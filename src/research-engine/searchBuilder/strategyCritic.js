@@ -223,7 +223,7 @@ export function critiqueStrategy({ strategy, hitCount, hitKind, seedRecall, sibl
   });
   if (thinConcepts.length) {
     const named = thinConcepts.map((c) => `"${c.label}"`).join(', ');
-    issues.push({ type: 'MISSING_SYNONYMS', severity: 'warn', message: `${thinConcepts.length === 1 ? 'Concept' : 'Concepts'} ${named} rely on a single term with no synonyms, which reduces sensitivity.`, suggestion: 'Add synonyms / abbreviations, or a subject heading, for each single-term concept.' });
+    issues.push({ type: 'MISSING_SYNONYMS', severity: 'warn', message: `${thinConcepts.length === 1 ? 'Concept' : 'Concepts'} ${named} rely on a single term with no synonyms, which reduces sensitivity.`, suggestion: 'Add synonyms / abbreviations, or a MeSH term, for each single-term concept.' });
     dominant = dominant || 'addSynonyms';
     for (const c of thinConcepts) suggestedEdits.push({ action: 'addSynonyms', concept: c.label, terms: synonymSuggestions(c) });
   }
@@ -245,7 +245,7 @@ export function critiqueStrategy({ strategy, hitCount, hitKind, seedRecall, sibl
       dominant = dominant || 'broaden';
       suggestedEdits.push({ action: 'broaden' });
     } else if (hits > cfg.maxHits || capped) {
-      issues.push({ type: 'TOO_MANY_HITS', severity: 'warn', message: capped ? `The search hit the result cap (${hits}+ records); it is likely too broad.` : `The search returned ${hits} records (above ${cfg.maxHits}); it may be too broad to screen.`, suggestion: 'Add a concept, use subject headings (major topic) or the precise profile, or narrow filters.' });
+      issues.push({ type: 'TOO_MANY_HITS', severity: 'warn', message: capped ? `The search hit the result cap (${hits}+ records); it is likely too broad.` : `The search returned ${hits} records (above ${cfg.maxHits}); it may be too broad to screen.`, suggestion: 'Add a concept, use MeSH major topic or the precise profile, or narrow filters.' });
       dominant = dominant || 'tighten';
       suggestedEdits.push({ action: 'increaseSpecificity' });
     }

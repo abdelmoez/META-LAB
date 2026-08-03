@@ -1403,6 +1403,16 @@ export async function exportRecords(req, res) {
     const settings = await getMetaSiftSettings();
     if (!settings.allowExport) return res.status(403).json({ error: 'Export is currently disabled by the administrator' });
 
+    // 97.md Phase 2 — the ZIP export is ALWAYS an async job (uniform code path; no
+    // sync ZIP). Answer before reserving allowance so nothing is consumed here.
+    if (req.query.format === 'zip') {
+      return res.status(400).json({
+        error: 'The screening ZIP export runs as a background job.',
+        useAsync: true,
+        startUrl: `/api/screening/projects/${p.id}/export/start`,
+      });
+    }
+
     // 67.md — screening.export tier gate (the sync path historically SKIPPED this, a
     // bypass the async path already blocked). 79.md §3 — plus the master project-export
     // gate + monthly allowance RESERVATION (Free = blocked; failed exports refunded below).
@@ -1460,12 +1470,18 @@ export async function exportRecords(req, res) {
       format: emittedFormat,
       meta: { filter },
     });
+    // 97.md Decision E8 — sync export success joins the project audit trail
+    // (writeAudit is best-effort and never throws; fire-and-forget).
+    const auditExport = () => writeAudit(p.id, req.user, 'SCREENING_EXPORTED', {
+      details: { format: emittedFormat, filter, records: filtered.length },
+    });
 
     if (fmt === 'json') {
       const body = JSON.stringify(filtered);
       res.setHeader('Content-Type', 'application/json');
       res.setHeader('Content-Disposition', `attachment; filename="sift-export-${p.id.slice(0,8)}.json"`);
       settleProjectExport(reservation?.reservationId, { status: 'succeeded', fileSize: Buffer.byteLength(body) });
+      auditExport();
       return res.send(body);
     }
 
@@ -1474,6 +1490,7 @@ export async function exportRecords(req, res) {
       res.setHeader('Content-Type', 'application/x-research-info-systems');
       res.setHeader('Content-Disposition', `attachment; filename="sift-export-${p.id.slice(0,8)}.ris"`);
       settleProjectExport(reservation?.reservationId, { status: 'succeeded', fileSize: Buffer.byteLength(ris) });
+      auditExport();
       return res.send(ris);
     }
 
@@ -1483,6 +1500,7 @@ export async function exportRecords(req, res) {
     res.setHeader('Content-Type', 'text/csv');
     res.setHeader('Content-Disposition', `attachment; filename="sift-export-${p.id.slice(0,8)}.csv"`);
     settleProjectExport(reservation?.reservationId, { status: 'succeeded', fileSize: Buffer.byteLength(csv) });
+    auditExport();
     res.send(csv);
   } catch (err) {
     // Refund the reserved allowance — a failed export never consumes usage (79.md §3).
@@ -1522,14 +1540,19 @@ export async function startExport(req, res) {
 
     const reqFmt = req.body?.format || req.query.format;
     const reqFilter = req.body?.filter || req.query.filter;
-    const fmt = ['csv', 'json', 'ris'].includes(reqFmt) ? reqFmt : 'csv';
-    const filter = ['all', 'include', 'exclude', 'maybe', 'undecided'].includes(reqFilter) ? reqFilter : 'all';
+    // 97.md Phase 2 — 'zip' is a first-class async format (the ONLY path for the
+    // portable ZIP; there is no sync ZIP). A ZIP is a complete project export, so
+    // its filter is always 'all' (documented in the archive README).
+    const fmt = ['csv', 'json', 'ris', 'zip'].includes(reqFmt) ? reqFmt : 'csv';
+    const filter = fmt === 'zip' ? 'all'
+      : ['all', 'include', 'exclude', 'maybe', 'undecided'].includes(reqFilter) ? reqFilter : 'all';
 
     // 79.md §3 — reserve one unit of the monthly project-export allowance at job
-    // START (gateExport already verified the master gate boolean). Enqueuing the job
-    // IS the export event, so the reservation is confirmed immediately; a job that
-    // later fails is a background concern (the allowance is not auto-refunded, matching
-    // the documented policy that a submitted async export counts).
+    // START (gateExport already verified the master gate boolean). Enqueuing a NEW
+    // job IS the export event, so that reservation is confirmed immediately; a job
+    // that later fails is a background concern (the allowance is not auto-refunded,
+    // matching the documented policy that a submitted async export counts). A start
+    // that DEDUPES to an existing queued/processing job is refunded below.
     let reservation;
     try {
       reservation = await requireProjectExport(req.user, {
@@ -1540,10 +1563,20 @@ export async function startExport(req, res) {
     const job = await enqueueExportJob(access.project.id, {
       createdById: req.user.id,
       createdByName: req.user.name || req.user.email || '',
-      format: fmt, filter, includeAiCv: true,
+      // The ZIP's CSV has its own schema without AI CV columns — skip the heavy
+      // cross-validation pass entirely for zip jobs (97.md Phase 2).
+      format: fmt, filter, includeAiCv: fmt !== 'zip',
     });
-    settleProjectExport(reservation.reservationId, { status: 'succeeded' });
-    recordUsage({ type: USAGE.EXPORT, userId: req.user.id, screenProjectId: access.project.id, format: fmt, meta: { filter, async: true } });
+    // Duplicate start (double-click / second tab / retry) deduped to an already
+    // queued/processing job → REFUND this reservation: one archive must never
+    // consume two monthly export units (same refund pattern as the failed sync
+    // export above; settle 'failed' flips counted=false in the ledger).
+    if (job.reused) {
+      settleProjectExport(reservation.reservationId, { status: 'failed', failureReason: 'deduped_to_existing_job' });
+    } else {
+      settleProjectExport(reservation.reservationId, { status: 'succeeded' });
+      recordUsage({ type: USAGE.EXPORT, userId: req.user.id, screenProjectId: access.project.id, format: fmt, meta: { filter, async: true } });
+    }
     res.status(202).json({ ok: true, jobId: job.id, status: job.status, format: fmt, filter });
   } catch (err) {
     console.error('[screening] startExport:', err.message);
@@ -1565,11 +1598,16 @@ export async function getExportJob(req, res) {
     }
 
     const ready = job.status === 'completed' && !!job.resultPath;
+    // 97.md Phase 2 — surface partial-failure warnings (non-blocking; the ZIP is
+    // still complete apart from the named optional member).
+    let warnings = [];
+    try { const w = JSON.parse(job.warnings || '[]'); if (Array.isArray(w)) warnings = w; } catch { /* keep [] */ }
     res.json({
       id: job.id, status: job.status, stage: job.stage, format: job.format, filter: job.filter,
       totalRecords: job.totalRecords, processedRecords: job.processedRecords,
       progress: job.totalRecords > 0 ? Math.min(100, Math.round((job.processedRecords / job.totalRecords) * 100)) : (ready ? 100 : 0),
       cvStatus: job.cvStatus, error: job.error, filename: job.filename, bytes: job.resultBytes,
+      warningCount: job.warningCount ?? 0, warnings,
       ready, createdAt: job.createdAt, completedAt: job.completedAt,
       downloadUrl: ready ? `/api/screening/projects/${access.project.id}/export/jobs/${job.id}/download` : null,
     });

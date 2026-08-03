@@ -14,7 +14,7 @@ export const acm = {
     const heading = (term.vocab && term.vocab.mesh) || term.text;
     vocab.unmapped++;
     vocab.approximate = true;
-    warnings.push({ code: 'VOCAB_APPROXIMATE', message: `ACM DL has no subject-heading thesaurus; "${heading}" was searched as AllField full text.` });
+    warnings.push({ code: 'VOCAB_APPROXIMATE', message: `ACM DL has no controlled-vocabulary thesaurus; the MeSH term "${heading}" was searched as AllField full text.` });
     const body = fieldBody({ text: heading, type: 'freetext', phrase: true }, { quoteChar: '"', wildcard: null, warnings });
     return `AllField:(${body})`;
   },

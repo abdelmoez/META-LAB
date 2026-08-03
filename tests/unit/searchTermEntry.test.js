@@ -111,3 +111,26 @@ describe('addTypedTerms', () => {
     expect(out.concepts[1].terms.map((t) => t.text)).toEqual(['b', 'c']);
   });
 });
+
+/* ══════════ 97 QA M18 — typed adds never collide with a MeSH copy ════════════ */
+import { addTypedTerms as addTypedTermsM18 } from '../../src/research-engine/searchBuilder/termEntry.js';
+
+describe('QA M18 — addTypedTerms dedupes only against FREE-TEXT terms', () => {
+  const meshGroup = () => [{
+    id: 'g1', label: 'HF', op: 'AND',
+    terms: [{ id: 'm1', text: 'Heart Failure', type: 'controlled', field: 'tiab', vocab: { mesh: 'Heart Failure' } }],
+  }];
+  it('typing the free-text form next to the same-label MeSH copy is ALLOWED (the standard pattern)', () => {
+    const res = addTypedTermsM18(meshGroup(), 'g1', 'heart failure');
+    expect(res.added).toEqual(['heart failure']);
+    expect(res.duplicates).toEqual([]);
+    expect(res.concepts[0].terms).toHaveLength(2);
+  });
+  it('a SECOND free-text copy is still skipped and reported', () => {
+    const withFree = meshGroup();
+    withFree[0].terms.push({ id: 'f1', text: 'heart failure', type: 'freetext', field: 'tiab' });
+    const res = addTypedTermsM18(withFree, 'g1', 'Heart failure');
+    expect(res.added).toEqual([]);
+    expect(res.duplicates).toEqual(['Heart failure']);
+  });
+});

@@ -8,11 +8,13 @@ import { serializeSearchState, pickPersisted, remoteAdoptDecision,
   conceptOnlyHoldsOriginTerm, conceptDrift, setConceptSourcePhrase,
   reorderConcept as reorderConceptState, reorderTerm as reorderTermState,
   mergeConcepts as mergeConceptsState,
-  splitConcept as splitConceptState } from "../../research-engine/searchBuilder/searchState.js"; // SE1 + SB3 + 96.md
+  // 97.md Phase 15 — one-shot neutral-label conversion for legacy PICO groups.
+  migrateLegacyGroupLabels,
+  splitConcept as splitConceptState } from "../../research-engine/searchBuilder/searchState.js"; // SE1 + SB3 + 96.md + 97.md
 import { tokenizeForSelection, spanPhrase } from "../../research-engine/searchBuilder/keywordSelection.js"; // SB3 Tab 1 + 96.md QA M5
 import { databaseGroups, defaultSelectedDatabases, getDatabase, ACCESS_TIERS, ACCESS_TOOLTIP, openUrlFor, homeUrlFor } from "../../research-engine/searchBuilder/databases.js"; // SB3 Tab 3 + 73.md P6
 import { compileStrategy, compileAll, capabilitiesFor } from "../../research-engine/searchBuilder/compilers/index.js"; // 73.md P6 — per-database strategy compiler (read-only consumer)
-import { detectCrossConceptDuplicates, searchQualityCheck, sensitivitySignal, termEquivalenceKey } from "../../research-engine/searchBuilder/crossConcept.js"; // SB4 Parts 4/8/9
+import { searchQualityCheck } from "../../research-engine/searchBuilder/crossConcept.js"; // SB4 (97.md: the family key now lives only in dupSignals' SOFT "possible variant" hint)
 import { useRealtime } from "../../frontend/hooks/useRealtime.js"; // SE1 Task 5 — live collaborator sync (shared SSE poke channel)
 // 85.md A1 — pure engine modules for the redesigned Concepts / Terms & Vocabulary UI.
 import { liveTermsOf } from "../../research-engine/searchBuilder/termLiveness.js";
@@ -23,8 +25,37 @@ import { computeStageStatuses } from "../../research-engine/searchBuilder/stageS
 import {
   recordRemoveTerm, recordRemoveConcept, recordDisable, recordBulkAccept,
   recordReorderConcept, recordReorderTerm, recordMergeConcepts, recordSplitConcept,
+  // 97.md (workstream B — plan §11): new undo kinds + the pure global-undo guard.
+  recordMoveTerm, recordCopyTerm, recordCombineTokens, recordSplitPhrase, recordRegenerate,
+  recordRenameConcept, recordAddConcept, recordDupOverride, shouldHandleGlobalUndo,
+  // 97 QA — per-editing-session term-edit undo (M13) + in-session restore undo (M11).
+  recordEditTerm, recordRestore,
   undoLast, clear as clearUndo,
 } from "../../research-engine/searchBuilder/undoStack.js";
+/* ── 97.md — pure state helpers from workstream B (plan §§8-13, ownership §22):
+   the conservative exact-duplicate engine + dupOverride machinery, the term
+   move/copy/combine/split ops (each returning ready-made undo info), and the
+   Regenerate engine with the spec's exact confirmation copy. */
+import {
+  findExactDuplicateInConcept, termDuplicateKey,
+  applyDupOverride as applyDupOverrideState, clearDupOverride as clearDupOverrideState,
+} from "../../research-engine/searchBuilder/exactDuplicate.js";
+import { moveTermToConcept, copyTerm as copyTermState, combineTokens as combineTokensState, splitPhrase as splitPhraseState, componentsMatchText } from "../../research-engine/searchBuilder/termOps.js";
+import { buildRegenerateState, REGENERATE_CONFIRM_COPY, REGENERATE_DONE_MESSAGE, PRE_REGENERATE_SNAPSHOT_NAME } from "../../research-engine/searchBuilder/regenerate.js";
+// 97 QA M4/M5/M28/M31 — the snapshot-then-regenerate transition, extracted so its
+// ordering (flush → snapshot → apply; abort on failure) is functionally tested.
+import { performRegenerate } from "./regenerateFlow.js";
+// 97 QA H3 — the shared per-tab revision channel: single-key saves (searchMode,
+// readyForScreening) ack through the same module and fast-forward our baseRevision.
+import { onSearchSaved } from "./searchBuilderApi.js";
+import { stampManualMeta } from "../../research-engine/searchBuilder/searchState.js";
+// 97.md — U-owned pure presentation model (per-term duplicate signals) + the
+// shared pointer-drag hook and its pure hit-testing helpers (unit-tested directly).
+import { buildDupModel } from "./dupSignals.js";
+import useChipDrag from "./dnd/useChipDrag.js";
+import { combineSpanFromTokens, normalizeReorderIndex } from "./dnd/dndModel.js";
+// 97.md Phase 4 — the pre-regeneration snapshot rides the existing version registry.
+import { searchVersionsApi } from "../searchWizard/searchVersionsApi.js";
 // 85.md A2 — extracted presentational leaves (SSR-contract-tested in searchBuilderUi.test.jsx).
 import ConceptNavigator from "./components/ConceptNavigator.jsx";
 import ActiveConceptPanel from "./components/ActiveConceptPanel.jsx";
@@ -405,7 +436,7 @@ export function DbStrategyPanel({res,cap,setOverride,hitState}){
   };
   const revert=()=>{ if(setOverride) setOverride(null); setEditing(false); };
   const vocabLine=res.vocab&&res.vocab.system!=="none"&&(res.vocab.mapped||res.vocab.unmapped)
-    ?`Subject headings (${res.vocab.system}): ${res.vocab.mapped} mapped${res.vocab.unmapped?`, ${res.vocab.unmapped} unmapped`:""}${res.vocab.approximate?" (approximate)":""}`
+    ?`Controlled vocabulary (${res.vocab.system}): ${res.vocab.mapped} mapped${res.vocab.unmapped?`, ${res.vocab.unmapped} unmapped`:""}${res.vocab.approximate?" (approximate)":""}`
     :null;
   const guidance=[...new Set([...(res.notes||[]),...((cap&&cap.notes)||[])])];
   return(
@@ -507,9 +538,43 @@ export function DbStrategyPanel({res,cap,setOverride,hitState}){
    SB3 — GUIDED WORKFLOW UI (presentational; the engine + state stay in the main
    component). A light 5-step stepper replaces the old single dense two-column view.
    ════════════════════════════════════════════════════════════════════════════ */
-// SB4 — Search Quality Check severity + sensitivity-signal colour maps.
-const QC_COLOR={critical:C.red,warning:C.yel,info:C.acc};
-const SENS_COLOR={"very-broad":C.red,broad:C.yel,balanced:C.grn,narrow:C.yel,"very-narrow":C.red};
+/* (97.md Phase 7 — the visible "Search Quality Check" card, its severity glyphs and
+   the sensitivity badge are REMOVED. Exact-duplicate detection moved onto the term
+   chips (dupSignals); the useful non-blocking hints — empty group, literal Boolean
+   operator — survive as quiet inline notices below.) */
+
+/* 97.md Phase 4 — the Regenerate confirmation dialog (exact spec copy). Pure
+   presentational + exported for SSR contract tests. Cancel leaves ALL state
+   unchanged; Regenerate proceeds only after the pre-regeneration snapshot saved. */
+export function RegenerateDialog({open,busy,error,onCancel,onConfirm}){
+  if(!open) return null;
+  return(
+    <div data-testid="sb-regenerate-dialog" role="dialog" aria-modal="true" aria-label="Regenerate search strategy?"
+      style={{position:"fixed",inset:0,zIndex:120,display:"flex",alignItems:"center",justifyContent:"center",background:"rgba(0,0,0,0.45)"}}>
+      <div style={{background:C.card,border:`1px solid ${C.brd2}`,borderRadius:12,padding:"18px 20px",maxWidth:440,width:"calc(100vw - 48px)",boxShadow:"0 24px 64px var(--t-shadow)",fontFamily:SANS}}>
+        {/* Exact spec copy — ONE source of truth (regenerate.REGENERATE_CONFIRM_COPY). */}
+        <h3 style={{margin:"0 0 10px",fontSize:15,fontWeight:700,color:C.txt}}>{REGENERATE_CONFIRM_COPY.title}</h3>
+        <p style={{margin:"0 0 10px",fontSize:12.5,color:C.txt2,lineHeight:1.6}}>
+          {REGENERATE_CONFIRM_COPY.body}
+        </p>
+        <p style={{margin:"0 0 12px",fontSize:11,color:C.muted,lineHeight:1.55}}>
+          A snapshot of your current workspace is saved to Versions first, so you can restore it at any time.
+        </p>
+        {error&&(
+          <div role="alert" style={{background:`${alpha(C.red,"10")}`,border:`1px solid ${alpha(C.red,"55")}`,borderRadius:8,padding:"8px 10px",marginBottom:12,fontSize:11.5,color:C.red}}>
+            {error}
+          </div>
+        )}
+        <div style={{display:"flex",gap:8,justifyContent:"flex-end"}}>
+          <button type="button" autoFocus onClick={onCancel} disabled={!!busy} style={{...btn("ghost"),fontSize:12}}>{REGENERATE_CONFIRM_COPY.cancel}</button>
+          <button type="button" onClick={onConfirm} disabled={!!busy} style={{...btn("primary"),fontSize:12,opacity:busy?0.7:1}}>
+            {busy?"Regenerating…":REGENERATE_CONFIRM_COPY.confirm}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 /* 96.md D13.1/2 (+ QA M5) — the RESEARCH QUESTION card at the top of Terms &
    Vocabulary: readable question text with click-to-select word/phrase tokens.
@@ -525,15 +590,45 @@ const SENS_COLOR={"very-broad":C.red,broad:C.yel,balanced:C.grn,narrow:C.yel,"ve
    from the anchor); a visible instruction line is wired via aria-describedby.
    Every token button carries aria-label = its exact text (the e2e + SSR-pinned
    accessible-name contract) and the .sbkw-token focus ring. */
-export function QuestionPhraseCard({question,accent,isSelected,onTogglePhrase,onAddManual,onEditQuestion,readOnly}){
+export function QuestionPhraseCard({question,accent,isSelected,onTogglePhrase,onCombineSpan,onAddManual,onEditQuestion,readOnly}){
   const [manual,setManual]=useState("");
   const [anchorIdx,setAnchorIdx]=useState(null); // last plain-clicked token — the span anchor
   const tokens=useMemo(()=>tokenizeForSelection(question||""),[question]);
+  const tokensRef=useRef(tokens); tokensRef.current=tokens;
   const hintId=useId();
+  const tokenEls=useRef({});
   // A stale anchor must never span across a DIFFERENT question's tokens.
   useEffect(()=>{ setAnchorIdx(null); },[question]);
+  /* 97.md Phase 6 — drag a token ONTO another token to combine the contiguous span
+     between them into one phrase ("sodium-glucose cotransporter 2"). The merge
+     target shows a DISTINCT ring and arms only after the hover threshold; Esc
+     cancels. Shift-click span selection stays the keyboard alternative.
+     QA M15 — the source sentence's word order is FIXED, so this tray is
+     `mergeOnly`: the drag model never resolves an insert/reorder target here (no
+     insertion line, no silent no-op drop) — the ONLY droppable target is another
+     token (combine), and the whole token acts as its merge zone. Documented
+     variation from the generic token-tray contract; term reorder lives on the
+     group chips. */
+  const drag=useChipDrag({
+    disabled:!!readOnly,
+    mergeOnly:true,
+    getGeometry:()=>({
+      chips:tokensRef.current.map((tok,i)=>{
+        const el=tokenEls.current[i];
+        if(!el||typeof el.getBoundingClientRect!=="function") return null;
+        const r=el.getBoundingClientRect();
+        return {id:i,groupId:"question",index:i,rect:{left:r.left,top:r.top,right:r.right,bottom:r.bottom}};
+      }).filter(Boolean),
+      groups:[],newGroup:null,
+    }),
+    onDrop:(info,target)=>{
+      if(target.kind==="merge"&&onCombineSpan) onCombineSpan(info.dragId,target.targetId);
+    },
+  });
+  const dragTarget=drag.state&&drag.state.target;
   const addManual=()=>{ const v=manual.trim(); if(v){ onAddManual(v); setManual(""); } };
   const clickToken=(i,shiftKey)=>{
+    if(drag.wasDragClick&&drag.wasDragClick()) return; // a drag just ended — not a click
     if(shiftKey&&anchorIdx!=null&&anchorIdx!==i){
       const span=spanPhrase(tokens,anchorIdx,i);
       if(span) onTogglePhrase(span);
@@ -547,7 +642,7 @@ export function QuestionPhraseCard({question,accent,isSelected,onTogglePhrase,on
     <div data-testid="sb-question-card" style={{background:C.card,border:`1px solid ${C.brd}`,borderLeft:`3px solid ${accent}`,borderRadius:10,padding:"11px 13px",marginBottom:10}}>
       <div style={{display:"flex",alignItems:"baseline",gap:8,marginBottom:6}}>
         <span style={{fontSize:12,fontWeight:700,color:C.txt}}>Research question</span>
-        <span style={{fontSize:10.5,color:C.muted}}>click the key ideas to create concept groups</span>
+        <span style={{fontSize:10.5,color:C.muted}}>click or drag the key ideas to build search groups</span>
         {onEditQuestion&&(
           <button type="button" onClick={onEditQuestion}
             style={{marginLeft:"auto",background:"none",border:"none",color:C.acc,cursor:"pointer",fontSize:11,fontFamily:SANS,textDecoration:"underline",padding:0}}>
@@ -561,25 +656,42 @@ export function QuestionPhraseCard({question,accent,isSelected,onTogglePhrase,on
           {tokens.map((tok,i)=>{
             const sel=isSelected(tok.text);
             const filler=tok.kind==="filler";
+            const isMergeTarget=!!(dragTarget&&dragTarget.kind==="merge"&&dragTarget.targetId===i);
+            const isDragged=!!(drag.state&&drag.state.dragId===i);
+            const handle=!readOnly?drag.handleFor(i):null;
             return(
-              <span key={i}> <button type="button" onClick={(e)=>clickToken(i,!!(e&&e.shiftKey))}
+              <span key={i} style={{position:"relative",display:"inline-block"}}> <button type="button" onClick={(e)=>clickToken(i,!!(e&&e.shiftKey))}
                 onKeyDown={(e)=>{ if(e.key==="Enter"&&e.shiftKey){ e.preventDefault(); clickToken(i,true); } }}
                 disabled={readOnly}
-                title={sel?"Already a concept group — click to open it (or remove it while unchanged)"
-                  :filler?"Common word — click if you really want a concept group from it; Shift-click selects the whole phrase up to here"
-                  :"Click to create a concept group from this phrase; Shift-click a second word to select the phrase between them"}
+                ref={(el)=>{ tokenEls.current[i]=el; }}
+                {...(handle||{})}
+                title={sel?"Already a search group — click to open it (or remove it while unchanged)"
+                  :filler?"Common word — click if you really want a search group from it; Shift-click selects the whole phrase up to here"
+                  :"Click to create a search group from this phrase; Shift-click (or drag onto) another word to combine the phrase between them"}
                 aria-label={tok.text} aria-pressed={sel} aria-describedby={hintId} className="sbkw-token"
                 style={{cursor:readOnly?"default":"pointer",fontFamily:SANS,fontSize:12.5,padding:"2px 8px",borderRadius:7,margin:"0 1px",
                   border:sel?`1px solid ${accent}`:filler?"1px dashed transparent":`1px ${tok.suggested?"solid":"dashed"} ${tok.suggested?alpha(accent,"66"):C.brd2}`,
                   background:sel?`${alpha(accent,"22")}`:tok.suggested?`${alpha(accent,"0c")}`:"transparent",
-                  color:sel?C.txt:C.txt2,fontWeight:sel?600:400,fontStyle:filler&&!sel?"italic":"normal"}}>
+                  color:sel?C.txt:C.txt2,fontWeight:sel?600:400,fontStyle:filler&&!sel?"italic":"normal",
+                  opacity:isDragged?0.45:1,
+                  ...(isMergeTarget?{outline:`3px ${drag.state.armed?"solid":"dashed"} ${accent}`,outlineOffset:2}:{}),
+                  ...((handle&&handle.style)||{})}}>
                 {sel?"✓ ":""}{tok.text}{tok.kind==="phrase"&&!sel?<span style={{fontSize:8,opacity:.7,marginLeft:4}}>phrase</span>:null}
-              </button> </span>
+              </button>
+              {isMergeTarget&&(()=>{
+                const span=combineSpanFromTokens(tokens,drag.state.dragId,i);
+                return(
+                  <span data-testid="sb-token-merge-hint" aria-hidden="true" style={{position:"absolute",top:"calc(100% + 4px)",left:0,zIndex:60,whiteSpace:"nowrap",fontSize:9.5,fontWeight:700,color:C.accText,background:C.acc,borderRadius:5,padding:"2px 8px"}}>
+                    {drag.state.armed?`Release to combine into “${span?span.text:tok.text}”`:"Hold to combine…"}
+                  </span>
+                );
+              })()}
+              {" "}</span>
             );
           })}
         </div>
         <div id={hintId} data-testid="sb-span-hint" style={{fontSize:10,color:C.muted,marginTop:6}}>
-          Click a word to create a concept group. Shift-click another word to select the whole phrase between them.
+          Click a word to create a search group. Shift-click another word — or drag one word onto another — to combine the whole phrase between them.
         </div>
         </>
       ):(
@@ -590,11 +702,63 @@ export function QuestionPhraseCard({question,accent,isSelected,onTogglePhrase,on
       {!readOnly&&(
         <div style={{display:"flex",gap:6,marginTop:9}}>
           <input value={manual} onChange={e=>setManual(e.target.value)} onKeyDown={e=>{if(e.key==="Enter"){e.preventDefault();addManual();}}}
-            aria-label="Add a concept group manually"
-            placeholder="Add a concept the question doesn't mention…" style={{...inputStyle,flex:1,fontSize:11.5}}/>
-          <button onClick={addManual} style={{...btn("ghost"),fontSize:11}}>+ Add concept</button>
+            aria-label="Add a search group manually"
+            placeholder="Add a search group the question doesn't mention…" style={{...inputStyle,flex:1,fontSize:11.5}}/>
+          <button onClick={addManual} style={{...btn("ghost"),fontSize:11}}>+ Add search group</button>
         </div>
       )}
+    </div>
+  );
+}
+
+/* 97.md Phase 5 (QA M9) — read-only SOURCE sections for the protocol's PICO text.
+   Shown below the research-question card whenever the project carries structured
+   P/I/C/O text, so users can see which text came from Population / Intervention /
+   Comparator / Outcomes. Tokens are clickable exactly like question tokens (each
+   click creates/opens a search group), but these sections are pure SOURCE
+   reference — they never control the workspace's organization (Phase 8: no forced
+   PICO cards) and PICO edits never mutate groups. Absent/blank PICO (every new
+   project) renders nothing. Presentational + exported for SSR contract tests. */
+export const PICO_SOURCE_ROWS = [
+  ["P", "Population"], ["I", "Intervention"], ["C", "Comparator"], ["O", "Outcomes"],
+];
+export function PicoSourceSections({ pico, accent, isSelected, onTogglePhrase, readOnly }) {
+  const rows = PICO_SOURCE_ROWS
+    .map(([key, label]) => ({ key, label, text: String((pico && pico[key]) || "").trim() }))
+    .filter((r) => r.text);
+  if (!rows.length) return null;
+  return (
+    <div data-testid="sb-pico-sources" style={{ background: C.card, border: `1px solid ${C.brd}`, borderRadius: 10, padding: "10px 13px", marginBottom: 10 }}>
+      <div style={{ display: "flex", alignItems: "baseline", gap: 8, marginBottom: 4 }}>
+        <span style={{ fontSize: 11.5, fontWeight: 700, color: C.txt }}>Protocol PICO — source text</span>
+        <span style={{ fontSize: 10, color: C.muted }}>
+          reference only — click an idea to add a search group; these fields never reorganize your groups
+        </span>
+      </div>
+      {rows.map((r) => (
+        <div key={r.key} data-testid={`sb-pico-source-${r.key}`} style={{ display: "flex", gap: 10, alignItems: "baseline", padding: "3px 0" }}>
+          <span style={{ flexShrink: 0, width: 86, fontSize: 9.5, fontWeight: 700, letterSpacing: 0.5, textTransform: "uppercase", color: C.muted }}>{r.label}</span>
+          <span style={{ lineHeight: 1.9, minWidth: 0 }}>
+            {tokenizeForSelection(r.text).map((tok, i) => {
+              const sel = isSelected ? isSelected(tok.text) : false;
+              const filler = tok.kind === "filler";
+              return (
+                <button key={i} type="button" disabled={!!readOnly}
+                  onClick={() => { if (!readOnly && onTogglePhrase) onTogglePhrase(tok.text); }}
+                  aria-label={tok.text} aria-pressed={sel} className="sbkw-token"
+                  title={sel ? "Already a search group — click to open it (or remove it while unchanged)"
+                    : `Click to create a search group from this ${r.label} phrase`}
+                  style={{ cursor: readOnly ? "default" : "pointer", fontFamily: SANS, fontSize: 11.5, padding: "1px 7px", borderRadius: 6, margin: "0 1px",
+                    border: sel ? `1px solid ${accent}` : "1px dashed transparent",
+                    background: sel ? `${alpha(accent, "22")}` : "transparent",
+                    color: sel ? C.txt : C.txt2, fontWeight: sel ? 600 : 400, fontStyle: filler && !sel ? "italic" : "normal" }}>
+                  {sel ? "✓ " : ""}{tok.text}
+                </button>
+              );
+            })}
+          </span>
+        </div>
+      ))}
     </div>
   );
 }
@@ -789,13 +953,16 @@ function LimitsPanel({ filters, setFilters, readOnly }) {
    PROPS (all optional except where noted; see INTEGRATION_README.md):
      projectId   string   — INTEGRATION: which project this search belongs to
      question    string   — 96.md: the research question (authoritative input)
-     pico        object   — LEGACY seam: only `pico.question` is read (fallback
-                            when `question` is absent). No P/I/C/O dependency.
+     pico        object   — `pico.question` is a fallback when `question` is
+                            absent; 97 QA M9: the structured P/I/C/O text is
+                            additionally DISPLAYED as read-only source sections
+                            (PicoSourceSections) — it is never read as a
+                            generation/organization input.
      api         object   — INTEGRATION: { meshLookup(text), pubmedCount(query) }
      loadSearch  func     — INTEGRATION: async (projectId) => savedState|null
      saveSearch  func     — INTEGRATION: async (projectId, state) => void
    ════════════════════════════════════════════════════════════════════════════ */
-export default function SearchBuilderTab({projectId,question:questionProp,pico,api,loadSearch,saveSearch,phase,onLiveQuery,onHitState,onRegisterHitRefresh,onGoToStage,onStats,readOnly,visible=true}){
+export default function SearchBuilderTab({projectId,question:questionProp,pico,api,loadSearch,saveSearch,phase,onLiveQuery,onHitState,onRegisterHitRefresh,onGoToStage,onStats,onVersionsChanged,onRegisterAfterRestore,readOnly,visible=true}){
   const A=api||defaultApi;
   // 96.md — the research question is the ONE upstream text the builder reads
   // (`pico.question` stays a fallback seam so legacy mounts keep working; the
@@ -864,6 +1031,30 @@ export default function SearchBuilderTab({projectId,question:questionProp,pico,a
   const [undoMsg,setUndoMsg]=useState(null);
   // Master-detail: the concept whose terms are being edited on the Terms stage.
   const [activeConceptId,setActiveConceptId]=useState(null);
+  /* ── 97.md additions ─────────────────────────────────────────────────────── */
+  // Plan §8 — the ONE new top-level persisted key: generation/modification metadata
+  // { generatedAt, generatedBy, sourceQuestion, manuallyModifiedAt, manuallyModifiedBy }.
+  // Omit-when-empty: null here ⇒ the key is omitted from the PUT payload entirely.
+  const [meta,setMeta]=useState(null);
+  const metaRef=useRef(meta); metaRef.current=meta;
+  // Stamp "manually modified" alongside every manual mutation (the same code paths
+  // that push undo entries — plus, QA M6: term-edit commits, manual database-
+  // strategy overrides, hidden-term restores and content undos). The client is
+  // identity-free: `manuallyModifiedBy` IS stamped server-side from the session
+  // (putSearch stampMetaIdentity, QA M3) and echoed back into local state on ack.
+  const touchMeta=useCallback(()=>{
+    setMeta(m=>stampManualMeta(m,undefined,new Date().toISOString())||null);
+  },[]);
+  // Phase 12 — blocked-duplicate notice { text, cid, tid } (+ Find existing term).
+  const [blockedNotice,setBlockedNotice]=useState(null);
+  // "Find other duplicate" / "Find existing term" — imperative chip focus request.
+  const [focusTerm,setFocusTerm]=useState(null); // { cid, tid }
+  // Phase 16 — a stale write was rejected and the fresher server doc was adopted.
+  const [conflictNotice,setConflictNotice]=useState(false);
+  // Phase 4 — Regenerate dialog state.
+  const [regenOpen,setRegenOpen]=useState(false);
+  const [regenBusy,setRegenBusy]=useState(false);
+  const [regenError,setRegenError]=useState('');
   // 96.md D13.3 — group-management UI state (terms phase): inline delete confirm,
   // the merge-target picker, and the split panel's draft {cid, selected:{tid:true}, label}.
   const [confirmDeleteId,setConfirmDeleteId]=useState(null);
@@ -924,7 +1115,13 @@ export default function SearchBuilderTab({projectId,question:questionProp,pico,a
     if(loadSearch&&projectId){ try{ saved=await loadSearch(projectId); }catch(e){ console.error("loadSearch failed",e); } }
     if(saved&&Array.isArray(saved.concepts)){
       const base=saved.concepts.map(c=>({...c,id:c.id||uid(),terms:(c.terms||[]).map(t=>({...t,id:t.id||uid()}))}));
-      setConcepts(base);
+      // 97.md Phase 15 — convert legacy PICO scaffold labels to neutral
+      // "Search Group N" names ONCE (idempotent: the per-concept labelMigrated
+      // marker makes re-loads a no-op; user-renamed labels are preserved and
+      // `picoField` is RETAINED for the drift/QC/timeframe exemptions).
+      // lastSavedRef below is computed from the RAW server doc, so a conversion
+      // dirties the persisted signature exactly once and the autosave persists it.
+      setConcepts(migrateLegacyGroupLabels(base));
       setOverrides(saved.overrides&&typeof saved.overrides==="object"?saved.overrides:{});
       setIgnored(Array.isArray(saved.ignored)?saved.ignored:[]);
       // prompt60 — load persisted search-scope limits (default empty for older saves).
@@ -942,6 +1139,8 @@ export default function SearchBuilderTab({projectId,question:questionProp,pico,a
       // 96.md — the question snapshot ('' on pre-96 saves → no drift banner until
       // the user builds from the question and the snapshot is stamped).
       setQuestionSnapshot(typeof saved.questionSnapshot==="string"?saved.questionSnapshot:"");
+      // 97.md plan §8 — generation/modification metadata (absent on pre-97 saves).
+      setMeta(saved.meta&&typeof saved.meta==="object"?saved.meta:null);
       // Record what the server actually holds so autosave is a no-op until a real edit.
       lastSavedRef.current=serializeSearchState(saved);
       revisionRef.current=typeof saved.revision==="number"?saved.revision:0;
@@ -951,6 +1150,7 @@ export default function SearchBuilderTab({projectId,question:questionProp,pico,a
       const seeded=seedStateFromQuestion(question);
       setConcepts([]);
       setQuestionSnapshot(seeded.questionSnapshot);
+      setMeta(null);
       lastSavedRef.current="";
       revisionRef.current=0;
     }
@@ -972,30 +1172,115 @@ export default function SearchBuilderTab({projectId,question:questionProp,pico,a
   // re-fire the exact same write.
   const pendingSaveRef=useRef(null);
   const saveStateRef=useRef('saved'); // mirror for the unmount flush (no stale closure)
-  const doSave=useCallback(async(sig,payload)=>{
-    if(!saveSearch||!projectId) return;
-    setSaveState('saving'); saveStateRef.current='saving';
-    try{
-      const res=await saveSearch(projectId,payload);
-      if(!res) throw new Error('save rejected');
-      lastSavedRef.current=sig;
-      if(res&&typeof res.revision==="number") revisionRef.current=res.revision;
-      if(pendingSaveRef.current&&pendingSaveRef.current.sig===sig) pendingSaveRef.current=null;
-      setSaveState('saved'); saveStateRef.current='saved';
-    }catch(e){
-      console.error("saveSearch failed",e);
-      setSaveState('error'); saveStateRef.current='error'; // pendingSaveRef keeps the payload for Retry
-    }
-  },[saveSearch,projectId]); // eslint-disable-line
+  // 97 QA H1/H3/M27 — ref mirrors for the async save machinery (no stale closures).
+  const readOnlyRef=useRef(readOnly); readOnlyRef.current=readOnly;
+  const readyRef=useRef(readyForScreening); readyRef.current=readyForScreening;
+  const busyEditingRef=useRef(false); // assigned below where busyEditing is derived
+  // 97 QA H1 — saves are SERIALIZED through one promise chain: a second doSave can
+  // never race the first one's ack (the +800ms duplicate timer used to replay a
+  // FROZEN baseRevision and self-inflict a 409 right after Regenerate).
+  const saveChainRef=useRef(Promise.resolve());
+  const doSave=useCallback((sig,payload)=>{
+    const run=async()=>{
+      if(!saveSearch||!projectId||readOnlyRef.current) return false; // M27 — viewers never PUT
+      // H1 — dedupe: an identical save already ACKED (e.g. the debounced timer
+      // firing after saveImmediate landed the same content) is a clean no-op.
+      if(sig===lastSavedRef.current){
+        if(pendingSaveRef.current&&pendingSaveRef.current.sig===sig) pendingSaveRef.current=null;
+        if(saveStateRef.current!=='saved'){ setSaveState('saved'); saveStateRef.current='saved'; }
+        return true;
+      }
+      setSaveState('saving'); saveStateRef.current='saving';
+      for(let attempt=0;attempt<2;attempt++){
+        try{
+          // H1/H3 — baseRevision is read AT SEND TIME, never frozen at schedule:
+          // revisionRef advances on every ack — our own saves, the workspace's
+          // single-key saves (shared onSearchSaved channel) and restore adoption.
+          const res=await saveSearch(projectId,{...payload,baseRevision:revisionRef.current});
+          if(!res) throw new Error('save rejected');
+          lastSavedRef.current=sig;
+          if(typeof res.revision==="number") revisionRef.current=res.revision;
+          // QA M3 — adopt the server's identity-stamped meta echo (generatedBy /
+          // manuallyModifiedBy are stamped from the session server-side), so the
+          // local doc + signature stay byte-identical to the stored one. Skipped
+          // when meta moved again mid-flight — the next save carries it.
+          if(res&&Object.prototype.hasOwnProperty.call(res,'meta')
+            &&metaRef.current===(Object.prototype.hasOwnProperty.call(payload,'meta')?payload.meta:null)){
+            const echoed=res.meta&&typeof res.meta==='object'&&Object.keys(res.meta).length?res.meta:null;
+            lastSavedRef.current=serializeSearchState({...payload,readyForScreening:readyRef.current,meta:echoed||undefined});
+            setMeta(echoed);
+          }
+          if(pendingSaveRef.current&&pendingSaveRef.current.sig===sig) pendingSaveRef.current=null;
+          setSaveState('saved'); saveStateRef.current='saved';
+          return true;
+        }catch(e){
+          console.error("saveSearch failed",e);
+          // 97.md Phase 16 — a rejected write may be a STALE revision (server-side
+          // CAS on baseRevision). Reconcile instead of a dead Retry loop:
+          let fresh=null;
+          try{ if(loadSearch&&projectId) fresh=await loadSearch(projectId); }
+          catch{/* reconcile is best-effort */}
+          if(fresh&&Array.isArray(fresh.concepts)&&typeof fresh.revision==="number"&&fresh.revision>revisionRef.current){
+            if(serializeSearchState(fresh)===lastSavedRef.current){
+              // H3 — the newer revision holds EXACTLY the content we last knew:
+              // another writer in this tab (search-mode / ready toggle) only
+              // bumped the envelope. Fast-forward and resend the pending edit —
+              // nothing is dropped, no false "collaborator" notice.
+              revisionRef.current=fresh.revision;
+              continue;
+            }
+            // Genuinely newer content. M7/H3 — honor the SAME defer-while-editing
+            // rule pullRemote applies: never adopt over an open editor/draft. The
+            // conflict notice still arms so the user learns (once the parked doc
+            // is adopted) that their unsaved change needs re-applying.
+            if(busyEditingRef.current){
+              pendingRemoteRef.current=fresh; setRemotePending(true);
+              setConflictNotice(true);
+              setSaveState('error'); saveStateRef.current='error'; // pending payload kept for an explicit Retry
+              return false;
+            }
+            applyRemote(fresh);
+            setConflictNotice(true);
+            return false;
+          }
+          setSaveState('error'); saveStateRef.current='error'; // pendingSaveRef keeps the payload for Retry
+          return false;
+        }
+      }
+      setSaveState('error'); saveStateRef.current='error';
+      return false;
+    };
+    const p=saveChainRef.current.then(run,run);
+    saveChainRef.current=p.then(()=>{},()=>{});
+    return p;
+  },[saveSearch,projectId,loadSearch]); // eslint-disable-line
   // Immediate save (Retry button / unmount flush) — bypasses the 800ms debounce.
+  // Returns the save promise (false when nothing was pending needs no save).
   const saveNow=useCallback(()=>{
     clearTimeout(saveTimer.current);
     const p=pendingSaveRef.current;
-    if(p) doSave(p.sig,p.payload);
+    return p?doSave(p.sig,p.payload):Promise.resolve(true);
   },[doSave]);
+  // 97 QA H3 — fast-forward our known revision whenever ANY writer in this tab
+  // (the workspace's single-key searchMode / readyForScreening saves included)
+  // receives a save ack for this project. The poke channel excludes the acting
+  // user, so without this the builder's next full save 409'd against the user's
+  // own single-key write and discarded their edit.
+  useEffect(()=>{
+    if(!projectId) return undefined;
+    return onSearchSaved(({projectId:pid,revision})=>{
+      if(pid===projectId&&typeof revision==="number"&&revision>revisionRef.current){
+        revisionRef.current=revision;
+      }
+    });
+  },[projectId]);
   useEffect(()=>{
     if(!loaded||!saveSearch||!projectId) return;
-    const sig=serializeSearchState({concepts,overrides,ignored,databases:selectedDbs,readyForScreening,dismissedWarnings,filters,rejectedSuggestions,questionSnapshot});
+    if(readOnly) return; // 97 QA M27 — read-only viewers never autosave (the label
+    // migration stays an IN-MEMORY display conversion for them; a PUT would 403
+    // forever and pin a spurious failed-save indicator).
+    // 97.md — `meta` rides the signature + payload (omit-when-empty: null ⇒ absent).
+    const sig=serializeSearchState({concepts,overrides,ignored,databases:selectedDbs,readyForScreening,dismissedWarnings,filters,rejectedSuggestions,questionSnapshot,...(meta?{meta}:{})});
     if(sig===lastSavedRef.current){
       pendingSaveRef.current=null; // unchanged vs the server → no PUT, no ping-pong
       // review-round #7 — an edit REVERTED inside the 800ms window (snackbar Undo,
@@ -1005,19 +1290,22 @@ export default function SearchBuilderTab({projectId,question:questionProp,pico,a
       return;
     }
     setRemoteUpdatedBy(null); // this user is now editing → drop the "updated by collaborator" attribution
-    const payload={concepts,overrides,ignored,databases:selectedDbs,dismissedWarnings,filters,rejectedSuggestions,questionSnapshot};
+    // 97.md Phase 16 — full-state PUTs carry `baseRevision` as an ENVELOPE key so
+    // the server rejects stale writes instead of LWW-clobbering; QA H1 — it is
+    // stamped inside doSave AT SEND TIME (a frozen schedule-time copy self-409'd).
+    const payload={concepts,overrides,ignored,databases:selectedDbs,dismissedWarnings,filters,rejectedSuggestions,questionSnapshot,...(meta?{meta}:{})};
     pendingSaveRef.current={sig,payload};
     setSaveState('saving'); saveStateRef.current='saving';
     clearTimeout(saveTimer.current);
     saveTimer.current=setTimeout(()=>doSave(sig,payload),800);
     return ()=>clearTimeout(saveTimer.current);
-  },[concepts,overrides,ignored,selectedDbs,readyForScreening,dismissedWarnings,filters,rejectedSuggestions,questionSnapshot,loaded]); // eslint-disable-line
+  },[concepts,overrides,ignored,selectedDbs,readyForScreening,dismissedWarnings,filters,rejectedSuggestions,questionSnapshot,meta,loaded,readOnly]); // eslint-disable-line
   // Unmount flush — if a debounced save is still pending, fire it immediately so
   // leaving the Search tab inside the 800ms window can never lose the last edit.
   useEffect(()=>()=>{
     clearTimeout(saveTimer.current);
     const p=pendingSaveRef.current;
-    if(p&&p.sig!==lastSavedRef.current&&saveStateRef.current!=='error'){
+    if(p&&p.sig!==lastSavedRef.current&&saveStateRef.current!=='error'&&!readOnlyRef.current){
       // fire-and-forget: the component is gone; the server ack just lands.
       doSave(p.sig,p.payload);
     }
@@ -1043,6 +1331,7 @@ export default function SearchBuilderTab({projectId,question:questionProp,pico,a
     setFilters(persisted.filters||{dateFrom:"",dateTo:"",languages:[],pubTypes:[]}); // prompt60
     setRejectedSuggestions(persisted.rejectedSuggestions||[]); // 85.md A1
     setQuestionSnapshot(persisted.questionSnapshot||""); // 96.md D2
+    setMeta((persisted.meta&&typeof persisted.meta==="object")?persisted.meta:(saved.meta&&typeof saved.meta==="object"?saved.meta:null)); // 97.md plan §8
     // 85.md A1 — the undo stack is only valid against the document it was recorded
     // on; undoing across a collaborator's update would resurrect stale state and
     // clobber their work via the last-write-wins PUT.
@@ -1058,6 +1347,7 @@ export default function SearchBuilderTab({projectId,question:questionProp,pico,a
   // block remote adoption forever).
   const anyDraft=Object.entries(drafts).some(([cid,v])=>v&&String(v).trim()&&concepts.some(c=>c.id===cid));
   const busyEditing=!!(editing||anyDraft||pendingSplit);
+  busyEditingRef.current=busyEditing; // QA H3/M7 — the 409 reconcile honors the same defer rule
   async function pullRemote(){
     if(!loadSearch||!projectId) return;
     let saved; try{ saved=await loadSearch(projectId); }catch{ return; }
@@ -1082,6 +1372,30 @@ export default function SearchBuilderTab({projectId,question:questionProp,pico,a
   useEffect(()=>{
     if(!busyEditing&&pendingRemoteRef.current) applyRemote(pendingRemoteRef.current);
   },[editing,drafts,pendingSplit]); // eslint-disable-line
+
+  /* ── 97 QA M7/M11 — version restore, for the ACTING user. The server's realtime
+     poke deliberately excludes the actor, so their mounted builder kept rendering
+     the PRE-restore workspace and the next edit self-409'd into a false
+     "collaborator updated" notice. The workspace threads the versions panel's
+     onAfterRestore here: refetch + adopt the restored document immediately AND
+     record a whole-state `restore` undo entry against the pre-restore state, so
+     the restore itself is undoable in-session (Phase 6 "Restore"). The stack is
+     cleared first (older entries reference the pre-restore document — the
+     standard cross-document rule); the restore entry alone rides on top. ── */
+  const handleAfterRestore=useCallback(async()=>{
+    if(!loadSearch||!projectId) return;
+    let saved=null;
+    try{ saved=await loadSearch(projectId); }catch{ return; }
+    if(!saved||!Array.isArray(saved.concepts)) return;
+    const prev={concepts:conceptsRef.current,meta:metaRef.current,questionSnapshot:questionSnapshotRef.current};
+    applyRemote(saved); // adopts + fast-forwards revisionRef (no self-409 later)
+    setUndoStack(recordRestore(clearUndo(),{prev}));
+    setUndoMsg('Version restored.');
+    announce('Version restored — the workspace now shows the restored strategy. Undo brings back what you had before.');
+  },[projectId,loadSearch]); // eslint-disable-line
+  useEffect(()=>{
+    if(typeof onRegisterAfterRestore==="function") onRegisterAfterRestore(handleAfterRestore);
+  },[onRegisterAfterRestore,handleAfterRestore]);
 
   /* Restore-all for the "user said no" memory. 96.md — with the PICO auto-sync
      retired there is nothing to re-extract: clearing `ignored` simply stops
@@ -1123,6 +1437,7 @@ export default function SearchBuilderTab({projectId,question:questionProp,pico,a
     let res;
     setConcepts(cs=>{ res=restoreTermInto(cs,entry); return res.cs; });
     setIgnored(ig=>ig.filter(e=>cnorm(e.text)!==cnorm(entry.text)));
+    touchMeta(); // QA M6 — re-adding a hidden term is a manual modification
     if(res&&res.cid) tryLookup(res.cid,res.tid,entry.text);
   }
 
@@ -1138,6 +1453,7 @@ export default function SearchBuilderTab({projectId,question:questionProp,pico,a
     });
     const drop=new Set(entries.map(e=>cnorm(e.text)));
     setIgnored(ig=>ig.filter(e=>!drop.has(cnorm(e.text))));
+    touchMeta(); // QA M6 — restoring hidden terms is a manual modification
     looked.forEach(([cid,tid,text])=>tryLookup(cid,tid,text));
   }
 
@@ -1161,6 +1477,16 @@ export default function SearchBuilderTab({projectId,question:questionProp,pico,a
         setConcepts(cs=>cs.map(c=>c.id===cid?{...c,terms:c.terms.map(t=>t.id===tid?{...t,vocab:v,type:forceControlled?"controlled":(t.type==="controlled"?"controlled":t.type)}:t)}:c));
       } else if(forceControlled){
         setConcepts(cs=>cs.map(c=>c.id===cid?{...c,terms:c.terms.map(t=>t.id===tid?{...t,type:"controlled",vocab:null}:t)}:c));
+      } else {
+        // 97 QA M12/M24 — an edited MeSH label that no longer matches ANY heading
+        // must not silently keep the stale descriptor (the chip and every compiled
+        // query would keep searching the OLD heading while the visible text
+        // differs). Clear the vocab so the term enters the explicit UNMATCHED
+        // state: the chip drops its [MeSH] form, shows "no MeSH match — will not
+        // match", compiles as plain free text, and the editor offers the one-click
+        // "Convert to free text" action. Freetext terms are untouched (a best-
+        // effort lookup miss must not strip an existing informational vocab).
+        setConcepts(cs=>cs.map(c=>c.id===cid?{...c,terms:c.terms.map(t=>(t.id===tid&&t.type==="controlled"&&t.vocab)?{...t,vocab:null}:t)}:c));
       }
     }catch(e){
       setLimitedMode(true);
@@ -1296,9 +1622,20 @@ export default function SearchBuilderTab({projectId,question:questionProp,pico,a
     }
     if(t&&t.source==="pico_auto"){ addIgnored({text:t.text,field:c?.field||"",label:c?.label||""}); }
     setConcepts(cs=>cs.map(c2=>c2.id===cid?{...c2,terms:c2.terms.filter(t2=>t2.id!==tid)}:c2));
+    touchMeta();
     if(editing&&editing.termId===tid) setEditing(null);
   };
-  const addConcept=()=>setConcepts(cs=>[...cs,{id:uid(),label:`Concept ${cs.length+1}`,op:"AND",source:"user_added",terms:[]}]);
+  // 97.md Phase 8 — new groups get NEUTRAL default names ("Search Group N").
+  // QA M10 — "Create group" is a required Phase-6 undo action: record the entry
+  // (the empty group vanishes on undo; terms added later keep it alive).
+  const addConcept=()=>{
+    const cid=uid();
+    const label=`Search Group ${conceptsRef.current.length+1}`;
+    touchMeta();
+    setConcepts(cs=>[...cs,{id:cid,label,op:"AND",source:"user_added",terms:[]}]);
+    setUndoStack(st=>recordAddConcept(st,{conceptId:cid,label}));
+    setUndoMsg(`Created group “${label}”`);
+  };
   const removeConcept=id=>{
     const c=concepts.find(x=>x.id===id);
     const idx=concepts.findIndex(x=>x.id===id);
@@ -1314,6 +1651,7 @@ export default function SearchBuilderTab({projectId,question:questionProp,pico,a
       return [...ig,...auto.filter(e=>!haveNow.has(cnorm(e.text)))];
     });
     setConcepts(cs=>cs.filter(c2=>c2.id!==id));
+    touchMeta();
     setActiveConceptId(a=>a===id?null:a);
     // review-round #6 — a deleted concept's retained add-draft / pending paste /
     // inline status must not linger: an orphaned draft kept `busyEditing` true
@@ -1334,39 +1672,141 @@ export default function SearchBuilderTab({projectId,question:questionProp,pico,a
       setUndoMsg(`Switched off "${t.text}"`);
     }
     setConcepts(cs=>setTermDisabled(cs,cid,tid,disabling));
+    touchMeta();
   };
-  /* 85.md A2 — the snackbar's Undo: apply the inverse of the latest recorded action. */
-  const undoLastAction=()=>{
-    const r=undoLast(undoStack,{concepts:conceptsRef.current,ignored:ignoredRef.current});
+  /* 85.md A2 + 97.md — the Undo entry point (snackbar button AND the global
+     Ctrl/Cmd+Z below). Reads through refs so the document-level key handler never
+     sees a stale stack. 97.md whole-state kinds (regenerate/restore) also restore
+     `meta` + `questionSnapshot` when the entry carries them. */
+  const undoStackRef=useRef(undoStack); undoStackRef.current=undoStack;
+  const undoLastAction=useCallback(()=>{
+    const r=undoLast(undoStackRef.current,{
+      concepts:conceptsRef.current,ignored:ignoredRef.current,
+      meta:metaRef.current,questionSnapshot:questionSnapshotRef.current,
+    });
     if(!r) return;
+    const metaRestored='meta' in r.state&&r.state.meta!==metaRef.current;
     setConcepts(r.state.concepts);
     setIgnored(r.state.ignored);
+    if(metaRestored) setMeta(r.state.meta||null);
+    if(typeof r.state.questionSnapshot==="string"&&r.state.questionSnapshot!==questionSnapshotRef.current) setQuestionSnapshot(r.state.questionSnapshot);
     setUndoStack(r.stack);
-    setUndoMsg(null);
+    // 97 QA M6 — undoing an action IS a manual modification (Phase 3 list); the
+    // whole-state kinds (regenerate/restore) set meta themselves, and a no-op
+    // undo (vanished target — empty description) must not dirty the signature.
+    if(!metaRestored&&r.description) touchMeta();
+    // 97 QA M16 — a VISIBLE toast describes what was undone (plain: no Undo
+    // button — redo does not exist), alongside the aria-live announcement.
+    setUndoMsg(r.description?{text:r.description,plain:true}:null);
     announce(r.description||'Undone');
-  };
+  },[]); // eslint-disable-line
+
+  /* ── 97.md Phase 6 — GLOBAL keyboard undo: Ctrl+Z (Windows/Linux) / Cmd+Z (macOS).
+     One document-level keydown handler, mounted only while this builder is the
+     visible workspace surface. The pure `shouldHandleGlobalUndo` predicate (B,
+     undoStack.js) refuses EVERY typing surface — inputs, textareas,
+     contentEditable/rich-text and search-syntax editors — so native text undo is
+     never hijacked. Shift/Alt combos (redo chords) are left alone. */
+  useEffect(()=>{
+    if(!embedded||!visible||readOnly) return;
+    const onKey=(e)=>{
+      if(e.key!=="z"&&e.key!=="Z") return;
+      if(!(e.ctrlKey||e.metaKey)||e.altKey||e.shiftKey) return;
+      const t=e.target||{};
+      let role=null;
+      try{ role=typeof t.getAttribute==="function"?t.getAttribute("role"):null; }catch{/* detached */}
+      if(!shouldHandleGlobalUndo({tagName:t.tagName,isContentEditable:!!t.isContentEditable,role})) return;
+      e.preventDefault();
+      undoLastAction();
+    };
+    document.addEventListener("keydown",onKey);
+    return ()=>document.removeEventListener("keydown",onKey);
+  },[embedded,visible,readOnly,undoLastAction]);
+
+  /* ── 97 QA M13 — TERM-EDIT undo: ONE entry per editing session (the rename
+     pattern). The pre-edit term object is snapshotted when the editor popover
+     opens; when the session ends (close / switch to another chip) a CHANGED term
+     records one `editTerm` inverse and stamps the manual-modification meta
+     (QA M6 — "Editing a term" is a Phase-3 manual action). Fields managed by
+     their own undoable actions (disabled, dupOverride) are excluded from the
+     diff so those actions never double-record. ── */
+  const editSessionRef=useRef(null); // { cid, tid, term } | null
+  const commitTermEditSession=useCallback(()=>{
+    const base=editSessionRef.current;
+    if(!base) return;
+    editSessionRef.current=null;
+    const c=conceptsRef.current.find(x=>x&&x.id===base.cid);
+    const now=c&&(c.terms||[]).find(x=>x&&x.id===base.tid);
+    if(!now) return; // removed / combined / split — those paths record their own undo
+    const KEYS=['text','type','field','truncate','noExplode','phrase','vocab'];
+    const changed=KEYS.some(k=>{
+      if(base.term[k]===now[k]) return false;
+      try{ return JSON.stringify(base.term[k]??null)!==JSON.stringify(now[k]??null); }catch{ return true; }
+    });
+    if(!changed) return;
+    touchMeta();
+    setUndoStack(st=>recordEditTerm(st,{conceptId:base.cid,term:base.term}));
+    setUndoMsg(`Edited “${String(now.text||base.term.text||'term')}”`);
+  },[touchMeta]);
+  useEffect(()=>{
+    const cur=editing&&editing.conceptId&&editing.termId?{cid:editing.conceptId,tid:editing.termId}:null;
+    const prev=editSessionRef.current;
+    if(prev&&(!cur||cur.tid!==prev.tid||cur.cid!==prev.cid)) commitTermEditSession();
+    if(cur&&!editSessionRef.current){
+      const c=conceptsRef.current.find(x=>x&&x.id===cur.cid);
+      const t=c&&(c.terms||[]).find(x=>x&&x.id===cur.tid);
+      editSessionRef.current=t?{cid:cur.cid,tid:cur.tid,term:t}:null;
+    }
+  },[editing,commitTermEditSession]);
   /* prompt42 Task 3 — add a picked suggestion as a term. MeSH → controlled (with a
      lookup to attach the descriptor); keyword/synonym → freetext. Deduped against
      the concept's existing terms (mirrors addSynonyms). Triggers a hit refresh. */
   const addSuggestion=(cid,sugg)=>{
     const c=concepts.find(x=>x.id===cid); if(!c||!sugg) return;
     const text=String(sugg.label||"").trim(); if(!text) return;
-    if(c.terms.some(t=>t.text.toLowerCase()===text.toLowerCase())) return; // dedupe
-    const tid=uid();
     const isMesh=sugg.type==="mesh";
+    // 97.md Phase 12 — same-group exact-dup prevention WITH the find-existing
+    // affordance. QA M18 — checked against the term ACTUALLY inserted (the MeSH
+    // descriptor for mesh picks, type-aware), so a free-text pick never collides
+    // with a same-label MeSH copy and vice versa.
+    const insertText=isMesh?(sugg.mesh||text):text;
+    const existing=findExactDuplicateInConcept(c,insertText,undefined,
+      isMesh?{type:'controlled',vocab:sugg.vocab||null}:undefined);
+    if(existing){
+      setBlockedNotice({text:`This exact term is already in ${c.label||'this group'}.`,cid,tid:existing.id});
+      announce(`“${text}” is already in ${c.label||'this group'}`);
+      return;
+    }
+    const tid=uid();
     const newTerm=isMesh
-      ? {id:tid,text:(sugg.mesh||text),type:"controlled",field:"tiab",source:"user_added",vocab:sugg.vocab||null}
+      ? {id:tid,text:insertText,type:"controlled",field:"tiab",source:"user_added",vocab:sugg.vocab||null}
       : {id:tid,text,type:"freetext",field:"tiab",source:sugg.type==="synonym"?"synonym":"user_added"};
     setConcepts(cs=>cs.map(x=>x.id===cid?{...x,terms:[...x.terms,newTerm]}:x));
+    touchMeta();
+    // 97 QA M10 — a suggestion pick is an Add: undoable like every other add path.
+    setUndoStack(st=>recordBulkAccept(st,{concept:c,termIds:[tid],label:newTerm.text}));
+    setUndoMsg(`Added “${newTerm.text}”`);
     // Attach/confirm the descriptor: force controlled for MeSH, best-effort otherwise.
     tryLookup(cid,tid,newTerm.text,isMesh);
   };
-  const addSynonyms=(cid,tid)=>{
-    const c=concepts.find(x=>x.id===cid),t=c?.terms.find(x=>x.id===tid);
-    if(!t?.vocab) return;
-    const existing=new Set(c.terms.map(x=>x.text.toLowerCase()));
-    const newTerms=(t.vocab.synonyms||[]).filter(s=>!existing.has(s.toLowerCase())).map(s=>({id:uid(),text:s,type:"freetext",field:"tiab",source:"synonym"}));
-    setConcepts(cs=>cs.map(x=>x.id===cid?{...x,terms:[...x.terms,...newTerms]}:x));
+  /* 97.md Phase 13 — add ONE entry term / related free-text term through an
+     EXPLICIT per-term action (MeSH popover rows + the suggestions area). Replaces
+     the retired bulk `addSynonyms` — nothing is ever bulk-inserted. */
+  const addEntryTerm=(cid,text)=>{
+    const c=conceptsRef.current.find(x=>x&&x.id===cid); if(!c) return;
+    const clean=String(text||"").trim(); if(!clean) return;
+    const existing=findExactDuplicateInConcept(c,clean);
+    if(existing){
+      setBlockedNotice({text:`“${clean}” is already in ${c.label||'this group'}.`,cid,tid:existing.id});
+      announce(`“${clean}” is already in ${c.label||'this group'}`);
+      return;
+    }
+    const tid=uid();
+    setConcepts(cs=>cs.map(x=>x.id===cid?{...x,terms:[...x.terms,{id:tid,text:clean,type:"freetext",field:"tiab",source:"synonym"}]}:x));
+    touchMeta();
+    setUndoStack(st=>recordBulkAccept(st,{concept:c,termIds:[tid],label:clean}));
+    setUndoMsg(`Added “${clean}”`);
+    announce(`Added “${clean}” to ${c.label||'the group'}`);
   };
 
   /* ── 85.md A2 — typed/pasted term entry through the ONE pure commit path ────
@@ -1390,7 +1830,20 @@ export default function SearchBuilderTab({projectId,question:questionProp,pico,a
         })};
       });
       setConcepts(withIds);
+      touchMeta();
+      // 97 QA M10 — a typed/pasted add is undoable: ONE entry removes exactly the
+      // created terms (Phase 6 "Add" is a required undo action).
+      if(looks.length&&target){
+        const label=looks.length===1?looks[0][1]:`${looks.length} terms`;
+        setUndoStack(st=>recordBulkAccept(st,{concept:target,termIds:looks.map(([tid])=>tid),label}));
+        setUndoMsg(looks.length===1?`Added “${looks[0][1]}”`:`Added ${looks.length} terms`);
+      }
       looks.forEach(([tid,text])=>tryLookup(cid,tid,text));
+    }
+    // 97.md Phase 12 — a rejected exact duplicate gets the find-existing affordance.
+    if(res.duplicates.length){
+      const existing=findExactDuplicateInConcept(target,res.duplicates[0]);
+      if(existing) setBlockedNotice({text:`This exact term is already in ${label}.`,cid,tid:existing.id});
     }
     const msg=res.added.length&&res.duplicates.length
       ? `${res.added.length} added · ${res.duplicates.length} already present`
@@ -1424,26 +1877,22 @@ export default function SearchBuilderTab({projectId,question:questionProp,pico,a
 
   /* ── 85.md A2 — vocabulary-suggestion review (pure A1 suggestionReview) ───── */
   const suggCounts=useMemo(()=>suggestionCount(concepts,rejectedSuggestions),[concepts,rejectedSuggestions]);
+  /* 97.md Phase 13 — accepting a MeSH suggestion adds ONLY that controlled term
+     (entry terms / synonyms are NEVER inserted with it). The old `synonyms`
+     bulk-accept branch and the "Accept all N subject headings" button are GONE:
+     entry terms render as individual rows with per-term "Add this term"
+     (addEntryTerm above). */
   const acceptSuggestion=(cid,s)=>{
     const c=conceptsRef.current.find(x=>x.id===cid); if(!c||!s) return;
-    const created=[];
-    if(s.kind==='mesh'){
-      const tid=uid(); created.push(tid);
-      const newTerm={id:tid,text:s.text,type:'controlled',field:'tiab',source:'user_added',vocab:s.vocab||null};
-      setConcepts(cs=>cs.map(x=>x.id===cid?{...x,terms:[...x.terms,newTerm]}:x));
-      if(!s.vocab) tryLookup(cid,tid,s.text,true);
-      announce(`Added subject heading "${s.text}" to ${c.label}`);
-    } else if(s.kind==='synonyms'){
-      const existing=new Set((c.terms||[]).map(x=>cnorm(x.text)));
-      const newTerms=(s.synonyms||[]).filter(x=>!existing.has(cnorm(x))).map(x=>{const tid=uid();created.push(tid);return {id:tid,text:x,type:'freetext',field:'tiab',source:'synonym'};});
-      if(!newTerms.length) return;
-      setConcepts(cs=>cs.map(x=>x.id===cid?{...x,terms:[...x.terms,...newTerms]}:x));
-      announce(`Added ${newTerms.length} synonym${newTerms.length===1?'':'s'} to ${c.label}`);
-    }
-    if(created.length){
-      setUndoStack(st=>recordBulkAccept(st,{concept:c,termIds:created,label:s.text}));
-      setUndoMsg(`Accepted "${s.text}"`);
-    }
+    if(s.kind!=='mesh') return; // entry terms go through addEntryTerm, one at a time
+    const tid=uid();
+    const newTerm={id:tid,text:s.text,type:'controlled',field:'tiab',source:'user_added',vocab:s.vocab||null};
+    setConcepts(cs=>cs.map(x=>x.id===cid?{...x,terms:[...x.terms,newTerm]}:x));
+    touchMeta();
+    if(!s.vocab) tryLookup(cid,tid,s.text,true);
+    announce(`Added MeSH term "${s.text}" to ${c.label}`);
+    setUndoStack(st=>recordBulkAccept(st,{concept:c,termIds:[tid],label:s.text}));
+    setUndoMsg(`Added "${s.text}"`);
   };
   const dismissSuggestion=(s)=>{
     if(!s||!s.key) return;
@@ -1451,24 +1900,6 @@ export default function SearchBuilderTab({projectId,question:questionProp,pico,a
     announce(`Dismissed suggestion "${s.text}"`);
   };
   const unrejectSuggestion=(key)=>setRejectedSuggestions(r=>r.filter(k=>k!==key));
-  const acceptAllHeadings=(cid)=>{
-    const c=conceptsRef.current.find(x=>x.id===cid); if(!c) return;
-    const pend=pendingSuggestions(c,rejectedSuggestions).filter(s=>s.kind==='mesh');
-    if(!pend.length) return;
-    // review-round #9 — several freetext terms can map to ONE heading ("t2dm" and
-    // "type 2 diabetes" → "Diabetes Mellitus, Type 2"): accept each descriptor once,
-    // and skip descriptors the concept already carries as a controlled term.
-    const have=new Set(c.terms.filter(t=>t.type==='controlled').map(t=>cnorm(t.text)));
-    const batch=[];
-    for(const s of pend){ const k=cnorm(s.text); if(!k||have.has(k)) continue; have.add(k); batch.push(s); }
-    if(!batch.length) return;
-    const created=[];
-    const newTerms=batch.map(s=>{const tid=uid();created.push(tid);return {id:tid,text:s.text,type:'controlled',field:'tiab',source:'user_added',vocab:s.vocab||null};});
-    setConcepts(cs=>cs.map(x=>x.id===cid?{...x,terms:[...x.terms,...newTerms]}:x));
-    setUndoStack(st=>recordBulkAccept(st,{concept:c,termIds:created,label:`${batch.length} headings`}));
-    setUndoMsg(`Accepted ${batch.length} subject heading${batch.length===1?'':'s'}`);
-    announce(`Accepted ${batch.length} subject heading${batch.length===1?'':'s'} into ${c.label}`);
-  };
   /* Rejection keys scoped to one concept, for the "Show dismissed" restore list. */
   const rejectedEntriesFor=(c)=>{
     if(!c) return [];
@@ -1523,15 +1954,16 @@ export default function SearchBuilderTab({projectId,question:questionProp,pico,a
   },[concepts,activeConceptId]);
   /* (96.md — the Concepts-stage "Edit terms →" card action is gone with the stage;
      the ConceptNavigator + question-card clicks own concept activation now.) */
-  /* Duplicate info for one term chip: the OTHER concept's name + resolution ids. */
-  const dupInfoForTerm=(cid,t)=>{
-    const key=termEquivalenceKey(t.text);
-    const d=duplicates.find(x=>x.equivKey===key);
-    if(!d) return null;
-    const other=(d.occurrences||[]).find(o=>o.conceptId!==cid);
-    if(!other) return null;
-    return {otherLabel:other.conceptLabel||'another concept',otherConceptId:other.conceptId};
-  };
+  /* ── 97.md Phase 12 — the chip-integrated duplicate model (dupSignals.js).
+     EXACT duplicates (conservative exactDuplicateKey) drive the dark-red state;
+     the old family equivalence is demoted to the soft "Possible variant" hint.
+     dupOverride/dismissals are configuration-scoped and auto-reevaluate. */
+  const dupModel=useMemo(
+    ()=>buildDupModel({concepts,dismissed:dismissedWarnings}),
+    [concepts,dismissedWarnings]);
+  const dupSignalFor=(t)=>(t&&t.id?dupModel.byTermId[t.id]||null:null);
+  /* Focus a specific chip ("Find other duplicate" / "Find existing term"). */
+  const requestFocusTerm=(cid,tid)=>{ setActiveConceptId(cid); setEditing(null); setFocusTerm({cid,tid}); };
   /* ── 96.md D13.2 — phrase selection on the RESEARCH QUESTION creates groups ──
      Clicking a token/phrase CREATES a concept group (label = phrase, sourcePhrase
      recorded, first term = the phrase as tiab freetext). Duplicate-phrase clicks
@@ -1549,10 +1981,42 @@ export default function SearchBuilderTab({projectId,question:questionProp,pico,a
     const cid=uid();
     const withIds={...fresh,id:cid,terms:fresh.terms.map(t=>({...t,id:uid()}))};
     setConcepts(cs=>[...cs,withIds]);
+    touchMeta();
     stampSnapshotIfEmpty();
     setActiveConceptId(cid);
     tryLookup(cid,withIds.terms[0].id,withIds.terms[0].text);
+    // 97 QA M10/H2 — Select (token click) / manual group add is undoable: the
+    // entry records the group's ORIGIN term ids, so undo removes the group even
+    // though it is born with its phrase term (work added later still protects it).
+    setUndoStack(st=>recordAddConcept(st,{conceptId:cid,label:withIds.label||text,originTermIds:withIds.terms.map(t=>t.id)}));
+    setUndoMsg(`Created group “${withIds.label||text}”`);
     return withIds;
+  };
+  /* 97.md Phase 6 — question-card drag-onto-token combine: create ONE search group
+     from the contiguous span between the two tokens (order preserved, whitespace
+     normalized, hyphens kept) and record the individual token texts as the
+     phrase's `components` so a later split is lossless. */
+  const combineQuestionSpan=(fromIdx,toIdx)=>{
+    const tokens=tokenizeForSelection(question||"");
+    const span=combineSpanFromTokens(tokens,fromIdx,toIdx);
+    if(!span) return;
+    const existing=findConceptForPhrase(conceptsRef.current,span.text);
+    if(existing){ setActiveConceptId(existing.id); announce(`"${existing.label||span.text}" already exists — opened it`); return; }
+    const fresh=createConceptFromPhrase(span.text);
+    if(!fresh) return;
+    const cid=uid();
+    const withIds={...fresh,id:cid,terms:fresh.terms.map(t=>({...t,id:uid(),components:span.components}))};
+    setConcepts(cs=>[...cs,withIds]);
+    touchMeta();
+    stampSnapshotIfEmpty();
+    setActiveConceptId(cid);
+    tryLookup(cid,withIds.terms[0].id,withIds.terms[0].text);
+    // 97 QA H2 — the entry carries the origin phrase term's id, so the toast's
+    // Undo genuinely removes the group the combine just created (the old entry
+    // only removed EMPTY groups and provably did nothing here).
+    setUndoStack(st=>recordAddConcept(st,{conceptId:cid,label:span.text,originTermIds:withIds.terms.map(t=>t.id)}));
+    setUndoMsg(`Combined into “${span.text}”`);
+    announce(`Combined into “${span.text}”`);
   };
   const togglePhrase=(text)=>{
     const clean=String(text||"").trim(); if(!clean) return;
@@ -1605,21 +2069,53 @@ export default function SearchBuilderTab({projectId,question:questionProp,pico,a
     const from=list.findIndex(c=>c&&c.id===cid);
     const next=reorderConceptState(list,cid,delta);
     if(next===list) return; // no-op (edge or unknown id)
-    const label=(list[from]&&list[from].label)||"Concept";
+    const label=(list[from]&&list[from].label)||"Search group";
     setConcepts(next);
+    touchMeta();
     setUndoStack(st=>recordReorderConcept(st,{conceptId:cid,fromIndex:from,toIndex:from+(delta<0?-1:1),label}));
     setUndoMsg(`Moved "${label}" ${delta<0?"up":"down"}`);
     announce(`Moved "${label}" ${delta<0?"up":"down"}`);
   };
+  /* 97.md Phase 10 — drag a group pill to an arbitrary position (insertion line).
+     Implemented as repeated pure ±1 reorders; ONE undo entry restores the origin. */
+  const reorderConceptToIndex=(cid,targetIndex)=>{
+    const list=conceptsRef.current;
+    const from=list.findIndex(c=>c&&c.id===cid);
+    if(from<0) return;
+    const to=normalizeReorderIndex(from,targetIndex);
+    if(to==null) return;
+    let next=list;
+    const step=to>from?1:-1;
+    for(let i=from;i!==to;i+=step) next=reorderConceptState(next,cid,step);
+    if(next===list) return;
+    const label=(list[from]&&list[from].label)||"Search group";
+    setConcepts(next);
+    touchMeta();
+    setUndoStack(st=>recordReorderConcept(st,{conceptId:cid,fromIndex:from,toIndex:to,label}));
+    setUndoMsg(`Moved "${label}"`);
+    announce(`Moved "${label}" to position ${to+1}`);
+  };
   const mergeConceptInto=(fromId,intoId)=>{
+    const target=conceptsRef.current.find(c=>c&&c.id===intoId);
+    // 97 QA M21 — legacy Time-frame note groups render no term chips: terms merged
+    // into one would become invisible and uneditable. Never a merge target (the
+    // menu + pill-drag geometry filter them too; this is the last line of defense).
+    if(target&&target.picoField==="T"){
+      announce(`"${target.label||'Time frame'}" is a legacy time-frame note — it cannot receive merged terms.`);
+      return;
+    }
     const res=mergeConceptsState(conceptsRef.current,fromId,intoId);
     if(!res) return;
-    const target=conceptsRef.current.find(c=>c&&c.id===intoId);
     setConcepts(res.concepts);
+    touchMeta();
     setUndoStack(st=>recordMergeConcepts(st,res.undo));
-    setUndoMsg(`Merged "${res.undo.fromConcept.label||"concept"}" into "${(target&&target.label)||"group"}"`);
+    // 97 QA M20 — duplicates left behind are NEVER silent: the toast counts them
+    // (they are recoverable via this merge's Undo entry).
+    const skippedN=Array.isArray(res.skipped)?res.skipped.length:0;
+    const skippedNote=skippedN?` · ${skippedN} duplicate term${skippedN===1?'':'s'} already present ${skippedN===1?'was':'were'} not moved`:'';
+    setUndoMsg(`Merged "${res.undo.fromConcept.label||"concept"}" into "${(target&&target.label)||"group"}"${skippedNote}`);
     setActiveConceptId(intoId);
-    announce(`Merged "${res.undo.fromConcept.label||"concept"}" into "${(target&&target.label)||"group"}"`);
+    announce(`Merged "${res.undo.fromConcept.label||"concept"}" into "${(target&&target.label)||"group"}"${skippedNote}`);
   };
   const splitConceptTerms=(cid,termIds,newLabel)=>{
     const res=splitConceptState(conceptsRef.current,cid,termIds,newLabel);
@@ -1628,6 +2124,7 @@ export default function SearchBuilderTab({projectId,question:questionProp,pico,a
     const withId=res.concepts.map((c,i)=>i===res.newIndex?{...c,id:nid}:c);
     const label=withId[res.newIndex].label;
     setConcepts(withId);
+    touchMeta();
     setUndoStack(st=>recordSplitConcept(st,{fromConceptId:cid,newConceptId:nid,termIds,label}));
     setUndoMsg(`Split ${termIds.length} term${termIds.length===1?"":"s"} into "${label}"`);
     setActiveConceptId(nid);
@@ -1643,10 +2140,57 @@ export default function SearchBuilderTab({projectId,question:questionProp,pico,a
     if(next===list) return; // no-op (edge or unknown id)
     const text=(c.terms[from]&&c.terms[from].text)||"term";
     setConcepts(next);
+    touchMeta();
     setUndoStack(st=>recordReorderTerm(st,{conceptId:cid,termId:tid,fromIndex:from,toIndex:from+(delta<0?-1:1),text}));
     setUndoMsg(`Moved "${text}" ${delta<0?"earlier":"later"}`);
     announce(`Moved "${text}" ${delta<0?"earlier":"later"} in ${c.label||"the group"}`);
   };
+  /* 97.md Phase 6/11 — drag-reorder a term to an ARBITRARY position (insertion
+     line). Repeated pure ±1 moves; ONE undo entry restores the original index. */
+  const reorderTermToIndex=(cid,tid,targetIndex)=>{
+    const list=conceptsRef.current;
+    const c=list.find(x=>x&&x.id===cid);
+    if(!c) return;
+    const from=(c.terms||[]).findIndex(t=>t&&t.id===tid);
+    if(from<0) return;
+    const to=normalizeReorderIndex(from,targetIndex);
+    if(to==null) return;
+    let next=list;
+    const step=to>from?1:-1;
+    for(let i=from;i!==to;i+=step) next=reorderTermState(next,cid,tid,step);
+    if(next===list) return;
+    const text=(c.terms[from]&&c.terms[from].text)||"term";
+    setConcepts(next);
+    touchMeta();
+    setUndoStack(st=>recordReorderTerm(st,{conceptId:cid,termId:tid,fromIndex:from,toIndex:to,text}));
+    setUndoMsg(`Moved "${text}"`);
+    announce(`Moved "${text}" to position ${to+1} in ${c.label||"the group"}`);
+  };
+  /* 97.md Phase 10 — rename undo: ONE entry per editing session (recorded on blur,
+     not per keystroke). renameBaseRef holds the label the session started from. */
+  const renameBaseRef=useRef(null);
+  const beginRenameTracking=(cid)=>{
+    const c=conceptsRef.current.find(x=>x&&x.id===cid);
+    renameBaseRef.current=c?{cid:c.id,label:c.label||''}:null;
+  };
+  const commitRename=()=>{
+    const base=renameBaseRef.current;
+    if(!base) return;
+    const c=conceptsRef.current.find(x=>x&&x.id===base.cid);
+    if(!c) return;
+    const now=c.label||'';
+    if(now===base.label) return;
+    touchMeta();
+    setUndoStack(st=>recordRenameConcept(st,{conceptId:c.id,prevLabel:base.label,nextLabel:now}));
+    setUndoMsg(`Renamed group to “${now||'Untitled'}”`);
+    announce(`Renamed the group to “${now||'Untitled'}”`);
+    renameBaseRef.current={cid:c.id,label:now};
+  };
+  // A new active group starts a fresh rename-tracking session.
+  useEffect(()=>{
+    const cid=activeConceptId||(conceptsRef.current[0]&&conceptsRef.current[0].id);
+    if(cid) beginRenameTracking(cid);
+  },[activeConceptId,loaded]); // eslint-disable-line
   /* 96.md §3A/§3B (QA M4) — rewrite a group's originating phrase (sourcePhrase).
      Once the new phrase occurs in the question, conceptDrift stops flagging the
      group; when every drifted group resolves, the silent snapshot refresh above
@@ -1657,34 +2201,291 @@ export default function SearchBuilderTab({projectId,question:questionProp,pico,a
     if(next===list) return; // no-op — nothing changed
     const c=list.find(x=>x&&x.id===cid);
     setConcepts(next);
+    touchMeta();
     announce(`Updated the phrase for "${(c&&c.label)||"the group"}"`);
   };
 
-  /* ── SB4: Organize Concepts hygiene (move term between concepts; dismiss a
-     warning) + derived duplicate/quality/sensitivity signals. Moving marks the term
-     user-controlled so a PICO re-sync respects it; user terms are never auto-removed. */
-  const moveTerm=(fromCid,tid,toCid)=>{
-    if(fromCid===toCid) return;
-    setConcepts(cs=>{
-      const from=cs.find(c=>c.id===fromCid); const t=from?.terms.find(x=>x.id===tid);
-      const to=cs.find(c=>c.id===toCid); if(!t||!to) return cs;
-      const dup=to.terms.some(x=>cnorm(x.text)===cnorm(t.text));
-      const moved={...t,source:"user_added"};
-      return cs.map(c=>{
-        if(c.id===fromCid) return {...c,terms:c.terms.filter(x=>x.id!==tid)};
-        if(c.id===toCid&&!dup) return {...c,terms:[...c.terms,moved]};
-        return c;
-      });
-    });
+  /* ── 97.md Phase 11 — cross-group term movement via the pure moveTermToConcept
+     (workstream B). This REPLACES the legacy moveTerm and fixes its three defects:
+     an exact duplicate at the target now BLOCKS the move (with "Find existing
+     term") instead of silently deleting the term; the move records an undo entry;
+     and the term's source/id/type/vocab/components metadata are preserved. */
+  const doMoveTerm=(fromCid,tid,toCid,index)=>{
+    if(fromCid===toCid&&index==null) return;
+    const list=conceptsRef.current;
+    const from=list.find(c=>c&&c.id===fromCid);
+    const t=from&&(from.terms||[]).find(x=>x&&x.id===tid);
+    const to=list.find(c=>c&&c.id===toCid);
+    if(!t||!to) return;
+    const res=moveTermToConcept(list,tid,fromCid,toCid,index);
+    if(!res) return;
+    if(res.blocked){
+      setBlockedNotice({text:`This exact term is already in ${to.label||'that group'}.`,cid:toCid,tid:res.existingTermId});
+      announce(`This exact term is already in ${to.label||'that group'} — nothing was moved.`);
+      return;
+    }
+    setConcepts(res.concepts);
+    touchMeta();
+    setUndoStack(st=>recordMoveTerm(st,res.undo));
+    setUndoMsg(`Moved “${t.text}” to ${to.label||'the other group'}`);
+    announce(`Moved “${t.text}” to ${to.label||'the other group'}`);
+    setEditing(null);
+  };
+  /* Move a term into a brand-NEW group — reuses the pure splitConcept op (already
+     undoable as one entry: undo moves the term back AND removes the empty group). */
+  const moveTermToNewGroup=(fromCid,tid)=>{
+    splitConceptTerms(fromCid,[tid],`Search Group ${conceptsRef.current.length+1}`);
+  };
+  /* 97.md Phases 9/11 — EXPLICIT copy (default drag always MOVES, never clones). */
+  const doCopyTerm=(fromCid,tid,toCid /* null → new group */)=>{
+    const list=conceptsRef.current;
+    const src=list.find(c=>c&&c.id===fromCid);
+    const t=src&&(src.terms||[]).find(x=>x&&x.id===tid);
+    if(!t) return;
+    let base=list, targetId=toCid, targetLabel='';
+    if(toCid==null){
+      targetId=uid();
+      targetLabel=`Search Group ${list.length+1}`;
+      base=[...list,{id:targetId,label:targetLabel,op:"AND",source:"user_added",terms:[]}];
+    } else {
+      const to=list.find(c=>c&&c.id===toCid);
+      if(!to) return;
+      targetLabel=to.label||'the group';
+    }
+    const res=copyTermState(base,tid,fromCid,targetId);
+    if(!res) return;
+    if(res.blocked){
+      setBlockedNotice({text:`This exact term is already in ${targetLabel}.`,cid:targetId,tid:res.existingTermId});
+      announce(`This exact term is already in ${targetLabel} — nothing was copied.`);
+      return;
+    }
+    setConcepts(res.concepts);
+    touchMeta();
+    setUndoStack(st=>recordCopyTerm(st,{conceptId:targetId,termId:res.newTermId,text:t.text}));
+    setUndoMsg(`Copied “${t.text}” to ${targetLabel}`);
+    announce(`Copied “${t.text}” to ${targetLabel}`);
+    setActiveConceptId(targetId);
+    setEditing(null);
+  };
+  /* 97.md Phase 6 — combine terms into ONE phrase (drag-onto-chip or the popover
+     menu). Group order decides the phrase order; `components` are recorded so the
+     phrase splits losslessly later. */
+  const doCombineTerms=(cid,termIds)=>{
+    const res=combineTokensState(conceptsRef.current,cid,termIds);
+    if(!res) return;
+    if(res.blocked){
+      // 97 QA M19 — the combined phrase would exactly duplicate a surviving term
+      // of this group: blocked with the standard find-existing affordance
+      // (mirrors every other same-group insertion path).
+      const c=conceptsRef.current.find(x=>x&&x.id===cid);
+      setBlockedNotice({text:`This exact term is already in ${(c&&c.label)||'this group'}.`,cid,tid:res.existingTermId});
+      announce(`“${res.text}” is already in ${(c&&c.label)||'this group'} — nothing was combined.`);
+      return;
+    }
+    setConcepts(res.concepts);
+    touchMeta();
+    setUndoStack(st=>recordCombineTokens(st,res.undo));
+    const text=(res.term&&res.term.text)||'the phrase';
+    setUndoMsg(`Combined into “${text}”`);
+    announce(`Combined into “${text}”`);
+    setEditing(null);
+  };
+  /* 97.md Phase 6 — split a phrase. Component history (term.components) restores
+     the original parts; an EDITED phrase goes through the popover's safe manual
+     split (explicit `parts`) — never a destructive guess. */
+  const doSplitPhrase=(cid,tid,parts)=>{
+    const res=splitPhraseState(conceptsRef.current,cid,tid,parts);
+    if(!res) return;
+    setConcepts(res.concepts);
+    touchMeta();
+    setUndoStack(st=>recordSplitPhrase(st,res.undo));
+    const n=(Array.isArray(res.terms)?res.terms.length:0)||(Array.isArray(parts)?parts.length:2);
+    setUndoMsg(`Split into ${n} terms`);
+    announce(`Split the phrase into ${n} terms`);
+    setEditing(null);
+  };
+  /* 97.md Phase 12 — intentional-duplicate override (term-level dupOverride on
+     EVERY copy; auto-invalidates when the term/edit/group configuration changes). */
+  const keepBothIntentionally=(t)=>{
+    const key=termDuplicateKey(t); // QA M18 — type-aware key (freetext keys unchanged)
+    if(!key) return;
+    const res=applyDupOverrideState(conceptsRef.current,key);
+    if(!res.changed.length) return;
+    setConcepts(res.concepts);
+    touchMeta();
+    setUndoStack(st=>recordDupOverride(st,{key,label:t.text,changed:res.changed}));
+    setUndoMsg(`Kept “${t.text}” intentionally`);
+    announce(`Kept “${t.text}” in both groups intentionally — the warning stays off until the term or groups change.`);
+    setEditing(null);
+  };
+  const unkeepDup=(t)=>{
+    const key=termDuplicateKey(t); // QA M18 — matches the key keepBothIntentionally stamps
+    if(!key) return;
+    const res=clearDupOverrideState(conceptsRef.current,key);
+    if(!res.changed.length) return;
+    setConcepts(res.concepts);
+    touchMeta();
+    setUndoStack(st=>recordDupOverride(st,{key,label:t.text,changed:res.changed}));
+    setUndoMsg(`“${t.text}” is no longer an intentional duplicate`);
+    announce(`“${t.text}” is no longer marked as an intentional duplicate.`);
+    setEditing(null);
+  };
+  /* 97 QA M17 — the duplicate-resolution "Move to <other group>" action. The
+     other group BY DEFINITION already holds this exact copy, so a literal move is
+     always blocked ("nothing was moved" forever — a guaranteed dead-end).
+     Consolidation is what the action means: remove THIS copy (undoable via
+     removeTerm's recorded inverse) and focus the surviving copy over there. */
+  const consolidateDupCopy=(cid,tid,other)=>{
+    const c=conceptsRef.current.find(x=>x&&x.id===cid);
+    const t=c&&(c.terms||[]).find(x=>x&&x.id===tid);
+    if(!c||!t||!other) return;
+    removeTerm(cid,tid);
+    setEditing(null);
+    requestFocusTerm(other.conceptId,other.termId);
+    setUndoMsg(`Kept “${t.text}” in ${other.conceptLabel||'the other group'} — removed this copy`);
+    announce(`“${t.text}” now lives only in ${other.conceptLabel||'the other group'}; the copy here was removed (undoable).`);
   };
   const dismissWarning=(id)=>setDismissedWarnings(d=>d.includes(id)?d:[...d,id]);
   const restoreWarnings=()=>setDismissedWarnings([]);
-  const duplicates=useMemo(()=>detectCrossConceptDuplicates(concepts),[concepts]);
-  const dupKeys=useMemo(()=>new Set(duplicates.map(d=>d.equivKey)),[duplicates]);
-  const qualityWarnings=useMemo(()=>searchQualityCheck(concepts,{dismissed:dismissedWarnings}),[concepts,dismissedWarnings]);
-  const sensitivity=useMemo(()=>(hitState&&hitState.status==="updated")?sensitivitySignal(hitState.hitCount):null,[hitState]);
+  /* 97.md Phase 7 — the "Search Quality Check" card is GONE. The two genuinely
+     useful non-blocking checks survive as QUIET inline notices (no branding, no
+     severity glyphs, no scores): empty group in the AND chain + literal Boolean
+     operator inside a term. Duplicates live on the chips (dupModel above). */
+  const quietHints=useMemo(
+    ()=>searchQualityCheck(concepts,{dismissed:dismissedWarnings}).filter(w=>String(w.id||'').startsWith('empty:')||String(w.id||'').startsWith('boolop:')),
+    [concepts,dismissedWarnings]);
   const moveTargetsFor=(cid)=>concepts.filter(c=>c.id!==cid&&c.picoField!=="T").map(c=>({id:c.id,label:c.label}));
-  const isDupTerm=(t)=>dupKeys.has(termEquivalenceKey(t.text));
+
+  /* ── 97.md Phases 6/10/11 — the pointer-drag surfaces (Decision D1). Geometry is
+     measured from live element refs at drag time and resolved by the PURE
+     dndModel.resolveDropTarget; menus/buttons remain the primary path. ── */
+  const chipEls=useRef({});
+  const pillEls=useRef({});
+  const newGroupEl=useRef(null);
+  const rectOf=(el)=>{ const r=el.getBoundingClientRect(); return {left:r.left,top:r.top,right:r.right,bottom:r.bottom}; };
+  // Term chips: reorder (insertion line) / combine (merge ring, hover-armed) /
+  // move to another group (navigator pill) / move to a NEW group.
+  const chipDrag=useChipDrag({
+    disabled:!!readOnly,
+    getGeometry:({meta:m})=>{
+      const cid=m&&m.conceptId;
+      const c=conceptsRef.current.find(x=>x&&x.id===cid);
+      const chips=[];
+      ((c&&c.terms)||[]).forEach((t,index)=>{
+        if(!t||!String(t.text||'').trim()) return;
+        const el=chipEls.current[t.id];
+        if(el&&typeof el.getBoundingClientRect==="function") chips.push({id:t.id,groupId:cid,index,rect:rectOf(el)});
+      });
+      const groups=conceptsRef.current
+        .filter(x=>x&&x.id!==cid&&x.picoField!=="T")
+        .map(x=>{ const el=pillEls.current[x.id]; return (el&&typeof el.getBoundingClientRect==="function")?{id:x.id,rect:rectOf(el)}:null; })
+        .filter(Boolean);
+      const ng=(newGroupEl.current&&typeof newGroupEl.current.getBoundingClientRect==="function")?{rect:rectOf(newGroupEl.current)}:null;
+      return {chips,groups,newGroup:ng};
+    },
+    onDrop:(info,target)=>{
+      const cid=info.meta&&info.meta.conceptId;
+      const tid=info.dragId;
+      if(!cid||!tid||!target) return;
+      if(target.kind==='insert'&&target.groupId===cid) reorderTermToIndex(cid,tid,target.index);
+      else if(target.kind==='merge'&&target.groupId===cid) doCombineTerms(cid,[target.targetId,tid]);
+      else if(target.kind==='group') doMoveTerm(cid,tid,target.groupId); // default drag MOVES, never clones
+      else if(target.kind==='new-group') moveTermToNewGroup(cid,tid);
+    },
+  });
+  // Group pills: drag to reorder the AND chain (insertion line) or onto another
+  // pill's centre (armed merge ring) to merge the two groups.
+  const pillDrag=useChipDrag({
+    disabled:!!readOnly,
+    getGeometry:()=>({
+      chips:conceptsRef.current.map((x,i)=>{
+        const el=x&&pillEls.current[x.id];
+        return (el&&typeof el.getBoundingClientRect==="function")?{id:x.id,groupId:'__pills',index:i,rect:rectOf(el)}:null;
+      }).filter(Boolean),
+      groups:[],newGroup:null,
+    }),
+    onDrop:(info,target)=>{
+      if(!target) return;
+      if(target.kind==='insert') reorderConceptToIndex(info.dragId,target.index);
+      else if(target.kind==='merge') mergeConceptInto(info.dragId,target.targetId);
+    },
+  });
+  const chipDropGroupId=chipDrag.state&&chipDrag.state.target&&chipDrag.state.target.kind==='group'?chipDrag.state.target.groupId:null;
+  // QA M21 — a legacy Time-frame note group is never a merge target: no confident
+  // ring is shown for it (mergeConceptInto refuses the drop as well).
+  const pillMergeTargetId=(()=>{
+    const t=pillDrag.state&&pillDrag.state.target;
+    if(!t||t.kind!=='merge') return null;
+    const tc=concepts.find(c=>c&&c.id===t.targetId);
+    return tc&&tc.picoField==='T'?null:t.targetId;
+  })();
+  const pillInsertIndex=pillDrag.state&&pillDrag.state.target&&pillDrag.state.target.kind==='insert'?pillDrag.state.target.index:null;
+
+  /* ── 97.md Phase 4 — explicit Regeneration ────────────────────────────────────
+     Snapshot-FIRST via the version registry ("Before regeneration"); on snapshot
+     failure the whole action ABORTS with an error and no state change. On success:
+     replace the groups from the research question (buildRegenerateState — B),
+     stamp questionSnapshot + meta.generatedAt/sourceQuestion, push a whole-state
+     `regenerate` undo entry, save IMMEDIATELY (auditAction:'regenerated' +
+     baseRevision ride the PUT envelope) and toast "Search strategy regenerated.
+     Undo". Overrides / filters / dismissals are NOT cleared (plan §9). */
+  const saveImmediate=useCallback((nextState,envelope)=>{
+    if(!saveSearch||!projectId) return;
+    clearTimeout(saveTimer.current);
+    const sig=serializeSearchState({...nextState,readyForScreening});
+    // QA H1 — baseRevision is NOT frozen here: doSave stamps it at send time.
+    const payload={...nextState,...(envelope||{})};
+    pendingSaveRef.current={sig,payload};
+    doSave(sig,payload);
+  },[doSave,saveSearch,projectId,readyForScreening]);
+  const confirmRegenerate=async()=>{
+    if(regenBusy) return;
+    setRegenBusy(true); setRegenError('');
+    // 97 QA M4/M5/M28/M31 — the protective ordering lives in the extracted,
+    // functionally-tested performRegenerate: (1) FLUSH the pending debounced save
+    // so the server-side snapshot includes edits from inside the 800ms window;
+    // (2) snapshot — skipped on a never-saved workspace (revision 0: there is no
+    // saved work to protect and the server would answer `no_strategy` 400);
+    // (3) apply only after every protective step succeeded. Any failure ABORTS
+    // with NO state change.
+    const res=await performRegenerate({
+      flushPendingSave:()=>saveNow(),
+      hasSavedStrategy:()=>revisionRef.current>0,
+      saveSnapshot:()=>searchVersionsApi.save(projectId,{name:PRE_REGENERATE_SNAPSHOT_NAME,note:'Automatic snapshot saved before Regenerate'}),
+      applyRegenerated:({snapshotted})=>{
+        if(snapshotted&&typeof onVersionsChanged==="function") onVersionsChanged();
+        const prev={
+          concepts:conceptsRef.current,
+          meta:metaRef.current,
+          questionSnapshot:questionSnapshotRef.current,
+        };
+        const out=buildRegenerateState({question,at:new Date().toISOString()});
+        const withIds=out.concepts.map(c=>({...c,id:c.id||uid(),terms:(c.terms||[]).map(t=>({...t,id:t.id||uid()}))}));
+        setConcepts(withIds);
+        setQuestionSnapshot(out.questionSnapshot);
+        setMeta(out.meta||null);
+        setActiveConceptId(withIds.length?withIds[0].id:null);
+        setEditing(null); setDrafts({}); setPendingSplit(null); setBlockedNotice(null);
+        setUndoStack(st=>recordRegenerate(st,{prev}));
+        setUndoMsg(REGENERATE_DONE_MESSAGE); // + the snackbar's Undo button ⇒ "Search strategy regenerated. Undo"
+        announce(snapshotted
+          ?'Search strategy regenerated. The previous workspace was snapshotted to Versions and can be restored.'
+          :'Search strategy regenerated. The workspace had never been saved, so no backup snapshot was needed.');
+        saveImmediate(
+          {concepts:withIds,overrides,ignored,databases:selectedDbs,dismissedWarnings,filters,rejectedSuggestions,questionSnapshot:out.questionSnapshot,...(out.meta?{meta:out.meta}:{})},
+          {auditAction:'regenerated'});
+        withIds.forEach(c=>(c.terms||[]).forEach(t=>{ if(t&&t.text) tryLookup(c.id,t.id,t.text); }));
+      },
+    });
+    if(!res.ok){
+      setRegenBusy(false);
+      setRegenError(res.error);
+      announce('Regeneration cancelled — nothing was changed. '+res.error);
+      return;
+    }
+    setRegenBusy(false);
+    setRegenOpen(false);
+  };
 
   // prompt60 + 73.md P4 (96.md QA L2) — which internal step panels render, purely
   // from the embedded phase: 'terms' → 2 (the central Terms & Vocabulary
@@ -1701,7 +2502,13 @@ export default function SearchBuilderTab({projectId,question:questionProp,pico,a
   return(
     <div style={{background:C.bg,color:C.txt,fontFamily:SANS,padding:"4px 2px"}}>
       <style>{`@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;700&display=swap');
-.sbkw-token:focus-visible{outline:2px solid ${C.acc};outline-offset:2px;}`}</style>
+.sbkw-token:focus-visible{outline:2px solid ${C.acc};outline-offset:2px;}
+.sb-chip:focus-visible{outline:2px solid ${C.acc};outline-offset:2px;border-radius:6px;}`}</style>
+
+      {/* 97.md Phase 4 — the Regenerate confirmation dialog (exact spec copy). */}
+      <RegenerateDialog open={regenOpen} busy={regenBusy} error={regenError}
+        onCancel={()=>{ if(!regenBusy){ setRegenOpen(false); setRegenError(''); } }}
+        onConfirm={confirmRegenerate}/>
 
       {/* 85.md A2 — ONE polite announcer for structural changes the eye may miss
           (keyword routing, add outcomes, bulk accepts, undo) — the workspace
@@ -1711,12 +2518,28 @@ export default function SearchBuilderTab({projectId,question:questionProp,pico,a
         {announceMsg}
       </span>
 
-      {/* 85.md A2 — feature-local undo snackbar for destructive actions. */}
-      <UndoSnackbar message={undoMsg} onUndo={undoLastAction} onDismiss={()=>setUndoMsg(null)}/>
+      {/* 85.md A2 — feature-local undo snackbar for destructive actions. 97 QA M16
+          — after an undo the same surface shows a PLAIN toast describing what was
+          undone (no Undo button: there is no redo). */}
+      <UndoSnackbar
+        message={typeof undoMsg==='string'?undoMsg:(undoMsg&&undoMsg.text)||null}
+        onUndo={undoMsg&&typeof undoMsg==='object'&&undoMsg.plain?null:undoLastAction}
+        onDismiss={()=>setUndoMsg(null)}/>
 
       {limitedMode&&(
         <div style={{background:`${alpha(C.yel,"10")}`,border:`1px solid ${alpha(C.yel,"44")}`,borderRadius:8,padding:"8px 12px",marginBottom:12,fontSize:12,color:C.txt2}}>
-          <strong style={{color:C.yel}}>Limited mode.</strong> Live subject-term lookup and PubMed counts are temporarily unavailable, so the builder is using a small offline vocabulary and hit counts are hidden. Your query syntax is still correct and fully usable.
+          <strong style={{color:C.yel}}>Limited mode.</strong> Live MeSH lookup and PubMed counts are temporarily unavailable, so the builder is using a small offline vocabulary and hit counts are hidden. Your query syntax is still correct and fully usable.
+        </div>
+      )}
+
+      {/* 97.md Phase 16 — a stale write was rejected; the fresher document was
+          adopted. QA M7 — the copy no longer asserts "a collaborator": the newer
+          revision can also be this user's own action in another view (restore /
+          second tab), so it names the situation honestly. */}
+      {conflictNotice&&(
+        <div data-testid="sb-conflict-notice" role="status" style={{background:`${alpha(C.yel,"10")}`,border:`1px solid ${alpha(C.yel,"44")}`,borderRadius:8,padding:"8px 12px",marginBottom:12,fontSize:12,color:C.txt2,display:"flex",alignItems:"center",gap:10}}>
+          <span style={{flex:1}}><strong style={{color:C.yel}}>This strategy was updated elsewhere</strong> (a collaborator, or your own action in another view) — your view was refreshed with the newer version. Please re-apply your last change if it is still needed.</span>
+          <button onClick={()=>setConflictNotice(false)} aria-label="Dismiss update notice" style={{...btn("ghost"),fontSize:10}}>Got it</button>
         </div>
       )}
 
@@ -1733,6 +2556,14 @@ export default function SearchBuilderTab({projectId,question:questionProp,pico,a
       {embedded&&(
         <div data-testid="sb-stage-toolbar" style={{display:"flex",alignItems:"center",gap:12,flexWrap:"wrap",marginBottom:12}}>
           <SaveStatusIndicator state={saveState} onRetry={saveNow}/>
+          {/* 97.md Phase 4 — regeneration happens ONLY through this explicit button. */}
+          {phase==="terms"&&!readOnly&&(
+            <button type="button" data-testid="sb-regenerate-btn" onClick={()=>{ setRegenError(''); setRegenOpen(true); }}
+              title="Rebuild terms and groups from the current research question and PICO. Asks for confirmation and snapshots your current workspace first."
+              style={{...btn("ghost"),fontSize:11}}>
+              ↻ Regenerate
+            </button>
+          )}
           <span style={{marginLeft:"auto",display:"inline-flex",alignItems:"center",gap:10}}>
             {remoteUpdatedBy&&(
               <span title={`This search was just updated by ${remoteUpdatedBy}`} style={{display:"inline-flex",alignItems:"center",gap:4,color:C.acc,fontSize:11,fontFamily:MONO}}>↻ {remoteUpdatedBy}</span>
@@ -1760,18 +2591,31 @@ export default function SearchBuilderTab({projectId,question:questionProp,pico,a
         const cIdx=c?(conceptIndexById[c.id]||0):0;
         const rejectedSet=rejectedSuggestions;
         const cStatus=c?conceptStatus(c,{rejected:rejectedSet}):"empty";
-        const pending=c?pendingSuggestions(c,rejectedSet):[];
+        // 97.md — MeSH suggestion rows carry a confidence marker where reliable
+        // (low-confidence is flagged, NEVER auto-added) and exact MeSH wording
+        // (UI-layer override of the engine's legacy "subject heading" why-copy).
+        const pending=(c?pendingSuggestions(c,rejectedSet):[])
+          .map(s=>s.kind==='mesh'
+            ?{...s,confidence:meshConfidence(s.sourceText,s.text),why:`Standard MeSH term for "${s.sourceText}"`}
+            :s);
         const hasAnyText=c?(c.terms||[]).some(t=>(t.text||"").trim()):false;
         const isTimeFrame=c&&c.picoField==="T";
-        const warningsOnly=qualityWarnings;
         return(
           <div data-testid="sb-step-organize-concepts">
-            {/* 96.md D13.1 — the research question leads the workspace: prominent
-                text with click-to-select phrase tokens (each click creates a concept
-                group below) + an Edit link back to the Research Question stage. */}
+            {/* 96.md D13.1 + 97.md Phase 5 — the research question SOURCE section
+                leads the workspace: click-to-select tokens, Shift-click spans and
+                drag-onto-token combine, each creating a search group below. */}
             <QuestionPhraseCard question={question} accent={C.acc}
-              isSelected={isPhraseSelected} onTogglePhrase={togglePhrase} onAddManual={addManualConcept}
+              isSelected={isPhraseSelected} onTogglePhrase={togglePhrase}
+              onCombineSpan={combineQuestionSpan} onAddManual={addManualConcept}
               onEditQuestion={typeof onGoToStage==='function'?()=>onGoToStage('question'):null} readOnly={readOnly}/>
+
+            {/* 97.md Phase 5 (QA M9) — the protocol's P/I/C/O text as read-only,
+                clearly-labeled SOURCE sections (tokens clickable like question
+                tokens). Reference only: these fields never control workspace
+                organization, and projects without PICO text render nothing. */}
+            <PicoSourceSections pico={pico} accent={C.acc}
+              isSelected={isPhraseSelected} onTogglePhrase={togglePhrase} readOnly={readOnly}/>
 
             {/* 96.md D2 — "question changed" drift banner (never auto-deletes).
                 QA M4 — rows also offer an inline "Update phrase" editor. */}
@@ -1783,49 +2627,63 @@ export default function SearchBuilderTab({projectId,question:questionProp,pico,a
                 onRemoveConcept={(id)=>removeConcept(id)}/>
             )}
 
-            {/* Search Quality Check — stage-level; a one-line summary chip when clean. */}
-            <div style={{background:C.card,border:`1px solid ${C.brd}`,borderRadius:10,padding:warningsOnly.length?12:"8px 12px",marginBottom:10}}>
-              <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:warningsOnly.length?8:0}}>
-                {warningsOnly.length===0
-                  ? <span style={{fontSize:11,color:C.grn,fontWeight:600}}>✓ Search quality check — no issues</span>
-                  : <>
-                      <span style={{fontSize:10.5,fontWeight:700,color:C.muted,letterSpacing:.5,textTransform:"uppercase"}}>Search Quality Check</span>
-                      <Help text="Quick, non-blocking checks: duplicates across AND-ed concepts, empty concepts, missing controlled vocabulary, and terms that may make the search too narrow. Guidance only — you stay in control."/>
-                    </>}
-                {hitState&&hitState.status==="updated"&&hitState.hitCount!=null&&(
-                  <span style={{marginLeft:"auto",display:"inline-flex",alignItems:"center",gap:8,fontSize:11,fontFamily:MONO}}>
-                    <span style={{color:C.acc,fontWeight:700}}>{fmtCount(hitState.hitCount)} PubMed hits</span>
-                    {sensitivity&&<span title="Rough breadth of the current strategy" style={{fontSize:9,fontWeight:700,letterSpacing:.4,textTransform:"uppercase",color:SENS_COLOR[sensitivity.key]||C.muted,border:`1px solid ${alpha(SENS_COLOR[sensitivity.key]||C.muted,"66")}`,borderRadius:4,padding:"0 5px"}}>{sensitivity.label}</span>}
-                  </span>
+            {/* 97.md Phase 7 — the "Search Quality Check" card is REMOVED (no branding,
+                no scores, no severity judgments). Duplicate detection lives ON the
+                chips; only two quiet, non-blocking hints remain. */}
+            {/* QA M22 — the "restore dismissed" affordance renders whenever ANY
+                dismissal is persisted (duplicate warnings included), independent
+                of whether quiet hints happen to exist: a dismissed dark-red
+                duplicate warning must never become un-restorable. */}
+            {(quietHints.length>0||(!readOnly&&dismissedWarnings.length>0))&&(
+              <div data-testid="sb-inline-hints" style={{background:C.card,border:`1px solid ${C.brd}`,borderRadius:10,padding:"8px 12px",marginBottom:10}}>
+                {quietHints.map(w=>(
+                  <div key={w.id} style={{display:"flex",gap:8,alignItems:"flex-start",padding:"3px 0",fontSize:11,color:C.muted,lineHeight:1.5}}>
+                    <span aria-hidden="true">·</span>
+                    <span style={{flex:1}}>{w.message}</span>
+                    {!readOnly&&<button onClick={()=>dismissWarning(w.id)} title="Hide this note" style={{...btn("ghost"),fontSize:9.5,padding:"1px 8px"}}>Dismiss</button>}
+                  </div>
+                ))}
+                {!readOnly&&dismissedWarnings.length>0&&(
+                  <button onClick={restoreWarnings} title="Show dismissed notes and duplicate warnings again" style={{...btn("ghost"),fontSize:9.5,padding:"1px 8px"}}>restore dismissed ({dismissedWarnings.length})</button>
                 )}
-                {/* QA M8 — dismissals persist; read-only viewers get no mutating control. */}
-                {!readOnly&&dismissedWarnings.length>0&&<button onClick={restoreWarnings} title="Show dismissed checks again" style={{...btn("ghost"),fontSize:9.5,padding:"2px 8px",marginLeft:warningsOnly.length===0?"auto":0}}>restore dismissed ({dismissedWarnings.length})</button>}
               </div>
-              {warningsOnly.map(w=>(
-                <div key={w.id} style={{display:"flex",gap:8,alignItems:"flex-start",padding:"6px 0",borderTop:`1px solid ${C.brd}`}}>
-                  <span style={{color:QC_COLOR[w.severity]||C.muted,fontWeight:700,fontSize:12}}>{w.severity==="critical"?"✕":w.severity==="warning"?"⚠":"ℹ"}</span>
-                  <span style={{flex:1,fontSize:11.5,color:C.txt2,lineHeight:1.5}}>
-                    <span>{w.message}</span>
-                    {w.action&&<span style={{display:"block",color:C.muted,fontSize:10.5,marginTop:2}}>→ {w.action}</span>}
-                  </span>
-                  {!readOnly&&<button onClick={()=>dismissWarning(w.id)} title="Keep anyway / dismiss this check" style={{...btn("ghost"),fontSize:9.5,padding:"2px 8px"}}>Dismiss</button>}
-                </div>
-              ))}
-            </div>
+            )}
 
-            {/* Concept navigator — one tab stop, arrow keys, fixed-height row. */}
+            {/* 97.md Phase 12 — same-group duplicate prevention / blocked-move notice
+                with the "Find existing term" affordance. */}
+            {blockedNotice&&(
+              <div data-testid="sb-dup-blocked" role="status" style={{background:`${alpha(C.yel,"10")}`,border:`1px solid ${alpha(C.yel,"44")}`,borderRadius:8,padding:"7px 10px",marginBottom:10,fontSize:11.5,color:C.txt2,display:"flex",alignItems:"center",gap:10,flexWrap:"wrap"}}>
+                <span style={{flex:1,minWidth:200}}>{blockedNotice.text}</span>
+                {blockedNotice.tid&&(
+                  <button type="button" onClick={()=>{ requestFocusTerm(blockedNotice.cid,blockedNotice.tid); setBlockedNotice(null); }}
+                    style={{...btn("solid"),fontSize:10.5}}>Find existing term</button>
+                )}
+                <button type="button" onClick={()=>setBlockedNotice(null)} aria-label="Dismiss duplicate notice" style={{...btn("ghost"),fontSize:10.5}}>Dismiss</button>
+              </div>
+            )}
+
+            {/* Group navigator — one tab stop, arrow keys, fixed-height row.
+                97.md: also the cross-group DROP surface (pills + "New group") and
+                the group-reorder/merge drag handles. */}
             <ConceptNavigator
               concepts={concepts}
               activeId={c?c.id:null}
-              onSelect={(id)=>setActiveConceptId(id)}
+              onSelect={(id)=>{ if(pillDrag.wasDragClick&&pillDrag.wasDragClick()) return; setActiveConceptId(id); }}
               statusFor={(x)=>conceptStatus(x,{rejected:rejectedSet})}
               suggestionCounts={suggCounts.perConcept}
+              registerPillEl={(id,el)=>{ pillEls.current[id]=el; }}
+              dropTargetGroupId={chipDropGroupId||pillMergeTargetId}
+              showNewGroupTarget={!!(chipDrag.state&&chipDrag.state.active)}
+              registerNewGroupEl={(el)=>{ newGroupEl.current=el; }}
+              pillDragHandleFor={readOnly?null:(id)=>pillDrag.handleFor(id,{})}
+              pillInsertIndex={pillInsertIndex}
             />
 
             {c&&(
               <ActiveConceptPanel concept={c} conceptIndex={cIdx} status={cStatus}
                 readOnly={readOnly}
                 onRename={readOnly?null:(label)=>updateConcept(c.id,{label})}
+                onRenameCommit={readOnly?null:commitRename}
                 onUpdateSourcePhrase={readOnly?null:(phrase)=>updateSourcePhrase(c.id,phrase)}
                 onRequestSplit={readOnly||((c.terms||[]).filter(t=>(t.text||"").trim()).length<2)?null
                   :()=>{setSplitDraft({cid:c.id,selected:{},label:""});setMergeOpen(false);setConfirmDeleteId(null);}}>
@@ -1843,7 +2701,9 @@ export default function SearchBuilderTab({projectId,question:questionProp,pico,a
                       {mergeOpen&&(
                         <span style={{position:"absolute",zIndex:75,top:"100%",left:0,marginTop:4,background:C.card,border:`1px solid ${C.brd2}`,borderRadius:8,boxShadow:"0 14px 40px var(--t-shadow)",overflow:"hidden",minWidth:200}}>
                           <span style={{display:"block",fontSize:9,fontWeight:700,color:C.muted,letterSpacing:.5,textTransform:"uppercase",padding:"6px 10px 2px"}}>Merge “{c.label}” into</span>
-                          {concepts.filter(x=>x.id!==c.id).map(x=>(
+                          {/* QA M21 — Time-frame note groups render no term chips, so terms
+                              merged into one would be stranded invisible: never a target. */}
+                          {concepts.filter(x=>x.id!==c.id&&x.picoField!=="T").map(x=>(
                             <button key={x.id} type="button" onClick={()=>{setMergeOpen(false);mergeConceptInto(c.id,x.id);}}
                               style={{display:"block",width:"100%",textAlign:"left",background:"none",border:"none",color:C.txt2,cursor:"pointer",fontSize:11.5,padding:"6px 10px",fontFamily:SANS}}>{x.label}</button>
                           ))}
@@ -1900,7 +2760,7 @@ export default function SearchBuilderTab({projectId,question:questionProp,pico,a
                   <>
                     {limitedMode&&(
                       <div style={{background:`${alpha(C.yel,"10")}`,border:`1px solid ${alpha(C.yel,"44")}`,borderRadius:8,padding:"7px 10px",marginBottom:8,fontSize:11,color:C.txt2}}>
-                        <strong style={{color:C.yel}}>Limited mode.</strong> Live subject-heading lookup is temporarily unavailable — terms still work; headings attach when the service returns.
+                        <strong style={{color:C.yel}}>Limited mode.</strong> Live MeSH lookup is temporarily unavailable — terms still work; MeSH records attach when the service returns.
                       </div>
                     )}
                     {/* QA M8 — the add box is a mutating surface: hidden for
@@ -1930,13 +2790,21 @@ export default function SearchBuilderTab({projectId,question:questionProp,pico,a
                           concept={c}
                           beginner={beginner}
                           readOnly={readOnly}
-                          dupInfoFor={(t)=>dupInfoForTerm(c.id,t)}
+                          dupSignalFor={dupSignalFor}
                           editingTermId={editing&&editing.conceptId===c.id?editing.termId:null}
-                          onOpenEditor={(tid)=>setEditing(editing&&editing.termId===tid?null:{conceptId:c.id,termId:tid})}
+                          onOpenEditor={(tid)=>{ if(chipDrag.wasDragClick&&chipDrag.wasDragClick()) return; setEditing(editing&&editing.termId===tid?null:{conceptId:c.id,termId:tid}); }}
                           onRemove={(tid)=>removeTerm(c.id,tid)}
+                          dragState={chipDrag.state}
+                          dragHandleFor={readOnly?null:(tid)=>chipDrag.handleFor(tid,{conceptId:c.id})}
+                          registerChipEl={(tid,el)=>{ chipEls.current[tid]=el; }}
+                          focusTermId={focusTerm&&focusTerm.cid===c.id?focusTerm.tid:null}
+                          onFocusedTerm={()=>setFocusTerm(null)}
+                          onAddEntryTerm={readOnly?null:(_tid,text)=>addEntryTerm(c.id,text)}
                           renderEditor={(t)=>{
-                            const dup=dupInfoForTerm(c.id,t);
+                            const sig=dupSignalFor(t);
+                            const other=sig&&sig.others&&sig.others.find(o=>o.conceptId!==c.id);
                             const tIdx=(c.terms||[]).findIndex(x=>x&&x.id===t.id);
+                            const combinable=(c.terms||[]).filter(x=>x&&x.id!==t.id&&String(x.text||'').trim()).map(x=>({id:x.id,text:x.text}));
                             return(
                               <TermEditorPopover
                                 term={t}
@@ -1945,23 +2813,32 @@ export default function SearchBuilderTab({projectId,question:questionProp,pico,a
                                 onReorder={(delta)=>moveTermBy(c.id,t.id,delta)}
                                 canMoveEarlier={tIdx>0}
                                 canMoveLater={tIdx>=0&&tIdx<(c.terms||[]).length-1}
-                                dupInfo={dup?{
-                                  otherLabel:dup.otherLabel,
-                                  onKeepHere:()=>{
-                                    const other=conceptsRef.current.find(x=>x.id===dup.otherConceptId);
-                                    const ot=other&&(other.terms||[]).find(x=>termEquivalenceKey(x.text)===termEquivalenceKey(t.text));
-                                    if(other&&ot) removeTerm(other.id,ot.id);
-                                    setEditing(null);
-                                  },
-                                  onMoveThere:()=>{ removeTerm(c.id,t.id); setEditing(null); },
+                                dupInfo={sig?{
+                                  kind:sig.kind,
+                                  intentional:sig.intentional,
+                                  otherLabel:(other&&other.conceptLabel)||(sig.others&&sig.others[0]&&sig.others[0].conceptLabel)||'another group',
+                                  onFindOther:sig.others&&sig.others.length?()=>{
+                                    const target=other||sig.others[0];
+                                    requestFocusTerm(target.conceptId,target.termId);
+                                  }:null,
+                                  onMoveThere:other?()=>consolidateDupCopy(c.id,t.id,other):null, // QA M17 — consolidates (a literal move is always blocked by the copy already there)
+                                  onRemoveCopy:()=>{ removeTerm(c.id,t.id); setEditing(null); },
+                                  onKeepBoth:sig.kind==='exact-cross'?()=>keepBothIntentionally(t):null,
+                                  onUnkeep:sig.intentional?()=>unkeepDup(t):null,
+                                  onDismiss:sig.kind==='exact-cross'?()=>{ dismissWarning(sig.id); setEditing(null); }:null,
                                 }:null}
                                 preview={renderTerm(t,activeDB)}
                                 onChange={(patch)=>updateTerm(c.id,t.id,patch)}
                                 onClose={()=>setEditing(null)}
                                 onLookup={(text,force)=>tryLookup(c.id,t.id,text,force)}
-                                onConvertSynonyms={()=>{ addSynonyms(c.id,t.id); setEditing(null); }}
                                 onToggleDisabled={()=>toggleTermDisabled(c.id,t.id)}
-                                onMove={(toCid)=>{ moveTerm(c.id,t.id,toCid); setEditing(null); announce(`Moved "${t.text}"`); }}
+                                onMove={(toCid)=>doMoveTerm(c.id,t.id,toCid)}
+                                onMoveToNewGroup={()=>{ moveTermToNewGroup(c.id,t.id); setEditing(null); }}
+                                onCopyTo={(toCid)=>doCopyTerm(c.id,t.id,toCid)}
+                                combineTargets={combinable}
+                                onCombineWith={(otherId)=>doCombineTerms(c.id,[t.id,otherId])}
+                                onSplitPhrase={Array.isArray(t.components)&&t.components.length>1&&componentsMatchText(t)?()=>doSplitPhrase(c.id,t.id):null} /* QA M14 — an EDITED combined phrase never auto-splits from stale components; the safe manual split applies */
+                                onManualSplit={(parts)=>doSplitPhrase(c.id,t.id,parts)}
                                 onRemove={()=>removeTerm(c.id,t.id)}
                               />
                             );
@@ -1975,7 +2852,7 @@ export default function SearchBuilderTab({projectId,question:questionProp,pico,a
                         readOnly={readOnly}
                         onAccept={(s)=>acceptSuggestion(c.id,s)}
                         onDismiss={dismissSuggestion}
-                        onAcceptAllHeadings={()=>acceptAllHeadings(c.id)}
+                        onAcceptEntryTerm={(_s,syn)=>addEntryTerm(c.id,syn)}
                         rejectedEntries={rejectedEntriesFor(c)}
                         showDismissed={showDismissedSuggs}
                         onToggleShowDismissed={()=>setShowDismissedSuggs(v=>!v)}
@@ -2004,8 +2881,8 @@ export default function SearchBuilderTab({projectId,question:questionProp,pico,a
               </ActiveConceptPanel>
             )}
 
-            {/* QA M8 — '+ Add concept' is a mutating control: hidden for viewers. */}
-            {!readOnly&&<button onClick={addConcept} style={{...btn("ghost"),width:"100%",justifyContent:"center",borderStyle:"dashed",marginTop:12}}>+ Add concept</button>}
+            {/* QA M8 — '+ Add search group' is a mutating control: hidden for viewers. */}
+            {!readOnly&&<button onClick={addConcept} style={{...btn("ghost"),width:"100%",justifyContent:"center",borderStyle:"dashed",marginTop:12}}>+ Add search group</button>}
 
             <div style={{marginTop:12}}>
               <StrategyPreviewPanel
@@ -2036,7 +2913,7 @@ export default function SearchBuilderTab({projectId,question:questionProp,pico,a
                   </div>
                   {compiled.map(res=>(
                     <DbStrategyPanel key={res.dbId} res={res} cap={capabilitiesFor(res.dbId)}
-                      setOverride={readOnly?null:(val=>setOverrides(o=>{const n={...o}; if(val==null) delete n[res.dbId]; else n[res.dbId]=val; return n;}))}
+                      setOverride={readOnly?null:(val=>{ touchMeta(); /* QA M6 — a manual db-strategy override edit is a manual modification */ setOverrides(o=>{const n={...o}; if(val==null) delete n[res.dbId]; else n[res.dbId]=val; return n;}); })}
                       hitState={res.dbId==="pubmed"?hitState:null}/>
                   ))}
                 </div>
@@ -2094,7 +2971,7 @@ export default function SearchBuilderTab({projectId,question:questionProp,pico,a
             </div>
             {compiled.map(res=>(
               <DbStrategyPanel key={res.dbId} res={res} cap={capabilitiesFor(res.dbId)}
-                setOverride={readOnly?null:(val=>setOverrides(o=>{const n={...o}; if(val==null) delete n[res.dbId]; else n[res.dbId]=val; return n;}))}
+                setOverride={readOnly?null:(val=>{ touchMeta(); /* QA M6 — a manual db-strategy override edit is a manual modification */ setOverrides(o=>{const n={...o}; if(val==null) delete n[res.dbId]; else n[res.dbId]=val; return n;}); })}
                 hitState={res.dbId==="pubmed"?hitState:null}/>
             ))}
           </div>

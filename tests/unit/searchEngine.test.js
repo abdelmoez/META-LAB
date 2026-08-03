@@ -7,8 +7,11 @@ import { describe, it, expect } from 'vitest';
 import {
   mapMeshSummary, mapMeshSummaryList, emtreeFallback, parseSparqlLabels, meshNarrower, meshSuggest,
 } from '../../server/searchEngine/nlmClient.js';
-import { sanitizeIgnored, sanitizeFilters, sanitizeSearchMode, sanitizeRejectedSuggestions, sanitizeQuestionSnapshot } from '../../server/searchEngine/searchEngineController.js';
-import { normalizePersistedQuestionSnapshot, serializeSearchState } from '../../src/research-engine/searchBuilder/searchState.js';
+import {
+  sanitizeIgnored, sanitizeFilters, sanitizeSearchMode, sanitizeRejectedSuggestions,
+  sanitizeQuestionSnapshot, sanitizeSearchMeta, sanitizeBaseRevision, sanitizeAuditAction,
+} from '../../server/searchEngine/searchEngineController.js';
+import { normalizePersistedQuestionSnapshot, normalizePersistedMeta, serializeSearchState } from '../../src/research-engine/searchBuilder/searchState.js';
 import { createTtlCache } from '../../server/searchEngine/ttlCache.js';
 
 describe('mapMeshSummary', () => {
@@ -149,6 +152,87 @@ describe('sanitizeQuestionSnapshot — putSearch allowlist (96.md D2 drift input
   });
 });
 
+describe('sanitizeSearchMeta — putSearch allowlist (97.md, the ONE new top-level key)', () => {
+  const META = {
+    generatedAt: '2026-08-02T10:00:00.000Z',
+    generatedBy: { id: 'u1', name: 'Ada' },
+    sourceQuestion: 'does metformin help?',
+    manuallyModifiedAt: '2026-08-03T09:00:00.000Z',
+    manuallyModifiedBy: { id: 'u2', name: 'Grace' },
+  };
+  it('keeps the five fields, trimmed and capped; empty fields are OMITTED', () => {
+    expect(sanitizeSearchMeta(META)).toEqual(META);
+    const partial = sanitizeSearchMeta({ generatedAt: ' t1 ', generatedBy: { id: 42, name: '' }, sourceQuestion: '' });
+    expect(partial).toEqual({ generatedAt: 't1', generatedBy: { id: '42', name: '' } });
+    expect('sourceQuestion' in partial).toBe(false);
+  });
+  it('caps: generatedAt/manuallyModifiedAt 40, id 100, name 200, sourceQuestion 2000', () => {
+    const out = sanitizeSearchMeta({
+      generatedAt: 't'.repeat(60),
+      generatedBy: { id: 'i'.repeat(200), name: 'n'.repeat(300) },
+      sourceQuestion: 'q'.repeat(3000),
+      manuallyModifiedAt: 'm'.repeat(60),
+    });
+    expect(out.generatedAt.length).toBe(40);
+    expect(out.generatedBy.id.length).toBe(100);
+    expect(out.generatedBy.name.length).toBe(200);
+    expect(out.sourceQuestion.length).toBe(2000);
+    expect(out.manuallyModifiedAt.length).toBe(40);
+  });
+  it('collapses junk to {} (stored empty object — omitted from client signatures)', () => {
+    expect(sanitizeSearchMeta(null)).toEqual({});
+    expect(sanitizeSearchMeta('junk')).toEqual({});
+    expect(sanitizeSearchMeta([1, 2])).toEqual({});
+    expect(sanitizeSearchMeta({ generatedAt: 7, generatedBy: 'x', manuallyModifiedBy: {} })).toEqual({});
+  });
+  it('round-trips BYTE-IDENTICALLY through the client normalizer (the RULE)', () => {
+    // Server echo → client pickPersisted must agree exactly, or the live-sync loop
+    // would see phantom changes (the putSearch RULE comment).
+    const base = { concepts: [], overrides: {}, ignored: [] };
+    for (const raw of [META, { generatedAt: ' t ' }, {}, { generatedBy: { id: 9, name: ' N ' } }, { sourceQuestion: 'y'.repeat(2500) }]) {
+      expect(serializeSearchState({ ...base, meta: sanitizeSearchMeta(raw) }))
+        .toBe(serializeSearchState({ ...base, meta: raw }));
+      const client = normalizePersistedMeta(raw);
+      expect(client === undefined ? {} : JSON.parse(JSON.stringify(client))).toEqual(sanitizeSearchMeta(raw));
+    }
+  });
+  it('a stored empty meta never changes a historical save signature', () => {
+    const legacy = { concepts: [{ id: 'c1', label: 'X', op: 'AND', terms: [] }], overrides: {}, ignored: [] };
+    expect(serializeSearchState({ ...legacy, meta: {} })).toBe(serializeSearchState(legacy));
+    // …while a REAL meta changes it (so autosave persists the new key).
+    expect(serializeSearchState({ ...legacy, meta: { generatedAt: 't' } })).not.toBe(serializeSearchState(legacy));
+  });
+});
+
+describe('sanitizeBaseRevision — putSearch ENVELOPE (97.md Phase 16 stale-write CAS)', () => {
+  it('accepts non-negative integers only', () => {
+    expect(sanitizeBaseRevision(0)).toBe(0);
+    expect(sanitizeBaseRevision(7)).toBe(7);
+  });
+  it('collapses everything else to null (= documented LWW, unchanged for legacy clients)', () => {
+    expect(sanitizeBaseRevision(-1)).toBeNull();
+    expect(sanitizeBaseRevision(1.5)).toBeNull();
+    expect(sanitizeBaseRevision('3')).toBeNull();
+    expect(sanitizeBaseRevision(null)).toBeNull();
+    expect(sanitizeBaseRevision(undefined)).toBeNull();
+    expect(sanitizeBaseRevision(NaN)).toBeNull();
+    expect(sanitizeBaseRevision({ revision: 3 })).toBeNull();
+  });
+});
+
+describe('sanitizeAuditAction — putSearch ENVELOPE (97.md Phase 4 regeneration audit)', () => {
+  it("accepts exactly 'regenerated'", () => {
+    expect(sanitizeAuditAction('regenerated')).toBe('regenerated');
+  });
+  it('collapses everything else to null (→ ordinary SEARCH_UPDATED)', () => {
+    expect(sanitizeAuditAction('REGENERATED')).toBeNull();
+    expect(sanitizeAuditAction('restored')).toBeNull();
+    expect(sanitizeAuditAction('')).toBeNull();
+    expect(sanitizeAuditAction(null)).toBeNull();
+    expect(sanitizeAuditAction(1)).toBeNull();
+  });
+});
+
 describe('sanitizeSearchMode — putSearch allowlist (73.md P5 two-path marker)', () => {
   it("accepts exactly 'manual' and 'automated'", () => {
     expect(sanitizeSearchMode('manual')).toBe('manual');
@@ -246,5 +330,65 @@ describe('createTtlCache', () => {
     expect(c.get('b')).toBe(2);
     expect(c.get('c')).toBe(3);
     expect(c.size).toBe(2);
+  });
+});
+
+/* ══════════ 97 QA M3/M32 — server-side meta identity stamping (putSearch) ════ */
+import { stampMetaIdentity } from '../../server/searchEngine/searchEngineController.js';
+
+describe('stampMetaIdentity — generatedBy/manuallyModifiedBy come from the session', () => {
+  const ada = { id: 'u1', name: 'Ada' };
+  const bob = { id: 'u2', name: 'Bob' };
+
+  it('stamps the acting user when a timestamp CHANGED vs the stored block', () => {
+    const out = stampMetaIdentity(
+      { generatedAt: 'T2', sourceQuestion: 'q', manuallyModifiedAt: 'T3' },
+      { generatedAt: 'T1', generatedBy: { id: 'u0', name: 'Old' } },
+      ada,
+    );
+    expect(out.generatedBy).toEqual({ id: 'u1', name: 'Ada' });
+    expect(out.manuallyModifiedBy).toEqual({ id: 'u1', name: 'Ada' });
+  });
+
+  it('an UNCHANGED timestamp preserves the stored attribution (a later writer never steals it)', () => {
+    const stored = {
+      generatedAt: 'T1', generatedBy: { id: 'u1', name: 'Ada' },
+      manuallyModifiedAt: 'T2', manuallyModifiedBy: { id: 'u1', name: 'Ada' },
+    };
+    // Bob saves without touching either timestamp (e.g. dismissed a suggestion —
+    // the client echoes the loaded meta): Ada keeps both attributions.
+    const out = stampMetaIdentity(
+      { generatedAt: 'T1', manuallyModifiedAt: 'T2' }, stored, bob,
+    );
+    expect(out.generatedBy).toEqual({ id: 'u1', name: 'Ada' });
+    expect(out.manuallyModifiedBy).toEqual({ id: 'u1', name: 'Ada' });
+  });
+
+  it('a fresh manual stamp by a NEW user re-attributes only the manual side', () => {
+    const stored = {
+      generatedAt: 'T1', generatedBy: { id: 'u1', name: 'Ada' },
+      manuallyModifiedAt: 'T2', manuallyModifiedBy: { id: 'u1', name: 'Ada' },
+    };
+    const out = stampMetaIdentity(
+      { generatedAt: 'T1', manuallyModifiedAt: 'T9' }, stored, bob,
+    );
+    expect(out.generatedBy).toEqual({ id: 'u1', name: 'Ada' });
+    expect(out.manuallyModifiedBy).toEqual({ id: 'u2', name: 'Bob' });
+  });
+
+  it('a regeneration block (generation fields only) gets generatedBy and stays reset on the manual side', () => {
+    const out = stampMetaIdentity({ generatedAt: 'T5', sourceQuestion: 'q2' }, {}, ada);
+    expect(out).toEqual({ generatedAt: 'T5', sourceQuestion: 'q2', generatedBy: { id: 'u1', name: 'Ada' } });
+  });
+
+  it('no session user → the block passes through untouched; {} stays {}', () => {
+    expect(stampMetaIdentity({ generatedAt: 'T1' }, {}, null)).toEqual({ generatedAt: 'T1' });
+    expect(stampMetaIdentity({}, {}, ada)).toEqual({});
+  });
+
+  it('the stamped block still round-trips through the client normalizer byte-identically', () => {
+    const stamped = stampMetaIdentity({ generatedAt: 'T1', manuallyModifiedAt: 'T2' }, {}, ada);
+    expect(normalizePersistedMeta(stamped)).toEqual(stamped);
+    expect(sanitizeSearchMeta(stamped)).toEqual(stamped);
   });
 });

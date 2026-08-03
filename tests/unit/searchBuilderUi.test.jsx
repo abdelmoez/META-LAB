@@ -1,9 +1,20 @@
 /**
- * searchBuilderUi.test.jsx — 85.md A2. SSR contract tests (house pattern:
- * renderToStaticMarkup, no jsdom, effects never run → no network) for the
- * extracted Search Builder leaves powering the redesigned Concepts and
- * Terms & Vocabulary stages, plus the pure uiShared helpers and the pinned
+ * searchBuilderUi.test.jsx — 85.md A2, reworked by 97.md. SSR contract tests
+ * (house pattern: renderToStaticMarkup, no jsdom, effects never run → no network)
+ * for the extracted Search Builder leaves powering the redesigned
+ * Select & Build Key Terms stage, plus the pure uiShared helpers and the pinned
  * renderTerm unmatched-heading fallback.
+ *
+ * 97.md contract changes pinned here:
+ *  - duplicate chips: dark-red exact-dup state with icon + visible "Duplicate"
+ *    badge + tooltip + screen-reader label (never colour alone); soft
+ *    "Possible variant" for family equivalents; "kept intentionally" for a valid
+ *    dupOverride;
+ *  - drag visuals are PROP-driven (insertion line vs distinct merge-target ring);
+ *  - MeSH terminology everywhere ("Subject heading" is gone), `"X"[MeSH]` chips,
+ *    the MeshDetailsPopover, per-entry-term "Add this term" rows, and NO bulk
+ *    accept-all (sb-accept-all-headings is REMOVED);
+ *  - the Regenerate confirmation dialog carries the spec's exact copy.
  */
 import { describe, it, expect } from 'vitest';
 import { createElement as h } from 'react';
@@ -14,18 +25,19 @@ import SaveStatusIndicator from '../../src/features/searchBuilder/components/Sav
 import UndoSnackbar from '../../src/features/searchBuilder/components/UndoSnackbar.jsx';
 import ConceptNavigator from '../../src/features/searchBuilder/components/ConceptNavigator.jsx';
 import ActiveConceptPanel from '../../src/features/searchBuilder/components/ActiveConceptPanel.jsx';
-import TermChipRow from '../../src/features/searchBuilder/components/TermChipRow.jsx';
+import TermChipRow, { EXACT_DUP_TOOLTIP } from '../../src/features/searchBuilder/components/TermChipRow.jsx';
 import TermEditorPopover from '../../src/features/searchBuilder/components/TermEditorPopover.jsx';
 import AddTermBox from '../../src/features/searchBuilder/components/AddTermBox.jsx';
 import SuggestionsDisclosure from '../../src/features/searchBuilder/components/SuggestionsDisclosure.jsx';
 import StrategyPreviewPanel from '../../src/features/searchBuilder/components/StrategyPreviewPanel.jsx';
-import { renderTerm } from '../../src/features/searchBuilder/SearchBuilderTab.jsx';
+import MeshDetailsPopover from '../../src/features/searchBuilder/components/MeshDetailsPopover.jsx';
+import { renderTerm, RegenerateDialog } from '../../src/features/searchBuilder/SearchBuilderTab.jsx';
 import { CB_SERIES } from '../../src/frontend/theme/tokens.js';
 
 const r = (el) => renderToStaticMarkup(el);
 
 /* ── fixtures ─────────────────────────────────────────────────────────────── */
-const VOCAB = { mesh: 'Diabetes Mellitus, Type 2', meshUI: 'D003924', synonyms: ['T2DM', 'NIDDM'], children: [] };
+const VOCAB = { mesh: 'Diabetes Mellitus, Type 2', meshUI: 'D003924', tree: 'C18.452.394.750.149', scope: 'A subclass of diabetes mellitus.', synonyms: ['T2DM', 'NIDDM'], children: ['Diabetes Mellitus, Lipoatrophic'] };
 const controlled = { id: 't1', text: 't2dm', type: 'controlled', field: 'tiab', source: 'user_added', vocab: VOCAB };
 const freetext = { id: 't2', text: 'metformin', type: 'freetext', field: 'tiab', source: 'user_added' };
 const unmatched = { id: 't3', text: 'xyzzy heading', type: 'controlled', field: 'tiab', source: 'user_added', vocab: null };
@@ -56,7 +68,6 @@ describe('uiShared — pure display helpers', () => {
   it('termMicroBadges: field scope (ALWAYS for free text — 96.md D13.5) / truncation / phrase / provenance / disabled', () => {
     expect(termMicroBadges({ type: 'freetext', field: 'ti', text: 'x' }).map((b) => b.key)).toEqual(['field']);
     expect(termMicroBadges({ type: 'freetext', field: 'all', text: 'x' })[0].label).toBe('everywhere');
-    // the DEFAULT scope is named too — every free-text chip says where it searches
     expect(termMicroBadges({ type: 'freetext', field: 'tiab', text: 'x' })[0].label).toBe('title/abstract');
     expect(termMicroBadges({ type: 'freetext', field: 'tiab', text: 'x', truncate: true }).map((b) => b.key)).toEqual(['field', 'truncate']);
     expect(termMicroBadges({ type: 'freetext', field: 'tiab', text: 'heart attack', phrase: true }).map((b) => b.key)).toEqual(['field', 'phrase']);
@@ -66,7 +77,6 @@ describe('uiShared — pure display helpers', () => {
     expect(termMicroBadges({ type: 'freetext', field: 'tiab', text: 'x', source: 'synonym' }).map((b) => b.label)).toContain('suggested');
     expect(termMicroBadges({ type: 'freetext', field: 'tiab', text: 'x', source: 'pico_auto' }).map((b) => b.label)).toContain('suggested');
     expect(termMicroBadges(freetext).map((b) => b.label)).toContain('manual'); // user_added
-    // controlled terms carry no field/source noise (the MeSH badge is theirs)
     expect(termMicroBadges({ type: 'controlled', text: 'x', vocab: { mesh: 'X' } })).toEqual([]);
   });
   it('conceptAccent cycles the CVD-safe Okabe–Ito series', () => {
@@ -126,10 +136,15 @@ describe('UndoSnackbar — feature-local undo affordance (audit C4)', () => {
     expect(html).toContain('>Undo</button>');
     expect(html).toContain('aria-label="Dismiss"');
   });
+  it('97.md Phase 4 — the regenerate toast composes to "Search strategy regenerated. Undo"', () => {
+    const html = r(h(UndoSnackbar, { message: 'Search strategy regenerated.', onUndo: () => {}, onDismiss: () => {} }));
+    expect(html).toContain('Search strategy regenerated.');
+    expect(html).toContain('>Undo</button>');
+  });
 });
 
 /* ── ConceptNavigator ─────────────────────────────────────────────────────── */
-describe('ConceptNavigator — master-detail pill row', () => {
+describe('ConceptNavigator — master-detail pill row (+ 97.md drop targets)', () => {
   const props = {
     concepts: [P, I, MANUAL], activeId: 'cI', onSelect: () => {},
     statusFor: () => 'needs-review', suggestionCounts: { cP: 1, cI: 0, cM: 0 },
@@ -147,43 +162,73 @@ describe('ConceptNavigator — master-detail pill row', () => {
     expect(html).toContain('data-testid="sb-nav-suggestion-dot"');
     expect(html).toContain('1 suggestion to review'); // aria-label carries the meaning
   });
+  it('97.md — idle render shows NO drop-target ring, insertion line or New-group zone', () => {
+    const html = r(h(ConceptNavigator, props));
+    expect(html).not.toContain('sb-pill-drop-target');
+    expect(html).not.toContain('sb-pill-insert-line');
+    expect(html).not.toContain('sb-new-group-target');
+  });
+  it('97.md — during a chip drag: pill drop-target ring + the "New group" drop zone', () => {
+    const html = r(h(ConceptNavigator, { ...props, dropTargetGroupId: 'cP', showNewGroupTarget: true }));
+    expect(html).toContain('data-testid="sb-pill-drop-target"');
+    expect(html).toContain('data-testid="sb-new-group-target"');
+    expect(html).toContain('＋ New group');
+  });
+  it('97.md — a pill-reorder drag renders the insertion line between pills', () => {
+    const html = r(h(ConceptNavigator, { ...props, pillInsertIndex: 1 }));
+    expect(html).toContain('data-testid="sb-pill-insert-line"');
+  });
 });
 
 /* ── ActiveConceptPanel ───────────────────────────────────────────────────── */
-describe('ActiveConceptPanel — detail shell', () => {
-  it('renders the pinned testid, accessible name input, role badge, coverage badge + guidance', () => {
+describe('ActiveConceptPanel — detail shell (97.md: neutral groups, MeSH wording)', () => {
+  it('renders the pinned testid, group ordinal, accessible name input, coverage badge + guidance', () => {
     const html = r(h(ActiveConceptPanel, { concept: P, conceptIndex: 0, status: 'ready' }, h('div', { 'data-testid': 'child-slot' })));
     expect(html).toContain('data-testid="sb-active-concept"');
+    expect(html).toContain('data-testid="sb-group-ordinal"');
+    expect(html).toContain('Group 1');
     expect(html).toContain('aria-label="Concept name: Population"');
     expect(html).toContain('data-testid="sb-mesh-coverage"');
-    expect(html).toContain('has heading');
-    expect(html).toContain('any one of them counts as a match'); // + the explicit within-group OR label (96.md D13.4)
-    expect(html).toContain('combined with');
+    expect(html).toContain('has MeSH term');
+    expect(html).toContain('any one of them counts as a match'); // within-group OR is explicit
+    expect(html).toContain('combined with <strong>AND</strong>'); // between-group AND is explicit
     expect(html).toContain('data-testid="child-slot"');
   });
-  it('a concept with terms but no matched heading reads "no heading yet"', () => {
+  it('a concept with terms but no matched MeSH term reads "no MeSH term yet"', () => {
     const html = r(h(ActiveConceptPanel, { concept: I, conceptIndex: 1, status: 'needs-review' }));
-    expect(html).toContain('no heading yet');
+    expect(html).toContain('no MeSH term yet');
+  });
+  it('97.md — the "Legacy group" badge is GONE; picoField groups render like any other', () => {
+    const html = r(h(ActiveConceptPanel, { concept: P, conceptIndex: 0, status: 'ready' }));
+    expect(html).not.toContain('Legacy group');
+    expect(html).not.toContain('Subject heading');
+  });
+  it('97.md Phase 13 — the mesh-suggested status pill reads "MeSH term suggested" (old wording killed)', () => {
+    const html = r(h(ActiveConceptPanel, { concept: I, conceptIndex: 1, status: 'mesh-suggested' }));
+    expect(html).toContain('MeSH term suggested');
+    expect(html).not.toContain('Subject heading suggested');
   });
 });
 
 /* ── TermChipRow ──────────────────────────────────────────────────────────── */
-describe('TermChipRow — chips show the SEARCHED term (audit C1)', () => {
+describe('TermChipRow — chips show the SEARCHED term + explicit OR separators', () => {
   const concept = { ...P, terms: [controlled, freetext, unmatched, disabledTerm] };
   const html = r(h(TermChipRow, {
     concept, beginner: true,
-    dupInfoFor: (t) => (t.id === 't2' ? { otherLabel: 'Intervention / Exposure', otherConceptId: 'cI' } : null),
     editingTermId: null, onOpenEditor: () => {}, onRemove: () => {}, renderEditor: () => null,
   }));
-  it('controlled chip = descriptor + MeSH badge; typed text preserved as title', () => {
+  it('controlled chip = the exact "Descriptor"[MeSH] form; typed text preserved as title', () => {
     expect(html).toContain('Diabetes Mellitus, Type 2');
-    expect(html).toContain('>MeSH</span>');
+    expect(html).toContain('[MeSH]');
     expect(html).toContain('title="You typed: t2dm"');
-    expect(html).not.toContain('[tiab]'); // never raw syntax on a chip
-    expect(html).not.toContain('[Mesh');
+    expect(html).not.toContain('[tiab]'); // raw field syntax still never leaks onto chips
   });
-  it('unmatched controlled term is an explicit warning chip', () => {
-    expect(html).toContain('heading not found — will not match');
+  it('controlled chips expose a keyboard-reachable MeSH-details affordance', () => {
+    expect(html).toContain('aria-label="MeSH details for Diabetes Mellitus, Type 2"');
+  });
+  it('unmatched controlled term is an explicit warning chip (MeSH wording)', () => {
+    expect(html).toContain('no MeSH match — will not match');
+    expect(html).not.toContain('subject heading');
   });
   it('every chip is an Edit button + a separate labelled Remove button (pinned aria contract)', () => {
     expect(html).toContain('aria-label="Edit t2dm"');
@@ -193,28 +238,100 @@ describe('TermChipRow — chips show the SEARCHED term (audit C1)', () => {
   it('disabled chips carry the "off" micro-badge (visible in beginner mode)', () => {
     expect(html).toContain('>off</span>');
   });
-  it('dup badge NAMES the other concept', () => {
-    expect(html).toContain('also in Intervention / Exposure');
+  it('97.md Phase 8 — visible OR separators between chips', () => {
+    expect(html).toContain('>OR</span>');
+  });
+});
+
+describe('TermChipRow — 97.md Phase 12 duplicate chip states (never colour alone)', () => {
+  const eusA = { id: 'e1', text: 'EUS', type: 'freetext', field: 'tiab' };
+  const concept = { id: 'g1', label: 'Search Group 1', op: 'AND', terms: [eusA, freetext] };
+  const base = { concept, beginner: true, editingTermId: null, onOpenEditor: () => {}, onRemove: () => {}, renderEditor: () => null };
+  const sigFor = (sig) => (t) => (t.id === 'e1' ? sig : null);
+
+  it('exact cross-group duplicate → dark-red chip with icon + Duplicate badge + tooltip + SR label', () => {
+    const html = r(h(TermChipRow, { ...base, dupSignalFor: sigFor({ kind: 'exact-cross', key: 'eus', id: 'exactdup:eus', groupIds: ['g1', 'g2'], others: [{ conceptId: 'g2', conceptLabel: 'Search Group 2', termId: 'e2', termText: 'eus' }], intentional: false, dismissed: false }) }));
+    expect(html).toContain('data-testid="sb-dup-badge"');
+    expect(html).toContain('⚠');                                   // icon
+    expect(html).toContain('Duplicate');                            // visible text
+    expect(html).toContain('Exact duplicate across AND groups');    // tooltip + SR label
+    expect(html).toContain('unnecessarily restrictive');            // spec tooltip copy
+    expect(html).toContain('Search Group 2');                       // names the other group
+    expect(html).toContain('role="img"');                           // SR label carrier
+    expect(html).toContain('#b91c1c');                              // strong dark-red border (plus…)
+    expect(EXACT_DUP_TOOLTIP('EUS')).toContain('“EUS” appears in more than one search group');
+  });
+  it('a valid intentional override mutes the warning ("kept intentionally", no dark red)', () => {
+    const html = r(h(TermChipRow, { ...base, dupSignalFor: sigFor({ kind: 'exact-cross', key: 'eus', id: 'exactdup:eus', groupIds: ['g1', 'g2'], others: [], intentional: true, dismissed: false }) }));
+    expect(html).toContain('data-testid="sb-dup-intentional"');
+    expect(html).toContain('kept intentionally');
+    expect(html).not.toContain('data-testid="sb-dup-badge"');
+  });
+  it('family variants get the SOFT "Possible variant" hint, never the exact styling', () => {
+    const html = r(h(TermChipRow, { ...base, dupSignalFor: sigFor({ kind: 'variant', key: 'fam:eus', id: 'multi:fam:eus', groupIds: ['g1', 'g2'], others: [{ conceptId: 'g2', conceptLabel: 'Search Group 2', termId: 'x', termText: 'endoscopic ultrasound' }], intentional: false, dismissed: false }) }));
+    expect(html).toContain('data-testid="sb-dup-variant"');
+    expect(html).toContain('Possible variant');
+    expect(html).not.toContain('data-testid="sb-dup-badge"');
+    expect(html).not.toContain('#b91c1c');
+  });
+});
+
+describe('TermChipRow — 97.md Phase 6 drag visuals are prop-driven and DISTINCT', () => {
+  const a = { id: 'a', text: 'alpha', type: 'freetext', field: 'tiab' };
+  const b = { id: 'b', text: 'beta', type: 'freetext', field: 'tiab' };
+  const concept = { id: 'g1', label: 'Search Group 1', op: 'AND', terms: [a, b] };
+  const base = { concept, beginner: true, editingTermId: null, onOpenEditor: () => {}, onRemove: () => {}, renderEditor: () => null };
+
+  it('idle → no insertion line, no merge target', () => {
+    const html = r(h(TermChipRow, base));
+    expect(html).not.toContain('sb-insert-line');
+    expect(html).not.toContain('sb-merge-target');
+  });
+  it('an insert target renders the INSERTION LINE (reorder affordance)', () => {
+    const html = r(h(TermChipRow, { ...base, dragState: { active: true, dragId: 'a', target: { kind: 'insert', groupId: 'g1', index: 1 }, armed: false } }));
+    expect(html).toContain('data-testid="sb-insert-line"');
+    expect(html).not.toContain('sb-merge-target');
+  });
+  it('a merge target renders the DISTINCT ring + hold-to-combine hint; armed flips the copy', () => {
+    const holding = r(h(TermChipRow, { ...base, dragState: { active: true, dragId: 'a', target: { kind: 'merge', targetId: 'b', groupId: 'g1' }, armed: false } }));
+    expect(holding).toContain('data-testid="sb-merge-target"');
+    expect(holding).toContain('data-armed="false"');
+    expect(holding).toContain('Hold to combine…');
+    expect(holding).not.toContain('sb-insert-line');
+    const armed = r(h(TermChipRow, { ...base, dragState: { active: true, dragId: 'a', target: { kind: 'merge', targetId: 'b', groupId: 'g1' }, armed: true } }));
+    expect(armed).toContain('data-armed="true"');
+    expect(armed).toContain('Release to combine into one phrase');
   });
 });
 
 /* ── TermEditorPopover ────────────────────────────────────────────────────── */
-describe('TermEditorPopover — evolved editor', () => {
+describe('TermEditorPopover — evolved editor (97.md MeSH wording + phrase/copy actions)', () => {
   const base = {
     term: freetext, beginner: false, moveTargets: [{ id: 'cI', label: 'Intervention / Exposure' }],
     preview: '"metformin"[tiab]', onChange: () => {}, onClose: () => {}, onLookup: () => {},
     onToggleDisabled: () => {}, onMove: () => {}, onRemove: () => {},
   };
-  it('is a labelled dialog with text edit, disable, first-class move, remove and Done', () => {
+  it('is a labelled dialog with text edit, disable, move, remove and Done', () => {
     const html = r(h(TermEditorPopover, base));
     expect(html).toContain('data-testid="sb-term-editor"');
     expect(html).toContain('role="dialog"');
     expect(html).toContain('aria-label="Edit term metformin"');
     expect(html).toContain('aria-label="Term text"');
     expect(html).toContain('>Disable</button>');
-    expect(html).toContain('Move to concept…');
+    expect(html).toContain('Move to group…');
     expect(html).toContain('>Remove</button>');
     expect(html).toContain('>Done</button>');
+  });
+  it('97.md Phase 13 — the search-as toggle says "MeSH term", never "Subject heading"', () => {
+    const html = r(h(TermEditorPopover, base));
+    expect(html).toContain('MeSH term');
+    expect(html).not.toContain('Subject heading');
+  });
+  it('a matched MeSH term shows "Matched MeSH term" + the explode section with the exact 97 label', () => {
+    const html = r(h(TermEditorPopover, { ...base, term: controlled }));
+    expect(html).toContain('✓ Matched MeSH term: Diabetes Mellitus, Type 2');
+    expect(html).toContain('Include narrower indexed terms');
+    expect(html).toContain('does not add any visible free-text terms');
   });
   it('expert mode shows the per-DB syntax preview; beginner hides it', () => {
     expect(r(h(TermEditorPopover, base))).toContain('data-testid="sb-term-syntax-preview"');
@@ -223,19 +340,102 @@ describe('TermEditorPopover — evolved editor', () => {
   it('a disabled term offers Enable instead', () => {
     expect(r(h(TermEditorPopover, { ...base, term: disabledTerm }))).toContain('>Enable</button>');
   });
-  it('an unmatched heading gets the honest warning + one-click convert', () => {
+  it('an edited-away MeSH term gets the honest conversion path ("no longer a MeSH term" → free text)', () => {
     const html = r(h(TermEditorPopover, { ...base, term: unmatched }));
-    expect(html).toContain('Heading not found');
-    expect(html).toContain('Convert to keyword');
+    expect(html).toContain('This is no longer a MeSH term');
+    expect(html).toContain('Convert to free text');
   });
-  it('duplicate resolution actions name the other concept', () => {
+  it('97.md Phase 12 — exact-duplicate actions: find other / move / remove / keep both / dismiss', () => {
     const html = r(h(TermEditorPopover, {
       ...base,
-      dupInfo: { otherLabel: 'Population', onKeepHere: () => {}, onMoveThere: () => {} },
+      dupInfo: {
+        kind: 'exact-cross', otherLabel: 'Search Group 2',
+        onFindOther: () => {}, onMoveThere: () => {}, onRemoveCopy: () => {}, onKeepBoth: () => {}, onDismiss: () => {},
+      },
     }));
-    expect(html).toContain('Also in Population');
-    expect(html).toContain('Keep here, remove from Population');
-    expect(html).toContain('Keep in Population, remove here');
+    expect(html).toContain('data-testid="sb-dup-actions"');
+    expect(html).toContain('Exact duplicate across AND groups');
+    expect(html).toContain('Find other duplicate');
+    expect(html).toContain('Move to Search Group 2');
+    expect(html).toContain('Remove this copy');
+    expect(html).toContain('Keep both intentionally');
+    expect(html).toContain('Dismiss warning');
+  });
+  it('a family variant gets only the soft informational note (no dark-red action block)', () => {
+    const html = r(h(TermEditorPopover, { ...base, dupInfo: { kind: 'variant', otherLabel: 'Search Group 2' } }));
+    expect(html).toContain('data-testid="sb-dup-variant-note"');
+    expect(html).toContain('Possible variant');
+    expect(html).not.toContain('sb-dup-actions');
+  });
+  it('97.md Phases 9/11 — explicit copy + move-to-NEW-group menu items (keyboard path for drag)', () => {
+    const html = r(h(TermEditorPopover, { ...base, onCopyTo: () => {}, onMoveToNewGroup: () => {} }));
+    expect(html).toContain('data-testid="sb-copy-btn"');
+    expect(html).toContain('Copy to group…');
+    // menus open on click (client state) — the buttons exist and are labelled.
+  });
+  it('97.md Phase 6 — combine menu + component split + SAFE manual split for edited phrases', () => {
+    const withCombine = r(h(TermEditorPopover, { ...base, combineTargets: [{ id: 'tX', text: 'biguanide' }], onCombineWith: () => {} }));
+    expect(withCombine).toContain('data-testid="sb-combine-btn"');
+    expect(withCombine).toContain('Combine into a phrase…');
+    const phraseWithComponents = { id: 'p1', text: 'sodium-glucose cotransporter 2', type: 'freetext', field: 'tiab', phrase: true, components: [{ text: 'sodium-glucose' }, { text: 'cotransporter' }, { text: '2' }] };
+    const compSplit = r(h(TermEditorPopover, { ...base, term: phraseWithComponents, onSplitPhrase: () => {}, onManualSplit: () => {} }));
+    expect(compSplit).toContain('data-testid="sb-split-phrase-btn"');
+    expect(compSplit).toContain('Split phrase (3 parts)');
+    const editedPhrase = { id: 'p2', text: 'renamed custom phrase', type: 'freetext', field: 'tiab', phrase: true };
+    const manual = r(h(TermEditorPopover, { ...base, term: editedPhrase, onManualSplit: () => {} }));
+    expect(manual).toContain('Split phrase…'); // opens the manual dialog — never guesses
+  });
+  it('97.md — reorder buttons stay as the keyboard alternative with edge disabling', () => {
+    const html = r(h(TermEditorPopover, {
+      term: freetext, beginner: true, moveTargets: [],
+      onReorder: () => {}, canMoveEarlier: false, canMoveLater: true,
+      onChange: () => {}, onClose: () => {}, onToggleDisabled: () => {}, onRemove: () => {},
+    }));
+    expect(html).toContain('data-testid="sb-term-move-earlier"');
+    expect(html).toContain('data-testid="sb-term-move-later"');
+    expect(html).toContain('aria-label="Move metformin earlier in the group"');
+    expect(html).toContain('Already first in the group');
+  });
+  it('97.md Phase 13 — the bulk "+ add N synonyms" action is GONE', () => {
+    const html = r(h(TermEditorPopover, { ...base, term: { ...freetext, vocab: VOCAB } }));
+    expect(html).not.toContain('add 2 synonyms');
+    expect(html).not.toContain('synonyms</button>');
+  });
+});
+
+/* ── MeshDetailsPopover (new — 97.md Phase 13) ────────────────────────────── */
+describe('MeshDetailsPopover — informational hover/focus details, per-term add only', () => {
+  // NIDDM already lives in the group (→ "✓ added"); T2DM does not (→ addable).
+  const base = { term: controlled, addedTexts: ['NIDDM'], onAddEntryTerm: () => {}, onClose: () => {} };
+  it('shows the exact "X"[MeSH] form, scope note, tree, ID, explode status and source', () => {
+    const html = r(h(MeshDetailsPopover, base));
+    expect(html).toContain('data-testid="sb-mesh-popover"');
+    expect(html).toContain('Diabetes Mellitus, Type 2');
+    expect(html).toContain('[MeSH]');
+    expect(html).toContain('A subclass of diabetes mellitus.');
+    expect(html).toContain('C18.452.394.750.149');
+    expect(html).toContain('D003924');
+    expect(html).toContain('Include narrower indexed terms');
+    expect(html).toContain('does not add visible free-text terms');
+    expect(html).toContain('National Library of Medicine');
+  });
+  it('entry terms are INFORMATIONAL rows with per-term "Add this term"; added ones marked', () => {
+    const html = r(h(MeshDetailsPopover, base));
+    expect((html.match(/data-testid="sb-mesh-entry-term"/g) || []).length).toBe(2);
+    expect(html).toContain('not added automatically');
+    expect(html).toContain('aria-label="Add this term: T2DM"');
+    expect(html).toContain('✓ added'); // NIDDM already lives in the group
+    // no bulk affordance of any kind
+    expect(html).not.toContain('Accept all');
+    expect(html).not.toContain('Add all');
+  });
+  it('noExplode flips the explode status copy', () => {
+    const html = r(h(MeshDetailsPopover, { ...base, term: { ...controlled, noExplode: true } }));
+    expect(html).toContain('only records indexed with this exact heading');
+  });
+  it('read-only hides the add actions', () => {
+    const html = r(h(MeshDetailsPopover, { ...base, readOnly: true }));
+    expect(html).not.toContain('Add this term');
   });
 });
 
@@ -274,25 +474,40 @@ describe('AddTermBox — explicit Add + typed-first + paste confirm', () => {
 });
 
 /* ── SuggestionsDisclosure ────────────────────────────────────────────────── */
-describe('SuggestionsDisclosure — review surface', () => {
+describe('SuggestionsDisclosure — 97.md Phase 13 review surface (no bulk accepts)', () => {
   const suggs = [
-    { key: 'rej:P:t2dm', text: 'Diabetes Mellitus, Type 2', kind: 'mesh', why: 'Standard subject heading for "t2dm"', sourceText: 't2dm' },
-    { key: 'rej:P:hf', text: 'Heart Failure', kind: 'mesh', why: 'Standard subject heading for "heart failure"', sourceText: 'heart failure' },
-    { key: 'rej:P:syn', text: 'metformin', kind: 'synonyms', why: 'Entry terms for "metformin"', synonyms: ['dimethylbiguanide'] },
+    { key: 'rej:P:t2dm', text: 'Diabetes Mellitus, Type 2', kind: 'mesh', why: 'Standard MeSH term for "t2dm"', sourceText: 't2dm' },
+    { key: 'rej:P:hf', text: 'Heart Failure', kind: 'mesh', why: 'Standard MeSH term for "heart failure"', sourceText: 'heart failure' },
+    { key: 'rej:P:syn', text: 'metformin', kind: 'synonyms', why: 'Entry terms for "metformin"', synonyms: ['dimethylbiguanide', 'glucophage'] },
   ];
-  it('renders rows with kind badge, why line, Accept + Dismiss', () => {
+  it('MeSH rows: kind badge "MeSH", why line, "Add this term" + Dismiss', () => {
     const html = r(h(SuggestionsDisclosure, { suggestions: suggs, onAccept: () => {}, onDismiss: () => {} }));
     expect(html).toContain('data-testid="sb-suggestions"');
     expect((html.match(/data-testid="sb-suggestion-row"/g) || []).length).toBe(3);
-    expect(html).toContain('Subject heading');
+    expect(html).toContain('>MeSH</span>');
     expect(html).toContain('aria-label="Accept suggestion Heart Failure"');
     expect(html).toContain('aria-label="Dismiss suggestion Heart Failure"');
-    expect(html).toContain('Standard subject heading for');
+    expect(html).toContain('Add this term');
+    expect(html).not.toContain('Subject heading');
   });
-  it('bulk "Accept all subject headings" appears with ≥2 heading suggestions', () => {
-    const html = r(h(SuggestionsDisclosure, { suggestions: suggs, onAcceptAllHeadings: () => {} }));
-    expect(html).toContain('data-testid="sb-accept-all-headings"');
-    expect(html).toContain('Accept all 2 subject headings');
+  it('the bulk "Accept all N subject headings" affordance is REMOVED', () => {
+    const html = r(h(SuggestionsDisclosure, { suggestions: suggs, onAccept: () => {} }));
+    expect(html).not.toContain('sb-accept-all-headings');
+    expect(html).not.toContain('Accept all');
+  });
+  it('entry-term suggestions render INDIVIDUAL per-term rows, never one bulk accept', () => {
+    const html = r(h(SuggestionsDisclosure, { suggestions: suggs, onAcceptEntryTerm: () => {} }));
+    expect(html).toContain('Entry terms for “metformin”');
+    expect((html.match(/data-testid="sb-entry-term-row"/g) || []).length).toBe(2);
+    expect(html).toContain('aria-label="Add this term: dimethylbiguanide"');
+    expect(html).toContain('aria-label="Add this term: glucophage"');
+  });
+  it('low-confidence MeSH suggestions are clearly marked (and never auto-added)', () => {
+    const withConf = [{ ...suggs[0], confidence: 'review' }];
+    const html = r(h(SuggestionsDisclosure, { suggestions: withConf, onAccept: () => {} }));
+    expect(html).toContain('data-testid="sb-sugg-low-confidence"');
+    expect(html).toContain('low confidence — review');
+    expect(html).toContain('never added automatically');
   });
   it('empty state is friendly, not blank', () => {
     const html = r(h(SuggestionsDisclosure, { suggestions: [] }));
@@ -314,6 +529,35 @@ describe('SuggestionsDisclosure — review surface', () => {
     expect(html).toContain('aria-label="Restore adults"');
     expect(html).toContain('↺ Restore all (1)');
   });
+  it('read-only: actions render disabled + aria-disabled with the access title', () => {
+    const html = r(h(SuggestionsDisclosure, { suggestions: suggs, readOnly: true, onAccept: () => {}, onDismiss: () => {}, onAcceptEntryTerm: () => {} }));
+    expect(html).toContain('aria-disabled="true"');
+    expect(html).toContain('Read-only access');
+  });
+});
+
+/* ── RegenerateDialog (new — 97.md Phase 4, exact spec copy) ──────────────── */
+describe('RegenerateDialog — the explicit regeneration confirmation', () => {
+  it('closed → renders nothing; open → modal dialog with the EXACT 97 copy', () => {
+    expect(r(h(RegenerateDialog, { open: false }))).toBe('');
+    const html = r(h(RegenerateDialog, { open: true, onCancel: () => {}, onConfirm: () => {} }));
+    expect(html).toContain('data-testid="sb-regenerate-dialog"');
+    expect(html).toContain('role="dialog"');
+    expect(html).toContain('aria-modal="true"');
+    expect(html).toContain('Regenerate search strategy?');
+    expect(html).toContain('This will rebuild the automatically generated keywords and search groups from the current research question and PICO. Your current manual organization may change.');
+    expect(html).toContain('>Cancel</button>');
+    expect(html).toContain('>Regenerate</button>');
+    expect(html).toContain('snapshot'); // the snapshot-first promise is stated
+  });
+  it('busy disables the actions; an error renders as an alert', () => {
+    const busy = r(h(RegenerateDialog, { open: true, busy: true, onCancel: () => {}, onConfirm: () => {} }));
+    expect(busy).toContain('Regenerating…');
+    expect(busy).toContain('disabled');
+    const err = r(h(RegenerateDialog, { open: true, error: 'The backup snapshot could not be saved, so nothing was regenerated.', onCancel: () => {}, onConfirm: () => {} }));
+    expect(err).toContain('role="alert"');
+    expect(err).toContain('nothing was regenerated');
+  });
 });
 
 /* ── StrategyPreviewPanel ─────────────────────────────────────────────────── */
@@ -324,7 +568,6 @@ describe('StrategyPreviewPanel — the honest human-readable preview', () => {
     const html = r(h(StrategyPreviewPanel, { ...base, beginner: true }));
     expect(html).toContain('data-testid="sb-strategy-preview"');
     expect((html.match(/data-testid="sb-preview-row"/g) || []).length).toBe(2);
-    // chips show the SEARCHED term (descriptor for controlled)
     expect(html).toContain('Diabetes Mellitus, Type 2 OR metformin');
   });
   it('96.md D13.4 — the op chip is a toggle BUTTON in the main flow (not expert-gated)', () => {
@@ -361,28 +604,26 @@ describe('StrategyPreviewPanel — the honest human-readable preview', () => {
 
 import { QuestionPhraseCard, QuestionDriftBanner } from '../../src/features/searchBuilder/SearchBuilderTab.jsx';
 
-describe('QuestionPhraseCard — phrase selection on the research question (96.md D13.1/2)', () => {
+describe('QuestionPhraseCard — phrase selection on the research question (96.md D13.1/2 + 97.md)', () => {
   const base = {
     question: 'Do SGLT2 inhibitors reduce hospital readmission in adults with heart failure?',
     accent: '#8859ff',
     isSelected: (text) => text.toLowerCase() === 'heart failure',
-    onTogglePhrase: () => {}, onAddManual: () => {}, onEditQuestion: () => {},
+    onTogglePhrase: () => {}, onCombineSpan: () => {}, onAddManual: () => {}, onEditQuestion: () => {},
   };
   it('renders the pinned testid, the question tokens as aria-pressed buttons, and the Edit link', () => {
     const html = r(h(QuestionPhraseCard, base));
     expect(html).toContain('data-testid="sb-question-card"');
     expect(html).toContain('Research question');
     expect(html).toContain('Edit question');
-    // Selected phrase reads pressed with the ✓ prefix (never colour-only)…
     expect(html).toContain('aria-pressed="true"');
     expect(html).toContain('✓ heart failure');
-    // …and unselected suggestions stay pressable.
     expect(html).toContain('aria-pressed="false"');
   });
-  it('offers the manual add-concept box with an accessible label', () => {
+  it('97.md — offers the manual add-group box with search-group language', () => {
     const html = r(h(QuestionPhraseCard, base));
-    expect(html).toContain('aria-label="Add a concept group manually"');
-    expect(html).toContain('+ Add concept');
+    expect(html).toContain('aria-label="Add a search group manually"');
+    expect(html).toContain('+ Add search group');
   });
   it('empty question → the guidance to the Research Question stage, no dead surface', () => {
     const html = r(h(QuestionPhraseCard, { ...base, question: '' }));
@@ -391,7 +632,7 @@ describe('QuestionPhraseCard — phrase selection on the research question (96.m
   });
   it('read-only hides the manual add box and disables tokens', () => {
     const html = r(h(QuestionPhraseCard, { ...base, readOnly: true }));
-    expect(html).not.toContain('+ Add concept');
+    expect(html).not.toContain('+ Add search group');
     expect(html).toContain('disabled');
   });
 });
@@ -419,7 +660,7 @@ describe('QuestionDriftBanner — "question changed" flagging (96.md D2, never a
   });
 });
 
-/* ══════════ 96.md QA fixes — M3/M4/M5/M6/M8/L5 SSR contracts ══════════ */
+/* ══════════ 96.md QA fixes — M4/M5/M8 SSR contracts (kept post-97) ══════════ */
 
 describe('QA M5 — QuestionPhraseCard token seam (pinned for e2e: sb-question-card + button semantics)', () => {
   const base = {
@@ -431,27 +672,26 @@ describe('QA M5 — QuestionPhraseCard token seam (pinned for e2e: sb-question-c
   it('every token — words, phrases AND filler/noise words — is a real <button> with aria-label = its exact text', () => {
     const html = r(h(QuestionPhraseCard, base));
     expect(html).toContain('data-testid="sb-question-card"');
-    // the e2e page object locates tokens by role=button + accessible name:
     expect(html).toContain('aria-label="heart failure"');        // curated phrase token
     expect(html).toContain('aria-label="hospital readmission"'); // vocabulary phrase token
     expect(html).toContain('aria-label="reduce"');               // plain word token
   });
   it('filler/noise words ("adults", "in") render dimmed but CLICKABLE (buttons, not spans)', () => {
     const html = r(h(QuestionPhraseCard, base));
-    expect(html).toContain('aria-label="adults"'); // NOISE word — clickable-on-intent (QA M5)
-    expect(html).toContain('aria-label="in"');     // connector — clickable-on-intent
-    // no token renders as a plain non-interactive span any more
+    expect(html).toContain('aria-label="adults"');
+    expect(html).toContain('aria-label="in"');
     expect(html).not.toMatch(/<span[^>]*>adults <\/span>/);
   });
-  it('the span-selection instruction line exists and tokens reference it via aria-describedby', () => {
+  it('the span/drag-combine instruction line exists and tokens reference it via aria-describedby', () => {
     const html = r(h(QuestionPhraseCard, base));
     expect(html).toContain('data-testid="sb-span-hint"');
     expect(html).toContain('Shift-click another word');
+    expect(html).toContain('drag one word onto another'); // 97.md drag-combine is documented inline
     expect(html).toContain('aria-describedby=');
   });
   it('read-only disables every token and hides the manual add box', () => {
     const html = r(h(QuestionPhraseCard, { ...base, readOnly: true }));
-    expect(html).not.toContain('+ Add concept');
+    expect(html).not.toContain('+ Add search group');
     expect(html).toContain('disabled');
   });
 });
@@ -480,7 +720,6 @@ describe('QA M4/M6/M8 — ActiveConceptPanel: source phrase, AND hint, read-only
     const html = r(h(ActiveConceptPanel, { concept: withPhrase, conceptIndex: 0, status: 'ready', onRequestSplit: () => {} }));
     expect(html).toContain('data-testid="sb-and-hint"');
     expect(html).toContain('Split them into separate groups');
-    // without the seam (read-only / too few terms) the hint disappears
     const none = r(h(ActiveConceptPanel, { concept: withPhrase, conceptIndex: 0, status: 'ready' }));
     expect(none).not.toContain('data-testid="sb-and-hint"');
   });
@@ -492,42 +731,12 @@ describe('QA M4/M6/M8 — ActiveConceptPanel: source phrase, AND hint, read-only
   });
 });
 
-describe('QA M3 — TermEditorPopover within-group reorder buttons', () => {
-  it('renders labelled Move earlier / Move later with edge disabling', () => {
-    const html = r(h(TermEditorPopover, {
-      term: freetext, beginner: true, moveTargets: [],
-      onReorder: () => {}, canMoveEarlier: false, canMoveLater: true,
-      onChange: () => {}, onClose: () => {}, onToggleDisabled: () => {}, onRemove: () => {},
-    }));
-    expect(html).toContain('data-testid="sb-term-move-earlier"');
-    expect(html).toContain('data-testid="sb-term-move-later"');
-    expect(html).toContain('aria-label="Move metformin earlier in the group"');
-    expect(html).toContain('Already first in the group');
-  });
-  it('without the onReorder seam the section is absent (leaf stays reusable)', () => {
-    const html = r(h(TermEditorPopover, {
-      term: freetext, beginner: true, moveTargets: [],
-      onChange: () => {}, onClose: () => {}, onToggleDisabled: () => {}, onRemove: () => {},
-    }));
-    expect(html).not.toContain('sb-term-move-earlier');
-  });
-});
-
 describe('QA M8 — TermChipRow read-only: inert edit, no remove', () => {
   it('disables the chip edit button with an explanation and drops the remove button', () => {
     const html = r(h(TermChipRow, { concept: { id: 'c', label: 'C', terms: [freetext] }, readOnly: true }));
     expect(html).toContain('disabled');
     expect(html).toContain('Read-only access');
     expect(html).not.toContain('aria-label="Remove metformin"');
-  });
-});
-
-describe('QA M8 — SuggestionsDisclosure read-only: disabled actions with explanation', () => {
-  const sugg = [{ key: 'k1', kind: 'mesh', text: 'Diabetes Mellitus, Type 2', why: 'why', vocab: VOCAB }];
-  it('Accept/Dismiss render disabled + aria-disabled with the access title', () => {
-    const html = r(h(SuggestionsDisclosure, { suggestions: sugg, readOnly: true, onAccept: () => {}, onDismiss: () => {} }));
-    expect(html).toContain('aria-disabled="true"');
-    expect(html).toContain('Read-only access');
   });
 });
 
@@ -544,5 +753,50 @@ describe('QA L5/M8 — StrategyPreviewPanel: rows are real buttons; read-only op
     const html = r(h(StrategyPreviewPanel, { concepts: concepts2, activeId: 'a', beginner: true, readOnly: true, onSelectConcept: () => {}, onToggleOp: () => {} }));
     expect(html).toMatch(/<button[^>]*data-testid="sb-preview-op"[^>]*disabled/);
     expect(html).toContain('Read-only access');
+  });
+});
+
+/* ══════════ 97 QA M9 — PICO source sections (read-only Phase 5 display) ══════ */
+import { PicoSourceSections, PICO_SOURCE_ROWS } from '../../src/features/searchBuilder/SearchBuilderTab.jsx';
+
+describe('PicoSourceSections — labeled read-only source rows below the question', () => {
+  const pico = { question: 'q', P: 'adults with type 2 diabetes', I: 'SGLT2 inhibitors', C: '', O: 'mortality' };
+
+  it('renders one labeled row per NON-EMPTY field, with clickable tokens', () => {
+    const html = r(h(PicoSourceSections, { pico, accent: '#123456', isSelected: () => false, onTogglePhrase: () => {} }));
+    expect(html).toContain('data-testid="sb-pico-sources"');
+    expect(html).toContain('Population');
+    expect(html).toContain('Intervention');
+    expect(html).toContain('Outcomes');
+    expect(html).not.toContain('Comparator'); // blank C → no row
+    expect(html).toMatch(/<button[^>]*aria-label="mortality"/); // tokens are buttons
+    // Clearly reference-only — the sections never reorganize the workspace.
+    expect(html).toContain('never reorganize your groups');
+  });
+  it('renders NOTHING when every PICO field is blank (new projects)', () => {
+    expect(r(h(PicoSourceSections, { pico: { question: 'q' }, isSelected: () => false }))).toBe('');
+    expect(r(h(PicoSourceSections, { pico: null, isSelected: () => false }))).toBe('');
+  });
+  it('marks already-selected tokens pressed; readOnly disables the buttons', () => {
+    const html = r(h(PicoSourceSections, { pico, isSelected: (t) => t === 'mortality', onTogglePhrase: () => {}, readOnly: true }));
+    expect(html).toMatch(/<button[^>]*aria-label="mortality"[^>]*aria-pressed="true"/);
+    expect(html).toMatch(/<button[^>]*disabled[^>]*aria-label="mortality"|<button[^>]*aria-label="mortality"[^>]*disabled/);
+  });
+  it('the four canonical rows are pinned (P/I/C/O only — no workspace control)', () => {
+    expect(PICO_SOURCE_ROWS.map(([k]) => k)).toEqual(['P', 'I', 'C', 'O']);
+  });
+});
+
+/* ══════════ 97 QA M16 — visible undo-confirmation toast (plain snackbar) ═════ */
+describe('UndoSnackbar — plain mode (undo feedback is VISIBLE, not SR-only)', () => {
+  it('renders the description WITHOUT an Undo button when onUndo is absent', () => {
+    const html = r(h(UndoSnackbar, { message: 'Restored "emphysema"', onUndo: null, onDismiss: () => {} }));
+    expect(html).toContain('Restored');
+    expect(html).toContain('data-testid="sb-undo"');
+    expect(html).not.toContain('>Undo<');
+  });
+  it('keeps the Undo button for ordinary action toasts', () => {
+    const html = r(h(UndoSnackbar, { message: 'Removed "x"', onUndo: () => {}, onDismiss: () => {} }));
+    expect(html).toContain('>Undo<');
   });
 });

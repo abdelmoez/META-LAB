@@ -761,6 +761,27 @@ describe('96.md D13 — mergeConcepts (QA L4: dedupe by EXACT normalized text; u
     expect(res.concepts[0].terms.map((t) => t.id)).toEqual(['b1', 'a1']);
     expect(res.undo.movedTermIds).toEqual(['a1']);
   });
+  it('QA M20 — a same-label MeSH term (attached vocab) SURVIVES a merge into a group holding the free-text form', () => {
+    const from = { id: 'a', label: 'Cardiac', terms: [
+      { id: 'a1', text: 'Heart Failure', type: 'controlled', vocab: { mesh: 'Heart Failure', meshUI: 'D006333' } },
+    ] };
+    const into = { id: 'b', label: 'HF', terms: [{ id: 'b1', text: 'heart failure' }] };
+    const res = mergeConcepts([from, into], 'a', 'b');
+    // The controlled variant is a DIFFERENT term class under the type-aware key:
+    // it moves (never silently discarded with its vocab metadata).
+    expect(res.concepts[0].terms.map((t) => t.id)).toEqual(['b1', 'a1']);
+    expect(res.skipped).toEqual([]);
+  });
+  it('QA M20 — genuinely-skipped exact duplicates are REPORTED, never silent', () => {
+    const from = { id: 'a', label: 'Cardiac', terms: [
+      { id: 'a1', text: 'cardiac failure' },
+      { id: 'a2', text: '"Heart Failure"' }, // exact dup of b1 under the conservative key
+    ] };
+    const into = { id: 'b', label: 'HF', terms: [{ id: 'b1', text: 'heart failure' }] };
+    const res = mergeConcepts([from, into], 'a', 'b');
+    expect(res.undo.movedTermIds).toEqual(['a1']);
+    expect(res.skipped).toEqual([{ id: 'a2', text: '"Heart Failure"' }]); // the UI counts these in the toast
+  });
   it('returns null for unknown/identical ids', () => {
     expect(mergeConcepts([eus, target], 'x', 'x')).toBeNull();
     expect(mergeConcepts([eus, target], 'nope', 'y')).toBeNull();
@@ -851,5 +872,194 @@ describe('96.md D2 — questionSnapshot persistence (omit-when-empty byte-stabil
     expect(anyLiveTerms(OLD_SHAPE.concepts)).toBe(true);
     expect(anyLiveTerms([{ id: 'g', terms: [{ id: 't', text: 'x', disabled: true }] }])).toBe(false);
     expect(anyLiveTerms([])).toBe(false);
+  });
+});
+
+/* ══════════════ 97.md — meta key, neutral groups, legacy-label migration ═══════ */
+
+import {
+  normalizePersistedMeta, stampManualMeta, buildGeneratedMeta,
+  migrateLegacyGroupLabels, renameConcept, defaultGroupLabel,
+} from '../../src/research-engine/searchBuilder/searchState.js';
+import { searchQualityCheck } from '../../src/research-engine/searchBuilder/crossConcept.js';
+
+describe('97.md — pickPersisted meta (the ONE new top-level key, omit-when-empty)', () => {
+  const BASE = {
+    concepts: [{ id: 'c1', label: 'X', op: 'AND', terms: [] }],
+    overrides: {}, ignored: [],
+  };
+  const META = {
+    generatedAt: '2026-08-02T10:00:00.000Z',
+    generatedBy: { id: 'u1', name: 'Ada' },
+    sourceQuestion: 'does it work?',
+  };
+
+  it('PINNED: pre-97 saves keep BYTE-IDENTICAL signatures (meta absent / {} / all-empty / junk)', () => {
+    const before = serializeSearchState(BASE);
+    expect(serializeSearchState({ ...BASE, meta: {} })).toBe(before);
+    expect(serializeSearchState({ ...BASE, meta: { generatedAt: '', sourceQuestion: '   ' } })).toBe(before);
+    expect(serializeSearchState({ ...BASE, meta: { generatedBy: {} } })).toBe(before);
+    expect(serializeSearchState({ ...BASE, meta: 'junk' })).toBe(before);
+    expect(serializeSearchState({ ...BASE, meta: [1, 2] })).toBe(before);
+    expect(pickPersisted(BASE).meta).toBeUndefined();
+    expect(pickPersisted({ ...BASE, meta: {} }).meta).toBeUndefined();
+  });
+
+  it('a real meta block rides in pickPersisted and changes the signature (autosave persists it)', () => {
+    const withMeta = { ...BASE, meta: META };
+    expect(pickPersisted(withMeta).meta).toEqual(META);
+    expect(serializeSearchState(withMeta)).not.toBe(serializeSearchState(BASE));
+    // every field is independently signature-relevant
+    expect(serializeSearchState({ ...BASE, meta: { ...META, manuallyModifiedAt: '2026-08-03T09:00:00.000Z' } }))
+      .not.toBe(serializeSearchState(withMeta));
+  });
+
+  it('normalizePersistedMeta: caps, trims, coerces ids, drops junk fields', () => {
+    const m = normalizePersistedMeta({
+      generatedAt: 't'.repeat(60),
+      generatedBy: { id: 42, name: 'n'.repeat(300) },
+      sourceQuestion: 'q'.repeat(3000),
+      manuallyModifiedAt: 7,               // junk type → dropped
+      manuallyModifiedBy: { id: '', name: '' }, // empty who → dropped
+    });
+    expect(m.generatedAt.length).toBe(40);
+    expect(m.generatedBy.id).toBe('42');   // numeric id tolerated, coerced
+    expect(m.generatedBy.name.length).toBe(200);
+    expect(m.sourceQuestion.length).toBe(2000);
+    expect(m.manuallyModifiedAt).toBeUndefined();
+    expect(m.manuallyModifiedBy).toBeUndefined();
+    expect(normalizePersistedMeta(null)).toBeUndefined();
+    expect(normalizePersistedMeta({})).toBeUndefined();
+  });
+
+  it('stampManualMeta: sets the manual fields, preserves generation provenance', () => {
+    const stamped = stampManualMeta(META, { id: 'u2', name: 'Grace' }, '2026-08-03T09:00:00.000Z');
+    expect(stamped).toEqual({
+      ...META,
+      manuallyModifiedAt: '2026-08-03T09:00:00.000Z',
+      manuallyModifiedBy: { id: 'u2', name: 'Grace' },
+    });
+    // meta absent → manual fields only
+    expect(stampManualMeta(undefined, { id: 'u2', name: 'Grace' }, '2026-08-03T09:00:00.000Z')).toEqual({
+      manuallyModifiedAt: '2026-08-03T09:00:00.000Z',
+      manuallyModifiedBy: { id: 'u2', name: 'Grace' },
+    });
+    // all-junk input degrades to undefined (safe to assign into state)
+    expect(stampManualMeta(undefined, null, '')).toBeUndefined();
+  });
+
+  it('buildGeneratedMeta: generation provenance ONLY — "modified since generation" is derived', () => {
+    const m = buildGeneratedMeta({ user: { id: 'u1', name: 'Ada' }, at: '2026-08-02T10:00:00.000Z', sourceQuestion: 'q?' });
+    expect(m).toEqual({
+      generatedAt: '2026-08-02T10:00:00.000Z',
+      generatedBy: { id: 'u1', name: 'Ada' },
+      sourceQuestion: 'q?',
+    });
+    expect(m.manuallyModifiedAt).toBeUndefined();
+    // a later manual stamp keeps generation provenance and adds the manual fields
+    const after = stampManualMeta(m, { id: 'u1', name: 'Ada' }, '2026-08-02T11:00:00.000Z');
+    expect(after.generatedAt).toBe('2026-08-02T10:00:00.000Z');
+    expect(after.manuallyModifiedAt).toBe('2026-08-02T11:00:00.000Z');
+  });
+});
+
+describe('97.md — renameConcept / defaultGroupLabel', () => {
+  const list = [
+    { id: 'a', label: 'Search Group 1', op: 'AND', terms: [] },
+    { id: 'b', label: 'Drainage', op: 'AND', terms: [] },
+  ];
+  it('renames one group (new array), no-ops for unknown id / blank / unchanged (SAME array)', () => {
+    const out = renameConcept(list, 'b', '  Biliary drainage  ');
+    expect(out).not.toBe(list);
+    expect(out[1].label).toBe('Biliary drainage');
+    expect(out[0]).toBe(list[0]); // untouched concepts keep their references
+    expect(renameConcept(list, 'zz', 'X')).toBe(list);
+    expect(renameConcept(list, 'b', '   ')).toBe(list);
+    expect(renameConcept(list, 'b', 'Drainage')).toBe(list);
+    expect(renameConcept(list, 'b', 'L'.repeat(300))[1].label.length).toBe(200);
+  });
+  it('defaultGroupLabel: Search Group N with collision bump', () => {
+    expect(defaultGroupLabel([])).toBe('Search Group 1');
+    expect(defaultGroupLabel(list)).toBe('Search Group 3');
+    expect(defaultGroupLabel([{ id: 'x', label: 'Search Group 1' }])).toBe('Search Group 2');
+  });
+});
+
+describe('97.md Phases 8/15 — migrateLegacyGroupLabels (idempotent, marker-stamped)', () => {
+  const legacyFiveGroup = () => [
+    { id: 'cP', label: 'Population', picoField: 'P', field: 'Population', source: 'pico_auto', op: 'AND', terms: [{ id: 't1', text: 'adults', type: 'freetext', field: 'tiab', source: 'pico_auto' }] },
+    { id: 'cI', label: 'Intervention / Exposure', picoField: 'I', field: 'Intervention / Exposure', source: 'pico_auto', op: 'AND', terms: [{ id: 't2', text: 'metformin', type: 'freetext', field: 'tiab', source: 'pico_auto' }] },
+    { id: 'cC', label: 'Comparator / Control', picoField: 'C', field: 'Comparator / Control', source: 'pico_auto', op: 'AND', terms: [] },
+    { id: 'cO', label: 'Outcomes', picoField: 'O', field: 'Outcomes', source: 'pico_auto', op: 'AND', terms: [] },
+    { id: 'cT', label: 'Time Frame', picoField: 'T', field: 'Time Frame', source: 'pico_auto', op: 'AND', note: 'Last 5 years', terms: [] },
+  ];
+
+  it('rewrites canonical PICO labels to "Search Group N" and stamps labelMigrated:1', () => {
+    const out = migrateLegacyGroupLabels(legacyFiveGroup());
+    expect(out.map((c) => c.label)).toEqual(['Search Group 1', 'Search Group 2', 'Search Group 3', 'Search Group 4', 'Search Group 5']);
+    out.forEach((c) => expect(c.labelMigrated).toBe(1));
+  });
+
+  it('RETAINS picoField (invariant 5) — QC/drift exemptions and rejectionKey scope survive', () => {
+    const original = legacyFiveGroup();
+    const out = migrateLegacyGroupLabels(original);
+    expect(out.map((c) => c.picoField)).toEqual(['P', 'I', 'C', 'O', 'T']);
+    // empty legacy Comparator/Outcomes stay QC-exempt after the label rewrite
+    expect(searchQualityCheck(out).filter((w) => w.id.startsWith('empty:'))).toEqual([]);
+    // drift never reports legacy groups, before or after
+    expect(conceptDrift('a completely different question', out)).toEqual([]);
+    // suggestion rejections stay scoped to the picoField → persisted keys stay valid
+    expect(rejectionKey(out[0], 'EUS')).toBe(rejectionKey(original[0], 'EUS'));
+    // terms ride through untouched (same objects)
+    expect(out[0].terms[0]).toBe(original[0].terms[0]);
+  });
+
+  it('preserves user-renamed legacy labels (97: "unless the user previously assigned a custom name")', () => {
+    const renamed = legacyFiveGroup().map((c, i) => (i === 0 ? { ...c, label: 'People with diabetes' } : c));
+    const out = migrateLegacyGroupLabels(renamed);
+    expect(out[0].label).toBe('People with diabetes');
+    expect(out[0].labelMigrated).toBeUndefined();
+    expect(out[1].label).toBe('Search Group 2'); // numbering = position among ALL groups
+  });
+
+  it('legacy Concepts-era groups (source pico_auto, NO picoField) migrate by label too', () => {
+    const era = [
+      { id: 'k1', label: 'Population', field: 'Population', source: 'pico_auto', op: 'AND', terms: [] },
+      { id: 'k2', label: 'Outcome', field: 'Outcome', source: 'pico_auto', op: 'AND', terms: [] },
+    ];
+    const out = migrateLegacyGroupLabels(era);
+    expect(out.map((c) => c.label)).toEqual(['Search Group 1', 'Search Group 2']);
+  });
+
+  it('never touches user-created groups — even one the user happened to call "Population"', () => {
+    const user = [
+      { id: 'u1', label: 'Population', source: 'user_added', op: 'AND', terms: [] },
+      { id: 'u2', label: 'heart failure', sourcePhrase: 'heart failure', source: 'user_added', op: 'AND', terms: [] },
+    ];
+    expect(migrateLegacyGroupLabels(user)).toBe(user); // SAME reference — untouched
+  });
+
+  it('IDEMPOTENT: second run is a no-op (SAME reference, byte-identical signature)', () => {
+    const once = migrateLegacyGroupLabels(legacyFiveGroup());
+    const twice = migrateLegacyGroupLabels(once);
+    expect(twice).toBe(once);
+    expect(serializeSearchState({ concepts: twice })).toBe(serializeSearchState({ concepts: once }));
+  });
+
+  it('an already-converted / non-legacy doc returns the SAME array (no spurious autosave on load)', () => {
+    const converted = migrateLegacyGroupLabels(legacyFiveGroup());
+    expect(migrateLegacyGroupLabels(converted)).toBe(converted);
+    const empty = [];
+    expect(migrateLegacyGroupLabels(empty)).toBe(empty);
+    expect(migrateLegacyGroupLabels(null)).toEqual([]);
+  });
+
+  it('the FIRST conversion changes the persisted signature exactly once (then stable)', () => {
+    const original = legacyFiveGroup();
+    const s0 = serializeSearchState({ concepts: original });
+    const once = migrateLegacyGroupLabels(original);
+    const s1 = serializeSearchState({ concepts: once });
+    expect(s1).not.toBe(s0); // conversion persists via the ordinary autosave…
+    expect(serializeSearchState({ concepts: migrateLegacyGroupLabels(once) })).toBe(s1); // …then no-ops forever
   });
 });

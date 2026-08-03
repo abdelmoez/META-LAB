@@ -18,7 +18,7 @@ export const gscholar = {
     const heading = (term.vocab && term.vocab.mesh) || term.text;
     vocab.unmapped++;
     vocab.approximate = true;
-    warnings.push({ code: 'VOCAB_APPROXIMATE', message: `Google Scholar has no subject headings; "${heading}" was searched as a plain phrase.` });
+    warnings.push({ code: 'VOCAB_APPROXIMATE', message: `Google Scholar has no controlled vocabulary; the MeSH term "${heading}" was searched as a plain phrase.` });
     return fieldBody({ text: heading, type: 'freetext', phrase: true }, { quoteChar: '"', wildcard: null, warnings });
   },
   renderFree(term, warnings, unsupported) {

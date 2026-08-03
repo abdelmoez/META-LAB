@@ -22,9 +22,9 @@ import { C, FONT, MONO, alpha } from '../../../frontend/theme/tokens.js';
 import { localMeshSuggestions, meshConfidence } from '../../../research-engine/searchBuilder/meshSuggest.js';
 import { splitTermInput } from '../../../research-engine/searchBuilder/termEntry.js';
 
-const SUGG_BADGE = { mesh: 'Subject heading', keyword: 'keyword', synonym: 'synonym' };
+const SUGG_BADGE = { mesh: 'MeSH', keyword: 'keyword', synonym: 'synonym' };
 const SUGG_WHY = {
-  mesh: 'Standard subject heading librarians tag articles with',
+  mesh: 'MeSH term — the standard heading indexers tag articles with',
   keyword: 'Related text word',
   synonym: 'Another word authors use for the same idea',
 };
@@ -148,7 +148,7 @@ export default function AddTermBox({
                     <span style={{ display: 'block', fontSize: 9.5, color: C.muted }}>{SUGG_WHY[s.type] || SUGG_WHY.keyword}</span>
                   </span>
                   {s.type === 'mesh' && s.confidence === 'review' && (
-                    <span title="Low-confidence match — check this heading fits your topic before adding." style={{ fontSize: 8, fontWeight: 700, letterSpacing: 0.4, color: C.yel, textTransform: 'uppercase', flexShrink: 0, border: `1px solid ${alpha(C.yel, '66')}`, borderRadius: 4, padding: '0 4px', marginTop: 2 }}>review</span>
+                    <span title="Low-confidence match — check this MeSH term fits your topic before adding. It is never added automatically." style={{ fontSize: 8, fontWeight: 700, letterSpacing: 0.4, color: C.yel, textTransform: 'uppercase', flexShrink: 0, border: `1px solid ${alpha(C.yel, '66')}`, borderRadius: 4, padding: '0 4px', marginTop: 2 }}>review</span>
                   )}
                   <span style={{ fontSize: 8, fontWeight: 700, letterSpacing: 0.4, color: s.type === 'mesh' ? C.acc : C.muted, textTransform: 'uppercase', opacity: 0.9, flexShrink: 0, border: `1px solid ${alpha(s.type === 'mesh' ? C.acc : C.muted, '55')}`, borderRadius: 4, padding: '0 4px', marginTop: 2 }}>{badge}</span>
                 </div>

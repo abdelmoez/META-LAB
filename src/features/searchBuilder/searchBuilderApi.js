@@ -33,6 +33,29 @@ export const searchBuilderApi = {
   },
 };
 
+/* ── 97.md QA H3 — the shared per-tab REVISION channel ─────────────────────────
+   The search module has SEVERAL writers in one browser tab: the builder's
+   full-state autosave AND the workspace's single-key saves (searchMode,
+   readyForScreening). Every single-key ack bumps the server revision, and the
+   realtime poke deliberately EXCLUDES the acting user — so without this channel
+   the mounted-hidden builder kept a stale baseRevision and its next autosave
+   409'd against the user's OWN write (a false "collaborator updated" notice).
+   Every saveSearch ack (any caller) publishes { projectId, revision }; the
+   builder subscribes and fast-forwards its known revision. Module-level, one per
+   bundle — exactly the writers that share a tab. */
+const revisionListeners = new Set();
+export function onSearchSaved(listener) {
+  if (typeof listener !== 'function') return () => {};
+  revisionListeners.add(listener);
+  return () => revisionListeners.delete(listener);
+}
+function publishSearchSaved(projectId, ack) {
+  if (!ack || typeof ack.revision !== 'number') return;
+  for (const cb of [...revisionListeners]) {
+    try { cb({ projectId, revision: ack.revision }); } catch { /* listener is best-effort */ }
+  }
+}
+
 // One search per project. load returns {concepts,overrides} | null (null seeds empty; the workspace seeds from the research question).
 export async function loadSearch(projectId) {
   try {
@@ -43,15 +66,20 @@ export async function loadSearch(projectId) {
   }
 }
 
-// Returns the server ack { ok, revision } on success (so the tab can track the
-// server revision for conflict-safe live sync), or null on any failure.
+// Returns the server ack { ok, revision, meta? } on success (so the tab can track
+// the server revision for conflict-safe live sync and adopt the server-stamped
+// meta identity), or null on any failure. Every ack is also published on the
+// shared revision channel above.
 export async function saveSearch(projectId, state) {
   try {
     const r = await fetch(`${BASE}/${projectId}`, {
       method: 'PUT', credentials: 'include',
       headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(state),
     });
-    return r.ok ? r.json() : null;
+    if (!r.ok) return null;
+    const ack = await r.json();
+    publishSearchSaved(projectId, ack);
+    return ack;
   } catch { return null; /* best-effort — autosave retries on the next change */ }
 }
 

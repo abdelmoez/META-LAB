@@ -24,7 +24,7 @@ export function useScreeningAi(pid, stage = 'title_abstract') {
   // scoring run resolving after navigate-away). React 18 silently drops these,
   // but the guard keeps it explicit and avoids wasted renders.
   const mounted = useRef(true);
-  useEffect(() => () => { mounted.current = false; }, []);
+  useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []); // re-arm: StrictMode dev double-invoke runs cleanup once on mount (97.md export-ZIP root cause)
 
   const loadStatus = useCallback(async () => {
     try {

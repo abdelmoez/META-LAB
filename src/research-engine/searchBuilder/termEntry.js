@@ -93,7 +93,13 @@ export function addTypedTerms(concepts, conceptId, rawInput) {
   if (idx < 0 || !pieces.length) return { concepts: list, added: [], duplicates: [] };
 
   const target = list[idx];
-  const have = new Set(((target && target.terms) || []).map((t) => norm(t && t.text)).filter(Boolean));
+  // 97 QA M18 — typed adds are always FREE TEXT, so they dedupe only against the
+  // group's free-text terms: a MeSH copy of the same label never blocks its
+  // free-text form ("Heart Failure"[MeSH] OR "heart failure"[tiab] is the
+  // standard controlled + free-text pattern Phase 13 encourages).
+  const have = new Set(((target && target.terms) || [])
+    .filter((t) => !(t && t.type === 'controlled'))
+    .map((t) => norm(t && t.text)).filter(Boolean));
   const added = [];
   const duplicates = [];
   const newTerms = [];

@@ -19,8 +19,11 @@
  * Selectors come from the screening area map + verification against ScreeningTab.jsx
  * / SiftProject.jsx; chrome + the sub-stepper testids come from FOUNDATION.md.
  */
+import fs from 'node:fs';
+import JSZip from 'jszip';
 import { test, expect } from '../fixtures/stitch-test';
 import { ScreeningPage, PIPELINE_STEPS } from '../page-objects/ScreeningPage';
+import { expectNoSeriousA11y } from '../helpers/axe';
 import * as api from '../helpers/api';
 
 test.describe('Screening — stage loads', () => {
@@ -163,6 +166,56 @@ test.describe('Screening — sub-views render', () => {
     await expect(sift.exportHeading).toBeVisible();
     // 8 seeded records → the "All records" filter has a non-zero count → export enabled.
     await expect(sift.exportButton).toBeEnabled();
+  });
+});
+
+test.describe('Screening — export ZIP journey (97.md)', () => {
+  test('downloads the portable screening ZIP with CSV + JSON backup + README, and the tab passes axe', async ({ page, screeningProject }, testInfo) => {
+    const sift = new ScreeningPage(page);
+    await sift.goto(screeningProject.project.id, 'export');
+    await expect(sift.exportHeading).toBeVisible();
+
+    // The headline ZIP action renders enabled next to the (distinct) single-format
+    // export button — the two actions must never collapse into one locator.
+    await expect(sift.zipDownloadButton).toBeEnabled();
+    await expect(sift.exportButton).toBeEnabled();
+
+    // Accessibility: the Export tab surface has no serious/critical violations.
+    await expectNoSeriousA11y(page, {
+      include: '[data-testid="stitch-main-content"]',
+      testInfo, label: 'screening-export',
+    });
+
+    // Start the ZIP export through the real UI. The tab enqueues the async job,
+    // polls it, and fires a same-origin anchor download when the archive is ready
+    // (worker drain + 1.2s poll cadence → allow a generous ceiling).
+    const downloadPromise = page.waitForEvent('download', { timeout: 120_000 });
+    await sift.zipDownloadButton.click();
+    const download = await downloadPromise;
+    expect(download.suggestedFilename()).toMatch(/screening-export-\d{4}-\d{2}-\d{2}\.zip$/);
+
+    // Read the archive with jszip (devDependency, read-only) — the required
+    // members are present and the CSV carries the seeded records.
+    const zipPath = testInfo.outputPath('screening-export.zip');
+    await download.saveAs(zipPath);
+    const zip = await JSZip.loadAsync(fs.readFileSync(zipPath), { checkCRC32: true });
+    const names = Object.keys(zip.files);
+    expect(names).toContain('references-and-screening-decisions.csv');
+    expect(names).toContain('screening-backup.json');
+    expect(names).toContain('README.txt');
+
+    const csv = await zip.file('references-and-screening-decisions.csv')!.async('string');
+    expect(csv).toContain('E2E Study 1 on intervention efficacy');
+    // Header row: first and (appended) last columns of the v1 append-only schema.
+    expect(csv.split('\n')[0]).toMatch(/^record_id,/);
+    expect(csv.split('\n')[0]).toMatch(/,updated_at$/);
+
+    const backup = JSON.parse(await zip.file('screening-backup.json')!.async('string'));
+    expect(backup.schemaVersion).toBe('1');
+    expect(backup.records.length).toBe(screeningProject.recordCount);
+
+    // Completion feedback: the persistent re-download link renders in the card.
+    await expect(page.getByRole('link', { name: /Download again/i })).toBeVisible();
   });
 });
 

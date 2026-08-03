@@ -1460,8 +1460,8 @@ model ScreenExportJob {
   status           String    @default("queued")
   // queued | loading | cvscoring | rendering | done | failed
   stage            String    @default("queued")
-  format           String    @default("csv") // csv | json | ris
-  filter           String    @default("all") // all | include | exclude | maybe | undecided
+  format           String    @default("csv") // csv | json | ris | zip (97.md — zip is async-only)
+  filter           String    @default("all") // all | include | exclude | maybe | undecided (zip always 'all')
   includeAiCv      Boolean   @default(true) // compute out-of-sample CV columns (capped)
   totalRecords     Int       @default(0)
   processedRecords Int       @default(0)
@@ -1470,6 +1470,12 @@ model ScreenExportJob {
   resultBytes      Int       @default(0)
   filename         String    @default("")
   error            String    @default("") // user-facing failure message (status=failed)
+  // 97.md Phase 2 — partial-failure surface for the ZIP export (ScreenImportJob
+  // precedent): an OPTIONAL member (RIS) that fails leaves the job `completed`
+  // with these set + an EXPORT-WARNINGS.txt inside the archive. Additive +
+  // defaulted/nullable → `prisma db push` stays safe.
+  warningCount     Int       @default(0)
+  warnings         String? // JSON array of user-facing warning messages
   attempts         Int       @default(0) // claims so far (retry-budget cap; poison-pill guard)
   heartbeatAt      DateTime?
   startedAt        DateTime?

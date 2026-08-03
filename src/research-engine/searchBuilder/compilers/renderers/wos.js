@@ -17,7 +17,7 @@ export const wos = {
     const heading = (term.vocab && term.vocab.mesh) || term.text;
     vocab.unmapped++;
     vocab.approximate = true;
-    warnings.push({ code: 'VOCAB_APPROXIMATE', message: `Web of Science has no subject-heading thesaurus; "${heading}" was searched as Topic (TS) text, which is approximate.` });
+    warnings.push({ code: 'VOCAB_APPROXIMATE', message: `Web of Science has no controlled-vocabulary thesaurus; the MeSH term "${heading}" was searched as Topic (TS) text, which is approximate.` });
     return `TS=("${S(heading).replace(/"/g, '')}")`;
   },
   renderFree(term, warnings) {

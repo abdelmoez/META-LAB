@@ -301,3 +301,275 @@ describe('96.md — recordSplitConcept + inverse', () => {
     expect(recordSplitConcept([], { fromConceptId: 'a', newConceptId: 'b', termIds: [] })).toEqual([]);
   });
 });
+
+/* ══════════════ 97.md — moveTerm / copy / rename / add / combine / split /
+                  dupOverride / regenerate / restore + the global-undo guard ═════ */
+
+import {
+  recordMoveTerm, recordCopyTerm, recordRenameConcept, recordAddConcept,
+  recordCombineTokens, recordSplitPhrase, recordDupOverride,
+  recordRegenerate, recordRestore, shouldHandleGlobalUndo,
+} from '../../src/research-engine/searchBuilder/undoStack.js';
+import {
+  moveTermToConcept, copyTerm as copyTermOp, combineTokens, splitPhrase,
+} from '../../src/research-engine/searchBuilder/termOps.js';
+import { applyDupOverride, clearDupOverride } from '../../src/research-engine/searchBuilder/exactDuplicate.js';
+
+const sig = (concepts) => serializeSearchState({ concepts, overrides: {}, ignored: [] });
+
+describe('97.md — recordMoveTerm + inverse (cross-group moves are undoable at last)', () => {
+  const vocabTerm = () => ({
+    id: 'm1', text: 'Heart Failure', type: 'controlled', field: 'tiab', source: 'pico_auto',
+    vocab: { mesh: 'Heart Failure', meshUI: 'D006333' },
+  });
+  const base = () => [
+    g('a', 'A', [vocabTerm(), t('t2', 'cardiac')]),
+    g('b', 'B', [t('t3', 'mortality')]),
+  ];
+
+  it('undo restores a BYTE-IDENTICAL pre-move state (metadata included)', () => {
+    const list = base();
+    const out = moveTermToConcept(list, 'm1', 'a', 'b');
+    const stack = recordMoveTerm([], out.undo);
+    const r = undoLast(stack, { concepts: out.concepts, ignored: [] });
+    expect(sig(r.state.concepts)).toBe(sig(list));
+    expect(r.state.concepts[0].terms[0].vocab.meshUI).toBe('D006333');
+    expect(r.description).toBe('Moved "Heart Failure" back');
+    expect(r.stack).toEqual([]);
+  });
+
+  it('degrades to a calm no-op when either group vanished (never deletes the term)', () => {
+    const list = base();
+    const out = moveTermToConcept(list, 'm1', 'a', 'b');
+    const stack = recordMoveTerm([], out.undo);
+    const withoutSource = { concepts: out.concepts.filter((c) => c.id !== 'a'), ignored: [] };
+    const r = undoLast(stack, withoutSource);
+    expect(r.state).toBe(withoutSource); // untouched — the term stays where it is
+    expect(r.description).toBe('');
+  });
+
+  it('refuses to record junk (missing ids / same group)', () => {
+    expect(recordMoveTerm([], {})).toEqual([]);
+    expect(recordMoveTerm([], { fromConceptId: 'a', toConceptId: 'a', termId: 't1' })).toEqual([]);
+  });
+});
+
+describe('97.md — recordCopyTerm + inverse (explicit duplication only)', () => {
+  it('undo removes exactly the copied term', () => {
+    const list = [g('a', 'A', [t('t1', 'EUS')]), g('b', 'B', [t('t2', 'drainage')])];
+    const out = copyTermOp(list, 't1', 'a', 'b');
+    const stack = recordCopyTerm([], { conceptId: 'b', termId: out.newTermId, text: 'EUS' });
+    const r = undoLast(stack, { concepts: out.concepts, ignored: [] });
+    expect(sig(r.state.concepts)).toBe(sig(list));
+    expect(r.description).toBe('Removed the copy of "EUS"');
+  });
+  it('refuses junk', () => {
+    expect(recordCopyTerm([], {})).toEqual([]);
+  });
+});
+
+describe('97.md — recordRenameConcept / recordAddConcept + inverses', () => {
+  it('rename undo restores the previous label; vanished concept degrades', () => {
+    const list = [g('a', 'Search Group 1')];
+    const stack = recordRenameConcept([], { conceptId: 'a', prevLabel: 'Search Group 1', nextLabel: 'Drainage' });
+    const renamed = [{ ...list[0], label: 'Drainage' }];
+    const r = undoLast(stack, { concepts: renamed, ignored: [] });
+    expect(r.state.concepts[0].label).toBe('Search Group 1');
+    expect(r.description).toBe('Renamed back to "Search Group 1"');
+    const gone = undoLast(stack, { concepts: [], ignored: [] });
+    expect(gone.description).toBe('');
+  });
+  it('addConcept undo removes the group ONLY while it is still empty', () => {
+    const stack = recordAddConcept([], { conceptId: 'n1', label: 'Search Group 2' });
+    const empty = { concepts: [g('a', 'A', [t('t1', 'x')]), g('n1', 'Search Group 2')], ignored: [] };
+    const r = undoLast(stack, empty);
+    expect(r.state.concepts.map((c) => c.id)).toEqual(['a']);
+    expect(r.description).toBe('Removed group "Search Group 2"');
+    // …but terms added since keep the group alive (no silent term loss)
+    const withWork = { concepts: [g('n1', 'Search Group 2', [t('t9', 'added since')])], ignored: [] };
+    const kept = undoLast(stack, withWork);
+    expect(kept.state).toBe(withWork);
+    expect(kept.description).toBe('');
+  });
+});
+
+describe('97.md — recordCombineTokens / recordSplitPhrase + inverses (lossless)', () => {
+  const base = () => [g('a', 'A', [t('t1', 'sodium-glucose'), t('t2', 'cotransporter'), t('t3', '2'), t('t4', 'inhibitors')])];
+
+  it('combine → undo restores the ORIGINAL terms (ids, order, byte-identical)', () => {
+    const list = base();
+    const out = combineTokens(list, 'a', ['t1', 't2', 't3']);
+    const stack = recordCombineTokens([], out.undo); // the undo payload is ready-made
+    const r = undoLast(stack, { concepts: out.concepts, ignored: [] });
+    expect(sig(r.state.concepts)).toBe(sig(list));
+    expect(r.state.concepts[0].terms.map((x) => x.id)).toEqual(['t1', 't2', 't3', 't4']);
+    expect(r.description).toBe('Separated "sodium-glucose cotransporter 2" again');
+  });
+
+  it('split → undo removes the components and restores the phrase term at its index', () => {
+    const phrase = {
+      id: 'p1', text: 'sodium-glucose cotransporter 2', type: 'freetext', field: 'tiab',
+      source: 'user_added', phrase: true,
+      components: [{ text: 'sodium-glucose' }, { text: 'cotransporter' }, { text: '2' }],
+    };
+    const list = [g('a', 'A', [phrase, t('t4', 'inhibitors')])];
+    const out = splitPhrase(list, 'a', 'p1');
+    const stack = recordSplitPhrase([], out.undo); // ready-made (term, index, newTermIds)
+    const r = undoLast(stack, { concepts: out.concepts, ignored: [] });
+    expect(sig(r.state.concepts)).toBe(sig(list));
+    expect(r.state.concepts[0].terms.map((x) => x.id)).toEqual(['p1', 't4']);
+    expect(r.description).toBe('Restored "sodium-glucose cotransporter 2"');
+  });
+
+  it('refuses junk records', () => {
+    expect(recordCombineTokens([], { conceptId: 'a', newTermId: 'p1', removed: [] })).toEqual([]);
+    expect(recordSplitPhrase([], { conceptId: 'a', term: null, newTermIds: ['x'] })).toEqual([]);
+    expect(recordSplitPhrase([], { conceptId: 'a', term: t('p', 'x'), newTermIds: [] })).toEqual([]);
+  });
+});
+
+describe('97.md — recordDupOverride + inverse (intentional-duplicate decisions)', () => {
+  const base = () => [g('a', 'A', [t('t1', 'EUS')]), g('b', 'B', [t('t2', 'eus')])];
+
+  it('set → undo removes the override fields byte-identically', () => {
+    const list = base();
+    const { concepts, changed } = applyDupOverride(list, 'eus');
+    const stack = recordDupOverride([], { key: 'eus', label: 'EUS', changed });
+    const r = undoLast(stack, { concepts, ignored: [] });
+    expect(sig(r.state.concepts)).toBe(sig(list));
+    expect('dupOverride' in r.state.concepts[0].terms[0]).toBe(false);
+    expect(r.description).toBe('Reverted the duplicate decision for "EUS"');
+  });
+
+  it('clear → undo puts the override BACK', () => {
+    const { concepts: withOverride } = applyDupOverride(base(), 'eus');
+    const { concepts: cleared, changed } = clearDupOverride(withOverride, 'eus');
+    const stack = recordDupOverride([], { key: 'eus', label: 'EUS', changed });
+    const r = undoLast(stack, { concepts: cleared, ignored: [] });
+    expect(sig(r.state.concepts)).toBe(sig(withOverride));
+    expect(r.state.concepts[0].terms[0].dupOverride).toEqual({ key: 'eus', groups: ['a', 'b'] });
+  });
+
+  it('refuses junk', () => {
+    expect(recordDupOverride([], { key: '', changed: [{ conceptId: 'a', termId: 't1' }] })).toEqual([]);
+    expect(recordDupOverride([], { key: 'eus', changed: [] })).toEqual([]);
+  });
+});
+
+describe('97.md — recordRegenerate / recordRestore + whole-state inverse', () => {
+  const prev = () => ({
+    concepts: [g('a', 'Population', [t('t1', 'adults')])],
+    meta: { generatedAt: '2026-08-01T00:00:00.000Z', generatedBy: { id: 'u1', name: 'Ada' }, sourceQuestion: 'old q' },
+    questionSnapshot: 'old q',
+  });
+
+  it('regenerate undo restores concepts + meta + questionSnapshot wholesale', () => {
+    const before = prev();
+    const stack = recordRegenerate([], { prev: before });
+    const after = {
+      concepts: [g('n1', 'Search Group 1', [t('x1', 'metformin')])],
+      meta: { generatedAt: '2026-08-02T00:00:00.000Z', sourceQuestion: 'new q' },
+      questionSnapshot: 'new q',
+      ignored: [],
+    };
+    const r = undoLast(stack, after);
+    expect(r.state.concepts).toBe(before.concepts);
+    expect(r.state.meta).toBe(before.meta);
+    expect(r.state.questionSnapshot).toBe('old q');
+    expect(r.description).toBe('Restored the strategy from before regeneration');
+  });
+
+  it('restore undo mirrors the mechanics and names the version', () => {
+    const before = prev();
+    const stack = recordRestore([], { prev: before, versionName: 'v3 final' });
+    const r = undoLast(stack, { concepts: [], meta: undefined, questionSnapshot: '', ignored: [] });
+    expect(r.state.concepts).toBe(before.concepts);
+    expect(r.description).toBe('Undid restoring "v3 final"');
+  });
+
+  it('accepts the `prior` alias the UI passes (recordRegenerate(st,{prior}))', () => {
+    const before = prev();
+    const stack = recordRegenerate([], { prior: before });
+    expect(stack).toHaveLength(1);
+    const r = undoLast(stack, { concepts: [], ignored: [] });
+    expect(r.state.concepts).toBe(before.concepts);
+  });
+
+  it('refuses junk (no prev concepts)', () => {
+    expect(recordRegenerate([], {})).toEqual([]);
+    expect(recordRestore([], { prev: { meta: {} } })).toEqual([]);
+  });
+});
+
+describe('97.md Phase 6 — shouldHandleGlobalUndo (Ctrl/Cmd+Z typing guard)', () => {
+  it('undoes over non-typing surfaces', () => {
+    expect(shouldHandleGlobalUndo({ tagName: 'BODY' })).toBe(true);
+    expect(shouldHandleGlobalUndo({ tagName: 'BUTTON' })).toBe(true);
+    expect(shouldHandleGlobalUndo({ tagName: 'DIV', role: 'listitem' })).toBe(true);
+    expect(shouldHandleGlobalUndo(null)).toBe(true);
+    expect(shouldHandleGlobalUndo({})).toBe(true);
+  });
+  it('refuses every typing surface (inputs, textareas, selects, contentEditable, ARIA text widgets)', () => {
+    expect(shouldHandleGlobalUndo({ tagName: 'INPUT' })).toBe(false);
+    expect(shouldHandleGlobalUndo({ tagName: 'input' })).toBe(false); // case-insensitive
+    expect(shouldHandleGlobalUndo({ tagName: 'TEXTAREA' })).toBe(false);
+    expect(shouldHandleGlobalUndo({ tagName: 'SELECT' })).toBe(false);
+    expect(shouldHandleGlobalUndo({ tagName: 'DIV', isContentEditable: true })).toBe(false); // rich-text editors
+    expect(shouldHandleGlobalUndo({ tagName: 'DIV', role: 'textbox' })).toBe(false);         // search-syntax editors
+    expect(shouldHandleGlobalUndo({ tagName: 'DIV', role: 'searchbox' })).toBe(false);
+    expect(shouldHandleGlobalUndo({ tagName: 'DIV', role: 'combobox' })).toBe(false);
+  });
+});
+
+/* ══════════════ 97 QA H2/M13 — origin-aware addConcept undo + editTerm ═══════ */
+import { recordEditTerm } from '../../src/research-engine/searchBuilder/undoStack.js';
+
+describe('QA H2 — addConcept undo tolerates the recorded ORIGIN term', () => {
+  it('removes a combine/select-created group that still holds only its origin term', () => {
+    // The question-card combine gesture creates the group WITH its phrase term —
+    // the old entry only removed EMPTY groups, so the toast Undo provably did
+    // nothing (QA H2). The origin-aware entry removes it.
+    const born = g('c9', 'sodium-glucose cotransporter 2', [t('o1', 'sodium-glucose cotransporter 2')]);
+    const stack = recordAddConcept([], { conceptId: 'c9', label: born.label, originTermIds: ['o1'] });
+    const r = undoLast(stack, { concepts: [g('a', 'A', [t('t1', 'x')]), born], ignored: [] });
+    expect(r.state.concepts.map((c) => c.id)).toEqual(['a']);
+    expect(r.description).toBe('Removed group "sodium-glucose cotransporter 2"');
+  });
+  it('keeps the group once terms were ADDED after creation (work is protected)', () => {
+    const grown = g('c9', 'phrase', [t('o1', 'phrase'), t('n1', 'added later')]);
+    const stack = recordAddConcept([], { conceptId: 'c9', label: 'phrase', originTermIds: ['o1'] });
+    const state = { concepts: [grown], ignored: [] };
+    const r = undoLast(stack, state);
+    expect(r.state).toBe(state); // no-op — the entry burns but nothing is deleted
+    expect(r.description).toBe('');
+  });
+  it('entries without origin ids keep the strict empty-only rule (Create group)', () => {
+    const stack = recordAddConcept([], { conceptId: 'c1', label: 'Search Group 1' });
+    const withTerm = { concepts: [g('c1', 'Search Group 1', [t('x1', 'later')])], ignored: [] };
+    expect(undoLast(stack, withTerm).description).toBe('');
+    const empty = { concepts: [g('c1', 'Search Group 1', [])], ignored: [] };
+    expect(undoLast(stack, empty).state.concepts).toEqual([]);
+  });
+});
+
+describe('QA M13 — editTerm: one entry per editing session restores the pre-edit term', () => {
+  it('puts the PRE-EDIT term object back in place (same id, current position)', () => {
+    const before = { ...t('t1', 'cardiomyopathy'), field: 'tiab' };
+    const after = { ...before, text: 'cardiomyopathies', field: 'ti', truncate: true };
+    const stack = recordEditTerm([], { conceptId: 'a', term: before });
+    const r = undoLast(stack, { concepts: [g('a', 'A', [t('t0', 'first'), after])], ignored: [] });
+    expect(r.state.concepts[0].terms[1]).toBe(before); // byte-identical pre-edit object
+    expect(r.description).toBe('Reverted the edits to "cardiomyopathy"');
+  });
+  it('degrades to a calm no-op when the term vanished meanwhile', () => {
+    const stack = recordEditTerm([], { conceptId: 'a', term: t('gone', 'x') });
+    const state = { concepts: [g('a', 'A', [t('t1', 'y')])], ignored: [] };
+    const r = undoLast(stack, state);
+    expect(r.state).toBe(state);
+    expect(r.description).toBe('');
+  });
+  it('refuses junk records', () => {
+    expect(recordEditTerm([], {})).toEqual([]);
+    expect(recordEditTerm([], { conceptId: 'a', term: { text: 'no id' } })).toEqual([]);
+  });
+});

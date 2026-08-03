@@ -103,6 +103,59 @@ const VERSION_SNAPSHOT_SHAPE = {
   questionSnapshot: 'Does pulmonary rehab help COPD patients in hospital?',
 };
 
+/** 9 — (97.md) legacy five-group scaffold whose Population was USER-RENAMED —
+ *      migration must preserve the custom name forever. */
+const LEGACY_RENAMED_GROUP = {
+  ...LEGACY_FIVE_GROUP,
+  concepts: LEGACY_FIVE_GROUP.concepts.map((c, i) => (i === 0 ? { ...c, label: 'People with diabetes' } : c)),
+};
+
+/** 10 — (97.md) ALREADY-MIGRATED doc: neutral labels + per-concept labelMigrated
+ *       marker, picoField RETAINED (invariant 5). Must load byte-stably and
+ *       re-migrate as a no-op. */
+const MIGRATED_NEUTRAL_LABELS = {
+  concepts: [
+    { id: 'cP', label: 'Search Group 1', labelMigrated: 1, picoField: 'P', field: 'Population', source: 'pico_auto', op: 'AND', terms: [term('t1', 'type 2 diabetes')] },
+    { id: 'cI', label: 'Search Group 2', labelMigrated: 1, picoField: 'I', field: 'Intervention / Exposure', source: 'pico_auto', op: 'AND', terms: [term('t2', 'metformin')] },
+    { id: 'cT', label: 'Search Group 3', labelMigrated: 1, picoField: 'T', field: 'Time Frame', source: 'pico_auto', op: 'AND', note: 'Last 5 years', terms: [] },
+  ],
+  overrides: {}, ignored: [],
+};
+
+/** 11 — (97.md) post-97 doc: `meta` top-level key + concept-riding term fields
+ *       (dupOverride, components) — everything the 97 state layer persists. */
+const WITH_META_AND_OVERRIDES = {
+  concepts: [
+    {
+      id: 'g1',
+      label: 'Search Group 1',
+      sourcePhrase: 'EUS',
+      source: 'user_added',
+      op: 'AND',
+      terms: [{ id: 't1', text: 'EUS', type: 'freetext', field: 'tiab', source: 'user_added', dupOverride: { key: 'eus', groups: ['g1', 'g2'] } }],
+    },
+    {
+      id: 'g2',
+      label: 'Search Group 2',
+      source: 'user_added',
+      op: 'AND',
+      terms: [
+        { id: 't2', text: 'eus', type: 'freetext', field: 'tiab', source: 'copied', dupOverride: { key: 'eus', groups: ['g1', 'g2'] } },
+        { id: 't3', text: 'sodium-glucose cotransporter 2', type: 'freetext', field: 'tiab', source: 'user_added', phrase: true, components: [{ text: 'sodium-glucose' }, { text: 'cotransporter' }, { text: '2' }] },
+      ],
+    },
+  ],
+  overrides: {}, ignored: [],
+  questionSnapshot: 'EUS drainage with SGLT2?',
+  meta: {
+    generatedAt: '2026-08-02T10:00:00.000Z',
+    generatedBy: { id: 'u1', name: 'Ada' },
+    sourceQuestion: 'EUS drainage with SGLT2?',
+    manuallyModifiedAt: '2026-08-02T11:00:00.000Z',
+    manuallyModifiedBy: { id: 'u1', name: 'Ada' },
+  },
+};
+
 const FIXTURES = [
   ['1 new project, no PICO', NEW_NO_PICO],
   ['2 legacy PICO five-group scaffold', LEGACY_FIVE_GROUP],
@@ -112,6 +165,9 @@ const FIXTURES = [
   ['6 dismissedWarnings + rejected keys', WITH_DISMISSALS],
   ['7 legacy string[] ignored', WITH_STRING_IGNORED],
   ['8 version-snapshot-shaped concepts', VERSION_SNAPSHOT_SHAPE],
+  ['9 (97) user-renamed legacy group', LEGACY_RENAMED_GROUP],
+  ['10 (97) already-migrated neutral labels', MIGRATED_NEUTRAL_LABELS],
+  ['11 (97) meta + dupOverride + components', WITH_META_AND_OVERRIDES],
 ];
 
 describe('96.md Phase 10 — migration fixtures load through every seam (QA L30)', () => {
@@ -156,6 +212,48 @@ describe('96.md Phase 10 — migration fixtures load through every seam (QA L30)
     // remaining 'attention' can only come from live suggestions, never from the
     // scaffold's empty groups.
     const findings = searchQualityCheck(LEGACY_FIVE_GROUP.concepts);
+    expect(findings.filter((w) => w.id.startsWith('empty:'))).toEqual([]);
+  });
+});
+
+/* ══════════════ 97.md Phase 15 — legacy-label migration through the seams ═══════ */
+
+import { migrateLegacyGroupLabels } from '../../src/research-engine/searchBuilder/searchState.js';
+
+describe('97.md — migrateLegacyGroupLabels across the archetypes', () => {
+  it('archetype 2 (five-group scaffold) converts ONCE to Search Group 1..5, then no-ops by signature', () => {
+    const once = migrateLegacyGroupLabels(LEGACY_FIVE_GROUP.concepts);
+    expect(once.map((c) => c.label)).toEqual(['Search Group 1', 'Search Group 2', 'Search Group 3', 'Search Group 4', 'Search Group 5']);
+    expect(once.map((c) => c.picoField)).toEqual(['P', 'I', 'C', 'O', 'T']); // retained (invariant 5)
+    const state = (concepts) => serializeSearchState({ ...LEGACY_FIVE_GROUP, concepts });
+    expect(state(once)).not.toBe(state(LEGACY_FIVE_GROUP.concepts)); // signature flips exactly once…
+    expect(migrateLegacyGroupLabels(once)).toBe(once);               // …then the SAME array forever
+    expect(state(migrateLegacyGroupLabels(once))).toBe(state(once));
+  });
+
+  it('archetype 3 (Concepts-era, no picoField) converts by canonical label too', () => {
+    const out = migrateLegacyGroupLabels(LEGACY_CONCEPTS_ERA.concepts);
+    expect(out.map((c) => c.label)).toEqual(['Search Group 1', 'Search Group 2']);
+    expect(out.every((c) => c.labelMigrated === 1)).toBe(true);
+  });
+
+  it('archetype 9 (user-renamed group) keeps the custom name and gets no marker', () => {
+    const out = migrateLegacyGroupLabels(LEGACY_RENAMED_GROUP.concepts);
+    expect(out[0].label).toBe('People with diabetes');
+    expect(out[0].labelMigrated).toBeUndefined();
+    expect(out[1].label).toBe('Search Group 2');
+  });
+
+  it('archetypes 10/11 (already-migrated / post-97) and 1/4 (no legacy groups) are byte-stable no-ops', () => {
+    for (const fx of [MIGRATED_NEUTRAL_LABELS, WITH_META_AND_OVERRIDES, NEW_NO_PICO, WITH_OVERRIDES]) {
+      expect(migrateLegacyGroupLabels(fx.concepts || [])).toBe(fx.concepts || []); // SAME reference
+      expect(serializeSearchState({ ...fx, concepts: migrateLegacyGroupLabels(fx.concepts || []) }))
+        .toBe(serializeSearchState(fx));
+    }
+  });
+
+  it('the migrated scaffold STILL raises no empty-group warnings (picoField retained → exemptions hold)', () => {
+    const findings = searchQualityCheck(migrateLegacyGroupLabels(LEGACY_FIVE_GROUP.concepts));
     expect(findings.filter((w) => w.id.startsWith('empty:'))).toEqual([]);
   });
 });

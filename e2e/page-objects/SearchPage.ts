@@ -1,32 +1,22 @@
 /**
  * SearchPage.ts — the page object for the `search-protocol` area: the Protocol/PICO
- * tab, the STAGED Search workspace (96.md — 7 stages: Research Question → Terms &
- * Vocabulary → Search Mode → Database Strategies → Results → Documentation → Send to
- * Screening), and the embedded Pecan "Search & Discovery" run surface.
+ * tab, the STAGED Search workspace (96.md, relabeled by 97.md — 7 stages: Research
+ * Question → Select & Build Key Terms → Search Mode → Database Strategies →
+ * Results → Documentation → Send to Screening), and the embedded Pecan
+ * "Search & Discovery" run surface.
  *
- * 96.md retired the legacy 3-step SearchWizard and the separate Concepts / Test &
- * Refine stages: the workspace renders whenever `searchEngine` is ON (no
- * searchWorkspaceV2 flag flip needed any more), phrase selection lives on the
- * research-question card at the top of Terms & Vocabulary (`sb-question-card`), and
- * concept groups are created by clicking question tokens or the manual add box.
+ * 97.md — the second stage is RENAMED (label-only) to "Select & Build Key Terms";
+ * its stage id stays `terms` (deep links / aliases unchanged). The stage is a
+ * direct Boolean workspace: question tokens (click / Shift-click span / drag-onto-
+ * token combine), neutral "Search Group N" groups with OR chips joined by visible
+ * OR separators, chip drag (reorder = insertion line; onto-chip = merge ring;
+ * onto a navigator pill = move; onto "＋ New group" = move to a new group), the
+ * dark-red exact-duplicate chip state, the MeSH details popover, and the explicit
+ * Regenerate button + confirmation dialog.
  *
  * It COMPOSES the shared `ShellNav` (chrome + overlays) rather than re-implementing
- * nav. Locators are verified against the live source:
- *
- *  - PICO tab (`?tab=pico`, serverBackedWorkflowState ON → ProtocolModulePanel):
- *      SectionHeader renders an `<h2>Research Question & PICO</h2>`; the question +
- *      P/I/C/O textareas + PROSPERO input are matched by their `e.g. …` placeholders;
- *      the server-backed StatusPill text ("Server-backed"/"Saving…"/"Saved") proves
- *      the module (not the legacy in-blob PICOTab) rendered. (Protocol keeps PICO —
- *      96.md removed it from the SEARCH engine only.)
- *  - Staged workspace (`?tab=search`): stage surface `search-workspace-stage`
- *      (data-stage), side-menu stepper / in-body rail union (`stageNav`), the
- *      question EDITOR on the question stage (`search-question-editor`), and the
- *      Terms & Vocabulary master-detail (navigator, active concept, chips, preview,
- *      Database previews, drift banner, group actions).
- *
- * Tab-content locators are scoped to the workspace tool body (`.stitch-tool-body`)
- * so they never collide with the persistent nav / context rail.
+ * nav. Tab-content locators are scoped to the workspace tool body
+ * (`.stitch-tool-body`) so they never collide with the persistent nav / rail.
  */
 import { Page, Locator, expect } from '@playwright/test';
 import { ShellNav } from './ShellNav';
@@ -48,10 +38,7 @@ export class SearchPage {
     this.shell = new ShellNav(page);
   }
 
-  /** The workspace tool body — scopes all tab-content locators. Present in BOTH the
-   *  carded (pico/prospero) and full-bleed (search) layouts: StitchProjectWorkspace
-   *  keeps the `stitch-tool-body` class on the tool-body wrapper regardless of
-   *  full-bleed, so the search stage's content is scopable here too. */
+  /** The workspace tool body — scopes all tab-content locators. */
   private get body(): Locator { return this.page.locator('.stitch-tool-body'); }
 
   /* ── Navigation ──────────────────────────────────────────────────────────── */
@@ -85,14 +72,7 @@ export class SearchPage {
 
   get workspaceHeading(): Locator { return this.body.getByRole('heading', { name: 'Pecan Search Engine', exact: true }); }
 
-  /* ── 74.md/75.md — the staged Search Workspace's stage navigation ──────────────
-     75.md moved the numbered Search workflow into the WHITE project side-menu (the
-     shared `stitch-workflow-stepper`): under the Stitch shell the in-body StageRail
-     (`search-workspace-rail`) is HIDDEN (`hideRail` from StitchProjectWorkspace) and
-     the side-menu stepper drives stages via `?tab=search&stage=<id>` links. A non-
-     Stitch / hideRail=false mount still renders the in-body rail. EXACTLY ONE of the
-     two is present at a time, so this union locator drives whichever the shell shows,
-     and both restructure identically on a mode switch (both derive from `stagesFor`). */
+  /** The white side-menu stepper / in-body rail union (exactly one is present). */
   get stageNav(): Locator {
     return this.page.locator('[data-testid="stitch-workflow-stepper"], [data-testid="search-workspace-rail"]');
   }
@@ -100,13 +80,10 @@ export class SearchPage {
   stageStep(name: RegExp | string): Locator {
     return this.stageNav.getByRole('button', { name: typeof name === 'string' ? new RegExp(name) : name });
   }
-  /** The staged workspace's stage surface — present in BOTH shells once the staged
-   *  workspace is mounted; `data-stage` carries the active stage id. */
+  /** The staged workspace's stage surface (`data-stage` = active stage id). */
   get stageSurface(): Locator { return this.page.getByTestId('search-workspace-stage'); }
 
-  /** Open ?tab=search and wait for the STAGED workspace. The dispatcher reads
-   *  /api/settings/public once per mount, so retry the navigation until the flag
-   *  state has propagated. */
+  /** Open ?tab=search and wait for the STAGED workspace (flags may propagate). */
   async openStagedWorkspace(projectId: string): Promise<void> {
     await expect(async () => {
       await this.gotoSearch(projectId);
@@ -114,8 +91,8 @@ export class SearchPage {
     }).toPass({ timeout: 30_000 });
   }
 
-  /** Deep-link a specific staged Search stage (`?tab=search&stage=<id>`), retrying
-   *  while flags propagate until the stage surface reports the requested stage. */
+  /** Deep-link a staged Search stage (`?tab=search&stage=<id>`), retrying while
+   *  flags propagate until the stage surface reports the requested stage. */
   async gotoStage(projectId: string, stageId: string): Promise<void> {
     await expect(async () => {
       await this.shell.goto(`/app/project/${encodeURIComponent(projectId)}?tab=search&stage=${encodeURIComponent(stageId)}`);
@@ -127,12 +104,8 @@ export class SearchPage {
 
   get questionEditor(): Locator { return this.body.getByTestId('search-question-editor'); }
 
-  /** Write the research question on the question stage (whole-project autosave).
-   *  96.md QA — the editor commits through TWO debounces (a 500ms local-draft
-   *  commit to updNested, then the ~800ms whole-project autosave PUT), so a
-   *  navigation right after fill() used to race the save and land on Terms with
-   *  an EMPTY question (no clickable tokens). Blur to flush the local commit,
-   *  then poll the server until pico.question matches before returning. */
+  /** Write the research question on the question stage (whole-project autosave),
+   *  then poll the server until it persisted (see 96.md race notes). */
   async setQuestion(projectId: string, text: string): Promise<void> {
     await this.gotoStage(projectId, 'question');
     await expect(this.questionEditor).toBeVisible();
@@ -150,11 +123,9 @@ export class SearchPage {
   }
 
   /**
-   * Wait until the builder's DEBOUNCED autosave (800ms) has actually landed the
-   * strategy on the server. Any spec that mutates the strategy and then hard-
-   * navigates (page.goto) MUST call this first — navigation destroys the page
-   * before the debounce fires, silently losing the mutation (the exact race that
-   * made the drift journey flake). Polls the same API the builder saves to.
+   * Wait until the builder's DEBOUNCED autosave (800ms) has landed the strategy on
+   * the server. Any spec that mutates the strategy and then hard-navigates MUST
+   * call this first (navigation destroys the page before the debounce fires).
    */
   async awaitStrategySaved(projectId: string, minConcepts = 1): Promise<void> {
     await expect
@@ -167,17 +138,26 @@ export class SearchPage {
       .toBeGreaterThanOrEqual(minConcepts);
   }
 
-  /* ── 96.md D13 — Terms & Vocabulary: the central workspace ───────────────── */
+  /** Seed the whole strategy document directly through the API (hermetic — no
+   *  live vocabulary lookups; putSearch stores `concepts` as sent). */
+  async seedStrategy(projectId: string, concepts: unknown[]): Promise<void> {
+    const r = await this.page.request.put(`/api/search-builder/${encodeURIComponent(projectId)}`, {
+      data: { concepts },
+    });
+    expect(r.ok(), 'seeding the strategy via PUT /api/search-builder').toBe(true);
+  }
 
-  /** The research-question phrase-selection card at the top of Terms & Vocabulary. */
+  /* ── 97.md — Select & Build Key Terms: the central workspace ─────────────── */
+
+  /** The research-question phrase-selection card (source section). */
   get questionCard(): Locator { return this.body.getByTestId('sb-question-card'); }
   /** A clickable question token/phrase (aria-pressed carries the selected state). */
   phraseToken(text: string | RegExp): Locator {
     return this.questionCard.getByRole('button', { name: text });
   }
-  /** The manual "add a concept" box on the question card. */
-  get addConceptInput(): Locator { return this.questionCard.getByLabel('Add a concept group manually'); }
-  /** Create a concept group from arbitrary text (label = sourcePhrase = text). */
+  /** The manual "add a search group" box on the question card (97 wording). */
+  get addConceptInput(): Locator { return this.questionCard.getByLabel('Add a search group manually'); }
+  /** Create a search group from arbitrary text (label = sourcePhrase = text). */
   async addConceptGroup(text: string): Promise<void> {
     await expect(this.addConceptInput).toBeVisible();
     await this.addConceptInput.fill(text);
@@ -189,7 +169,7 @@ export class SearchPage {
   /** The active group's management toolbar (reorder / merge / split / delete). */
   get groupActions(): Locator { return this.body.getByTestId('sb-group-actions'); }
   get splitPanel(): Locator { return this.body.getByTestId('sb-split-panel'); }
-  /** The compiled per-database preview cards inside Terms & Vocabulary. */
+  /** The compiled per-database preview cards inside the terms stage. */
   get dbPreviews(): Locator { return this.body.getByTestId('sb-db-previews'); }
 
   /** Terms stage — master-detail surfaces. */
@@ -201,14 +181,12 @@ export class SearchPage {
   get addTermInput(): Locator { return this.body.getByTestId('sb-add-term-input'); }
   get addTermButton(): Locator { return this.body.getByTestId('sb-add-term-btn'); }
   get addStatusLine(): Locator { return this.body.getByTestId('sb-add-status'); }
-  /** A term chip's EDIT button (the whole chip) inside the active concept. EXACT so a
-   *  free-text term never aliases a longer subject-heading descriptor that contains it
-   *  as a substring (e.g. "heart failure" vs "Heart Failure, Diastolic"); the chip's
-   *  accessible name is exactly `Edit <text>` (aria-label overrides the inner text). */
+  /** A term chip's EDIT button (the whole chip) inside the active group. EXACT so a
+   *  free-text term never aliases a longer MeSH descriptor containing it. */
   termChip(term: string): Locator {
     return this.activeConcept.getByRole('button', { name: `Edit ${term}`, exact: true });
   }
-  /** A term chip's separate remove button (pinned aria contract; EXACT — see termChip). */
+  /** A term chip's separate remove button (pinned aria contract; EXACT). */
   termChipRemove(term: string): Locator {
     return this.activeConcept.getByRole('button', { name: `Remove ${term}`, exact: true });
   }
@@ -222,11 +200,67 @@ export class SearchPage {
   /** The undo snackbar is portaled-fixed at the page level (not body-scoped). */
   get undoSnackbar(): Locator { return this.page.getByTestId('sb-undo'); }
 
-  /** Type into the active concept's add box and commit with the explicit Add button. */
+  /* ── 97.md — new surfaces ────────────────────────────────────────────────── */
+
+  /** Quiet inline hints (the Search Quality Check card is REMOVED). */
+  get inlineHints(): Locator { return this.body.getByTestId('sb-inline-hints'); }
+  /** Dark-red exact-duplicate badge on a chip (icon + "Duplicate" + SR label). */
+  get dupBadges(): Locator { return this.body.getByTestId('sb-dup-badge'); }
+  /** Soft "Possible variant" chip hint. */
+  get variantBadges(): Locator { return this.body.getByTestId('sb-dup-variant'); }
+  /** "kept intentionally" chip marker (valid dupOverride). */
+  get intentionalBadges(): Locator { return this.body.getByTestId('sb-dup-intentional'); }
+  /** Blocked same-group duplicate notice with "Find existing term". */
+  get dupBlockedNotice(): Locator { return this.body.getByTestId('sb-dup-blocked'); }
+  /** The duplicate action block inside the term editor popover. */
+  get dupActions(): Locator { return this.termEditor.getByTestId('sb-dup-actions'); }
+  /** The MeSH details popover (hover/focus on a controlled chip). */
+  get meshPopover(): Locator { return this.body.getByTestId('sb-mesh-popover'); }
+  /** The keyboard affordance that opens the MeSH popover for a descriptor. */
+  meshInfoButton(descriptor: string): Locator {
+    return this.activeConcept.getByRole('button', { name: `MeSH details for ${descriptor}`, exact: true });
+  }
+  /** Drag visuals (prop-driven; asserted during pointer gestures). */
+  get insertLine(): Locator { return this.body.getByTestId('sb-insert-line'); }
+  get mergeTarget(): Locator { return this.body.getByTestId('sb-merge-target'); }
+  get newGroupTarget(): Locator { return this.body.getByTestId('sb-new-group-target'); }
+  /** The Regenerate button (terms-stage toolbar) + its confirmation dialog. */
+  get regenerateButton(): Locator { return this.body.getByTestId('sb-regenerate-btn'); }
+  get regenerateDialog(): Locator { return this.page.getByTestId('sb-regenerate-dialog'); }
+  /** Stale-write reconcile notice (Phase 16). */
+  get conflictNotice(): Locator { return this.body.getByTestId('sb-conflict-notice'); }
+
+  /** Type into the active group's add box and commit with the explicit Add button. */
   async addTermToActiveConcept(term: string): Promise<void> {
     await expect(this.addTermInput).toBeVisible();
     await this.addTermInput.fill(term);
     await this.addTermButton.click();
+  }
+
+  /**
+   * Hand-rolled pointer drag from one locator's centre onto another's centre.
+   * `holdMs` keeps the pointer hovering before release — REQUIRED for merge drops
+   * (the merge target arms only after the ~350ms hover threshold; reorder/move
+   * drops need no hold). Moves in steps so pointermove hit-testing runs.
+   */
+  async dragTo(source: Locator, target: Locator, opts: { holdMs?: number; offsetX?: number } = {}): Promise<void> {
+    // The terms workspace is TALLER than the viewport. mouse.* coordinates are
+    // viewport-relative and events aimed outside it never reach the page, so an
+    // off-screen endpoint silently no-ops the whole gesture: bring both ends into
+    // view FIRST (they sit near each other on every drag surface), then measure.
+    await source.scrollIntoViewIfNeeded();
+    await target.scrollIntoViewIfNeeded();
+    const src = await source.boundingBox();
+    const dst = await target.boundingBox();
+    if (!src || !dst) throw new Error('dragTo: source or target has no bounding box');
+    const from = { x: src.x + src.width / 2, y: src.y + src.height / 2 };
+    const to = { x: dst.x + dst.width / 2 + (opts.offsetX || 0), y: dst.y + dst.height / 2 };
+    await this.page.mouse.move(from.x, from.y);
+    await this.page.mouse.down();
+    await this.page.mouse.move((from.x + to.x) / 2, (from.y + to.y) / 2, { steps: 8 });
+    await this.page.mouse.move(to.x, to.y, { steps: 8 });
+    if (opts.holdMs) await this.page.waitForTimeout(opts.holdMs);
+    await this.page.mouse.up();
   }
 
   /* ── Database Strategies stage / Terms estimates ─────────────────────────── */

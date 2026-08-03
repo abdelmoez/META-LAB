@@ -77,7 +77,7 @@ export const CAPABILITIES = {
     syntaxLevel: 'native',
     notes: [
       'Use the ICTRP Advanced search and paste the string — only AND/OR and quoted phrases are supported.',
-      'Subject headings, field tags, and truncation are not available; run several simpler searches if needed.',
+      'Controlled vocabulary (MeSH), field tags, and truncation are not available; run several simpler searches if needed.',
     ],
   },
   scopus: {
@@ -89,7 +89,7 @@ export const CAPABILITIES = {
     syntaxLevel: 'native',
     notes: [
       'Paste into Scopus → Advanced document search; TITLE-ABS-KEY() covers title, abstract, and keywords.',
-      'INDEXTERMS() reuses your subject headings and is approximate — Scopus has no MeSH/Emtree thesaurus.',
+      'INDEXTERMS() reuses your MeSH terms and is approximate — Scopus has no MeSH/Emtree thesaurus.',
     ],
   },
   wos: {
@@ -101,7 +101,7 @@ export const CAPABILITIES = {
     syntaxLevel: 'native',
     notes: [
       'Paste into the Web of Science Advanced Search; TS= is Topic (title, abstract, keywords), TI= is title only.',
-      'Web of Science has no subject-heading thesaurus, so headings were searched as topic text ($ is its single-character wildcard).',
+      'Web of Science has no controlled-vocabulary thesaurus, so MeSH terms were searched as topic text ($ is its single-character wildcard).',
     ],
   },
   gscholar: {
@@ -125,7 +125,7 @@ export const CAPABILITIES = {
     syntaxLevel: 'native',
     notes: [
       'Paste into CINAHL (EBSCOhost) Advanced Search; (MH "Heading+") explodes a CINAHL Heading, TI/AB are field codes.',
-      'The headings were carried over from your subject terms and are approximate — confirm them against CINAHL Headings.',
+      'The CINAHL Headings were carried over from your MeSH terms and are approximate — confirm them in the CINAHL Headings thesaurus.',
     ],
   },
   psycinfo: {
@@ -137,7 +137,7 @@ export const CAPABILITIES = {
     syntaxLevel: 'native',
     notes: [
       'Paste into APA PsycInfo (EBSCOhost) Advanced Search; DE "descriptor" targets the APA Thesaurus, TI/AB are field codes.',
-      'Descriptors were carried over from your subject terms and are approximate — the APA Thesaurus differs from MeSH.',
+      'Descriptors were carried over from your MeSH terms and are approximate — the APA Thesaurus differs from MeSH.',
     ],
   },
   proquest: {
@@ -162,7 +162,7 @@ export const CAPABILITIES = {
     notes: [
       'OpenGrey itself was discontinued in 2020 (its records are archived at DANS) — the Open button targets BASE, a free index that covers grey literature.',
       'Grey-literature portals accept only simple AND/OR and quoted phrases — paste the string and expect a coarse match.',
-      'There are no subject headings, field tags, truncation, or limits; screen the results manually.',
+      'There is no controlled vocabulary, and no field tags, truncation, or limits; screen the results manually.',
     ],
   },
   europepmc: {
@@ -198,7 +198,7 @@ export const CAPABILITIES = {
     syntaxLevel: 'native',
     notes: [
       'Use IEEE Xplore → Advanced Search → Command Search and paste the string ("Document Title":, "Abstract": are its fields).',
-      'IEEE has no subject-heading thesaurus, so any subject terms were searched as full-text words.',
+      'IEEE has no controlled-vocabulary thesaurus, so any MeSH terms were searched as full-text words.',
     ],
   },
   acm: {
@@ -210,7 +210,7 @@ export const CAPABILITIES = {
     syntaxLevel: 'native',
     notes: [
       'Use the ACM DL Advanced Search; Title:(...) and Abstract:(...) are its field-scoped groups.',
-      'ACM has no subject-heading thesaurus and applies date limits from the results-page filters, not the query string.',
+      'ACM has no controlled-vocabulary thesaurus and applies date limits from the results-page filters, not the query string.',
     ],
   },
 };

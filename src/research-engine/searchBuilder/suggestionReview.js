@@ -84,7 +84,7 @@ export function pendingSuggestions(concept, rejected) {
       seen.add(key);
       out.push({
         key, text: heading, kind: 'mesh',
-        why: `Standard subject heading for "${t.text}"`,
+        why: `Standard MeSH term for "${t.text}"`,
         vocab: t.vocab, sourceText: t.text, termId: t.id,
       });
     } else {

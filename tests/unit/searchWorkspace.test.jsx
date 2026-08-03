@@ -24,8 +24,10 @@ afterEach(() => { vi.unstubAllGlobals(); });
 const PICO = { P: 'adults with type 2 diabetes', question: 'does metformin help?' };
 
 // Note: the SSR markup HTML-escapes "&" to "&amp;", so ampersand labels are matched escaped.
+// 97.md Phase 5 — the second stage is renamed (label-only) to "Select & Build Key
+// Terms"; the stage id `terms` and every deep link / alias are unchanged.
 const STAGE_LABELS = [
-  'Research Question', 'Terms &amp; Vocabulary', 'Search Mode', 'Database Strategies',
+  'Research Question', 'Select &amp; Build Key Terms', 'Search Mode', 'Database Strategies',
   'Run Externally', 'Documentation', 'Send to Screening',
 ];
 
@@ -188,7 +190,7 @@ describe('SearchWorkspace — each stage composes its existing component without
       // The builder mounts (its SSR loading shell) — proving the reused engine composes.
       expect(render(stage)).toContain('Loading search');
     }
-    expect(render('terms')).toContain('Terms &amp; vocabulary'); // "&" is HTML-escaped in SSR markup
+    expect(render('terms')).toContain('Select &amp; build key terms'); // "&" is HTML-escaped in SSR markup (97.md rename)
     expect(render('strategy')).toContain('Database strategies');
   });
 

@@ -43,7 +43,7 @@ describe('PubMed rendering (balanced)', () => {
     expect(p.freeText.length).toBe(2);
     expect(p.fieldTags).toContain('Mesh');
     expect(p.fieldTags).toContain('tiab');
-    expect(p.explanation).toContain('subject heading');
+    expect(p.explanation).toContain('MeSH term');
     expect(p.explanation).toContain('free-text');
   });
 });

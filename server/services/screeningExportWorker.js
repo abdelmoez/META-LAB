@@ -18,6 +18,10 @@ import { DEFAULT_MAX_JOB_ATTEMPTS, partitionStuckJobs } from '../utils/jobRetry.
 import {
   computeExportCvScores, streamExportToSink, exportContentType, EXPORT_CV_MAX_ASYNC,
 } from './screeningExportService.js';
+// 97.md Phase 2 — the portable ZIP export always runs as an async job (format 'zip').
+import { generateScreeningZip } from './screeningExportZip.js';
+import { screeningExportFilename } from '../utils/filenames.js';
+import { writeAudit } from '../screening/access.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // Default: server/storage/<subdir> (same convention as screeningPdfController). Override
@@ -42,6 +46,28 @@ async function patch(jobId, data) {
   try { await prisma.screenExportJob.update({ where: { id: jobId }, data }); } catch { /* best-effort */ }
 }
 
+/**
+ * Serialize job warnings into a bounded string that is ALWAYS valid JSON.
+ * A naive `JSON.stringify(...).slice(0, N)` can cut mid-token and make the stored
+ * value unparseable — getExportJob would then degrade to `warnings: []` while
+ * warningCount stays > 0, silently suppressing the non-blocking UI banner
+ * (97.md Phase 2 partial-failure handling). Each message is capped, then whole
+ * trailing items are dropped (never mid-string cuts) until the payload fits.
+ */
+export function serializeJobWarnings(warnings, { itemCap = 500, totalCap = 4000 } = {}) {
+  const items = (Array.isArray(warnings) ? warnings : []).map((w) => String(w ?? '').slice(0, itemCap));
+  for (;;) {
+    const out = JSON.stringify(items);
+    if (out.length <= totalCap || !items.length) return out;
+    if (items.length === 1) {
+      // Escaping can inflate the JSON beyond the raw length — shrink and re-check.
+      items[0] = items[0].slice(0, Math.max(0, items[0].length - (out.length - totalCap)));
+    } else {
+      items.pop();
+    }
+  }
+}
+
 /** Mark a job failed with a user-facing message. */
 async function fail(jobId, message) {
   await patch(jobId, {
@@ -51,9 +77,14 @@ async function fail(jobId, message) {
   });
 }
 
-/** A file sink with awaited, backpressure-aware writes. */
-function makeFileSink(filePath) {
-  const stream = fs.createWriteStream(filePath, { encoding: 'utf8' });
+/**
+ * A file sink with awaited, backpressure-aware writes.
+ * 97.md Decision E9 — `binary` is set ONLY for format 'zip': Buffer chunks pass
+ * through untouched instead of being reinterpreted as utf8 text. The text
+ * formats (csv/json/ris) keep the exact utf8 stream they always had.
+ */
+function makeFileSink(filePath, { binary = false } = {}) {
+  const stream = fs.createWriteStream(filePath, binary ? {} : { encoding: 'utf8' });
   const write = (chunk) => new Promise((resolve, reject) => {
     stream.write(chunk, (err) => (err ? reject(err) : resolve()));
   });
@@ -81,11 +112,71 @@ async function claimNext() {
   return null;
 }
 
+/**
+ * Process one claimed ZIP export job (97.md Phase 2). Core-member failure (CSV /
+ * JSON / README / archive write) fails the job with an actionable error; an
+ * optional-member (RIS) failure completes the job with `warningCount`/`warnings`
+ * (additive columns, ScreenImportJob precedent) and an EXPORT-WARNINGS.txt inside
+ * the archive. Completion is audited as SCREENING_EXPORTED (Decision E8).
+ */
+async function processZipJob(job, filePath) {
+  try {
+    const project = await prisma.screenProject.findUnique({
+      where: { id: job.projectId }, select: { title: true },
+    });
+    if (!project) { await fail(job.id, 'Project not found.'); return; }
+
+    const total = await prisma.screenRecord.count({ where: { projectId: job.projectId } });
+    await patch(job.id, { totalRecords: total, stage: 'rendering', cvStatus: 'not_applicable', heartbeatAt: new Date() });
+
+    const sink = makeFileSink(filePath, { binary: true });
+    let lastPatch = 0;
+    const result = await generateScreeningZip({
+      projectId: job.projectId,
+      userId: job.createdById,
+      exportedBy: { id: job.createdById, name: job.createdByName || '' },
+      write: sink.write,
+      onProgress: async ({ processed }) => {
+        const now = Date.now();
+        if (now - lastPatch < 750) return; // throttle progress writes
+        lastPatch = now;
+        // Progress spans 3 record passes (csv/ris/json) — map back to record units.
+        await patch(job.id, { processedRecords: Math.min(total, Math.floor(processed / 3)), heartbeatAt: new Date() });
+      },
+    });
+    await sink.close();
+
+    let bytes = 0;
+    try { bytes = fs.statSync(filePath).size; } catch { /* leave 0 */ }
+    const filename = screeningExportFilename(project.title, new Date());
+    await patch(job.id, {
+      status: 'completed', stage: 'done',
+      processedRecords: result.total, totalRecords: result.total,
+      resultPath: filePath, resultBytes: bytes, filename,
+      warningCount: result.warnings.length,
+      warnings: serializeJobWarnings(result.warnings),
+      completedAt: new Date(),
+    });
+    // Decision E8 — export completion joins the project audit trail (best-effort).
+    await writeAudit(job.projectId, { id: job.createdById, name: job.createdByName || '' }, 'SCREENING_EXPORTED', {
+      details: { format: 'zip', filter: job.filter || 'all', records: result.total, warnings: result.warnings.length, async: true },
+    });
+  } catch (e) {
+    try { fs.unlinkSync(filePath); } catch { /* may not exist */ }
+    console.error('[export-worker] processZipJob:', e?.message);
+    await fail(job.id, e?.message === 'Project not found'
+      ? 'Project not found.'
+      : `Could not generate the screening export ZIP: ${e?.message || 'unexpected error'}. Please try again; contact support if it keeps failing.`);
+  }
+}
+
 /** Process one claimed export job end-to-end. Never throws into the drain loop. */
 async function processJob(job) {
   ensureDir();
   const { ext } = exportContentType(job.format);
   const filePath = path.join(EXPORT_DIR, `${job.id}.${ext}`);
+  // 97.md Phase 2 — ZIP jobs take the dedicated multi-member path (binary sink).
+  if (job.format === 'zip') return processZipJob(job, filePath);
   const filename = `sift-export-${String(job.projectId).slice(0, 8)}-${String(job.id).slice(0, 8)}.${ext}`;
   try {
     const total = await prisma.screenRecord.count({ where: { projectId: job.projectId } });
@@ -160,19 +251,22 @@ export function kickExportWorker() {
 /**
  * enqueueExportJob — create (or reuse) a queued export job. A queued/processing job with
  * the same (project, user, format, filter) is REUSED so a double-click can't spawn two
- * heavy exports. Returns the job row immediately.
+ * heavy exports. Returns the job row immediately, with a non-persisted `reused` marker
+ * so the caller can tell "new export" from "deduped to an in-flight one" — startExport
+ * refunds the second allowance reservation when the job was reused (one archive must
+ * never consume two monthly export units).
  */
 export async function enqueueExportJob(projectId, { createdById, createdByName = '', format = 'csv', filter = 'all', includeAiCv = true } = {}) {
   const existing = await prisma.screenExportJob.findFirst({
     where: { projectId, createdById, format, filter, status: { in: ['queued', 'processing'] } },
     orderBy: { createdAt: 'desc' },
   });
-  if (existing) { kickExportWorker(); return existing; }
+  if (existing) { kickExportWorker(); return { ...existing, reused: true }; }
   const job = await prisma.screenExportJob.create({
     data: { projectId, createdById, createdByName, format, filter, includeAiCv, status: 'queued', stage: 'queued' },
   });
   kickExportWorker();
-  return job;
+  return { ...job, reused: false };
 }
 
 /**

@@ -240,7 +240,7 @@ export const DEFAULT_GENERATOR_CONFIG = Object.freeze({
 
 function buildExplanation(label, meshCount, freeCount, fieldTags) {
   const parts = [];
-  if (meshCount) parts.push(`${meshCount} subject heading${meshCount > 1 ? 's' : ''}`);
+  if (meshCount) parts.push(`${meshCount} MeSH term${meshCount > 1 ? 's' : ''}`);
   if (freeCount) parts.push(`${freeCount} free-text term${freeCount > 1 ? 's' : ''}`);
   const body = parts.length ? parts.join(' and ') : 'no terms';
   const orNote = meshCount && freeCount ? ', combined with OR' : (meshCount + freeCount > 1 ? ', combined with OR' : '');

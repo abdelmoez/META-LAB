@@ -19,4 +19,4 @@ export { tokenizeForSelection, suggestedKeywords, isFillerWord } from '../../res
 export { DATABASE_CATALOG, databaseGroups, defaultSelectedDatabases, accessNote } from '../../research-engine/searchBuilder/databases.js';
 // SB4 — concept-hygiene helpers (duplicate detection, Search Quality Check, sensitivity).
 export { termEquivalenceKey, detectCrossConceptDuplicates, searchQualityCheck, sensitivitySignal } from '../../research-engine/searchBuilder/crossConcept.js';
-export { searchBuilderApi, loadSearch, saveSearch, searchEngineFlagEnabled } from './searchBuilderApi.js';
+export { searchBuilderApi, loadSearch, saveSearch, onSearchSaved, searchEngineFlagEnabled } from './searchBuilderApi.js';

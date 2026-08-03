@@ -1,27 +1,29 @@
 /**
- * SuggestionsDisclosure.jsx — 85.md A2. The "Suggestions to review (N)" area for
- * the active concept (native <details> — the parts.jsx Disclosure pattern):
- *  - one row per pending suggestion (A1 pendingSuggestions): term, kind badge,
- *    one-line why, Accept / Dismiss;
- *  - bulk "Accept all subject headings";
- *  - Dismiss persists (rejectedSuggestions) and "Show dismissed" lists the
- *    rejections with one-click restore (no hidden, unrecoverable "no" — critique #9);
- *  - the Hidden-terms restore panel (deleted auto suggestions) lives INSIDE this
- *    disclosure — one review surface, not three stacked panels (audit H6).
+ * SuggestionsDisclosure.jsx — 85.md A2, reworked by 97.md Phase 13. The
+ * "Suggestions to review (N)" area for the active search group (native <details>):
+ *
+ *  - kind 'mesh' rows: ONE MeSH term per row (exact terminology — never "subject
+ *    heading"), with a confidence marker where the match is low-confidence
+ *    ("check this fits") — a low-confidence suggestion is NEVER auto-added;
+ *  - kind 'synonyms' (entry-term) suggestions render as INDIVIDUAL rows with a
+ *    per-term "Add this term" action — the 97.md-banned one-click keyword bundle
+ *    (and the old "Accept all N subject headings" button) is GONE;
+ *  - Dismiss persists (rejectedSuggestions) and "Show dismissed" restores;
+ *  - the Hidden-terms restore panel lives INSIDE this disclosure.
  *
  * Presentational leaf: plain props + callbacks, no fetch.
  */
 import { C, FONT, MONO, alpha } from '../../../frontend/theme/tokens.js';
 import { Disclosure } from '../../pecanSearch/components/parts.jsx';
 
-const KIND_LABEL = { mesh: 'Subject heading', synonyms: 'Synonyms' };
+const KIND_LABEL = { mesh: 'MeSH', synonyms: 'Entry terms' };
 
 function actionBtn(color) {
   return { background: 'none', border: `1px solid ${alpha(color, '55')}`, borderRadius: 6, color, cursor: 'pointer', fontSize: 10.5, fontWeight: 700, fontFamily: FONT, padding: '3px 10px', minHeight: 24, flexShrink: 0 };
 }
 
 export default function SuggestionsDisclosure({
-  suggestions, readOnly, onAccept, onDismiss, onAcceptAllHeadings,
+  suggestions, readOnly, onAccept, onDismiss, onAcceptEntryTerm,
   rejectedEntries, showDismissed, onToggleShowDismissed, onUnreject,
   ignoredGroups, onRestoreTerm, onRestoreField, onRestoreAll,
 }) {
@@ -29,11 +31,7 @@ export default function SuggestionsDisclosure({
   const rejected = Array.isArray(rejectedEntries) ? rejectedEntries : [];
   const hidden = Array.isArray(ignoredGroups) ? ignoredGroups : [];
   const hiddenCount = hidden.reduce((n, g) => n + ((g.items && g.items.length) || 0), 0);
-  const meshCount = pending.filter((s) => s.kind === 'mesh').length;
   const empty = !pending.length && !rejected.length && !hiddenCount;
-  // QA M8 — accept/dismiss/restore all mutate persisted state (terms /
-  // rejectedSuggestions / ignored): read-only viewers get disabled buttons with an
-  // access explanation, never a click whose autosave the server then rejects.
   const RO_TITLE = 'Read-only access — ask a project editor to review suggestions';
   const roBtn = (base) => (readOnly ? { ...base, cursor: 'not-allowed', opacity: 0.55 } : base);
 
@@ -46,30 +44,49 @@ export default function SuggestionsDisclosure({
           </div>
         )}
 
-        {pending.length > 0 && meshCount > 1 && onAcceptAllHeadings && (
-          <div style={{ marginBottom: 8 }}>
-            <button type="button" onClick={() => { if (!readOnly) onAcceptAllHeadings(); }} disabled={!!readOnly} aria-disabled={readOnly || undefined}
-              title={readOnly ? RO_TITLE : undefined} data-testid="sb-accept-all-headings" style={roBtn(actionBtn(C.acc))}>
-              Accept all {meshCount} subject headings
-            </button>
-          </div>
-        )}
-
         {pending.map((s) => (
-          <div key={s.key} data-testid="sb-suggestion-row" style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', padding: '6px 0', borderTop: `1px solid ${C.brd}` }}>
-            <span style={{ flex: '1 1 200px', minWidth: 0 }}>
-              <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12, color: C.txt, fontFamily: s.kind === 'mesh' ? MONO : FONT }}>
-                {s.kind === 'synonyms' ? `${(s.synonyms || []).length} synonyms for “${s.text}”` : s.text}
-                <span style={{ fontSize: 8, fontWeight: 700, letterSpacing: 0.4, color: C.acc, textTransform: 'uppercase', border: `1px solid ${alpha(C.acc, '55')}`, borderRadius: 4, padding: '0 4px' }}>
-                  {KIND_LABEL[s.kind] || s.kind}
+          <div key={s.key} data-testid="sb-suggestion-row" style={{ padding: '6px 0', borderTop: `1px solid ${C.brd}` }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+              <span style={{ flex: '1 1 200px', minWidth: 0 }}>
+                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12, color: C.txt, fontFamily: s.kind === 'mesh' ? MONO : FONT }}>
+                  {s.kind === 'synonyms' ? `Entry terms for “${s.text}”` : s.text}
+                  <span style={{ fontSize: 8, fontWeight: 700, letterSpacing: 0.4, color: C.acc, textTransform: 'uppercase', border: `1px solid ${alpha(C.acc, '55')}`, borderRadius: 4, padding: '0 4px' }}>
+                    {KIND_LABEL[s.kind] || s.kind}
+                  </span>
+                  {/* 97.md — mark low-confidence suggestions clearly; never auto-add them. */}
+                  {s.kind === 'mesh' && s.confidence === 'review' && (
+                    <span data-testid="sb-sugg-low-confidence"
+                      title="Low-confidence match — check this MeSH term fits your topic before adding it. It is never added automatically."
+                      style={{ fontSize: 8, fontWeight: 700, letterSpacing: 0.4, color: C.yel, textTransform: 'uppercase', border: `1px solid ${alpha(C.yel, '66')}`, borderRadius: 4, padding: '0 4px' }}>
+                      low confidence — review
+                    </span>
+                  )}
                 </span>
+                <span style={{ display: 'block', fontSize: 10, color: C.muted }}>{s.why}</span>
               </span>
-              <span style={{ display: 'block', fontSize: 10, color: C.muted }}>{s.why}</span>
-            </span>
-            <button type="button" onClick={() => { if (!readOnly && onAccept) onAccept(s); }} disabled={!!readOnly} aria-disabled={readOnly || undefined}
-              title={readOnly ? RO_TITLE : undefined} aria-label={`Accept suggestion ${s.text}`} style={roBtn(actionBtn(C.grn))}>Accept</button>
-            <button type="button" onClick={() => { if (!readOnly && onDismiss) onDismiss(s); }} disabled={!!readOnly} aria-disabled={readOnly || undefined}
-              title={readOnly ? RO_TITLE : undefined} aria-label={`Dismiss suggestion ${s.text}`} style={roBtn(actionBtn(C.muted))}>Dismiss</button>
+              {s.kind === 'mesh' && (
+                <button type="button" onClick={() => { if (!readOnly && onAccept) onAccept(s); }} disabled={!!readOnly} aria-disabled={readOnly || undefined}
+                  title={readOnly ? RO_TITLE : 'Adds only this MeSH term — entry terms and synonyms are never inserted with it'}
+                  aria-label={`Accept suggestion ${s.text}`} style={roBtn(actionBtn(C.grn))}>Add this term</button>
+              )}
+              <button type="button" onClick={() => { if (!readOnly && onDismiss) onDismiss(s); }} disabled={!!readOnly} aria-disabled={readOnly || undefined}
+                title={readOnly ? RO_TITLE : undefined} aria-label={`Dismiss suggestion ${s.text}`} style={roBtn(actionBtn(C.muted))}>Dismiss</button>
+            </div>
+            {/* 97.md Phase 13 — entry terms are INDIVIDUAL rows, each with its own
+                explicit "Add this term"; there is no bulk insert of the whole list. */}
+            {s.kind === 'synonyms' && Array.isArray(s.synonyms) && s.synonyms.length > 0 && (
+              <div style={{ marginTop: 4, display: 'flex', flexDirection: 'column', gap: 2 }}>
+                {s.synonyms.map((syn) => (
+                  <div key={syn} data-testid="sb-entry-term-row" style={{ display: 'flex', alignItems: 'center', gap: 8, paddingLeft: 14 }}>
+                    <span style={{ flex: 1, minWidth: 0, fontSize: 11.5, color: C.txt2, overflowWrap: 'anywhere' }}>{syn}</span>
+                    <button type="button" onClick={() => { if (!readOnly && onAcceptEntryTerm) onAcceptEntryTerm(s, syn); }}
+                      disabled={!!readOnly} aria-disabled={readOnly || undefined}
+                      title={readOnly ? RO_TITLE : `Add “${syn}” as an individual free-text term`}
+                      aria-label={`Add this term: ${syn}`} style={roBtn(actionBtn(C.acc))}>Add this term</button>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         ))}
 

@@ -14,7 +14,7 @@ export const ieee = {
     const heading = (term.vocab && term.vocab.mesh) || term.text;
     vocab.unmapped++;
     vocab.approximate = true;
-    unsupported.push({ feature: 'controlled-vocabulary', detail: `IEEE Xplore has no subject-heading field; "${heading}" was searched as "All Metadata" full text.` });
+    unsupported.push({ feature: 'controlled-vocabulary', detail: `IEEE Xplore has no controlled-vocabulary field; the MeSH term "${heading}" was searched as "All Metadata" full text.` });
     const body = fieldBody({ text: heading, type: 'freetext', phrase: true }, { quoteChar: '"', wildcard: null, warnings });
     return `"All Metadata":${body}`;
   },

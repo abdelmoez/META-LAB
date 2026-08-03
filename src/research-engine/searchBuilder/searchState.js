@@ -18,6 +18,8 @@ import { picoToConcepts, extractConcepts, matchFamily, norm } from './conceptExt
 import { FAMILY_PICO_ROLE } from './medicalSynonyms.js';
 import { isLiveTerm, liveTermsOf } from './termLiveness.js';
 import { rejectionKey } from './suggestionReview.js';
+// 97 QA M20 — merge dedupe uses the conservative type-aware duplicate key.
+import { termDuplicateKey } from './exactDuplicate.js';
 
 /* ── SE2: the five canonical PICO concept groups ──────────────────────────────
    The Search Builder ALWAYS shows these five, in this order, each keyed by a
@@ -305,7 +307,80 @@ export function pickPersisted(state) {
     // pre-96 save keeps a byte-identical signature. Mirrored by putSearch's
     // `questionSnapshot` branch + sanitizeQuestionSnapshot (trim, cap 2000).
     questionSnapshot: normalizePersistedQuestionSnapshot(state && state.questionSnapshot),
+    // 97.md Phases 3/15 — generation/modification provenance (the ONE new top-level
+    // key this overhaul adds; everything else rides inside `concepts`). Included
+    // ONLY when at least one field is set (omit-when-empty), so every pre-97 save
+    // keeps a byte-identical signature and never autosaves spuriously on open.
+    // Mirrored by putSearch's `meta` branch + sanitizeSearchMeta.
+    meta: normalizePersistedMeta(state && state.meta),
   };
+}
+
+/** 97.md — one { id, name } identity reference, or undefined when empty. Ids are
+ *  coerced to strings (server user ids are strings; numbers tolerated). Pure. */
+function normalizeMetaWho(raw) {
+  const o = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {};
+  const id = (typeof o.id === 'string' || typeof o.id === 'number') ? String(o.id).slice(0, 100).trim() : '';
+  const name = typeof o.name === 'string' ? o.name.slice(0, 200).trim() : '';
+  return (id || name) ? { id, name } : undefined;
+}
+
+/**
+ * 97.md Phases 3/15 — the persisted generation/modification metadata block, or
+ * undefined when EVERY field is empty (a key set to undefined is omitted by
+ * stableStringify — the filters/questionSnapshot trick, so pre-97 saves keep
+ * byte-identical signatures). Shape:
+ *   { generatedAt?, generatedBy?{id,name}, sourceQuestion?,
+ *     manuallyModifiedAt?, manuallyModifiedBy?{id,name} }
+ * Field caps mirror the server sanitizer (sanitizeSearchMeta) byte-for-byte, so a
+ * server echo always round-trips to the same signature. "Manually modified since
+ * generation" and "source changed since generation" are DERIVED from these fields
+ * plus the live question — never stored. Pure.
+ */
+export function normalizePersistedMeta(raw) {
+  const m = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {};
+  const str = (v, n) => (typeof v === 'string' ? v.slice(0, n).trim() : '');
+  const out = {
+    generatedAt: str(m.generatedAt, 40) || undefined,
+    generatedBy: normalizeMetaWho(m.generatedBy),
+    sourceQuestion: str(m.sourceQuestion, 2000) || undefined,
+    manuallyModifiedAt: str(m.manuallyModifiedAt, 40) || undefined,
+    manuallyModifiedBy: normalizeMetaWho(m.manuallyModifiedBy),
+  };
+  const empty = !out.generatedAt && !out.generatedBy && !out.sourceQuestion
+    && !out.manuallyModifiedAt && !out.manuallyModifiedBy;
+  return empty ? undefined : out;
+}
+
+/**
+ * 97.md Phase 3 — stamp the manual-modification fields (the UI calls this from
+ * every code path that pushes an undo entry, i.e. every manual mutation).
+ * Generation fields are preserved; `at` = caller-supplied ISO timestamp (module
+ * contract: no Date.now in here); `user` = { id, name }. Returns undefined when
+ * the result would be empty (junk inputs) — safe to assign straight into state.
+ * Pure.
+ */
+export function stampManualMeta(meta, user, at) {
+  const base = normalizePersistedMeta(meta) || {};
+  return normalizePersistedMeta({
+    ...base,
+    manuallyModifiedAt: typeof at === 'string' ? at : '',
+    manuallyModifiedBy: normalizeMetaWho(user),
+  });
+}
+
+/**
+ * 97.md Phase 4 — the meta block a REGENERATION stamps: generation provenance
+ * only ({ generatedAt, generatedBy, sourceQuestion }); manuallyModified* is reset
+ * (a fresh generation has no manual edits — the derived "modified since
+ * generation" reads false until the next manual mutation stamps it). Pure.
+ */
+export function buildGeneratedMeta({ user, at, sourceQuestion } = {}) {
+  return normalizePersistedMeta({
+    generatedAt: typeof at === 'string' ? at : '',
+    generatedBy: normalizeMetaWho(user),
+    sourceQuestion: typeof sourceQuestion === 'string' ? sourceQuestion : '',
+  });
 }
 
 /** 96.md D2 — the persisted question snapshot, or undefined when blank (a key set to
@@ -467,7 +542,7 @@ export function conceptStatus(concept, opts) {
 export const CONCEPT_STATUS_LABELS = {
   empty: 'No terms yet',
   'needs-review': 'Needs review',
-  'mesh-suggested': 'Subject heading suggested',
+  'mesh-suggested': 'MeSH term suggested',
   ready: 'Ready',
 };
 
@@ -575,11 +650,18 @@ export function setConceptSourcePhrase(concepts, conceptId, phrase) {
  * by EXACT normalized text — NOT family equivalence (QA L4): "cardiac failure" must
  * survive a merge into a group holding "heart failure", because distinct synonyms
  * of one idea are precisely what an OR group is for (crossConcept QC check 4 even
- * tells users to keep acronym + expansion). Only byte-equal (normalized) duplicates
- * are skipped. Returns { concepts, undo } where `undo` = { fromConcept, fromIndex,
+ * tells users to keep acronym + expansion). Only exact-key duplicates are skipped —
+ * 97 QA M20: the collision test is the CONSERVATIVE, TYPE-AWARE termDuplicateKey
+ * (not the broader norm()), so a MeSH term with attached vocab is never silently
+ * discarded because the target holds the same label as FREE TEXT; and every
+ * genuinely-skipped duplicate is REPORTED in `skipped` so the UI can say
+ * "N duplicate terms were not moved" (never a silent loss).
+ * Returns { concepts, undo, skipped } where `undo` = { fromConcept, fromIndex,
  * intoId, movedTermIds } — everything undoStack.recordMergeConcepts needs to apply
  * the exact inverse (remove the moved terms, re-insert the source group at its
- * original index). Returns null when either id is missing or identical. Pure.
+ * original index) — and `skipped` = [{ id, text }] of the source terms left behind
+ * as exact duplicates of the target (recoverable via the merge undo entry).
+ * Returns null when either id is missing or identical. Pure.
  */
 export function mergeConcepts(concepts, fromId, intoId) {
   const list = Array.isArray(concepts) ? concepts : [];
@@ -588,12 +670,16 @@ export function mergeConcepts(concepts, fromId, intoId) {
   const into = list.find((c) => c && c.id === intoId);
   if (fromIndex === -1 || !into) return null;
   const fromConcept = list[fromIndex];
-  const haveKeys = new Set((into.terms || []).map((t) => norm(t && t.text)).filter(Boolean));
+  const haveKeys = new Set((into.terms || []).map((t) => termDuplicateKey(t)).filter(Boolean));
   const moved = [];
+  const skipped = [];
   for (const t of (fromConcept.terms || [])) {
-    const key = norm(t && t.text);
-    if (!key || haveKeys.has(key)) continue; // the exact same text already in the target
-    haveKeys.add(key);
+    const key = termDuplicateKey(t);
+    if (key && haveKeys.has(key)) { // the exact same term already in the target
+      skipped.push({ id: t && t.id, text: String((t && t.text) || '') });
+      continue;
+    }
+    if (key) haveKeys.add(key);
     moved.push(t); // the ORIGINAL term object — ids/vocab/flags survive the merge
   }
   const next = list
@@ -602,6 +688,7 @@ export function mergeConcepts(concepts, fromId, intoId) {
   return {
     concepts: next,
     undo: { fromConcept, fromIndex, intoId, movedTermIds: moved.map((t) => t.id).filter(Boolean) },
+    skipped,
   };
 }
 
@@ -687,4 +774,73 @@ export function conceptOnlyHoldsOriginTerm(concept) {
  *  (96.md replaces the old P/I picoField gating). Pure. */
 export function anyLiveTerms(concepts) {
   return (Array.isArray(concepts) ? concepts : []).some((c) => liveTermsOf(c).length > 0);
+}
+
+/* ══════════════ 97.md — neutral Boolean groups (Phases 8/10/15) ═══════════════ */
+
+/**
+ * 97.md Phase 10 — rename one concept group. Label trimmed + capped at 200;
+ * returns the SAME array when the id is unknown, the label is blank, or nothing
+ * changes (cheap no-op detection — signature untouched). Pure.
+ */
+export function renameConcept(concepts, conceptId, label) {
+  const list = Array.isArray(concepts) ? concepts : [];
+  const idx = list.findIndex((c) => c && c.id === conceptId);
+  if (idx === -1) return list;
+  const clean = cleanPhrase(label).slice(0, 200);
+  if (!clean || clean === cleanPhrase(list[idx].label)) return list;
+  return list.map((c, i) => (i === idx ? { ...c, label: clean } : c));
+}
+
+/**
+ * 97.md Phase 8 — the default name for a NEW group: `Search Group N` with N =
+ * group count + 1, bumped past any existing label collision. Pure.
+ */
+export function defaultGroupLabel(concepts) {
+  const list = Array.isArray(concepts) ? concepts : [];
+  const taken = new Set(list.map((c) => norm(c && c.label)).filter(Boolean));
+  let n = list.length + 1;
+  while (taken.has(norm(`Search Group ${n}`))) n += 1;
+  return `Search Group ${n}`;
+}
+
+/* Canonical PICO labels (normalized) a legacy group may still carry — the
+   LEGACY_FIELD_TO_KEY variants plus the five canonical PICO_FIELD_DEFS labels.
+   A label OUTSIDE this set is a user rename and is preserved (97 Phase 15). */
+const CANONICAL_PICO_LABELS = new Set([
+  ...Object.keys(LEGACY_FIELD_TO_KEY),
+  ...PICO_FIELD_DEFS.map((d) => norm(d.label)),
+]);
+
+/**
+ * 97.md Phases 8/15 (plan §15) — IDEMPOTENT legacy-label migration. Every legacy
+ * PICO group (`picoField` / `source:'pico_auto'`) whose label still EXACTLY
+ * matches a canonical PICO label (normalized; user-renamed labels never match and
+ * are preserved) is renamed to `Search Group <n>` (n = its 1-based position among
+ * ALL groups) and stamped with the per-concept conversion marker
+ * `labelMigrated: 1` (rides inside `concepts` — no putSearch branch, invariant 1).
+ *
+ * `picoField` is deliberately RETAINED (invariant 5): the drift exemption
+ * (conceptDrift), the empty-group QC exemption (crossConcept), Time-Frame note
+ * rendering, and suggestionReview.rejectionKey scoping all key off it. Only the
+ * VISIBLE label changes.
+ *
+ * Idempotency: a migrated group's label is no longer canonical AND carries the
+ * marker, so re-running is a no-op — migrate(migrate(x)) === migrate(x) by
+ * persisted signature. Returns the SAME array when nothing changes, so untouched
+ * (already-migrated / renamed / non-legacy) docs stay byte-stable and the load
+ * path never triggers a spurious autosave for them. A first-time conversion
+ * changes the signature ONCE; the ensuing autosave persists it. Pure.
+ */
+export function migrateLegacyGroupLabels(concepts) {
+  const list = Array.isArray(concepts) ? concepts : [];
+  let changed = false;
+  const out = list.map((c, i) => {
+    if (!c || c.labelMigrated) return c;
+    if (!(c.picoField || c.source === 'pico_auto')) return c;
+    if (!CANONICAL_PICO_LABELS.has(norm(c.label))) return c; // user-renamed → kept
+    changed = true;
+    return { ...c, label: `Search Group ${i + 1}`, labelMigrated: 1 };
+  });
+  return changed ? out : list;
 }

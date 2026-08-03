@@ -314,5 +314,7 @@ export async function streamExportToSink({ projectId, userId, format = 'csv', fi
 export function exportContentType(format) {
   if (format === 'json') return { ext: 'json', type: 'application/json' };
   if (format === 'ris') return { ext: 'ris', type: 'application/x-research-info-systems' };
+  // 97.md Phase 2 — the portable screening export ZIP (async job only).
+  if (format === 'zip') return { ext: 'zip', type: 'application/zip' };
   return { ext: 'csv', type: 'text/csv' };
 }

@@ -24,7 +24,9 @@
  */
 export const STAGES = [
   { id: 'question',      num: 1, label: 'Research Question',   desc: 'Frame the question' },
-  { id: 'terms',         num: 2, label: 'Terms & Vocabulary',  desc: 'Build your search',      builder: true, phase: 'terms' },
+  // 97.md Phase 5 — label-only rename (stage id `terms` NEVER changes: deep links,
+  // STAGE_ALIASES concepts/refine→terms and stored URLs all key off the id).
+  { id: 'terms',         num: 2, label: 'Select & Build Key Terms', desc: 'Build your search',  builder: true, phase: 'terms' },
   { id: 'mode',          num: 3, label: 'Search Mode',         desc: 'Manual or automated' },
   { id: 'strategy',      num: 4, label: 'Database Strategies', desc: 'Per-database syntax',    builder: true, phase: 'build', manualOnly: true },
   { id: 'results',       num: 5, label: 'Run Externally',      desc: 'Your database accounts', needsConcepts: true },

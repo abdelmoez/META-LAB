@@ -80,7 +80,9 @@ describe('DbStrategyPanel — the per-database strategy workspace panel (P6)', (
     expect(html).toContain('Subject headings were searched as topic text.');
     expect(html).toContain('not supported: explosion');
     expect(html).toContain('No thesaurus in Web of Science.');
-    expect(html).toContain('Subject headings (mesh): 3 mapped, 1 unmapped (approximate)');
+    // 97.md Phase 13 terminology sweep — the status line says "Controlled
+    // vocabulary" generically (the compiler names the actual system in brackets).
+    expect(html).toContain('Controlled vocabulary (mesh): 3 mapped, 1 unmapped (approximate)');
     expect(html).toContain('Paste into the Advanced Search.');
   });
 

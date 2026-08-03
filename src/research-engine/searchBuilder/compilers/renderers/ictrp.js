@@ -14,7 +14,7 @@ export const ictrp = {
     const heading = (term.vocab && term.vocab.mesh) || term.text;
     vocab.unmapped++;
     vocab.approximate = true;
-    unsupported.push({ feature: 'controlled-vocabulary', detail: `WHO ICTRP has no subject-heading field; "${heading}" was searched as a plain phrase.` });
+    unsupported.push({ feature: 'controlled-vocabulary', detail: `WHO ICTRP has no controlled-vocabulary field; the MeSH term "${heading}" was searched as a plain phrase.` });
     return fieldBody({ text: heading, type: 'freetext', phrase: true }, { quoteChar: '"', wildcard: null, warnings });
   },
   renderFree(term, warnings, unsupported) {

@@ -706,7 +706,7 @@ function QuestionStage({ pico, updNested, readOnly, goTerms, lockCtx }) {
     timerRef.current = setTimeout(() => commitRef.current(v), 500);
   };
   return (
-    <Card title="Research question" icon="target" desc="Your search strategy is built directly from this question in Terms & Vocabulary.">
+    <Card title="Research question" icon="target" desc="Your search strategy is built directly from this question in Select & Build Key Terms.">
       {canEdit ? (
         <>
           <label htmlFor="search-question-editor" style={{ display: 'block', fontSize: 10.5, fontWeight: 700, color: C.muted, letterSpacing: 0.5, textTransform: 'uppercase', marginBottom: 6 }}>
@@ -714,7 +714,7 @@ function QuestionStage({ pico, updNested, readOnly, goTerms, lockCtx }) {
           </label>
           {legacyEmpty && (
             <div style={{ marginBottom: 8 }}>
-              <Note tone="info">This project was planned with PICO. Write the research question here to drive Terms &amp; Vocabulary — your saved P/I/C/O text stays untouched in the Protocol module.</Note>
+              <Note tone="info">This project was planned with PICO. Write the research question here to drive Select &amp; Build Key Terms — your saved P/I/C/O text stays untouched in the Protocol module.</Note>
             </div>
           )}
           <textarea
@@ -1054,12 +1054,24 @@ export default function SearchWorkspace({
   // memo (and therefore the heavy builder mount) untouched.
   const goToRef = useRef(null); goToRef.current = goTo;
   const onGoToStage = useCallback((id) => { if (typeof goToRef.current === 'function') goToRef.current(id); }, []);
-  // 96.md — the builder reads ONLY the research question (no PICO threading).
+  // 96.md — the builder READS only the research question as a generation input;
+  // 97 QA M9 — the structured P/I/C/O text is additionally threaded for the
+  // read-only SOURCE sections (display only — never an organization input).
   const question = (pico && pico.question) || '';
+  // 97 QA M7/M11 — the builder registers its after-restore adopter here, so a
+  // version restore refreshes the ACTOR's builder immediately (the realtime poke
+  // excludes the actor) and the restore becomes undoable in-session.
+  const afterRestoreRef = useRef(null);
+  const onRegisterAfterRestore = useCallback((fn) => { afterRestoreRef.current = fn; }, []);
+  const handleVersionRestored = useCallback(() => {
+    bumpPanels();
+    if (typeof afterRestoreRef.current === 'function') afterRestoreRef.current();
+  }, [bumpPanels]);
   const builderEl = useMemo(() => (
     <SearchBuilderTab
       projectId={projectId}
       question={question}
+      pico={pico} // 97 QA M9 — read-only PICO source sections (P/I/C/O display only)
       api={searchBuilderApi}
       loadSearch={loadSearch}
       saveSearch={saveSearch}
@@ -1071,8 +1083,10 @@ export default function SearchWorkspace({
       onRegisterHitRefresh={onRegisterHitRefresh}
       onGoToStage={onGoToStage}
       onStats={onStats}
+      onVersionsChanged={bumpPanels} // 97.md Phase 4 — the pre-regeneration snapshot must appear in the Versions panel
+      onRegisterAfterRestore={onRegisterAfterRestore} // 97 QA M7/M11 — restore adoption + in-session restore undo
     />
-  ), [projectId, question, builderPhase, readOnly, builderVisible, onLiveQuery, onHitState, onRegisterHitRefresh, onGoToStage, onStats]);
+  ), [projectId, question, pico, builderPhase, readOnly, builderVisible, onLiveQuery, onHitState, onRegisterHitRefresh, onGoToStage, onStats, bumpPanels, onRegisterAfterRestore]);
 
   const modeLabel = searchMode === 'automated' ? 'Automated search' : searchMode === 'manual' ? 'Manual search' : null;
 
@@ -1145,10 +1159,10 @@ export default function SearchWorkspace({
               <ModeChooserStrip onChoose={changeMode} busy={modeBusy} goMode={() => goTo('mode')} />
             )}
             {stage === 'terms' && (
-              <StageIntro title="Terms & vocabulary">
-                Build your search here: click the key ideas in your research question to create concept groups, broaden each group with
-                synonyms and controlled vocabulary (MeSH stays separate from free text), set the AND/OR logic, and watch the compiled
-                per-database queries update live below.
+              <StageIntro title="Select & build key terms">
+                Build your search here: click or drag the key ideas in your research question to create search groups, broaden each
+                group with synonyms and MeSH terms (controlled vocabulary stays separate from free text), arrange terms with OR inside
+                a group and AND between groups, and watch the compiled per-database queries update live below.
               </StageIntro>
             )}
             {stage === 'strategy' && (
@@ -1169,7 +1183,7 @@ export default function SearchWorkspace({
                 {(pecanEnabled || searchMode !== 'manual') && (
                   <PreviewEstimates projectId={projectId} getLive={getLive} pecanEnabled={pecanEnabled} />
                 )}
-                <SearchVersionsPanel key={`v-${panelNonce}`} projectId={projectId} readOnly={readOnly} onAfterRestore={bumpPanels} />
+                <SearchVersionsPanel key={`v-${panelNonce}`} projectId={projectId} readOnly={readOnly} onAfterRestore={handleVersionRestored} />
               </div>
             )}
             {stage === 'strategy' && studioEnabled && (

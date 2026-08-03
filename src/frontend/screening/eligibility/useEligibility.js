@@ -22,7 +22,7 @@ export function useEligibility(pid) {
   const assessCache = useRef(new Map());            // recordId → assessment
   // Guard against setState after the tab unmounts mid-request.
   const mounted = useRef(true);
-  useEffect(() => () => { mounted.current = false; }, []);
+  useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []); // re-arm: StrictMode dev double-invoke runs cleanup once on mount (97.md export-ZIP root cause)
 
   const load = useCallback(async () => {
     try {

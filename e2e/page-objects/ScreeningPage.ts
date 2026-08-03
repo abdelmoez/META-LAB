@@ -124,8 +124,13 @@ export class ScreeningPage {
   // "Final Review" itself is a plain <div> (not a heading); anchor on the unique,
   // always-rendered banner sentence instead.
   get finalReviewHeading(): Locator { return this.main.getByText(/Records that reached inclusion quorum/); }
-  get exportHeading(): Locator { return this.main.getByRole('heading', { name: /Export Data/i }); }
+  // 97.md — the tab heading is now "Export screening data" (ExportTab.jsx).
+  get exportHeading(): Locator { return this.main.getByRole('heading', { name: /Export screening data/i }); }
+  /** The single-format "↓ Export…" button. Still unique under /Export/i: the 97.md
+   *  ZIP button is named "↓ Download screening file (ZIP)" (no "export" in it). */
   get exportButton(): Locator { return this.main.getByRole('button', { name: /Export/i }); }
+  /** 97.md headline action — the portable ZIP job button. */
+  get zipDownloadButton(): Locator { return this.main.getByRole('button', { name: /Download screening file/i }); }
 
   /* ── AI surfaces (gated >= 50 screened decisions) ──────────────────────────── */
 

@@ -49,7 +49,7 @@ describe('pendingSuggestions — kind "mesh" (convertible freetext)', () => {
     expect(out).toHaveLength(1);
     expect(out[0]).toMatchObject({
       kind: 'mesh', text: 'Obesity', sourceText: 'obesity',
-      why: 'Standard subject heading for "obesity"', key: rejectionKey(c, 'obesity'),
+      why: 'Standard MeSH term for "obesity"', key: rejectionKey(c, 'obesity'),
     });
     expect(out[0].vocab.mesh).toBe('Obesity');
   });

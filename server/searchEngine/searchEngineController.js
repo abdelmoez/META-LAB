@@ -3,8 +3,12 @@
  * (BACKEND_CONTRACT.md). Four capabilities:
  *   POST /api/search-builder/mesh    { term }  → mesh record | null   (NLM proxy)
  *   POST /api/search-builder/count   { query } → { count }            (NLM proxy)
- *   GET  /api/search-builder/:pid              → { concepts, overrides, ignored, revision, updatedAt } | null
- *   PUT  /api/search-builder/:pid    { concepts, overrides, ignored } → { ok:true, revision }
+ *   GET  /api/search-builder/:pid              → { concepts, overrides, ignored, …, meta, revision, updatedAt } | null
+ *   PUT  /api/search-builder/:pid    { concepts, overrides, ignored, …, meta }
+ *        (+ envelope-only keys, never persisted: baseRevision → strict CAS/409,
+ *         auditAction:'regenerated' → SEARCH_REGENERATED audit)
+ *        → { ok:true, revision, meta? } (meta echoed back when the body named it —
+ *          identity-stamped server-side, see stampMetaIdentity)
  *
  * On a successful PUT the controller emits a thin `search.updated` realtime poke to
  * the workspace's other online collaborators (SE1 Task 5 — live sync without refresh).
@@ -121,6 +125,89 @@ export function sanitizeRejectedSuggestions(raw) {
  */
 export function sanitizeQuestionSnapshot(raw) {
   return (typeof raw === 'string' ? raw : '').slice(0, 2000).trim();
+}
+
+/** 97.md — one { id, name } identity reference or null. Mirrors the client's
+ *  normalizeMetaWho (searchState.normalizePersistedMeta) byte-for-byte. */
+function sanitizeMetaWho(raw) {
+  const o = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {};
+  const id = (typeof o.id === 'string' || typeof o.id === 'number') ? String(o.id).slice(0, 100).trim() : '';
+  const name = typeof o.name === 'string' ? o.name.slice(0, 200).trim() : '';
+  return (id || name) ? { id, name } : null;
+}
+
+/**
+ * 97.md Phases 3/15 — the generation/modification metadata block (the ONE new
+ * top-level persisted key of the 97 overhaul; see the RULE at the `meta` branch
+ * below). Fields: generatedAt / manuallyModifiedAt (strings, cap 40),
+ * generatedBy / manuallyModifiedBy ({id,name}, caps 100/200), sourceQuestion
+ * (cap 2000 — mirrors sanitizeQuestionSnapshot). Empty fields are OMITTED and an
+ * all-empty block collapses to {} — the client's normalizePersistedMeta mirrors
+ * these EXACT caps + slice-then-trim order with the omit-when-empty convention,
+ * so a server echo always round-trips to a byte-identical persisted signature.
+ * Exported for unit tests.
+ */
+export function sanitizeSearchMeta(raw) {
+  const m = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {};
+  const str = (v, n) => (typeof v === 'string' ? v.slice(0, n).trim() : '');
+  const out = {};
+  const generatedAt = str(m.generatedAt, 40);
+  if (generatedAt) out.generatedAt = generatedAt;
+  const generatedBy = sanitizeMetaWho(m.generatedBy);
+  if (generatedBy) out.generatedBy = generatedBy;
+  const sourceQuestion = str(m.sourceQuestion, 2000);
+  if (sourceQuestion) out.sourceQuestion = sourceQuestion;
+  const manuallyModifiedAt = str(m.manuallyModifiedAt, 40);
+  if (manuallyModifiedAt) out.manuallyModifiedAt = manuallyModifiedAt;
+  const manuallyModifiedBy = sanitizeMetaWho(m.manuallyModifiedBy);
+  if (manuallyModifiedBy) out.manuallyModifiedBy = manuallyModifiedBy;
+  return out;
+}
+
+/**
+ * 97.md QA M3/M32 — stamp the `generatedBy` / `manuallyModifiedBy` identity
+ * fields SERVER-SIDE from the authenticated session. The client is deliberately
+ * identity-free (it never knows its own user), so it sends the timestamps only;
+ * whenever an incoming timestamp CHANGED vs the stored block, the acting user is
+ * the one who generated / manually modified — stamp them. An unchanged timestamp
+ * keeps the sent identity as-is when present, else preserves the STORED identity
+ * (so an unrelated save by another user never steals attribution and the fields
+ * survive clients that do not echo them). Pure — exported for unit tests.
+ * @param {object} incoming  sanitizeSearchMeta(body.meta)
+ * @param {object} stored    sanitizeSearchMeta(previously stored meta)
+ * @param {object} user      req.user ({ id, name })
+ */
+export function stampMetaIdentity(incoming, stored, user) {
+  const inc = incoming && typeof incoming === 'object' ? { ...incoming } : {};
+  const prev = stored && typeof stored === 'object' ? stored : {};
+  const who = sanitizeMetaWho(user ? { id: user.id, name: user.name } : null);
+  if (!who) return inc;
+  if (inc.generatedAt && inc.generatedAt !== prev.generatedAt) inc.generatedBy = who;
+  else if (inc.generatedAt && !inc.generatedBy && prev.generatedBy) inc.generatedBy = prev.generatedBy;
+  if (inc.manuallyModifiedAt && inc.manuallyModifiedAt !== prev.manuallyModifiedAt) inc.manuallyModifiedBy = who;
+  else if (inc.manuallyModifiedAt && !inc.manuallyModifiedBy && prev.manuallyModifiedBy) {
+    inc.manuallyModifiedBy = prev.manuallyModifiedBy;
+  }
+  return inc;
+}
+
+/**
+ * 97.md Phase 16 — the OPTIONAL stale-write guard riding the PUT body ENVELOPE
+ * (never persisted): a non-negative integer enables a compare-and-swap against
+ * that revision; anything else (absent, junk, legacy clients) → null = the
+ * documented last-write-wins contract, unchanged. Exported for unit tests.
+ */
+export function sanitizeBaseRevision(raw) {
+  return Number.isInteger(raw) && raw >= 0 ? raw : null;
+}
+
+/**
+ * 97.md Phase 4 — the PUT body ENVELOPE's audit-action marker (never persisted).
+ * Strict whitelist: 'regenerated' (→ SEARCH_REGENERATED audit row) or null
+ * (→ the ordinary SEARCH_UPDATED). Exported for unit tests.
+ */
+export function sanitizeAuditAction(raw) {
+  return raw === 'regenerated' ? 'regenerated' : null;
 }
 
 // 75.md Phase 7 — flag gating routes through the central featureAccess seam, so a
@@ -257,30 +344,68 @@ export async function putSearch(req, res) {
     // silently dropped. NOTE the per-concept `sourcePhrase` key needs NO branch —
     // it rides inside `concepts`, which is stored as sent (no field stripping).
     if (has('questionSnapshot')) value.questionSnapshot = sanitizeQuestionSnapshot(body.questionSnapshot);
+    // 97.md Phases 3/15 — generation/modification metadata. The RULE again: every
+    // new persisted top-level key needs its own putSearch branch + sanitizer, or
+    // the whitelist silently drops it. This is the ONE new top-level key of the 97
+    // overhaul — everything else (dupOverride, components, labelMigrated) rides
+    // inside `concepts`, which is stored as sent.
+    // QA M3/M32 — the By identity fields are stamped HERE from the session (the
+    // client is identity-free): a changed timestamp attributes to req.user; an
+    // unchanged one preserves the stored attribution. The stamped block is echoed
+    // back in the PUT response so the client can adopt it (signature parity).
+    if (has('meta')) {
+      const prior = await getModuleState(req.params.projectId, SEARCH_MODULE);
+      value.meta = stampMetaIdentity(
+        sanitizeSearchMeta(body.meta),
+        sanitizeSearchMeta(prior && prior.state && prior.state.meta),
+        req.user,
+      );
+    }
     // 73.md P5 — additive two-path marker ('manual' | 'automated' | null).
     if (has('searchMode')) value.searchMode = sanitizeSearchMode(body.searchMode);
-    // baseRevision null = overwrite (the contract's PUT is a full upsert; the
-    // search builder is single-strategy-per-project so last-write-wins is fine).
-    // 86.md P0.1 — patchModuleState still runs an internal CAS even with
-    // baseRevision:null, so a concurrent writer landing between its read and write
-    // returns {conflict:true} with NO write. This previously fell through to a
-    // hard-coded {ok:true}, silently DROPPING the edit while the client marked it
-    // saved. Retry a bounded number of times (re-reads the fresh state and re-applies
-    // the whitelisted patch — correct LWW), and if it still can't land, answer 409 so
-    // the client keeps the pending payload for a real retry instead of losing it.
+    // ── Envelope keys (read from the body, NEVER persisted) ──────────────────
+    // 97.md Phase 16 — optional stale-write rejection: a client that sends its
+    // known base revision gets a strict CAS (a stale full-state write answers 409
+    // instead of clobbering a collaborator's newer document). Partial-body
+    // writers (searchMode / readyForScreening single-key PUTs) deliberately omit
+    // it and keep the documented LWW — they cannot clobber concepts by
+    // construction (named-key patch).
+    const baseRevision = sanitizeBaseRevision(body.baseRevision);
+    // 97.md Phase 4 — a regeneration save marks itself so the audit trail records
+    // SEARCH_REGENERATED instead of the generic SEARCH_UPDATED.
+    const auditAction = sanitizeAuditAction(body.auditAction);
+
     let out;
-    for (let attempt = 0; attempt < 4; attempt++) {
+    if (baseRevision != null) {
+      // Strict CAS against the caller's revision — ONE attempt: retrying a stale
+      // baseRevision can never succeed, and the client must refetch + reconcile.
       out = await patchModuleState({
-        projectId: req.params.projectId, moduleKey: SEARCH_MODULE, patch: value, baseRevision: null, user: req.user,
+        projectId: req.params.projectId, moduleKey: SEARCH_MODULE, patch: value, baseRevision, user: req.user,
       });
-      if (out.ok || !out.conflict) break;
+    } else {
+      // baseRevision null = overwrite (the contract's PUT is a full upsert; the
+      // search builder is single-strategy-per-project so last-write-wins is fine).
+      // 86.md P0.1 — patchModuleState still runs an internal CAS even with
+      // baseRevision:null, so a concurrent writer landing between its read and write
+      // returns {conflict:true} with NO write. This previously fell through to a
+      // hard-coded {ok:true}, silently DROPPING the edit while the client marked it
+      // saved. Retry a bounded number of times (re-reads the fresh state and re-applies
+      // the whitelisted patch — correct LWW), and if it still can't land, answer 409 so
+      // the client keeps the pending payload for a real retry instead of losing it.
+      for (let attempt = 0; attempt < 4; attempt++) {
+        out = await patchModuleState({
+          projectId: req.params.projectId, moduleKey: SEARCH_MODULE, patch: value, baseRevision: null, user: req.user,
+        });
+        if (out.ok || !out.conflict) break;
+      }
     }
     if (!out.ok) {
       return res.status(409).json({ ok: false, conflict: true, revision: out.current ? out.current.revision : undefined });
     }
     if (out.ok) {
       await recordWorkflowAudit({
-        projectId: req.params.projectId, moduleKey: SEARCH_MODULE, action: 'SEARCH_UPDATED',
+        projectId: req.params.projectId, moduleKey: SEARCH_MODULE,
+        action: auditAction === 'regenerated' ? 'SEARCH_REGENERATED' : 'SEARCH_UPDATED',
         revision: out.result.revision, user: req.user,
         details: { concepts: Array.isArray(value.concepts) ? value.concepts.length : undefined },
       });
@@ -294,7 +419,13 @@ export async function putSearch(req, res) {
         { exclude: req.user.id },
       );
     }
-    return res.json({ ok: true, revision: out.result.revision });
+    // QA M3 — echo the identity-stamped meta so the client can adopt the exact
+    // stored block (keeps its persisted signature byte-identical to the server's).
+    return res.json({
+      ok: true,
+      revision: out.result.revision,
+      ...(value.meta !== undefined ? { meta: value.meta } : {}),
+    });
   } catch (err) {
     console.error('[searchEngine] putSearch error:', err.message);
     return res.status(500).json({ error: 'Internal server error' });

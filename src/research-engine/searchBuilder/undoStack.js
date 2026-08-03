@@ -1,8 +1,13 @@
 /**
- * undoStack.js — 85.md A1 (+ 96.md D13). A pure LIFO stack (cap 20) of INVERSE
- * PATCHES over the Search Builder's { concepts, ignored } state, so destructive
- * actions (remove a term/concept, disable, bulk-accept suggestions, and the 96.md
- * group operations: reorder / merge / split) are recoverable.
+ * undoStack.js — 85.md A1 (+ 96.md D13, + 97.md Phases 4/6/9-12). A pure LIFO
+ * stack (cap 20) of INVERSE PATCHES over the Search Builder's { concepts,
+ * ignored } state (whole-state entries additionally carry { meta,
+ * questionSnapshot }), so destructive actions (remove a term/concept, disable,
+ * bulk-accept suggestions, the 96.md group operations reorder / merge / split,
+ * and the 97.md kinds: cross-group moveTerm, copyTerm, renameConcept,
+ * addConcept, editTerm, combineTokens, splitPhrase, dupOverride, regenerate,
+ * restore) are recoverable. shouldHandleGlobalUndo (bottom) is the Ctrl/Cmd+Z
+ * typing-context guard.
  *
  * WHY INVERSE PATCHES AND NOT SNAPSHOTS: removing a pico_auto term ALSO appends an
  * `ignored` entry (so the PICO re-sync won't resurrect it). An undo that restored
@@ -165,6 +170,162 @@ export function recordSplitConcept(stack, { fromConceptId, newConceptId, termIds
     newConceptId,
     termIds: ids,
     label: String(label || ''),
+  });
+}
+
+/**
+ * 97.md Phase 11 — recordMoveTerm(stack, { fromConceptId, toConceptId, termId,
+ * fromIndex, toIndex, text }) — the info termOps.moveTermToConcept returns as
+ * `undo`. Undo pulls the term (by id) out of the TARGET group and re-inserts it
+ * into the SOURCE group at its original index (clamped). This makes cross-group
+ * moves undoable for the first time (the old moveTerm recorded nothing).
+ */
+export function recordMoveTerm(stack, { fromConceptId, toConceptId, termId, fromIndex, toIndex, text } = {}) {
+  if (!fromConceptId || !toConceptId || !termId || fromConceptId === toConceptId) return asStack(stack);
+  return pushEntry(stack, {
+    kind: 'moveTerm',
+    fromConceptId,
+    toConceptId,
+    termId,
+    fromIndex: Number.isInteger(fromIndex) && fromIndex >= 0 ? fromIndex : 0,
+    toIndex: Number.isInteger(toIndex) && toIndex >= 0 ? toIndex : 0,
+    text: String(text || ''),
+  });
+}
+
+/**
+ * 97.md Phase 9 — recordCopyTerm(stack, { conceptId, termId, text }) after an
+ * EXPLICIT duplicate-term copy (termOps.copyTerm — `newTermId` from its result).
+ * Undo removes exactly that copied term (by id).
+ */
+export function recordCopyTerm(stack, { conceptId, termId, text } = {}) {
+  if (!conceptId || !termId) return asStack(stack);
+  return pushEntry(stack, { kind: 'copyTerm', conceptId, termId, text: String(text || '') });
+}
+
+/**
+ * 97.md Phase 10 — recordRenameConcept(stack, { conceptId, prevLabel, nextLabel }).
+ * Undo restores the previous label (a vanished concept degrades to a no-op).
+ */
+export function recordRenameConcept(stack, { conceptId, prevLabel, nextLabel } = {}) {
+  if (!conceptId || typeof prevLabel !== 'string') return asStack(stack);
+  return pushEntry(stack, {
+    kind: 'renameConcept',
+    conceptId,
+    prevLabel,
+    nextLabel: String(nextLabel || ''),
+  });
+}
+
+/**
+ * 97.md Phase 10 — recordAddConcept(stack, { conceptId, label, originTermIds? })
+ * after a new group was created. `originTermIds` = ids of the term(s) the
+ * creation itself seeded (a token-click / combine-gesture group is BORN with its
+ * origin phrase term — 97 QA H2: undo must remove that group too, not only an
+ * empty one). Undo removes the group while it holds nothing beyond the recorded
+ * origin terms — work ADDED since keeps the group alive (no-op).
+ */
+export function recordAddConcept(stack, { conceptId, label, originTermIds } = {}) {
+  if (!conceptId) return asStack(stack);
+  return pushEntry(stack, {
+    kind: 'addConcept',
+    conceptId,
+    label: String(label || ''),
+    originTermIds: asList(originTermIds).filter(Boolean),
+  });
+}
+
+/**
+ * 97 QA M13 — recordEditTerm(stack, { conceptId, term }) with `term` = the
+ * PRE-EDIT term object (snapshotted when the editor session opened). ONE entry
+ * per editing session (recorded on editor close when something changed — the
+ * rename pattern), so Ctrl+Z after editing text / type / field / explode /
+ * truncation / phrase restores the term exactly as it was.
+ */
+export function recordEditTerm(stack, { conceptId, term } = {}) {
+  if (!conceptId || !term || !term.id) return asStack(stack);
+  return pushEntry(stack, { kind: 'editTerm', conceptId, term });
+}
+
+/**
+ * 97.md Phase 6 — recordCombineTokens(stack, { conceptId, newTermId, removed,
+ * insertIndex, text }) — the whole options object comes straight from
+ * termOps.combineTokens' `undo` (`newTermId` = the combined phrase term's id).
+ * Undo removes the phrase and re-inserts the ORIGINAL term objects (ids/vocab
+ * intact) at their original indices.
+ */
+export function recordCombineTokens(stack, { conceptId, newTermId, removed, insertIndex, text } = {}) {
+  const list = asList(removed).filter((r) => r && r.term);
+  if (!conceptId || !newTermId || list.length < 2) return asStack(stack);
+  return pushEntry(stack, {
+    kind: 'combineTokens',
+    conceptId,
+    newTermId,
+    removed: list,
+    insertIndex: Number.isInteger(insertIndex) && insertIndex >= 0 ? insertIndex : 0,
+    text: String(text || ''),
+  });
+}
+
+/**
+ * 97.md Phase 6 — recordSplitPhrase(stack, { conceptId, term, index, newTermIds })
+ * — the whole options object comes straight from termOps.splitPhrase's `undo`
+ * (`newTermIds` = the component terms' ids). Undo removes exactly those component
+ * terms and re-inserts the ORIGINAL phrase term at its index.
+ */
+export function recordSplitPhrase(stack, { conceptId, term, index, newTermIds } = {}) {
+  const ids = asList(newTermIds).filter(Boolean);
+  if (!conceptId || !term || !ids.length) return asStack(stack);
+  return pushEntry(stack, {
+    kind: 'splitPhrase',
+    conceptId,
+    term,
+    index: Number.isInteger(index) && index >= 0 ? index : 0,
+    newTermIds: ids,
+  });
+}
+
+/**
+ * 97.md Phase 12 — recordDupOverride(stack, { key, label, changed }) — `changed`
+ * comes straight from exactDuplicate.applyDupOverride / clearDupOverride
+ * ([{ conceptId, termId, prev }]). Undo writes each term's PREVIOUS dupOverride
+ * value back (deleting the field where prev was undefined) — the exact inverse of
+ * either a set or an unset.
+ */
+export function recordDupOverride(stack, { key, label, changed } = {}) {
+  const list = asList(changed).filter((c) => c && c.conceptId && c.termId);
+  if (!key || !list.length) return asStack(stack);
+  return pushEntry(stack, { kind: 'dupOverride', key, label: String(label || ''), changed: list });
+}
+
+/**
+ * 97.md Phase 4 — recordRegenerate(stack, { prev }) with prev = the whole
+ * pre-regeneration { concepts, meta, questionSnapshot } slice (`prior` is an
+ * accepted alias). Undo restores all three wholesale (consistent with the
+ * existing whole-object entries). The stack still clears on remote adoption —
+ * the collaboration rule is unchanged.
+ */
+export function recordRegenerate(stack, { prev, prior } = {}) {
+  const p = prev || prior;
+  if (!p || !Array.isArray(p.concepts)) return asStack(stack);
+  return pushEntry(stack, {
+    kind: 'regenerate',
+    prev: { concepts: p.concepts, meta: p.meta, questionSnapshot: p.questionSnapshot },
+  });
+}
+
+/**
+ * 97.md Phase 4 — recordRestore(stack, { prev, versionName? }): same whole-state
+ * mechanics as recordRegenerate (`prior` alias accepted), recorded when a version
+ * snapshot is restored so the restore itself is undoable in-session.
+ */
+export function recordRestore(stack, { prev, prior, versionName } = {}) {
+  const p = prev || prior;
+  if (!p || !Array.isArray(p.concepts)) return asStack(stack);
+  return pushEntry(stack, {
+    kind: 'restore',
+    versionName: String(versionName || ''),
+    prev: { concepts: p.concepts, meta: p.meta, questionSnapshot: p.questionSnapshot },
   });
 }
 
@@ -360,8 +521,205 @@ export function undoLast(stack, state) {
     };
   }
 
+  if (entry.kind === 'moveTerm') {
+    // Inverse of a cross-group move: pull the term (by id) out of the TARGET and
+    // re-insert it into the SOURCE at its original index (clamped). Either side
+    // vanished (collaborator deleted it) → calm no-op — never delete the term
+    // without putting it back (the 97 no-silent-loss rule).
+    const to = concepts.find((c) => c && c.id === entry.toConceptId);
+    const from = concepts.find((c) => c && c.id === entry.fromConceptId);
+    const moved = to && asList(to.terms).find((t) => t && t.id === entry.termId);
+    if (!to || !from || !moved) return { stack: rest, state, description: '' };
+    const next = concepts.map((c) => {
+      if (!c) return c;
+      if (c.id === entry.toConceptId) return { ...c, terms: asList(c.terms).filter((t) => !(t && t.id === entry.termId)) };
+      if (c.id === entry.fromConceptId) {
+        const terms = asList(c.terms);
+        if (terms.some((t) => t && t.id === entry.termId)) return c; // already back — no duplicate
+        const at = Math.min(Math.max(entry.fromIndex, 0), terms.length);
+        return { ...c, terms: [...terms.slice(0, at), moved, ...terms.slice(at)] };
+      }
+      return c;
+    });
+    return {
+      stack: rest,
+      state: { ...state, concepts: next, ignored },
+      description: `Moved "${entry.text}" back`,
+    };
+  }
+
+  if (entry.kind === 'copyTerm') {
+    const next = concepts.map((c) => (c && c.id === entry.conceptId
+      ? { ...c, terms: asList(c.terms).filter((t) => !(t && t.id === entry.termId)) }
+      : c));
+    return {
+      stack: rest,
+      state: { ...state, concepts: next, ignored },
+      description: `Removed the copy of "${entry.text}"`,
+    };
+  }
+
+  if (entry.kind === 'renameConcept') {
+    const next = concepts.map((c) => (c && c.id === entry.conceptId ? { ...c, label: entry.prevLabel } : c));
+    const touched = next.some((c, i) => c !== concepts[i]);
+    return {
+      stack: rest,
+      state: touched ? { ...state, concepts: next, ignored } : state,
+      description: touched ? `Renamed back to "${entry.prevLabel}"` : '',
+    };
+  }
+
+  if (entry.kind === 'addConcept') {
+    // Remove the added group while it holds nothing beyond its recorded ORIGIN
+    // term(s) (QA H2 — a token-click / combine group is born WITH its phrase
+    // term); anything added since is real work and keeps the group alive (no-op
+    // — same protective rule as splitConcept).
+    const target = concepts.find((c) => c && c.id === entry.conceptId);
+    if (!target) return { stack: rest, state, description: '' };
+    const origin = new Set(asList(entry.originTermIds));
+    const extras = asList(target.terms).filter((t) => t && !origin.has(t.id));
+    if (extras.length) return { stack: rest, state, description: '' };
+    return {
+      stack: rest,
+      state: { ...state, concepts: concepts.filter((c) => !(c && c.id === entry.conceptId)), ignored },
+      description: `Removed group "${entry.label || String(target.label || '')}"`,
+    };
+  }
+
+  if (entry.kind === 'editTerm') {
+    // Inverse of an editor session: put the PRE-EDIT term object back in place
+    // (same id, current position). Concept/term vanished meanwhile → calm no-op.
+    const next = concepts.map((c) => {
+      if (!c || c.id !== entry.conceptId) return c;
+      const terms = asList(c.terms);
+      if (!terms.some((t) => t && t.id === entry.term.id)) return c;
+      return { ...c, terms: terms.map((t) => (t && t.id === entry.term.id ? entry.term : t)) };
+    });
+    const touched = next.some((c, i) => c !== concepts[i]);
+    return {
+      stack: rest,
+      state: touched ? { ...state, concepts: next, ignored } : state,
+      description: touched ? `Reverted the edits to "${String(entry.term.text || '')}"` : '',
+    };
+  }
+
+  if (entry.kind === 'combineTokens') {
+    // Inverse of a combine: drop the phrase term (by id) and re-insert the
+    // ORIGINAL term objects (ids/vocab intact) at their original indices —
+    // ascending order keeps each recorded index meaningful. Texts re-added
+    // manually meanwhile are not duplicated.
+    const next = concepts.map((c) => {
+      if (!c || c.id !== entry.conceptId) return c;
+      let terms = asList(c.terms).filter((t) => !(t && t.id === entry.newTermId));
+      const sorted = [...entry.removed].sort((a, b) => a.index - b.index);
+      for (const r of sorted) {
+        const n = norm(r.term && r.term.text);
+        if (n && terms.some((t) => norm(t && t.text) === n)) continue;
+        const at = Math.min(Math.max(r.index, 0), terms.length);
+        terms = [...terms.slice(0, at), r.term, ...terms.slice(at)];
+      }
+      return { ...c, terms };
+    });
+    const touched = next.some((c, i) => c !== concepts[i]);
+    return {
+      stack: rest,
+      state: touched ? { ...state, concepts: next, ignored } : state,
+      description: touched ? `Separated "${entry.text}" again` : '',
+    };
+  }
+
+  if (entry.kind === 'splitPhrase') {
+    // Inverse of a phrase split: remove exactly the component terms the split
+    // created and re-insert the ORIGINAL phrase term at its index.
+    const drop = new Set(entry.newTermIds);
+    const next = concepts.map((c) => {
+      if (!c || c.id !== entry.conceptId) return c;
+      let terms = asList(c.terms).filter((t) => !(t && drop.has(t.id)));
+      const n = norm(entry.term && entry.term.text);
+      if (!(n && terms.some((t) => norm(t && t.text) === n))) {
+        const at = Math.min(Math.max(entry.index, 0), terms.length);
+        terms = [...terms.slice(0, at), entry.term, ...terms.slice(at)];
+      }
+      return { ...c, terms };
+    });
+    const touched = next.some((c, i) => c !== concepts[i]);
+    return {
+      stack: rest,
+      state: touched ? { ...state, concepts: next, ignored } : state,
+      description: touched ? `Restored "${String(entry.term && entry.term.text || '')}"` : '',
+    };
+  }
+
+  if (entry.kind === 'dupOverride') {
+    // Inverse of an intentional-duplicate set/unset: write each term's PREVIOUS
+    // dupOverride back (deleting the field where there was none). Vanished
+    // terms degrade per-term to a no-op.
+    const byConcept = new Map();
+    for (const ch of entry.changed) {
+      if (!byConcept.has(ch.conceptId)) byConcept.set(ch.conceptId, new Map());
+      byConcept.get(ch.conceptId).set(ch.termId, ch.prev);
+    }
+    const next = concepts.map((c) => {
+      if (!c || !byConcept.has(c.id)) return c;
+      const wanted = byConcept.get(c.id);
+      let touchedC = false;
+      const terms = asList(c.terms).map((t) => {
+        if (!t || !wanted.has(t.id)) return t;
+        touchedC = true;
+        const prev = wanted.get(t.id);
+        if (prev === undefined) { const { dupOverride: _gone, ...restT } = t; return restT; }
+        return { ...t, dupOverride: prev };
+      });
+      return touchedC ? { ...c, terms } : c;
+    });
+    const touched = next.some((c, i) => c !== concepts[i]);
+    return {
+      stack: rest,
+      state: touched ? { ...state, concepts: next, ignored } : state,
+      description: touched ? `Reverted the duplicate decision for "${entry.label}"` : '',
+    };
+  }
+
+  if (entry.kind === 'regenerate' || entry.kind === 'restore') {
+    // Whole-state inverse (97 Phase 4): put back the exact pre-action
+    // { concepts, meta, questionSnapshot } slice. `ignored` is untouched
+    // (regeneration/restore never edit it).
+    return {
+      stack: rest,
+      state: {
+        ...state,
+        concepts: entry.prev.concepts,
+        meta: entry.prev.meta,
+        questionSnapshot: entry.prev.questionSnapshot,
+        ignored,
+      },
+      description: entry.kind === 'regenerate'
+        ? 'Restored the strategy from before regeneration'
+        : `Undid restoring ${entry.versionName ? `"${entry.versionName}"` : 'the version'}`,
+    };
+  }
+
   // Unknown entry kind (forward compat): drop it without touching state.
   return { stack: rest, state, description: '' };
+}
+
+/**
+ * 97.md Phase 6 — should a document-level Ctrl/Cmd+Z keydown run the workspace
+ * undo? Pure predicate (house style — the DOM handler stays a one-liner around
+ * it). Refuses whenever the event target is a typing surface: INPUT / TEXTAREA /
+ * SELECT elements, contentEditable regions (rich-text editors), and ARIA text
+ * widgets (textbox / searchbox / combobox — search-syntax editors). Everything
+ * else (chips, buttons, the page body) undoes.
+ * @param {{ tagName?:string, isContentEditable?:boolean, role?:string }} target
+ */
+export function shouldHandleGlobalUndo(target) {
+  const t = target || {};
+  if (t.isContentEditable === true) return false;
+  const tag = String(t.tagName || '').toUpperCase();
+  if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return false;
+  const role = String(t.role || '').toLowerCase();
+  if (role === 'textbox' || role === 'searchbox' || role === 'combobox') return false;
+  return true;
 }
 
 /** Empty the stack. The UI MUST call this on applyRemote / version restore. */
