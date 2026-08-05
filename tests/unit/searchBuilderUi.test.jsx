@@ -878,3 +878,32 @@ describe('UndoSnackbar — plain mode (undo feedback is VISIBLE, not SR-only)', 
     expect(html).toContain('>Undo<');
   });
 });
+
+/* ── 98.md §11 round 2 — carefully designed bulk selection ─────────────────── */
+describe('SuggestionsDisclosure — §11 round-2 checkbox bulk selection', () => {
+  const pending = [
+    { key: 'k1', kind: 'mesh', text: 'Diabetes Mellitus, Type 2', why: 'x' },
+    { key: 'k2', kind: 'mesh', text: 'Sketchy Match', why: 'x', confidence: 'review' },
+    { key: 'k3', kind: 'synonyms', text: 'heart failure', why: 'x', synonyms: ['HF', 'cardiac failure'] },
+  ];
+  it('open editors get the bulk bar with select-all + a disabled Add button until something is checked', () => {
+    const html = r(h(SuggestionsDisclosure, { suggestions: pending, open: true, onToggleOpen: () => {}, onAcceptMany: () => {} }));
+    expect(html).toContain('sb-sugg-bulk-bar');
+    expect(html).toContain('Select all');
+    expect(html).toContain('(low-confidence MeSH excluded)');
+    expect(html).toContain('sb-sugg-add-selected');
+    expect(html).toContain('disabled'); // nothing preselected — the batch add starts inert
+  });
+  it('low-confidence MeSH rows carry NO selection checkbox (never bulk-addable)', () => {
+    const html = r(h(SuggestionsDisclosure, { suggestions: pending, open: true, onToggleOpen: () => {}, onAcceptMany: () => {} }));
+    expect(html).toContain('aria-label="Select suggestion Diabetes Mellitus, Type 2"');
+    expect(html).not.toContain('aria-label="Select suggestion Sketchy Match"');
+    expect(html).toContain('aria-label="Select entry term HF"');
+  });
+  it('read-only viewers and callers without onAcceptMany see no bulk affordances', () => {
+    const ro = r(h(SuggestionsDisclosure, { suggestions: pending, open: true, onToggleOpen: () => {}, onAcceptMany: () => {}, readOnly: true }));
+    expect(ro).not.toContain('sb-sugg-bulk-bar');
+    const noCb = r(h(SuggestionsDisclosure, { suggestions: pending, open: true, onToggleOpen: () => {} }));
+    expect(noCb).not.toContain('sb-sugg-bulk-bar');
+  });
+});

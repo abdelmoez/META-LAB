@@ -8,13 +8,16 @@
  *    heading"), with a confidence marker where the match is low-confidence
  *    ("check this fits") — a low-confidence suggestion is NEVER auto-added;
  *  - kind 'synonyms' (entry-term) suggestions render as INDIVIDUAL rows with a
- *    per-term "Add this term" action — the 97.md-banned one-click keyword bundle
- *    (and the old "Accept all N subject headings" button) is GONE;
+ *    per-term "Add this term" action; 98.md §11 round 2 adds CAREFULLY DESIGNED
+ *    bulk selection — explicit checkboxes + one "Add N selected" action (nothing
+ *    preselected; low-confidence MeSH excluded from select-all; dedup-aware; one
+ *    undo entry). The 97.md-banned indiscriminate one-click bundle stays gone;
  *  - Dismiss persists (rejectedSuggestions) and "Show dismissed" restores;
  *  - the Hidden-terms restore panel lives INSIDE this disclosure.
  *
  * Presentational leaf: plain props + callbacks, no fetch.
  */
+import { useState } from 'react';
 import { C, FONT, MONO, alpha } from '../../../frontend/theme/tokens.js';
 
 const KIND_LABEL = { mesh: 'MeSH', synonyms: 'Entry terms' };
@@ -24,7 +27,7 @@ function actionBtn(color) {
 }
 
 export default function SuggestionsDisclosure({
-  suggestions, readOnly, onAccept, onDismiss, onAcceptEntryTerm,
+  suggestions, readOnly, onAccept, onAcceptMany, onDismiss, onAcceptEntryTerm,
   rejectedEntries, showDismissed, onToggleShowDismissed, onUnreject,
   ignoredGroups, onRestoreTerm, onRestoreField, onRestoreAll,
   // 98.md §11 — CONTROLLED visibility: suggestions are hidden by default and
@@ -42,6 +45,28 @@ export default function SuggestionsDisclosure({
   const roBtn = (base) => (readOnly ? { ...base, cursor: 'not-allowed', opacity: 0.55 } : base);
   const isOpen = !!open;
 
+  /* 98.md §11 (round 2) — checkbox multi-select. Keys: 'm:<suggKey>' for MeSH
+     rows, 'e:<suggKey>:<synonym>' for entry-term rows. Nothing is preselected;
+     select-all EXCLUDES low-confidence MeSH rows (they must be reviewed one by
+     one — 97's never-auto-add rule); the batch lands through onAcceptMany as
+     ONE dedup-aware, single-undo add. */
+  const [selected, setSelected] = useState({});
+  const toggleSel = (k) => setSelected((m) => ({ ...m, [k]: !m[k] }));
+  const selectable = [];
+  for (const sg of pending) {
+    if (sg.kind === 'mesh' && sg.confidence !== 'review') selectable.push({ key: `m:${sg.key}`, item: { kind: 'mesh', sugg: sg } });
+    if (sg.kind === 'synonyms' && Array.isArray(sg.synonyms)) {
+      for (const syn of sg.synonyms) selectable.push({ key: `e:${sg.key}:${syn}`, item: { kind: 'entry', text: syn } });
+    }
+  }
+  const chosen = selectable.filter((x) => selected[x.key]);
+  const allChosen = selectable.length > 0 && chosen.length === selectable.length;
+  const addChosen = () => {
+    if (readOnly || !onAcceptMany || !chosen.length) return;
+    onAcceptMany(chosen.map((x) => x.item));
+    setSelected({});
+  };
+
   return (
     <div data-testid="sb-suggestions" style={{ fontFamily: FONT }}>
       {/* 98.md §11/§20 — one-click reveal with a compact count; children are
@@ -55,6 +80,22 @@ export default function SuggestionsDisclosure({
       </button>
       {isOpen && (
       <div style={{ marginTop: 6 }}>
+        {!readOnly && onAcceptMany && selectable.length > 1 && (
+          <div data-testid="sb-sugg-bulk-bar" style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', padding: '4px 0 6px' }}>
+            <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 10.5, color: C.txt2, cursor: 'pointer' }}>
+              <input type="checkbox" checked={allChosen}
+                onChange={() => setSelected(allChosen ? {} : Object.fromEntries(selectable.map((x) => [x.key, true])))}
+                aria-label="Select all suggestions (low-confidence MeSH terms excluded)" />
+              Select all
+              <span style={{ color: C.muted }}>(low-confidence MeSH excluded)</span>
+            </label>
+            <button type="button" data-testid="sb-sugg-add-selected" onClick={addChosen} disabled={!chosen.length}
+              aria-label={`Add ${chosen.length} selected suggestion${chosen.length === 1 ? '' : 's'}`}
+              style={{ ...actionBtn(C.grn), opacity: chosen.length ? 1 : 0.5, cursor: chosen.length ? 'pointer' : 'not-allowed' }}>
+              Add {chosen.length || ''} selected
+            </button>
+          </div>
+        )}
         {empty && (
           <div style={{ fontSize: 11.5, color: C.muted, fontStyle: 'italic' }}>
             No suggestions right now — they appear as you add terms.
@@ -64,6 +105,10 @@ export default function SuggestionsDisclosure({
         {pending.map((s) => (
           <div key={s.key} data-testid="sb-suggestion-row" style={{ padding: '6px 0', borderTop: `1px solid ${C.brd}` }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+              {!readOnly && onAcceptMany && s.kind === 'mesh' && s.confidence !== 'review' && (
+                <input type="checkbox" checked={!!selected[`m:${s.key}`]} onChange={() => toggleSel(`m:${s.key}`)}
+                  aria-label={`Select suggestion ${s.text}`} style={{ flexShrink: 0 }} />
+              )}
               <span style={{ flex: '1 1 200px', minWidth: 0 }}>
                 <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12, color: C.txt, fontFamily: s.kind === 'mesh' ? MONO : FONT }}>
                   {s.kind === 'synonyms' ? `Entry terms for “${s.text}”` : s.text}
@@ -95,6 +140,10 @@ export default function SuggestionsDisclosure({
               <div style={{ marginTop: 4, display: 'flex', flexDirection: 'column', gap: 2 }}>
                 {s.synonyms.map((syn) => (
                   <div key={syn} data-testid="sb-entry-term-row" style={{ display: 'flex', alignItems: 'center', gap: 8, paddingLeft: 14 }}>
+                    {!readOnly && onAcceptMany && (
+                      <input type="checkbox" checked={!!selected[`e:${s.key}:${syn}`]} onChange={() => toggleSel(`e:${s.key}:${syn}`)}
+                        aria-label={`Select entry term ${syn}`} style={{ flexShrink: 0 }} />
+                    )}
                     <span style={{ flex: 1, minWidth: 0, fontSize: 11.5, color: C.txt2, overflowWrap: 'anywhere' }}>{syn}</span>
                     <button type="button" onClick={() => { if (!readOnly && onAcceptEntryTerm) onAcceptEntryTerm(s, syn); }}
                       disabled={!!readOnly} aria-disabled={readOnly || undefined}

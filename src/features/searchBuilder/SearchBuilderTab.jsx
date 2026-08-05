@@ -1950,6 +1950,41 @@ export default function SearchBuilderTab({projectId,question:questionProp,pico,a
     setUndoStack(st=>recordBulkAccept(st,{concept:c,termIds:[tid],label:s.text}));
     setUndoMsg(`Added "${s.text}"`);
   };
+  /* 98.md §11 (round 2) — carefully designed BULK selection: explicit checkbox
+     multi-select + ONE "Add N selected" action. This is NOT the 97-banned
+     indiscriminate bundle: nothing is preselected, low-confidence MeSH rows are
+     excluded from select-all (component side), duplicates are skipped and
+     REPORTED, and the whole batch is ONE undo entry. items:
+     [{kind:'mesh',sugg}|{kind:'entry',text}]. */
+  const acceptSuggestionsBulk=(cid,items)=>{
+    const base=conceptsRef.current.find(x=>x&&x.id===cid); if(!base||!Array.isArray(items)||!items.length) return;
+    const newTerms=[]; const looks=[]; const skipped=[];
+    let working={...base,terms:[...base.terms]};
+    for(const it of items){
+      if(it&&it.kind==='mesh'&&it.sugg){
+        const s=it.sugg;
+        const text=String(s.text||'').trim(); if(!text) continue;
+        if(findExactDuplicateInConcept(working,text,undefined,{type:'controlled',vocab:s.vocab||null})){ skipped.push(text); continue; }
+        const tid=uid();
+        const t={id:tid,text,type:'controlled',field:'tiab',source:'user_added',vocab:s.vocab||null};
+        working={...working,terms:[...working.terms,t]}; newTerms.push(t);
+        if(!s.vocab) looks.push([tid,text]);
+      } else if(it&&it.kind==='entry'&&it.text){
+        const clean=String(it.text).trim(); if(!clean) continue;
+        if(findExactDuplicateInConcept(working,clean)){ skipped.push(clean); continue; }
+        const tid=uid();
+        working={...working,terms:[...working.terms,{id:tid,text:clean,type:'freetext',field:'tiab',source:'synonym'}]};
+        newTerms.push(working.terms[working.terms.length-1]);
+      }
+    }
+    if(!newTerms.length){ announce('Nothing added — the selected terms are already in this concept.'); return; }
+    setConcepts(cs=>cs.map(x=>x.id===cid?{...x,terms:[...x.terms,...newTerms]}:x));
+    touchMeta();
+    setUndoStack(st=>recordBulkAccept(st,{concept:base,termIds:newTerms.map(t=>t.id),label:`${newTerms.length} suggested terms`}));
+    setUndoMsg(`Added ${newTerms.length} suggested term${newTerms.length===1?'':'s'}${skipped.length?` — ${skipped.length} already present`:''}`);
+    announce(`Added ${newTerms.length} suggested term${newTerms.length===1?'':'s'} to ${base.label||'the concept'}${skipped.length?`; ${skipped.length} skipped as already present`:''}`);
+    looks.forEach(([tid,text])=>tryLookup(cid,tid,text,true));
+  };
   const dismissSuggestion=(s)=>{
     if(!s||!s.key) return;
     setRejectedSuggestions(r=>r.includes(s.key)?r:[...r,s.key]);
@@ -3016,6 +3051,7 @@ export default function SearchBuilderTab({projectId,question:questionProp,pico,a
                         open={!!suggOpen[c.id]} /* 98.md §11 — hidden by default; per-concept session state */
                         onToggleOpen={()=>setSuggOpen(o=>({...o,[c.id]:!o[c.id]}))}
                         onAccept={(s)=>acceptSuggestion(c.id,s)}
+                        onAcceptMany={(items)=>acceptSuggestionsBulk(c.id,items)} /* 98.md §11 round 2 — checkbox bulk add */
                         onDismiss={dismissSuggestion}
                         onAcceptEntryTerm={(_s,syn)=>addEntryTerm(c.id,syn)}
                         rejectedEntries={rejectedEntriesFor(c)}
