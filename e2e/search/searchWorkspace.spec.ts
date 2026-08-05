@@ -397,6 +397,86 @@ test.describe('98.md — the staged Search Workspace (concept board)', () => {
     await expect(sp.conceptCard('cardiac failure')).toBeVisible();
   });
 
+  test('99.md — expand/collapse: outside click, Escape, chevron, and switching between cards', async ({ page, tmpProject }) => {
+    const sp = new SearchPage(page);
+    await seedGroup(sp, tmpProject.id, 'heart failure');
+    await sp.addConceptGroup('adults');
+    await expect(sp.activeConcept.getByLabel(/Concept name/)).toHaveValue('adults');
+
+    // Clicking a COMPACT card transfers the expansion (only one card is ever open).
+    await activateCard(sp, 'heart failure');
+    await expect(sp.compactCards).toHaveCount(1);
+
+    // Clicking anywhere OUTSIDE the board collapses the working card into the
+    // balanced all-compact overview — no active card anywhere on the page.
+    await page.getByTestId('sb-strategy-preview').getByText('Your search so far').click();
+    await expect(sp.activeConcept).toHaveCount(0);
+    await expect(sp.compactCards).toHaveCount(2);
+
+    // Collapsed cards stay informative: term count + a real disclosure chevron.
+    const hf = sp.conceptCard('heart failure');
+    await expect(hf.getByTestId('sb-term-count')).toHaveText(/1 term/);
+    await expect(hf.getByTestId('sb-card-toggle')).toHaveAttribute('aria-expanded', 'false');
+
+    // The chevron expands; on the working card it reports the expanded state.
+    await hf.getByTestId('sb-card-toggle').click();
+    await expect(sp.activeConcept.getByLabel(/Concept name/)).toHaveValue('heart failure');
+    await expect(sp.activeConcept.getByTestId('sb-card-toggle')).toHaveAttribute('aria-expanded', 'true');
+
+    // Clicks INSIDE the working card never collapse it (the add box keeps focus)...
+    await sp.addTermInput.click();
+    await expect(sp.activeConcept).toBeVisible();
+
+    // ...and a free Escape (empty draft, no popover) collapses from the keyboard,
+    // anchoring focus on the now-compact card so keyboard users are never stranded.
+    await sp.addTermInput.press('Escape');
+    await expect(sp.activeConcept).toHaveCount(0);
+    await expect(sp.conceptCard('heart failure')).toBeFocused();
+
+    // Enter re-expands the focused compact card (the 98.md H14 keyboard path).
+    await page.keyboard.press('Enter');
+    await expect(sp.activeConcept.getByLabel(/Concept name/)).toHaveValue('heart failure');
+
+    // The strategy preview's concept rows expand their card from below the board.
+    await page.getByTestId('sb-strategy-preview').getByText('Your search so far').click();
+    await expect(sp.activeConcept).toHaveCount(0);
+    await page.getByTestId('sb-preview-row').filter({ hasText: 'adults' }).click();
+    await expect(sp.activeConcept.getByLabel(/Concept name/)).toHaveValue('adults');
+
+    // The chevron on the working card collapses it again (round trip).
+    await sp.activeConcept.getByTestId('sb-card-toggle').click();
+    await expect(sp.activeConcept).toHaveCount(0);
+  });
+
+  test('99.md — leaving the terms stage cancels a pending collapse (the board is never stuck collapsed)', async ({ page, tmpProject }) => {
+    // Regression: clicking a stage pip runs BOTH the outside-click collapse (which
+    // defers its commit into a View Transition) and the stage change. The builder
+    // stays mounted across stages, so a commit landing after the phase reset used
+    // to leave the board permanently collapsed on return — no working card, and
+    // no focusable add box for a keyboard user (the 98.md H14 contract).
+    const sp = new SearchPage(page);
+    await seedGroup(sp, tmpProject.id, 'sepsis');
+    await rail(sp).getByRole('button', { name: /Database Strategies/ }).click();
+    await expect(stageSurface(sp)).toHaveAttribute('data-stage', 'strategy');
+    await termsPip(sp).click();
+    await expect(stageSurface(sp)).toHaveAttribute('data-stage', 'terms');
+    await expect(sp.activeConcept).toBeVisible();
+    await expect(sp.activeConcept.getByLabel(/Concept name/)).toHaveValue('sepsis');
+    await expect(sp.addTermInput).toBeVisible();
+  });
+
+  test('99.md — reduced motion: expand/collapse works identically without the morph', async ({ page, tmpProject }) => {
+    await page.emulateMedia({ reducedMotion: 'reduce' });
+    const sp = new SearchPage(page);
+    await seedGroup(sp, tmpProject.id, 'stroke');
+    await sp.addConceptGroup('aspirin');
+    await activateCard(sp, 'stroke');
+    await page.getByTestId('sb-strategy-preview').getByText('Your search so far').click();
+    await expect(sp.activeConcept).toHaveCount(0);
+    await sp.conceptCard('aspirin').getByTestId('sb-card-toggle').click();
+    await expect(sp.activeConcept.getByLabel(/Concept name/)).toHaveValue('aspirin');
+  });
+
   test('97.md Phase 12 — duplicate journey: dark-red chips on BOTH board cards, find other, keep both, persistence', async ({ page, tmpProject }) => {
     const sp = new SearchPage(page);
     await seedGroup(sp, tmpProject.id, 'obstruction');
@@ -582,8 +662,13 @@ test.describe('98.md — the staged Search Workspace (concept board)', () => {
     await expect(sp.termChip('emphysema')).toHaveCount(0); // untouched
 
     // Outside every typing surface the SAME chord undoes the removal.
-    await sp.workspaceHeading.click(); // move focus off the input
+    // 99.md — clicking the heading (neutral page surface) also COLLAPSES the
+    // board; global undo still works from the collapsed overview, and the
+    // restored term is there once the card is re-expanded.
+    await sp.workspaceHeading.click(); // move focus off the input (collapses the board)
+    await expect(sp.activeConcept).toHaveCount(0);
     await page.keyboard.press('Control+z');
+    await activateCard(sp, 'copd');
     await expect(sp.termChip('emphysema')).toBeVisible();
   });
 

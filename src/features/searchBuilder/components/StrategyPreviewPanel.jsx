@@ -39,7 +39,7 @@ function CountChip({ hitState, onRetry }) {
       <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8, fontSize: 11 }}>
         <span style={{ color: C.yel }}>estimate unavailable</span>
         {onRetry && (
-          <button type="button" onClick={onRetry}
+          <button type="button" onClick={onRetry} data-sb-collapse-exempt="true" /* 99.md — retrying the estimate is not "clicking away" */
             style={{ background: 'none', border: `1px solid ${C.brd2}`, borderRadius: 6, color: C.txt2, cursor: 'pointer', fontSize: 10.5, fontWeight: 600, fontFamily: FONT, padding: '2px 10px', minHeight: 22 }}>
             Retry
           </button>
@@ -80,7 +80,11 @@ export default function StrategyPreviewPanel({ concepts, activeId, beginner, rea
                 {/* QA M8 — the AND/OR toggle mutates persisted state: read-only
                     viewers get a disabled chip with an access explanation instead
                     of a click that PUTs and fails. */}
-                <button type="button" data-testid="sb-preview-op"
+                {/* 99.md — collapse-exempt: this toggle ACTS on the concepts (it
+                    rewrites the between-concept operator), so it must not double as
+                    "clicked away from the board". The panel's inert areas still
+                    collapse, which is the documented outside-click behaviour. */}
+                <button type="button" data-testid="sb-preview-op" data-sb-collapse-exempt="true"
                   onClick={() => { if (!readOnly && onToggleOp) onToggleOp(blocks[bi - 1].c.id); }}
                   disabled={!!readOnly}
                   aria-disabled={readOnly || undefined}

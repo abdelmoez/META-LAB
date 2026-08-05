@@ -247,6 +247,84 @@ describe('ActiveConceptPanel — board card modes (98.md §9)', () => {
   });
 });
 
+/* ── 99.md — dynamic expand/collapse contracts on the board card ─────────────
+   The chevron is the card's DISCLOSURE control (real button; aria-expanded +
+   aria-controls point at the stable body wrapper), the compact header names its
+   size ("N terms"), and the hover/motion affordances ride CSS classes so
+   prefers-reduced-motion can remove them wholesale in the tab stylesheet. */
+describe('ActiveConceptPanel — 99.md expand/collapse disclosure contracts', () => {
+  it('COMPACT card: chevron button with aria-expanded="false" + aria-controls → the body id', () => {
+    const html = r(h(ActiveConceptPanel, { concept: P, conceptIndex: 0, status: 'ready', compact: true, onActivate: () => {}, testId: 'sb-concept-card' }));
+    expect(html).toContain('data-testid="sb-card-toggle"');
+    expect(html).toContain('aria-expanded="false"');
+    expect(html).toContain('aria-controls="sb-card-body-cP"');
+    expect(html).toContain('id="sb-card-body-cP"');
+    expect(html).toContain('aria-label="Expand Population for editing"');
+    expect(html).toContain('data-open="false"');
+  });
+  it('the collapsed disclosure region is EMPTY — aria-expanded="false" never describes visible content', () => {
+    // The chips preview stays visible while collapsed, so it must sit OUTSIDE the
+    // region the chevron claims to control; the region itself renders empty.
+    const html = r(h(ActiveConceptPanel, {
+      concept: P, conceptIndex: 0, status: 'ready', compact: true, onActivate: () => {}, testId: 'sb-concept-card',
+    }, h('div', { 'data-testid': 'chip-preview' })));
+    expect(html).toContain('data-testid="chip-preview"');       // preview renders…
+    expect(html).toMatch(/id="sb-card-body-cP"[^>]*><\/div>/);  // …but the region is empty
+    // Expanded, the same children live INSIDE the region.
+    const open = r(h(ActiveConceptPanel, {
+      concept: P, conceptIndex: 0, status: 'ready', active: true, onCollapse: () => {},
+    }, h('div', { 'data-testid': 'work-surfaces' })));
+    expect(open).toMatch(/id="sb-card-body-cP"[\s\S]*data-testid="work-surfaces"/);
+  });
+  it('the focusable compact card carries a programmatic operability hint (it is not a button role)', () => {
+    const html = r(h(ActiveConceptPanel, { concept: P, conceptIndex: 0, status: 'ready', compact: true, onActivate: () => {}, testId: 'sb-concept-card' }));
+    expect(html).toContain('aria-describedby="sb-card-body-cP-hint"');
+    expect(html).toContain('Press Enter to open this concept for editing.');
+    expect(html).not.toContain('role="button"'); // nested interactive children forbid it
+    // The active card is not a tab stop and carries no hint.
+    expect(r(h(ActiveConceptPanel, { concept: P, conceptIndex: 0, status: 'ready', active: true, onCollapse: () => {} })))
+      .not.toContain('aria-describedby');
+  });
+  it('the chevron meets the 24×24 pointer-target minimum (WCAG 2.2 SC 2.5.8)', () => {
+    const html = r(h(ActiveConceptPanel, { concept: P, conceptIndex: 0, status: 'ready', active: true, onCollapse: () => {} }));
+    expect(html).toMatch(/min-height:24px/);
+    expect(html).toMatch(/min-width:24px/);
+  });
+  it('ACTIVE card: chevron flips to aria-expanded="true" with collapse labelling', () => {
+    const html = r(h(ActiveConceptPanel, { concept: P, conceptIndex: 0, status: 'ready', active: true, onCollapse: () => {} }));
+    expect(html).toContain('data-testid="sb-card-toggle"');
+    expect(html).toContain('aria-expanded="true"');
+    expect(html).toContain('aria-label="Collapse Population"');
+    expect(html).toContain('data-open="true"');
+    expect(html).toContain('sb-card-body-enter'); // the soft body entrance class rides the active state
+  });
+  it('no toggle callbacks → no chevron (the legacy single-panel mount stays chevron-free)', () => {
+    const html = r(h(ActiveConceptPanel, { concept: P, conceptIndex: 0, status: 'ready', active: true }));
+    expect(html).not.toContain('sb-card-toggle');
+  });
+  it('COMPACT card header names its size — "N terms" with MeSH presence in the title', () => {
+    const html = r(h(ActiveConceptPanel, { concept: P, conceptIndex: 0, status: 'ready', compact: true, onActivate: () => {}, testId: 'sb-concept-card' }));
+    expect(html).toContain('data-testid="sb-term-count"');
+    expect(html).toContain('2 terms');
+    expect(html).toContain('includes a MeSH term'); // P holds a matched controlled term
+    // the active card shows the chips themselves — no duplicate count badge
+    expect(r(h(ActiveConceptPanel, { concept: P, conceptIndex: 0, status: 'ready', active: true, onCollapse: () => {} }))).not.toContain('sb-term-count');
+    // an EMPTY compact card keeps its "No terms yet" body instead of a "0 terms" badge
+    expect(r(h(ActiveConceptPanel, { concept: { ...P, terms: [] }, conceptIndex: 0, status: 'empty', compact: true, onActivate: () => {}, testId: 'sb-concept-card' }))).not.toContain('sb-term-count');
+  });
+  it('the hover/motion affordances ride the sb-card-shell class + data-compact attribute', () => {
+    const compact = r(h(ActiveConceptPanel, { concept: P, conceptIndex: 0, status: 'ready', compact: true, onActivate: () => {}, testId: 'sb-concept-card' }));
+    expect(compact).toContain('sb-card-shell');
+    expect(compact).toContain('data-compact="true"');
+    const active = r(h(ActiveConceptPanel, { concept: P, conceptIndex: 0, status: 'ready', active: true, onCollapse: () => {} }));
+    expect(active).toContain('data-compact="false"');
+  });
+  it('the chevron is a VIEW control: present for read-only viewers too', () => {
+    const html = r(h(ActiveConceptPanel, { concept: P, conceptIndex: 0, status: 'ready', compact: true, readOnly: true, onActivate: () => {}, testId: 'sb-concept-card' }));
+    expect(html).toContain('data-testid="sb-card-toggle"');
+  });
+});
+
 /* ── TermChipRow ──────────────────────────────────────────────────────────── */
 describe('TermChipRow — chips show the SEARCHED term + explicit OR separators', () => {
   const concept = { ...P, terms: [controlled, freetext, unmatched, disabledTerm] };

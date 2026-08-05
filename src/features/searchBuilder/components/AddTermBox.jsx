@@ -85,7 +85,11 @@ export default function AddTermBox({
       if (open && items.length) pick(items[Math.max(0, hi)]);
       else commitTyped();
     } else if (e.key === 'Escape') {
-      if (open) { e.preventDefault(); setOpen(false); setHi(0); }
+      // 99.md — layered dismissal: Escape closes the suggestion list first, then
+      // clears a non-empty draft, and only a "free" Escape (nothing to dismiss
+      // here) bubbles on to the board's collapse handler.
+      if (open) { e.preventDefault(); e.stopPropagation(); setOpen(false); setHi(0); }
+      else if (String(value || '').trim()) { e.stopPropagation(); onClear && onClear(); }
       else { onClear && onClear(); }
     }
   };

@@ -36,6 +36,7 @@ export default function ActiveConceptPanel({
   compact,            // true → inactive card: tighter padding, no guidance ¶, activate-on-click
   active,             // true → this card is the working card (strong border)
   onActivate,         // click-to-activate (inactive cards)
+  onCollapse,         // 99.md — chevron collapse (active card; view action, works read-only)
   dragHandle,         // pointer-drag handle props for group reorder/merge (spread onto the grip)
   registerEl,         // (el) → geometry registration (cross-group drop target + reorder)
   isDropTarget,       // a chip/group drag is hovering this card → ring
@@ -48,6 +49,10 @@ export default function ActiveConceptPanel({
   const live = liveTermsOf(c);
   const meshN = live.filter((t) => t.type === 'controlled' && t.vocab).length;
   const st = status || 'empty';
+  // 99.md §8 — the chevron is the card's DISCLOSURE control: aria-expanded +
+  // aria-controls point at the body wrapper (a stable id in both states).
+  const bodyId = `sb-card-body-${String(c.id || 'x').replace(/[^a-zA-Z0-9_-]/g, '')}`;
+  const canToggle = !!(onActivate || onCollapse);
   const stCol = { empty: C.dim, 'needs-review': C.yel, 'mesh-suggested': C.acc, ready: C.grn }[st] || C.muted;
   // M4 — inline sourcePhrase editing state (local draft; commit via callback).
   const [phraseEditing, setPhraseEditing] = useState(false);
@@ -72,11 +77,22 @@ export default function ActiveConceptPanel({
     <section data-testid={testId || 'sb-active-concept'} aria-label={`Concept group: ${c.label || ''}`}
       aria-current={active ? 'true' : undefined}
       ref={registerEl}
+      className="sb-card-shell" data-compact={compact ? 'true' : 'false'} /* 99.md §3 — hover lift + focus ring live in the tab stylesheet */
       onClick={compact && onActivate ? onActivate : undefined}
-      tabIndex={compact && onActivate ? 0 : undefined}
+      /* 99.md review (a11y) — the card must stay FOCUSABLE in both states. Dropping
+         the attribute on expand un-focuses the element the user was standing on, and
+         the browser resets focus to <body>: Escape then reached nothing and the card
+         could not be collapsed from the keyboard. tabIndex=-1 keeps it programmatically
+         focusable (the Escape-collapse refocus target) without adding a tab stop. */
+      tabIndex={compact && onActivate ? 0 : -1}
       onKeyDown={compact && onActivate ? (e) => {
         if ((e.key === 'Enter' || e.key === ' ') && !fromInteractive(e)) { e.preventDefault(); onActivate(); }
       } : undefined}
+      /* 99.md review (a11y) — the compact card is a focusable tab stop (H14) and the
+         Escape-collapse refocus target, but role="region" announces nothing about it
+         being operable. The hint says so programmatically; role="button" is NOT an
+         option (the card contains nested interactive children, which that role forbids). */
+      aria-describedby={compact && onActivate ? `${bodyId}-hint` : undefined}
       title={compact && onActivate ? 'Select this concept to edit it' : undefined}
       style={{
         background: C.card, borderRadius: 10, padding: compact ? '10px 12px' : 14, fontFamily: FONT,
@@ -108,6 +124,10 @@ export default function ActiveConceptPanel({
           onFocus={() => { if (!readOnly && onRenameBegin) onRenameBegin(); }} /* 98.md review (M4) — the rename-undo session tracks THIS card, not the active one */
           onBlur={() => { if (!readOnly && onRenameCommit) onRenameCommit(); }}
           onClick={(e) => { if (compact) e.stopPropagation(); }}
+          /* 99.md review (a11y) — layered dismissal: Escape inside a text field must
+             not collapse the card out from under an active edit. This input is always
+             visible (there is no editor layer to close), so Escape simply stops here. */
+          onKeyDown={(e) => { if (e.key === 'Escape') e.stopPropagation(); }}
           aria-label={`Concept name: ${c.label || ''}`}
           readOnly={!!readOnly} aria-disabled={readOnly || undefined}
           title={readOnly ? 'Read-only access — ask a project editor to rename this concept' : 'Rename this concept'}
@@ -127,13 +147,54 @@ export default function ActiveConceptPanel({
             {meshN > 0 ? 'has MeSH term' : 'no MeSH term yet'}
           </span>
         )}
+        {/* 99.md §6 — the collapsed card names its size at a glance ("N terms",
+            MeSH presence in the tooltip); the active card shows the chips anyway. */}
+        {compact && live.length > 0 && (
+          <span data-testid="sb-term-count"
+            title={meshN > 0 ? `${live.length} term${live.length === 1 ? '' : 's'} · includes a MeSH term` : `${live.length} term${live.length === 1 ? '' : 's'}`}
+            style={{ fontSize: 9, fontWeight: 700, color: C.muted, background: C.card2, border: `1px solid ${C.brd2}`, borderRadius: 5, padding: '1px 6px', flexShrink: 0, whiteSpace: 'nowrap' }}>
+            {live.length} term{live.length === 1 ? '' : 's'}
+          </span>
+        )}
         <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 9, fontWeight: 700, letterSpacing: 0.4, color: stCol, textTransform: 'uppercase', background: alpha(stCol, '14'), border: `1px solid ${alpha(stCol, '44')}`, borderRadius: 5, padding: '1px 7px', flexShrink: 0 }}>
           {/* 97.md Phase 13 — exact vocabulary naming: the retired "Subject heading
               suggested" status label reads "MeSH term suggested" here (UI-layer
               override; the engine constant is swept separately). */}
           <span aria-hidden="true">{CONCEPT_STATUS_GLYPH[st] || '○'}</span>{st === 'mesh-suggested' ? 'MeSH term suggested' : (CONCEPT_STATUS_LABELS[st] || st)}
         </span>
+        {/* 99.md §3/§8 — the explicit expand/collapse DISCLOSURE control: a real
+            button (valid aria-expanded home — the section itself carries no widget
+            role), doubling as the visible "this opens" cue. A view action: present
+            for read-only viewers too. */}
+        {canToggle && (
+          <button type="button" data-testid="sb-card-toggle"
+            className="sb-card-chevron" data-open={active ? 'true' : 'false'}
+            aria-expanded={!!active} aria-controls={bodyId}
+            aria-label={active ? `Collapse ${c.label || 'this concept'}` : `Expand ${c.label || 'this concept'} for editing`}
+            title={active ? 'Collapse this concept' : 'Expand this concept'}
+            onClick={(e) => { e.stopPropagation(); if (active) { if (onCollapse) onCollapse(); } else if (onActivate) onActivate(); }}
+            /* 99.md review (a11y) — 24×24 minimum (WCAG 2.2 SC 2.5.8): on the ACTIVE
+               card this chevron is the ONLY pointer target that collapses, so it
+               cannot lean on the card-sized expand target the compact state has. */
+            style={{ background: 'none', border: 'none', color: C.muted, cursor: 'pointer', fontSize: 12, lineHeight: 1, padding: '4px 6px', flexShrink: 0, borderRadius: 6, minHeight: 24, minWidth: 24, display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }}>
+            <span aria-hidden="true">⌄</span>
+          </button>
+        )}
       </div>
+      {/* 99.md review (a11y) — the collapsed card's chip PREVIEW sits OUTSIDE the
+          disclosure region: it stays visible in both states, so including it would
+          make aria-expanded="false" describe a region that is plainly still there. */}
+      {compact && onActivate && (
+        <span id={`${bodyId}-hint`} style={{ position: 'absolute', width: 1, height: 1, padding: 0, margin: -1, overflow: 'hidden', clip: 'rect(0 0 0 0)', whiteSpace: 'nowrap', border: 0 }}>
+          Press Enter to open this concept for editing.
+        </span>
+      )}
+      {compact && children}
+      {/* 99.md — the disclosure region: exactly the surfaces the chevron toggles
+          (empty while collapsed, so aria-expanded tells the truth). The wrapper is
+          mounted in BOTH states to keep the aria-controls id resolvable, and the
+          active body gets the soft fade-slide entrance (CSS-only). */}
+      <div id={bodyId} className={active ? 'sb-card-body-enter' : undefined}>
       {/* 96.md QA M4 — the originating question phrase, editable in place (active card only). */}
       {!compact && (c.sourcePhrase || phraseEditing) && (
         <div data-testid="sb-source-phrase" style={{ display: 'flex', alignItems: 'center', gap: 7, flexWrap: 'wrap', margin: '0 0 8px', fontSize: 11, color: C.muted }}>
@@ -153,7 +214,7 @@ export default function ActiveConceptPanel({
           {phraseEditing && (
             <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
               <input value={phraseDraft} onChange={(e) => setPhraseDraft(e.target.value)}
-                onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); savePhrase(); } if (e.key === 'Escape') setPhraseEditing(false); }}
+                onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); savePhrase(); } if (e.key === 'Escape') { e.stopPropagation(); setPhraseEditing(false); } /* 99.md — layered dismissal: closing the phrase editor must not also collapse the card */ }}
                 aria-label={`New phrase for ${c.label || 'this concept'}`} placeholder="phrase from the question…" autoFocus
                 style={{ background: C.surf, border: `1px solid ${C.brd}`, borderRadius: 7, padding: '4px 8px', color: C.txt, fontFamily: FONT, fontSize: 11, width: 220 }} />
               <button type="button" onClick={savePhrase} disabled={!phraseDraft.trim()}
@@ -187,7 +248,8 @@ export default function ActiveConceptPanel({
           )}
         </p>
       )}
-      {children}
+      {!compact && children}
+      </div>
     </section>
   );
 }

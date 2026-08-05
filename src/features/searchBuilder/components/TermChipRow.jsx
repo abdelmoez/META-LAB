@@ -239,7 +239,7 @@ export default function TermChipRow({
                   aria-expanded={meshOpenId === t.id}
                   onFocus={() => setMeshOpenId(t.id)}
                   onClick={() => setMeshOpenId(t.id)}
-                  onKeyDown={(e) => { if (e.key === 'Escape') setMeshOpenId(null); }}
+                  onKeyDown={(e) => { if (e.key === 'Escape' && meshOpenId === t.id) { e.stopPropagation(); setMeshOpenId(null); } /* 99.md — layered dismissal: consume Escape only when it actually closed the popover */ }}
                   onBlur={(e) => {
                     const wrap = e.currentTarget && e.currentTarget.parentNode;
                     const to = e.relatedTarget;

@@ -1,4 +1,7 @@
 import { useState, useMemo, useEffect, useRef, useCallback, useId } from "react";
+// 99.md — the board expand/collapse morph renders synchronously inside a View
+// Transition callback (the only flushSync in the feature; see animateBoardChange).
+import { flushSync } from "react-dom";
 import { C, FONT, MONO, alpha, CB_SERIES } from "../../frontend/theme/tokens.js";  // SearchEngine: adapt to app theme (day/night + brand)
 import { localMeshSuggestions, meshConfidence } from "../../research-engine/searchBuilder/meshSuggest.js"; // prompt42 Task 3 + SB5 vocab safety
 import { serializeSearchState, pickPersisted, remoteAdoptDecision,
@@ -595,7 +598,7 @@ export function QuestionPhraseCard({question,accent,isSelected,onTogglePhrase,on
     onTogglePhrase(tokens[i].text);
   };
   return(
-    <div data-testid="sb-question-card" style={{background:C.card,border:`1px solid ${C.brd}`,borderLeft:`3px solid ${accent}`,borderRadius:10,padding:"11px 13px",marginBottom:10}}>
+    <div data-testid="sb-question-card" data-sb-collapse-exempt="true" style={{background:C.card,border:`1px solid ${C.brd}`,borderLeft:`3px solid ${accent}`,borderRadius:10,padding:"11px 13px",marginBottom:10}}>
       <div style={{display:"flex",alignItems:"baseline",gap:8,marginBottom:6}}>
         <span style={{fontSize:12,fontWeight:700,color:C.txt}}>Research question</span>
         {beginner&&<span style={{fontSize:10.5,color:C.muted}}>click or drag the key ideas to build concept groups</span>}
@@ -693,7 +696,11 @@ export function PicoSourceSections({ pico, accent, isSelected, onTogglePhrase, r
     .filter((r) => r.text);
   if (!rows.length) return null;
   return (
-    <div data-testid="sb-pico-sources" style={{ background: C.card, border: `1px solid ${C.brd}`, borderRadius: 10, padding: "10px 13px", marginBottom: 10 }}>
+    // 99.md review — collapse-exempt for the same reason as the question card: these
+    // tokens run the SAME togglePhrase handler, so they create/open/remove concepts.
+    // Without it, removing a phrase-only concept via a PICO token collapsed the whole
+    // board while the identical research-question token left it alone.
+    <div data-testid="sb-pico-sources" data-sb-collapse-exempt="true" style={{ background: C.card, border: `1px solid ${C.brd}`, borderRadius: 10, padding: "10px 13px", marginBottom: 10 }}>
       <div style={{ display: "flex", alignItems: "baseline", gap: 8, marginBottom: 4 }}>
         <span style={{ fontSize: 11.5, fontWeight: 700, color: C.txt }}>Protocol PICO — source text</span>
         <span style={{ fontSize: 10, color: C.muted }}>
@@ -746,7 +753,7 @@ export function QuestionDriftBanner({drifted,onKeepAll,onEditConcept,onUpdatePhr
     setEditingId(null); setPhraseDraft("");
   };
   return(
-    <div data-testid="sb-drift-banner" role="status"
+    <div data-testid="sb-drift-banner" data-sb-collapse-exempt="true" role="status"
       style={{background:`${alpha(C.yel,"10")}`,border:`1px solid ${alpha(C.yel,"44")}`,borderRadius:8,padding:"10px 12px",marginBottom:10,fontSize:12,color:C.txt2}}>
       <div style={{display:"flex",alignItems:"center",gap:10,flexWrap:"wrap",marginBottom:6}}>
         <span style={{flex:1,minWidth:220}}>
@@ -998,6 +1005,15 @@ export default function SearchBuilderTab({projectId,question:questionProp,pico,a
   const [undoMsg,setUndoMsg]=useState(null);
   // Master-detail: the concept whose terms are being edited on the Terms stage.
   const [activeConceptId,setActiveConceptId]=useState(null);
+  /* 99.md — EXPLICIT board collapse, deliberately a SEPARATE atom from
+     activeConceptId: a null id means "no explicit choice" and falls back to
+     concepts[0] (the 98.md H14 keyboard contract plus every legacy flow — load,
+     remote adoption, version restore, undo — depends on that fallback), while
+     boardCollapsed=true means the USER collapsed the expanded card (outside
+     click / Escape / chevron) and every card renders compact until the next
+     explicit activation. Session-only UI state: never persisted, reset when the
+     project switches or the user leaves the terms phase. */
+  const [boardCollapsed,setBoardCollapsed]=useState(false);
   /* ── 97.md additions ─────────────────────────────────────────────────────── */
   // Plan §8 — the ONE new top-level persisted key: generation/modification metadata
   // { generatedAt, generatedBy, sourceQuestion, manuallyModifiedAt, manuallyModifiedBy }.
@@ -1025,10 +1041,18 @@ export default function SearchBuilderTab({projectId,question:questionProp,pico,a
   // 96.md D13.3 — group-management UI state (terms phase): inline delete confirm,
   // the merge-target picker, and the split panel's draft {cid, selected:{tid:true}, label}.
   const [confirmDeleteId,setConfirmDeleteId]=useState(null);
+  // 99.md review (a11y) — one-shot guard so the delete-confirm's Cancel button
+  // takes focus when the row OPENS without stealing it on every re-render.
+  const confirmFocusRef=useRef(null);
+  // …and back to "× Delete concept" when the confirm is cancelled (it is unmounted
+  // by the swap, so focus would otherwise fall to <body>).
+  const restoreDeleteFocusRef=useRef(false);
   const [mergeOpen,setMergeOpen]=useState(false);
   const [splitDraft,setSplitDraft]=useState(null);
   // Group UI state follows the active concept (stale pickers never linger).
   useEffect(()=>{ setConfirmDeleteId(null); setMergeOpen(false); setSplitDraft(null); },[activeConceptId]);
+  // Re-arm the confirm's one-shot focus each time the row closes.
+  useEffect(()=>{ if(!confirmDeleteId) confirmFocusRef.current=null; },[confirmDeleteId]);
   // review-round #8 — switching the active concept closes any popover/add box that
   // belongs to another concept: an INVISIBLE editor (master-detail hides non-active
   // concepts) silently kept `busyEditing` true, deferring remote updates that then
@@ -1687,8 +1711,9 @@ export default function SearchBuilderTab({projectId,question:questionProp,pico,a
     // 98.md review (H14) — the new concept opens as the ACTIVE card immediately
     // (matching every other creation path): its add-term box is focusable, so a
     // keyboard user is never stranded on an empty compact card with no
-    // activatable control.
-    setActiveConceptId(cid);
+    // activatable control. (99.md — activatePlain also clears an explicit
+    // collapse: creating a concept always opens it.)
+    activatePlain(cid);
     setUndoStack(st=>recordAddConcept(st,{conceptId:cid,label}));
     setUndoMsg(`Created concept “${label}”`);
   };
@@ -2041,8 +2066,11 @@ export default function SearchBuilderTab({projectId,question:questionProp,pico,a
   const conceptIndexById=useMemo(()=>{const m={};concepts.forEach((c,i)=>{m[c.id]=i;});return m;},[concepts]);
   const activeConcept=useMemo(()=>{
     if(!concepts.length) return null;
+    // 99.md — an explicit user collapse renders EVERY card compact; a null id
+    // still falls back to concepts[0] (the load-time keyboard contract, H14).
+    if(boardCollapsed) return null;
     return concepts.find(c=>c.id===activeConceptId)||concepts[0];
-  },[concepts,activeConceptId]);
+  },[concepts,activeConceptId,boardCollapsed]);
   /* (96.md — the Concepts-stage "Edit terms →" card action is gone with the stage;
      the ConceptNavigator + question-card clicks own concept activation now.) */
   /* ── 97.md Phase 12 — the chip-integrated duplicate model (dupSignals.js).
@@ -2053,8 +2081,10 @@ export default function SearchBuilderTab({projectId,question:questionProp,pico,a
     ()=>buildDupModel({concepts,dismissed:dismissedWarnings}),
     [concepts,dismissedWarnings]);
   const dupSignalFor=(t)=>(t&&t.id?dupModel.byTermId[t.id]||null:null);
-  /* Focus a specific chip ("Find other duplicate" / "Find existing term"). */
-  const requestFocusTerm=(cid,tid)=>{ setActiveConceptId(cid); setEditing(null); setFocusTerm({cid,tid}); };
+  /* Focus a specific chip ("Find other duplicate" / "Find existing term").
+     99.md — routed through selectConcept so a collapsed board expands (with the
+     morph) before the chip receives focus. */
+  const requestFocusTerm=(cid,tid)=>{ selectConcept(cid,()=>{ setEditing(null); setFocusTerm({cid,tid}); }); };
   /* ── 96.md D13.2 — phrase selection on the RESEARCH QUESTION creates groups ──
      Clicking a token/phrase CREATES a concept group (label = phrase, sourcePhrase
      recorded, first term = the phrase as tiab freetext). Duplicate-phrase clicks
@@ -2074,7 +2104,7 @@ export default function SearchBuilderTab({projectId,question:questionProp,pico,a
     setConcepts(cs=>[...cs,withIds]);
     touchMeta();
     stampSnapshotIfEmpty();
-    setActiveConceptId(cid);
+    activatePlain(cid); // 99.md — a freshly created concept always opens
     tryLookup(cid,withIds.terms[0].id,withIds.terms[0].text);
     // 97 QA M10/H2 — Select (token click) / manual group add is undoable: the
     // entry records the group's ORIGIN term ids, so undo removes the group even
@@ -2092,7 +2122,7 @@ export default function SearchBuilderTab({projectId,question:questionProp,pico,a
     const span=combineSpanFromTokens(tokens,fromIdx,toIdx);
     if(!span) return;
     const existing=findConceptForPhrase(conceptsRef.current,span.text);
-    if(existing){ setActiveConceptId(existing.id); announce(`"${existing.label||span.text}" already exists — opened it`); return; }
+    if(existing){ selectConcept(existing.id); announce(`"${existing.label||span.text}" already exists — opened it`); return; }
     const fresh=createConceptFromPhrase(span.text);
     if(!fresh) return;
     const cid=uid();
@@ -2100,7 +2130,7 @@ export default function SearchBuilderTab({projectId,question:questionProp,pico,a
     setConcepts(cs=>[...cs,withIds]);
     touchMeta();
     stampSnapshotIfEmpty();
-    setActiveConceptId(cid);
+    activatePlain(cid); // 99.md — a freshly created concept always opens
     tryLookup(cid,withIds.terms[0].id,withIds.terms[0].text);
     // 97 QA H2 — the entry carries the origin phrase term's id, so the toast's
     // Undo genuinely removes the group the combine just created (the old entry
@@ -2117,7 +2147,7 @@ export default function SearchBuilderTab({projectId,question:questionProp,pico,a
         removeConcept(existing.id); // records the undo inverse + snackbar
         announce(`Removed concept "${existing.label||clean}"`);
       } else {
-        setActiveConceptId(existing.id);
+        selectConcept(existing.id);
         announce(`"${existing.label||clean}" already has terms — opened it instead`);
       }
       return;
@@ -2128,7 +2158,7 @@ export default function SearchBuilderTab({projectId,question:questionProp,pico,a
   const addManualConcept=(text)=>{
     const clean=String(text||"").trim(); if(!clean) return;
     const existing=findConceptForPhrase(conceptsRef.current,clean);
-    if(existing){ setActiveConceptId(existing.id); announce(`"${existing.label||clean}" already exists — opened it`); return; }
+    if(existing){ selectConcept(existing.id); announce(`"${existing.label||clean}" already exists — opened it`); return; }
     if(addPhraseConcept(clean)) announce(`Created concept "${clean}"`);
   };
 
@@ -2209,7 +2239,7 @@ export default function SearchBuilderTab({projectId,question:questionProp,pico,a
     const skippedN=Array.isArray(res.skipped)?res.skipped.length:0;
     const skippedNote=skippedN?` · ${skippedN} duplicate term${skippedN===1?'':'s'} already present ${skippedN===1?'was':'were'} not moved`:'';
     setUndoMsg(`Merged "${res.undo.fromConcept.label||"concept"}" into "${(target&&target.label)||"concept"}"${skippedNote}`);
-    setActiveConceptId(intoId);
+    activatePlain(intoId); // 99.md — the merge target opens even from a collapsed board (drag-merge)
     announce(`Merged "${res.undo.fromConcept.label||"concept"}" into "${(target&&target.label)||"concept"}"${skippedNote}`);
   };
   const splitConceptTerms=(cid,termIds,newLabel)=>{
@@ -2222,7 +2252,7 @@ export default function SearchBuilderTab({projectId,question:questionProp,pico,a
     touchMeta();
     setUndoStack(st=>recordSplitConcept(st,{fromConceptId:cid,newConceptId:nid,termIds,label}));
     setUndoMsg(`Split ${termIds.length} term${termIds.length===1?"":"s"} into "${label}"`);
-    setActiveConceptId(nid);
+    activatePlain(nid);
     announce(`Split ${termIds.length} term${termIds.length===1?"":"s"} into "${label}"`);
   };
   /* 96.md §3B (QA M3) — reorder a TERM within its group (the rendered OR chain).
@@ -2359,7 +2389,7 @@ export default function SearchBuilderTab({projectId,question:questionProp,pico,a
     setUndoStack(st=>recordCopyTerm(st,{conceptId:targetId,termId:res.newTermId,text:t.text}));
     setUndoMsg(`Copied “${t.text}” to ${targetLabel}`);
     announce(`Copied “${t.text}” to ${targetLabel}`);
-    setActiveConceptId(targetId);
+    activatePlain(targetId);
     setEditing(null);
   };
   /* 97.md Phase 6 — combine terms into ONE phrase (drag-onto-chip or the popover
@@ -2521,6 +2551,198 @@ export default function SearchBuilderTab({projectId,question:questionProp,pico,a
   })();
   const pillInsertIndex=pillDrag.state&&pillDrag.state.target&&pillDrag.state.target.kind==='insert'?pillDrag.state.target.index:null;
 
+  /* ── 99.md — DYNAMIC EXPAND/COLLAPSE of the concept board ───────────────────
+     One helper family owns every activation/collapse so the motion policy lives
+     in exactly one place:
+       · animateBoardChange — wraps a board-layout mutation in a View Transition
+         (the platform morph: old/new snapshots cross-fade while each named card
+         travels to its new box). Falls back to an instant flushSync when the API
+         is missing (jsdom, older engines), when prefers-reduced-motion is set,
+         or while a pointer drag is live (a morph mid-drag would fight the drag's
+         own geometry). CSS durations/easing live in the tab <style> block.
+       · selectConcept — the ONE expansion path (compact-card click/keyboard,
+         chevron, preview rows, drift banner, "Find existing term"). Clears the
+         explicit collapse, activates, and optionally runs companion state
+         updates INSIDE the same synchronous commit (an editing target set in a
+         separate commit would be closed by the stale-editor effect).
+       · collapseBoard — the ONE collapse path (outside click, Escape, chevron).
+         Closes per-card transient UI (editor popover, merge/split/delete
+         pickers) but deliberately RETAINS add-box drafts and suggestion-panel
+         open state: collapse is a view action, never a data action. */
+  const dragGestureLiveRef=useRef(null);
+  dragGestureLiveRef.current=()=>!!(
+    (chipDrag.state&&chipDrag.state.active)||(pillDrag.state&&pillDrag.state.active)
+    ||(chipDrag.wasDragClick&&chipDrag.wasDragClick())||(pillDrag.wasDragClick&&pillDrag.wasDragClick()));
+  const prefersReducedMotion=()=>{
+    try{ return typeof window!=="undefined"&&!!(window.matchMedia&&window.matchMedia("(prefers-reduced-motion: reduce)").matches); }
+    catch{ return false; }
+  };
+  /* THE COALESCING BOARD SCHEDULER. Board mutations from the same gesture arrive
+     through SEVERAL dispatch layers (the document-capture outside-click listener,
+     then the React handler on the actual target — e.g. collapse-then-reactivate
+     when a question token or preview row is clicked). A naive per-call
+     startViewTransition defers each mutation into its own async callback, so a
+     later call still reads pre-collapse state (its "already active" guard then
+     eats the re-activation) and commits land out of order. Instead every change
+     MERGES into one pending intent (guards read the intent, never render-scope
+     state) and exactly one commit applies it — inside a single View Transition
+     when morphing is possible, instantly otherwise. */
+  // True only while a board morph is in flight (drives the transient card names).
+  const [morphing,setMorphing]=useState(false);
+  const boardStateRef=useRef({collapsed:false,activeId:null});
+  boardStateRef.current={collapsed:boardCollapsed,activeId:activeConceptId};
+  const boardPendingRef=useRef(null);
+  const currentBoardIntent=()=>boardPendingRef.current||boardStateRef.current;
+  /* What the intent renders as the working card — replicates the activeConcept
+     memo's concepts[0] fallback so guards agree with what the user SEES. */
+  const intentActiveId=(intent)=>{
+    if(intent.collapsed) return null;
+    const list=conceptsRef.current||[];
+    if(!list.length) return null;
+    return list.some(x=>x&&x.id===intent.activeId)?intent.activeId:(list[0]&&list[0].id)||null;
+  };
+  const scheduleBoardChange=(patch)=>{
+    const pending=boardPendingRef.current;
+    const base=pending||{...boardStateRef.current,extras:[],afters:[],morph:true};
+    boardPendingRef.current={
+      collapsed:patch.collapsed!==undefined?patch.collapsed:base.collapsed,
+      activeId:patch.activeId!==undefined?patch.activeId:base.activeId,
+      extras:[...base.extras,...(patch.extras?[patch.extras]:[])],
+      afters:[...base.afters,...(patch.after?[patch.after]:[])],
+      morph:base.morph&&patch.morph!==false,
+    };
+    if(pending) return; // merged into the already-scheduled commit
+    const commit=()=>{
+      const fin=boardPendingRef.current;
+      boardPendingRef.current=null;
+      if(!fin) return;
+      flushSync(()=>{
+        setBoardCollapsed(fin.collapsed);
+        setActiveConceptId(fin.activeId);
+        fin.extras.forEach(f=>f());
+      });
+      fin.afters.forEach(f=>f());
+    };
+    const morph=!prefersReducedMotion()
+      &&!(dragGestureLiveRef.current&&dragGestureLiveRef.current())
+      &&typeof document!=="undefined"&&typeof document.startViewTransition==="function"
+      &&boardPendingRef.current.morph;
+    if(morph){
+      /* 99.md review (regressions) — view-transition-name is applied ONLY for the
+         duration of the morph. A permanent name makes every card wrapper a stacking
+         context, and the popovers that overflow a card (term editor, MeSH details)
+         then paint UNDER the following cards. The name must exist before the OLD
+         snapshot is taken, so it is flushed synchronously first and removed once the
+         transition settles. */
+      flushSync(()=>setMorphing(true));
+      const vt=document.startViewTransition(commit);
+      const done=()=>setMorphing(false);
+      if(vt&&vt.finished&&typeof vt.finished.then==="function") vt.finished.then(done,done);
+      else done();
+    }else commit();
+  };
+  /* The ONE expansion path (compact-card click/keyboard, chevron, preview rows,
+     drift banner, "Find existing term"). Companion updates (e.g. an editing
+     target) ride the same commit — a separate commit would be closed by the
+     stale-editor effect. */
+  const selectConcept=(cid,extras,opts)=>{
+    if(!cid) return;
+    if(intentActiveId(currentBoardIntent())===cid){ if(extras) extras(); return; } // already the working card — intentional no-op
+    scheduleBoardChange({collapsed:false,activeId:cid,extras,
+      after:opts&&opts.scroll?()=>{
+        const el=pillEls.current[cid];
+        if(el&&typeof el.scrollIntoView==="function") el.scrollIntoView({block:"nearest",behavior:prefersReducedMotion()?"auto":"smooth"});
+      }:undefined});
+  };
+  /* No-morph activation for DATA flows (merge/split/copy/create): their concepts
+     mutation commits in the surrounding event batch, so a morph would snapshot a
+     half-applied board. flushSync folds any such pending data update into the
+     same commit — the card change lands instantly, as it did before 99.md. */
+  const activatePlain=(cid)=>{ if(cid) scheduleBoardChange({collapsed:false,activeId:cid,morph:false}); };
+  const collapseBoard=(opts)=>{
+    const cur=currentBoardIntent();
+    if(cur.collapsed) return;
+    const prevId=intentActiveId(cur);
+    if(!prevId) return; // nothing is expanded (empty board)
+    // Keyboard collapse keeps the user anchored — but ONLY when their focus
+    // lived inside the collapsing card (its working surfaces unmount, so the
+    // browser would otherwise drop focus to <body>). Focus already elsewhere
+    // (another card, the page) is never stolen. Pointer collapse never refocuses.
+    const prevEl=pillEls.current[prevId]||null;
+    const focused=(typeof document!=="undefined"&&document.activeElement)||null;
+    const hadFocusInside=!!(prevEl&&typeof prevEl.contains==="function"&&focused&&prevEl.contains(focused));
+    scheduleBoardChange({collapsed:true,
+      extras:()=>{ setEditing(null); setMergeOpen(false); setSplitDraft(null); setConfirmDeleteId(null); },
+      /* 99.md review (a11y) — only rescue focus that the collapse actually DESTROYED.
+         Controls that survive it (the chevron the user just pressed, the rename input)
+         keep focus; moving it to the card section there would silently demote the user
+         from the button they are operating. */
+      after:(opts&&opts.refocus&&hadFocusInside)?()=>{
+        if(focused&&focused.isConnected) return;
+        if(prevEl&&typeof prevEl.focus==="function") prevEl.focus();
+      }:undefined});
+  };
+  const collapseBoardRef=useRef(null); collapseBoardRef.current=collapseBoard;
+  /* Outside-click collapse — a GESTURE-scoped document listener pair: the
+     pointerdown AND the resulting click must both land outside the board (and
+     outside the exempt layers) before the board collapses. Requiring the DOWN
+     to be outside means a text-selection drag that starts inside a card and
+     releases on the page never collapses it; requiring the CLICK target too
+     means a down-outside/up-inside gesture stays inert. Exempt layers: any
+     dialog (term editor, MeSH popover, Regenerate), the undo snackbar, and the
+     question-drift banner (its buttons act ON concepts). The trailing
+     compatibility click after a chip/pill drag is guarded like every other
+     click surface (98.md L8). Listeners ride capture phase so an inner
+     stopPropagation can never strand the board expanded. */
+  const outsideDownRef=useRef(false);
+  useEffect(()=>{
+    if(phase!=="terms") return undefined;
+    /* Exempt = surfaces whose clicks ACT ON the concept workflow rather than
+       leave it: the board itself, transient layers (dialogs, the undo snackbar)
+       and every strategy control panel carrying data-sb-collapse-exempt (the
+       question source card — its tokens create/focus concepts, the terms
+       toolbar with Regenerate, the drift banner, duplicate notices). Clicks on
+       genuinely neutral page surface (preview panels, limits, headings, page
+       background) still collapse. */
+    const exempt=(el)=>!!(el&&typeof el.closest==="function"&&el.closest(
+      '[data-testid="sb-concept-board"],[role="dialog"],[data-testid="sb-undo"],[data-sb-collapse-exempt]'));
+    const onDown=(e)=>{ outsideDownRef.current=!exempt(e.target); };
+    const onClick=(e)=>{
+      /* 99.md review — a KEYBOARD-activated control synthesises a click with
+         detail===0 and no preceding pointerdown, so the flag would still be carrying
+         a verdict from whatever the user last clicked: activating a button by Enter
+         could collapse the board (or not) depending on unrelated history. Pointer
+         gestures only; keyboard collapse is Escape's job. The flag is consumed here
+         so it can never outlive its own gesture. */
+      const pointerGesture=outsideDownRef.current&&e.detail!==0;
+      outsideDownRef.current=false;
+      if(!pointerGesture||exempt(e.target)) return;
+      if(dragGestureLiveRef.current&&dragGestureLiveRef.current()) return;
+      if(collapseBoardRef.current) collapseBoardRef.current({refocus:false});
+    };
+    document.addEventListener("pointerdown",onDown,true);
+    document.addEventListener("click",onClick,true);
+    return ()=>{
+      document.removeEventListener("pointerdown",onDown,true);
+      document.removeEventListener("click",onClick,true);
+    };
+  },[phase]);
+  /* Collapse is per-visit UI state: leaving the terms workspace or switching
+     projects restores the default working layout (first/last-active card open).
+     CRITICAL — the reset must also CANCEL any pending board commit. A View
+     Transition callback runs a frame later than the click that scheduled it, so
+     clicking a stage pip ran: outside-click schedules collapse → React changes
+     the stage → this effect resets → the deferred commit lands LAST and
+     re-collapses. Because SearchBuilderTab stays mounted across stages, the
+     board then stayed collapsed on return, breaking the H14 contract (verified
+     by e2e). Dropping the pending intent makes that late commit a no-op — see
+     the `if(!fin) return` guard in scheduleBoardChange's commit. */
+  const resetBoardCollapsed=useCallback(()=>{ boardPendingRef.current=null; setBoardCollapsed(false); },[]);
+  useEffect(()=>{ if(phase!=="terms") resetBoardCollapsed(); },[phase,resetBoardCollapsed]);
+  useEffect(()=>{ resetBoardCollapsed(); },[projectId,resetBoardCollapsed]);
+  // A commit that would land after unmount must not touch state either.
+  useEffect(()=>()=>{ boardPendingRef.current=null; },[]);
+
   /* ── 97.md Phase 4 — explicit Regeneration ────────────────────────────────────
      Snapshot-FIRST via the version registry ("Before regeneration"); on snapshot
      failure the whole action ABORTS with an error and no state change. On success:
@@ -2565,6 +2787,7 @@ export default function SearchBuilderTab({projectId,question:questionProp,pico,a
         setQuestionSnapshot(out.questionSnapshot);
         setMeta(out.meta||null);
         setActiveConceptId(withIds.length?withIds[0].id:null);
+        resetBoardCollapsed(); // 99.md — a regenerated board always lands in the working layout
         setEditing(null); setDrafts({}); setPendingSplit(null); setBlockedNotice(null);
         setUndoStack(st=>recordRegenerate(st,{prev}));
         setUndoMsg(REGENERATE_DONE_MESSAGE); // + the snackbar's Undo button ⇒ "Search strategy regenerated. Undo"
@@ -2603,7 +2826,37 @@ export default function SearchBuilderTab({projectId,question:questionProp,pico,a
     <div style={{background:C.bg,color:C.txt,fontFamily:SANS,padding:"4px 2px"}}>
       <style>{`@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;700&display=swap');
 .sbkw-token:focus-visible{outline:2px solid ${C.acc};outline-offset:2px;}
-.sb-chip:focus-visible{outline:2px solid ${C.acc};outline-offset:2px;border-radius:6px;}`}</style>
+.sb-chip:focus-visible{outline:2px solid ${C.acc};outline-offset:2px;border-radius:6px;}
+/* 99.md §3/§4 — concept-card affordances. Hover lifts via box-shadow + transform
+   (the base border stays inline, so the "glow" ring rides the shadow instead);
+   the chevron rotates; the active card's working surfaces fade-slide in (a soft
+   landing wherever the View Transition morph is unavailable). All motion is
+   removed under prefers-reduced-motion, matching the pv-* house pattern. */
+.sb-card-shell{transition:box-shadow .18s var(--ease-out,cubic-bezier(.22,.61,.36,1)),transform .18s var(--ease-out,cubic-bezier(.22,.61,.36,1));}
+/* NB: --t-shadow is a COMPLETE shadow value ("0 4px 20px rgba(…)"), not a colour —
+   writing "0 6px 16px var(--t-shadow)" makes the whole declaration invalid at
+   computed-value time and the browser silently drops it (caught in 99.md visual QA). */
+.sb-card-shell[data-compact="true"]:hover{box-shadow:0 0 0 1px ${alpha(C.acc,'66')},var(--t-shadow);transform:translateY(-1px);}
+.sb-card-shell[data-compact="true"]:focus-visible{outline:2px solid ${C.acc};outline-offset:2px;}
+.sb-card-chevron{transition:transform .18s var(--ease-out,cubic-bezier(.22,.61,.36,1));}
+.sb-card-chevron[data-open="true"]{transform:rotate(180deg);}
+.sb-card-body-enter{animation:sbCardBodyIn .2s var(--ease-out,cubic-bezier(.22,.61,.36,1));}
+@keyframes sbCardBodyIn{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}
+/* The board morph (only this tab starts view transitions): calm, quick, no bounce.
+   old/new are retimed WITH the group — leaving them at the UA's 250ms default made
+   the cross-fade outlast the movement. The root is SNAPPED rather than cross-faded:
+   everything outside the board is unchanged by an expand/collapse, so animating the
+   default root group only ghosted the whole page under the cards (99.md review). */
+::view-transition-group(*){animation-duration:.22s;animation-timing-function:var(--ease-out,cubic-bezier(.22,.61,.36,1));}
+::view-transition-old(*),::view-transition-new(*){animation-duration:.22s;animation-timing-function:var(--ease-out,cubic-bezier(.22,.61,.36,1));}
+::view-transition-old(root){animation:none;opacity:0;}
+::view-transition-new(root){animation:none;opacity:1;}
+@media (prefers-reduced-motion: reduce){
+  .sb-card-shell,.sb-card-chevron{transition:none!important;}
+  .sb-card-shell[data-compact="true"]:hover{transform:none;}
+  .sb-card-body-enter{animation:none!important;}
+  ::view-transition-group(*),::view-transition-old(*),::view-transition-new(*){animation:none!important;}
+}`}</style>
 
       {/* 97.md Phase 4 — the Regenerate confirmation dialog (exact spec copy). */}
       <RegenerateDialog open={regenOpen} busy={regenBusy} error={regenError}
@@ -2654,7 +2907,7 @@ export default function SearchBuilderTab({projectId,question:questionProp,pico,a
       {/* 85.md A2 — embedded stage toolbar: honest save state (audit C2) + the
           beginner/expert toggle, previously unreachable in the workspace (M9). */}
       {embedded&&(
-        <div data-testid="sb-stage-toolbar" style={{display:"flex",alignItems:"center",gap:12,flexWrap:"wrap",marginBottom:12}}>
+        <div data-testid="sb-stage-toolbar" data-sb-collapse-exempt="true" style={{display:"flex",alignItems:"center",gap:12,flexWrap:"wrap",marginBottom:12}}>
           <SaveStatusIndicator state={saveState} onRetry={saveNow}/>
           {/* 97.md Phase 4 — regeneration happens ONLY through this explicit button. */}
           {phase==="terms"&&!readOnly&&(
@@ -2713,7 +2966,7 @@ export default function SearchBuilderTab({projectId,question:questionProp,pico,a
             {questionChanged&&!questionEditing&&(
               <QuestionDriftBanner drifted={drifted} readOnly={readOnly}
                 onKeepAll={keepDriftedConcepts}
-                onEditConcept={(id)=>setActiveConceptId(id)}
+                onEditConcept={(id)=>selectConcept(id,null,{scroll:true})}
                 onUpdatePhrase={(id,phrase)=>updateSourcePhrase(id,phrase)}
                 onRemoveConcept={(id)=>removeConcept(id)}/>
             )}
@@ -2726,7 +2979,7 @@ export default function SearchBuilderTab({projectId,question:questionProp,pico,a
                 of whether quiet hints happen to exist: a dismissed dark-red
                 duplicate warning must never become un-restorable. */}
             {(quietHints.length>0||(!readOnly&&dismissedWarnings.length>0))&&(
-              <div data-testid="sb-inline-hints" style={{background:C.card,border:`1px solid ${C.brd}`,borderRadius:10,padding:"8px 12px",marginBottom:10}}>
+              <div data-testid="sb-inline-hints" data-sb-collapse-exempt="true" style={{background:C.card,border:`1px solid ${C.brd}`,borderRadius:10,padding:"8px 12px",marginBottom:10}}>
                 {quietHints.map(w=>(
                   <div key={w.id} style={{display:"flex",gap:8,alignItems:"flex-start",padding:"3px 0",fontSize:11,color:C.muted,lineHeight:1.5}}>
                     <span aria-hidden="true">·</span>
@@ -2743,7 +2996,7 @@ export default function SearchBuilderTab({projectId,question:questionProp,pico,a
             {/* 97.md Phase 12 — same-group duplicate prevention / blocked-move notice
                 with the "Find existing term" affordance. */}
             {blockedNotice&&(
-              <div data-testid="sb-dup-blocked" role="status" style={{background:`${alpha(C.yel,"10")}`,border:`1px solid ${alpha(C.yel,"44")}`,borderRadius:8,padding:"7px 10px",marginBottom:10,fontSize:11.5,color:C.txt2,display:"flex",alignItems:"center",gap:10,flexWrap:"wrap"}}>
+              <div data-testid="sb-dup-blocked" data-sb-collapse-exempt="true" role="status" style={{background:`${alpha(C.yel,"10")}`,border:`1px solid ${alpha(C.yel,"44")}`,borderRadius:8,padding:"7px 10px",marginBottom:10,fontSize:11.5,color:C.txt2,display:"flex",alignItems:"center",gap:10,flexWrap:"wrap"}}>
                 <span style={{flex:1,minWidth:200}}>{blockedNotice.text}</span>
                 {blockedNotice.tid&&(
                   <button type="button" onClick={()=>{ requestFocusTerm(blockedNotice.cid,blockedNotice.tid); setBlockedNotice(null); }}
@@ -2765,7 +3018,18 @@ export default function SearchBuilderTab({projectId,question:questionProp,pico,a
                 drag-time "New concept" drop zone), which a list role forbids
                 (axe aria-required-children, critical). The group label carries
                 the AND semantics; each card is its own labelled <section>. */}
+            {/* 99.md §3 — beginner-gated one-liner naming the interaction (the design
+                itself — chevron, hover lift, pointer cursor — carries it for everyone). */}
+            {beginner&&concepts.length>0&&(
+              <p data-testid="sb-board-hint" style={{margin:'0 0 8px',fontSize:11.5,color:C.muted,lineHeight:1.6}}>
+                Click a concept to open it for editing — press Escape or click anywhere else to close it.
+              </p>
+            )}
             <div data-testid="sb-concept-board" role="group" aria-label="Concept groups"
+              /* 99.md §8 — Escape collapses the working card from anywhere inside the
+                 board that did not already consume it (popovers stopPropagation their
+                 own Escape; the add box preventDefaults while its layers dismiss). */
+              onKeyDown={(e)=>{ if(e.key==="Escape"&&!e.defaultPrevented&&activeConcept){ e.preventDefault(); collapseBoard({refocus:true}); } }}
               style={{display:'flex',flexWrap:'wrap',alignItems:'stretch',gap:10,marginBottom:4}}>
               {concepts.map((c,cIdx)=>{
                 const active=!!(activeConcept&&activeConcept.id===c.id);
@@ -2802,7 +3066,14 @@ export default function SearchBuilderTab({projectId,question:questionProp,pico,a
                       // editing surfaces; inactive cards sit side by side and wrap
                       // naturally by viewport width (no horizontal-scroll-only path).
                       flex:active?'1 1 100%':'1 1 300px',
-                      minWidth:active?undefined:260}}>
+                      minWidth:active?undefined:260,
+                      // 99.md §4 — during a morph each card owns a stable
+                      // view-transition name, so the transition tracks THIS card's box
+                      // across the reflow (uid() is [0-9a-z]*; the prefix keeps the
+                      // custom-ident valid). Applied ONLY while morphing — a permanent
+                      // name would leave every card a stacking context and paint
+                      // card-overflowing popovers under the following cards.
+                      ...(morphing?{viewTransitionName:`sb-card-${String(c.id||cIdx).replace(/[^a-zA-Z0-9_-]/g,'')}`}:null)}}>
                     {pillInsertIndex===cIdx&&insertLineEl}
                     {cIdx>0&&(
                       /* 98.md §9 — the polished AND connector: clearly not a term chip,
@@ -2835,7 +3106,8 @@ export default function SearchBuilderTab({projectId,question:questionProp,pico,a
                       readOnly={readOnly}
                       active={active} compact={!active} beginner={beginner}
                       testId={active?'sb-active-concept':'sb-concept-card'}
-                      onActivate={active?null:()=>{ /* 98.md review (L8) — the trailing click after EITHER drag kind must not activate */ if((pillDrag.wasDragClick&&pillDrag.wasDragClick())||(chipDrag.wasDragClick&&chipDrag.wasDragClick())) return; setActiveConceptId(c.id); }}
+                      onActivate={active?null:()=>{ /* 98.md review (L8) — the trailing click after EITHER drag kind must not activate */ if((pillDrag.wasDragClick&&pillDrag.wasDragClick())||(chipDrag.wasDragClick&&chipDrag.wasDragClick())) return; selectConcept(c.id); }}
+                      onCollapse={active?()=>collapseBoard({refocus:true}):null} /* 99.md — the chevron collapses the working card */
                       dragHandle={readOnly?null:pillDrag.handleFor(c.id,{})}
                       registerEl={(el)=>{ pillEls.current[c.id]=el; }}
                       isDropTarget={(chipDropGroupId||pillMergeTargetId)===c.id}
@@ -2862,7 +3134,7 @@ export default function SearchBuilderTab({projectId,question:questionProp,pico,a
                             readOnly={readOnly}
                             dupSignalFor={dupSignalFor}
                             editingTermId={null}
-                            onOpenEditor={(tid)=>{ if(chipDrag.wasDragClick&&chipDrag.wasDragClick()) return; setActiveConceptId(c.id); setEditing({conceptId:c.id,termId:tid}); }}
+                            onOpenEditor={(tid)=>{ if(chipDrag.wasDragClick&&chipDrag.wasDragClick()) return; /* 99.md — the editing target rides the SAME commit as the activation (a later commit would be closed by the stale-editor effect) */ selectConcept(c.id,()=>setEditing({conceptId:c.id,termId:tid})); }}
                             onRemove={(tid)=>removeTerm(c.id,tid)}
                             dragState={chipDrag.state}
                             dragHandleFor={readOnly?null:(tid)=>chipDrag.handleFor(tid,{conceptId:c.id})}
@@ -2877,7 +3149,7 @@ export default function SearchBuilderTab({projectId,question:questionProp,pico,a
                           ):(
                             /* 98.md review (H14) — a real button, so an emptied
                                compact card stays keyboard-reachable. */
-                            <button type="button" onClick={()=>setActiveConceptId(c.id)}
+                            <button type="button" onClick={()=>selectConcept(c.id)}
                               style={{background:'none',border:'none',padding:0,fontSize:11,color:C.acc,fontStyle:'italic',cursor:'pointer',fontFamily:SANS,textDecoration:'underline'}}>
                               No terms yet — select the card to add some.
                             </button>
@@ -2893,7 +3165,8 @@ export default function SearchBuilderTab({projectId,question:questionProp,pico,a
                     <span style={{fontSize:9.5,fontWeight:700,color:C.muted,letterSpacing:.5,textTransform:"uppercase",marginRight:2}}>Concept</span>
                     <button type="button" onClick={()=>moveConceptBy(c.id,-1)} disabled={cIdx===0} aria-label={`Move ${c.label} up`} title="Move this concept earlier in the search" style={{...btn("ghost"),fontSize:10,padding:"3px 9px",opacity:cIdx===0?0.45:1}}>↑ Move up</button>
                     <button type="button" onClick={()=>moveConceptBy(c.id,1)} disabled={cIdx>=concepts.length-1} aria-label={`Move ${c.label} down`} title="Move this concept later in the search" style={{...btn("ghost"),fontSize:10,padding:"3px 9px",opacity:cIdx>=concepts.length-1?0.45:1}}>↓ Move down</button>
-                    <span style={{position:"relative",display:"inline-block"}}>
+                    <span style={{position:"relative",display:"inline-block"}}
+                      onKeyDown={(e)=>{ if(e.key==="Escape"&&mergeOpen){ e.stopPropagation(); setMergeOpen(false); } /* 99.md — layered dismissal */ }}>
                       <button type="button" onClick={()=>{setMergeOpen(o=>!o);setSplitDraft(null);setConfirmDeleteId(null);}} aria-expanded={mergeOpen} aria-label={`Merge ${c.label} into another concept`} disabled={concepts.length<2} style={{...btn("ghost"),fontSize:10,padding:"3px 9px",opacity:concepts.length<2?0.45:1}}>⇄ Merge into…</button>
                       {mergeOpen&&(
                         <span style={{position:"absolute",zIndex:75,top:"100%",left:0,marginTop:4,background:C.card,border:`1px solid ${C.brd2}`,borderRadius:8,boxShadow:"0 14px 40px var(--t-shadow)",overflow:"hidden",minWidth:200}}>
@@ -2912,20 +3185,36 @@ export default function SearchBuilderTab({projectId,question:questionProp,pico,a
                       disabled={(c.terms||[]).filter(t=>(t.text||"").trim()).length<2}
                       style={{...btn("ghost"),fontSize:10,padding:"3px 9px",opacity:(c.terms||[]).filter(t=>(t.text||"").trim()).length<2?0.45:1}}>✂ Split…</button>
                     {confirmDeleteId===c.id?(
-                      <span style={{display:"inline-flex",alignItems:"center",gap:6,marginLeft:"auto"}}>
+                      /* 99.md review (a11y) — the destructive confirm is a transient
+                         layer like the merge/split pickers: Escape CANCELS it and is
+                         consumed there (without this the keydown reached the board and
+                         collapsed the whole card), and focus lands on Cancel when the
+                         row opens — the "× Delete concept" button that had focus is
+                         unmounted by this very swap, which otherwise drops focus to
+                         <body> and strands the keyboard user (WCAG 2.4.3). */
+                      <span style={{display:"inline-flex",alignItems:"center",gap:6,marginLeft:"auto"}}
+                        onKeyDown={(e)=>{ if(e.key==="Escape"){ e.stopPropagation(); restoreDeleteFocusRef.current=true; setConfirmDeleteId(null); } }}>
                         <span style={{fontSize:10.5,color:C.yel}}>
                           Delete “{c.label}”{(()=>{const n=(c.terms||[]).filter(t=>(t.text||"").trim()).length;return n?` and its ${n} term${n===1?"":"s"}`:"";})()}?
                         </span>
                         <button type="button" onClick={()=>{setConfirmDeleteId(null);removeConcept(c.id);}} aria-label={`Confirm delete ${c.label}`} style={{...btn("danger"),fontSize:10,padding:"3px 9px"}}>Delete</button>
-                        <button type="button" onClick={()=>setConfirmDeleteId(null)} style={{...btn("ghost"),fontSize:10,padding:"3px 9px"}}>Cancel</button>
+                        <button type="button" ref={(el)=>{ if(el&&confirmFocusRef.current!==c.id){ confirmFocusRef.current=c.id; try{ el.focus(); }catch{ /* best-effort */ } } }}
+                          onClick={()=>{ restoreDeleteFocusRef.current=true; setConfirmDeleteId(null); }} style={{...btn("ghost"),fontSize:10,padding:"3px 9px"}}>Cancel</button>
                       </span>
                     ):(
-                      <button type="button" onClick={()=>{setConfirmDeleteId(c.id);setMergeOpen(false);setSplitDraft(null);}} aria-label={`Delete concept ${c.label}`} title="Delete this concept (undoable)" style={{...btn("danger"),fontSize:10,padding:"3px 9px",marginLeft:"auto"}}>× Delete concept</button>
+                      /* 99.md review (a11y) — cancelling the confirm unmounts the button
+                         that had focus, so focus returns HERE (one-shot, and only when
+                         the confirm was actually cancelled — a collapse must not pull
+                         focus back into a card it just closed). */
+                      <button type="button" ref={(el)=>{ if(el&&restoreDeleteFocusRef.current){ restoreDeleteFocusRef.current=false; try{ el.focus(); }catch{ /* best-effort */ } } }}
+                        onClick={()=>{setConfirmDeleteId(c.id);setMergeOpen(false);setSplitDraft(null);}} aria-label={`Delete concept ${c.label}`} title="Delete this concept (undoable)" style={{...btn("danger"),fontSize:10,padding:"3px 9px",marginLeft:"auto"}}>× Delete concept</button>
                     )}
                   </div>
                 )}
                 {splitDraft&&splitDraft.cid===c.id&&(
-                  <div data-testid="sb-split-panel" style={{background:C.surf,border:`1px solid ${C.brd2}`,borderRadius:8,padding:"9px 11px",marginBottom:10}}>
+                  <div data-testid="sb-split-panel"
+                    onKeyDown={(e)=>{ if(e.key==="Escape"){ e.stopPropagation(); setSplitDraft(null); } /* 99.md — layered dismissal */ }}
+                    style={{background:C.surf,border:`1px solid ${C.brd2}`,borderRadius:8,padding:"9px 11px",marginBottom:10}}>
                     <div style={{fontSize:10.5,fontWeight:700,color:C.muted,letterSpacing:.4,textTransform:"uppercase",marginBottom:6}}>Move selected terms to a new concept</div>
                     <div style={{display:"flex",flexWrap:"wrap",gap:6,marginBottom:8}}>
                       {(c.terms||[]).filter(t=>(t.text||"").trim()).map(t=>{
@@ -3139,7 +3428,7 @@ export default function SearchBuilderTab({projectId,question:questionProp,pico,a
                 onRetryHits={refreshHitsNow}
                 onToggleOp={(cid)=>updateConcept(cid,{op:(concepts.find(x=>x.id===cid)?.op)==="OR"?"AND":"OR"})}
                 pubmedQuery={pubmedQuery}
-                onSelectConcept={(id)=>setActiveConceptId(id)}
+                onSelectConcept={(id)=>selectConcept(id,null,{scroll:true})} /* 99.md — expand + bring the card into view */
               />
             </div>
 
