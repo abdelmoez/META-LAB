@@ -17,9 +17,28 @@ export const ROLE_COLOR = { owner: 'gold', leader: 'purple', reviewer: 'blue', v
    Status derivation
    ════════════════════════════════════════════════════════════════════════ */
 
+/** 98.md §14 Defect 3b — the canonical screening step from the server's transient
+ *  `_progress` annotation (delivered on the list path too). Returns the step object
+ *  or null when the payload predates the annotation. */
+function screeningStepOf(p) {
+  const steps = p && p._progress && Array.isArray(p._progress.steps) ? p._progress.steps : null;
+  if (!steps) return null;
+  const s = steps.find((x) => x && x.id === 'screening');
+  return (s && typeof s.status === 'string') ? s : null;
+}
+
 /** Derive a coarse lifecycle status for a project row. */
 export function statusOf(p) {
   if (p._archived) return 'archived';
+  // 98.md §14 Defect 3b — prefer the canonical `_progress` screening step (which
+  // only honours a sign-off corroborated by evidence) over the manual label.
+  const step = screeningStepOf(p);
+  if (step) {
+    if (step.status === 'done') return 'done';
+    if (step.status === 'partial') return 'in_progress';
+    return 'active';
+  }
+  // Fallback for payloads without `_progress` (older servers / optimistic shapes).
   const ps = p._linkedMetaSift && p._linkedMetaSift.progressStatus;
   if (ps === 'done') return 'done';
   if (ps === 'in_progress') return 'in_progress';
@@ -107,12 +126,18 @@ export function projectStatsOf(p) {
 export function progressOf(p) {
   const ms = p && p._linkedMetaSift;
   if (!ms) return null;
-  if (ms.progressStatus === 'done') return 100;
+  // 98.md §14 Defect 3b — prefer the canonical `_progress` screening step over the
+  // manual progressStatus label: 100 only when the model says done; when it says
+  // NOT done, an uncorroborated 'done' label no longer paints a full bar (and the
+  // decided/pool ratio below is capped at 99 so the bar can't read "finished").
+  const step = screeningStepOf(p);
+  if (step && step.status === 'done') return 100;
+  if (!step && ms.progressStatus === 'done') return 100; // legacy payloads only
   const { recordCount, decidedCount } = projectStatsOf(p);
   const denom = (ms.screenablePool != null) ? ms.screenablePool : (recordCount ?? 0);
   if (denom === 0) return null; // nothing imported → no fake bar
   const pct = Math.round((decidedCount / denom) * 100);
-  return Math.max(0, Math.min(100, pct));
+  return Math.max(0, Math.min(step ? 99 : 100, pct));
 }
 
 /** "Active now" display: "<online> / <total>" when the project has members,

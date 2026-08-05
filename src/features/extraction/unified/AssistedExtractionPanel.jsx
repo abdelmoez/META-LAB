@@ -29,10 +29,14 @@ import { normalizeItems, itemsToRows, detectColumns, buildGrid } from '../../../
 import { snapToken } from '../../../research-engine/extraction/cellGrammar.js';
 import { findNumberTokens } from '../../../research-engine/extraction/numberTokens.js';
 import { mkExtractionRecord } from '../../../research-engine/extraction/records.js';
-import { decideWrite } from '../../../research-engine/extraction/valuePrecedence.js';
+// 98.md §16 — measure-awareness for the click path, shared with the engine workspace
+// (which fields the current effect measure actually uses). 98.md review — Finding A:
+// usesEffectSlot is deliberately NOT imported here — the classic card always shows
+// the es/lo/hi block, so the engine's hidden-slot gates do not apply on this surface.
+import { assignableFieldsFor } from '../../../research-engine/extraction/engine/articleStatus.js';
 import { aiExtractStatus, aiExtract } from '../../../frontend/services/aiExtractService.js';
 
-/** Study fields a click can fill (the value slots) — used by the overwrite guard. */
+/** Study fields a click can fill (the value slots) — used by the replace bookkeeping. */
 const VALUE_PATCH_FIELDS = [
   'es', 'lo', 'hi', 'a', 'b', 'c', 'd', 'nExp', 'meanExp', 'sdExp',
   'nCtrl', 'meanCtrl', 'sdCtrl', 'events', 'total', 'n',
@@ -48,6 +52,8 @@ const ASSIGN_FIELDS = [
   ['nCtrl', 'n (Ctrl)'], ['meanCtrl', 'mean (Ctrl)'], ['sdCtrl', 'SD (Ctrl)'],
   ['events', 'events'], ['total', 'total'], ['n', 'Total N'],
 ];
+/** Human label per value field for status messages, from the picker's own labels. */
+const ASSIGN_LABEL = Object.fromEntries(ASSIGN_FIELDS);
 
 // 4.md §13.3/§21.2 — ONE shared grammar: clicks resolve through cellGrammar.snapToken
 // (numberTokens geometry + p-value awareness). The old firstNumber "grab the run's
@@ -86,11 +92,28 @@ export default function AssistedExtractionPanel({
   const [aiAvailable, setAiAvailable] = useState(false);
   const [aiOn, setAiOn] = useState(false);            // OFF by default, per session
   const [detected, setDetected] = useState([]);       // detectedOutcomes chooser (empty/unmatched PICO)
-  const [pendingAssign, setPendingAssign] = useState(null); // held click-assign overwrite (§21.5)
   const docRef = useRef(null);
 
   const study = useMemo(() => studies.find((s) => s.id === selectedStudyId) || null, [studies, selectedStudyId]);
   const pdf = usePdfSource(study, projectId);
+
+  // 98.md §16 — the pick target must track the article + measure (ported from the
+  // engine's clamp, ArticleWorkspace.jsx §207-212): switching study or changing the
+  // effect measure clamps a stale SPECIFIC field onto a target the study can take.
+  // 98.md review — Finding A: the engine's "hidden es slot" premise is FALSE on this
+  // classic surface — the study card renders the "EFFECT SIZE & 95% CI" es/lo/hi
+  // block for EVERY measure (extractionTabs.jsx), so 'smart' is never a dead target
+  // here. Force-moving 'smart' onto the first raw field sent composite Smart clicks
+  // (ratioCI/pair/meanSd) into a single raw cell. Never move 'smart' off; clamp only
+  // a stale specific field (off-measure after a study/measure switch) back to 'smart'.
+  const clampStudyId = study && study.id;
+  const clampEsType = study && study.esType;
+  useEffect(() => {
+    setAssignField((cur) => {
+      if (cur === 'smart') return 'smart';
+      return assignableFieldsFor(study || {}).includes(cur) ? cur : 'smart';
+    });
+  }, [clampStudyId, clampEsType]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Probe the optional LLM proxy once (fail-closed). Never auto-enables.
   useEffect(() => {
@@ -159,6 +182,10 @@ export default function AssistedExtractionPanel({
       else {
         const raw = tokenPrimary(token);
         if (raw == null) { setStatus(`"${runStr}" has no number to capture.`); return; }
+        // 98.md review — Finding A: NO usesEffectSlot gate here (unlike the engine's
+        // ArticleWorkspace): the classic card ALWAYS renders the es/lo/hi block, so a
+        // lone number captured as the effect estimate is visible for every measure —
+        // never a dead click. The p-value/percent guards above still apply.
         const e = esFields(Number(raw), null, null); if (!e) { setStatus('That value is ≤ 0, which a ratio measure cannot take on the log scale.'); return; }
         Object.assign(patch, e);
       }
@@ -171,63 +198,58 @@ export default function AssistedExtractionPanel({
     }
     if (conv.length) { patch.conversions = [...(Array.isArray(study.conversions) ? study.conversions : []), ...conv]; patch.converted = true; }
     if (!Object.keys(patch).length) { setStatus('Nothing captured — try clicking directly on the number.'); return; }
-    // Provenance note (page + the source text) + needsReview so a click is always auditable.
-    const prov = `[click${payload.page ? ` p${payload.page}` : ''}] ${runStr}`.trim();
-    patch.needsReview = true;
-    patch.notes = study.notes ? `${study.notes} · ${prov}` : prov;
-    if (!study.source) patch.source = 'text';
 
-    // Overwrite guard (§21.5): a click must NEVER silently replace a value already in a
-    // destination field. Existing study values are treated as human-origin; a differing
-    // machine (click) value against them is a conflict → ask before replacing, default keep.
-    const conflicts = [];
-    // §18.2 — the dialog must speak on the CLINICAL scale: ratio es/lo/hi are stored as
-    // ln internally, so back-transform them for display (2 dp), never show raw logs.
+    // 98.md §16 — IMMEDIATE replace for click captures (converged with the engine's
+    // writeValues semantics, ArticleWorkspace.jsx). The old §21.5 decideWrite guard here
+    // hardcoded every existing value as 'user-typed', so ANY differing second click
+    // opened a blocking Keep/Replace dialog — the reviewer could never simply re-click
+    // to correct a wrong capture. A click is a reviewer-AIMED capture (human-directed,
+    // not a machine pass): it replaces the destination directly; the prior value is
+    // preserved in the '[click pN]' notes trail below (the classic path has no per-field
+    // provenance history store), so replacement is immediate but never a silent loss.
+    // decideWrite itself stays canonical for MACHINE-sourced writes (auto/table drafts).
+    // §18.2 — messages speak on the CLINICAL scale: ratio es/lo/hi are stored as ln
+    // internally, so back-transform them for display (2 dp), never show raw logs.
     const displayVal = (field, v) => {
       const n = Number(v);
       if (isRatio && ['es', 'lo', 'hi'].includes(field) && Number.isFinite(n)) return `${study.esType} ${Math.exp(n).toFixed(2)}`;
       return Number.isFinite(n) ? String(Math.round(n * 10000) / 10000) : String(v);
     };
+    const replaced = [];   // {field, from, to} — differing, previously non-empty destinations
+    const unchanged = [];  // fields whose stored value already equals the capture
     for (const field of VALUE_PATCH_FIELDS) {
       if (!(field in patch)) continue;
-      const decision = decideWrite({
-        existingValue: study[field], existingOrigin: 'user-typed',
-        incoming: patch[field], incomingOrigin: 'click',
-      });
-      if (decision.action === 'propose-replace' || decision.action === 'add-alternative') {
-        conflicts.push({ field, existing: displayVal(field, study[field]), incoming: displayVal(field, patch[field]) });
-      }
+      const existing = study[field];
+      if (existing === '' || existing === null || existing === undefined) continue;
+      if (String(existing).trim() === String(patch[field]).trim()) { unchanged.push({ field, val: existing }); delete patch[field]; continue; }
+      replaced.push({ field, from: displayVal(field, existing), to: displayVal(field, patch[field]) });
     }
-    if (conflicts.length) { setPendingAssign({ studyId: study.id, patch, conflicts }); setStatus(''); return; }
+    // Re-clicking the very value(s) already stored is a no-op: say so (aria-live) instead
+    // of silently re-stamping notes/needsReview (mirrors the engine's identical-value bail).
+    if (unchanged.length && !Object.keys(patch).some((k) => !PATCH_META_FIELDS.includes(k))) {
+      setStatus(`Already captured ${unchanged.map((u) => `${displayVal(u.field, u.val)} into ${ASSIGN_LABEL[u.field] || u.field}`).join(', ')} — no change.`);
+      return;
+    }
+
+    // Provenance note (page + the source text) + needsReview so a click is always
+    // auditable; a replaced value rides the SAME trail so nothing is silently lost.
+    const priorNote = replaced.length ? ` (replaced ${replaced.map((r) => `${r.field} ${r.from}`).join(', ')})` : '';
+    const prov = `[click${payload.page ? ` p${payload.page}` : ''}] ${runStr}${priorNote}`.trim();
+    patch.needsReview = true;
+    patch.notes = study.notes ? `${study.notes} · ${prov}` : prov;
+    if (!study.source) patch.source = 'text';
 
     onPatchStudy && onPatchStudy(study.id, patch);
-    const shown = Object.entries(patch).filter(([k]) => !PATCH_META_FIELDS.includes(k)).map(([k, v]) => `${v}→${k}`).join(', ');
-    setStatus(`Assigned ${shown}.`);
-  }, [study, assignField, onPatchStudy]);
-
-  // Resolve a held overwrite decision. 'replace' applies the whole captured patch;
-  // 'keep' drops only the conflicting value fields (empty/agreeing fields still write).
-  const resolvePendingAssign = useCallback((mode) => {
-    const pending = pendingAssign;
-    if (!pending) return;
-    let patch = pending.patch;
-    if (mode === 'keep') {
-      const drop = new Set(pending.conflicts.map((c) => c.field));
-      patch = Object.fromEntries(Object.entries(pending.patch).filter(([k]) => !drop.has(k)));
-      // Drop the ratio-log conversion audit entry when its effect value (es) was declined,
-      // so the study's conversion trail never references a value the user did not accept.
-      if (drop.has('es')) { delete patch.conversions; delete patch.converted; }
-      // If nothing but meta remains, don't churn the study.
-      if (!Object.keys(patch).some((k) => !PATCH_META_FIELDS.includes(k))) {
-        setPendingAssign(null);
-        setStatus('Kept the existing value(s).');
-        return;
-      }
+    if (replaced.length) {
+      // Mirror the engine's replace confirmation wording (ArticleWorkspace.jsx) so both
+      // surfaces speak the same language; here the prior value lives in the notes trail.
+      const r = replaced[0];
+      setStatus(`Replaced ${ASSIGN_LABEL[r.field] || r.field} (was ${r.from}) → ${r.to}. Previous value kept in the notes.`);
+    } else {
+      const shown = Object.entries(patch).filter(([k]) => !PATCH_META_FIELDS.includes(k)).map(([k, v]) => `${v}→${k}`).join(', ');
+      setStatus(`Assigned ${shown}.`);
     }
-    onPatchStudy && onPatchStudy(pending.studyId, patch);
-    setPendingAssign(null);
-    setStatus(mode === 'replace' ? 'Replaced with the clicked value(s).' : 'Kept existing; filled the empty field(s).');
-  }, [pendingAssign, onPatchStudy]);
+  }, [study, assignField, onPatchStudy]);
 
   const interaction = useMemo(() => {
     if (readOnly || !pdf.url) return null;
@@ -557,28 +579,13 @@ export default function AssistedExtractionPanel({
             </div>
           )}
 
-          {/* Overwrite guard (§21.5): a click that would replace an existing value asks first. */}
-          {pendingAssign && (
-            <div role="alertdialog" aria-label="Confirm replacing existing values"
-              style={{ border: `1.5px solid ${themeAlpha(C.yel, '66')}`, borderRadius: 8, padding: '10px 12px', background: themeAlpha(C.yel, '10') }}>
-              <div style={{ fontSize: 12, fontWeight: 700, color: C.txt, marginBottom: 6 }}>
-                This field already has a value
-              </div>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 3, marginBottom: 8 }}>
-                {pendingAssign.conflicts.map((c) => (
-                  <div key={c.field} style={{ fontSize: 11.5, fontFamily: "'IBM Plex Mono',monospace", color: C.txt2 }}>
-                    Replace <b>{c.field}</b> {c.existing} with {c.incoming}?
-                  </div>
-                ))}
-              </div>
-              <div style={{ display: 'flex', gap: 8 }}>
-                <button onClick={() => resolvePendingAssign('keep')} style={{ ...btnS('ghost'), fontSize: 11 }}>Keep current</button>
-                <button onClick={() => resolvePendingAssign('replace')} style={{ ...btnS('danger'), fontSize: 11 }}>Replace</button>
-              </div>
-            </div>
-          )}
-
-          {status && <div style={{ fontSize: 11.5, color: C.grn, lineHeight: 1.5 }}>{status}</div>}
+          {/* 98.md §16 — capture/replace confirmations are announced (persistent
+              aria-live container, mirrors the engine workspace); the old §21.5 blocking
+              Keep/Replace dialog is retired — clicks replace immediately, with the prior
+              value preserved in the notes trail. */}
+          <div role="status" aria-live="polite" style={{ minHeight: status ? undefined : 0 }}>
+            {status && <div style={{ fontSize: 11.5, color: C.grn, lineHeight: 1.5 }}>{status}</div>}
+          </div>
           {error && <div style={{ fontSize: 11.5, color: C.red, lineHeight: 1.5 }}>{error}</div>}
           {pdf.error && <div style={{ fontSize: 11.5, color: C.yel }}>{pdf.error}</div>}
 

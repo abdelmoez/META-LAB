@@ -195,6 +195,13 @@ export function MetaSiftPrismaSync({project,updateProject,activeId,setTab}){
   const apply=(summary)=>{
     const p=summary.prisma;
     const accepted=Array.isArray(summary.acceptedStudies)?summary.acceptedStudies:[];
+    // 98.md §14 Defect 5 — never write an ALL-ZERO snapshot into the blob. The
+    // mount-time auto-apply of an empty screening workspace used to stamp
+    // included:"0" etc., which older nonEmpty checks read as completion evidence
+    // (and it clobbers hand-typed PRISMA numbers with zeros). Nothing real to
+    // sync → leave the blob untouched.
+    const allZero=["identified","duplicatesRemoved","excludedTitleAbstract","fullTextExcluded","included"].every(k=>!Number(p&&p[k]));
+    if(allZero&&accepted.length===0) return;
     updateProject(activeId,proj=>{
       const cur=proj.prisma||{};
       const next={...cur,

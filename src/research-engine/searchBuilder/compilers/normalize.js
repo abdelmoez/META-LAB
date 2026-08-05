@@ -28,9 +28,19 @@ function normField(field) {
   return FIELD_ALIAS[S(field).trim().toLowerCase()] || 'tiab';
 }
 
+/** 98.md §12 — Unicode hygiene at the client compilers' choke point (mirrors
+ *  server ast.js foldUnicodePunctuation): NFC + curly quotes/apostrophes folded
+ *  to ASCII so “Crohn’s disease” compiles exactly like "Crohn's disease" in
+ *  every quote grammar. */
+function foldUnicodePunctuation(text) {
+  let s = S(text);
+  try { s = s.normalize('NFC'); } catch { /* older runtimes */ }
+  return s.replace(/[“”„]/g, '"').replace(/[‘’‚]/g, "'");
+}
+
 /** Normalize one saved term → a compact IR term (blank-text terms are dropped upstream). */
 function normTerm(t) {
-  const text = S(t && t.text).trim();
+  const text = foldUnicodePunctuation(S(t && t.text)).trim();
   return {
     text,
     type: t && t.type === 'controlled' ? 'controlled' : 'freetext',

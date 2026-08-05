@@ -384,7 +384,7 @@ describe('97.md — recordRenameConcept / recordAddConcept + inverses', () => {
     const empty = { concepts: [g('a', 'A', [t('t1', 'x')]), g('n1', 'Search Group 2')], ignored: [] };
     const r = undoLast(stack, empty);
     expect(r.state.concepts.map((c) => c.id)).toEqual(['a']);
-    expect(r.description).toBe('Removed group "Search Group 2"');
+    expect(r.description).toBe('Removed concept "Search Group 2"'); // 98.md §8 — the noun is Concept
     // …but terms added since keep the group alive (no silent term loss)
     const withWork = { concepts: [g('n1', 'Search Group 2', [t('t9', 'added since')])], ignored: [] };
     const kept = undoLast(stack, withWork);
@@ -533,7 +533,7 @@ describe('QA H2 — addConcept undo tolerates the recorded ORIGIN term', () => {
     const stack = recordAddConcept([], { conceptId: 'c9', label: born.label, originTermIds: ['o1'] });
     const r = undoLast(stack, { concepts: [g('a', 'A', [t('t1', 'x')]), born], ignored: [] });
     expect(r.state.concepts.map((c) => c.id)).toEqual(['a']);
-    expect(r.description).toBe('Removed group "sodium-glucose cotransporter 2"');
+    expect(r.description).toBe('Removed concept "sodium-glucose cotransporter 2"'); // 98.md §8 terminology
   });
   it('keeps the group once terms were ADDED after creation (work is protected)', () => {
     const grown = g('c9', 'phrase', [t('o1', 'phrase'), t('n1', 'added later')]);

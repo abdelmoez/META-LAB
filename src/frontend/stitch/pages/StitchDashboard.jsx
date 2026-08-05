@@ -244,7 +244,9 @@ function ProjectRow({ p, onOpen, onAction }) {
       </div>
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: '2px 14px', fontSize: 12, color: S.textMuted, fontWeight: 500 }}>
         {p._linkedMetaSift ? <span>{stats.recordCount} records</span> : null}
-        {p._linkedMetaSift ? <span>{stats.decidedCount}/{stats.recordCount} finalized</span> : null}
+        {/* 98.md §14 Defect 3c — the denominator is the duplicate-free screenable
+            pool (what decidedCount is counted against), not the raw import count. */}
+        {p._linkedMetaSift ? <span>{stats.decidedCount}/{p._linkedMetaSift.screenablePool ?? stats.recordCount} finalized</span> : null}
         {p._linkedMetaSift ? <span>{onlineTotalLabel(stats.onlineCount, stats.memberCount)}</span> : null}
         <span>updated {relTime(p.updatedAt)}</span>
       </div>

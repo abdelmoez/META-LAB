@@ -1,7 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import {
   normalizeCanonical, validateCanonical, renderPlain, hashQuery, normalizeField,
-  flattenTerms, quoteIfPhrase, findLiteralBooleanTerms, FIELD, QUERY_LIMITS,
+  flattenTerms, quoteIfPhrase, findLiteralBooleanTerms, foldUnicodePunctuation,
+  FIELD, QUERY_LIMITS,
 } from '../../../server/pecanSearch/query/ast.js';
 
 describe('query/ast — canonical model', () => {
@@ -83,5 +84,57 @@ describe('query/ast — canonical model', () => {
 
   it('flattenTerms returns every term', () => {
     expect(flattenTerms({ concepts: [{ op: 'OR', terms: [{ text: 'a' }, { text: 'b' }] }] })).toHaveLength(2);
+  });
+});
+
+/* ══════════ 98.md §12 — normalizeCanonical field coercion + Unicode folding ═════ */
+
+describe('query/ast — 98.md §12 builder-default controlled terms coerce to FIELD.MESH', () => {
+  const vocab = { mesh: 'Diabetes Mellitus, Type 2' };
+
+  it("coerces a builder-shaped controlled term (field:'tiab', vocab.mesh) to 'mesh'", () => {
+    // The Search Builder stamps controlled terms with field:'tiab' (its field
+    // selector is a free-text concept); without the coercion the manual preview
+    // showed "X"[Mesh] while the automated run executed "X"[Title/Abstract].
+    const c = normalizeCanonical({ concepts: [{ terms: [{ text: 't2dm', type: 'controlled', field: 'tiab', vocab }] }] });
+    expect(c.concepts[0].terms[0].field).toBe(FIELD.MESH);
+    expect(c.concepts[0].terms[0].type).toBe('controlled');
+    expect(c.concepts[0].terms[0].vocab).toEqual(vocab);
+  });
+
+  it("every builder default (blank / 'tiab' / 'all' / 'tw') coerces for controlled terms", () => {
+    for (const field of ['', 'tiab', 'all', 'tw', undefined]) {
+      const c = normalizeCanonical({ concepts: [{ terms: [{ text: 'x', type: 'controlled', field, vocab }] }] });
+      expect(c.concepts[0].terms[0].field).toBe(FIELD.MESH);
+    }
+  });
+
+  it('only VOCABULARY fields (mesh/kw) pass through; ti/ab coerce too (review M13 — the client renderers ignore term.field for controlled terms, so field-respecting runs would silently diverge from the [Mesh] preview)', () => {
+    const kw = normalizeCanonical({ concepts: [{ terms: [{ text: 'x', type: 'controlled', field: 'kw', vocab }] }] });
+    expect(kw.concepts[0].terms[0].field).toBe(FIELD.KEYWORD);
+    const ti = normalizeCanonical({ concepts: [{ terms: [{ text: 'x', type: 'controlled', field: 'ti', vocab }] }] });
+    expect(ti.concepts[0].terms[0].field).toBe(FIELD.MESH);
+    const ab = normalizeCanonical({ concepts: [{ terms: [{ text: 'x', type: 'controlled', field: 'ab', vocab }] }] });
+    expect(ab.concepts[0].terms[0].field).toBe(FIELD.MESH);
+    const mh = normalizeCanonical({ concepts: [{ terms: [{ text: 'x', type: 'controlled', field: 'mesh', vocab }] }] });
+    expect(mh.concepts[0].terms[0].field).toBe(FIELD.MESH);
+  });
+
+  it('freetext terms NEVER coerce — their builder default stays tiab', () => {
+    const c = normalizeCanonical({ concepts: [{ terms: [{ text: 'metformin', type: 'freetext', field: 'tiab' }] }] });
+    expect(c.concepts[0].terms[0].field).toBe(FIELD.TIAB);
+  });
+});
+
+describe('query/ast — 98.md §12 foldUnicodePunctuation rides normalization', () => {
+  it('folds curly quotes/apostrophes to ASCII and NFC-normalizes term text', () => {
+    expect(foldUnicodePunctuation('Crohn\u2019s \u201Cdisease\u201D')).toBe('Crohn\'s "disease"');
+    expect(foldUnicodePunctuation('cafe\u0301')).toBe('caf\u00e9'); // NFC
+  });
+  it('normalizeCanonical applies the folding to every term text', () => {
+    const c = normalizeCanonical({ concepts: [{ terms: [{ text: 'Crohn\u2019s disease' }] }] });
+    expect(c.concepts[0].terms[0].text).toBe("Crohn's disease");
+    // renderPlain therefore emits the ASCII form inside its quoted phrase
+    expect(renderPlain(c)).toBe('"Crohn\'s disease"');
   });
 });

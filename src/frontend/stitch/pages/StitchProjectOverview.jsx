@@ -53,6 +53,13 @@ const PHASE_STEPS = {
 const PHASE_PRIMARY = { Plan: 'pico', Search: 'search', Screen: 'screening', Extract: 'extraction', Analyze: 'analysis', Report: 'grade' };
 const STEP_TONE = { done: 'success', partial: 'warn', empty: 'neutral' };
 const STEP_LABEL = { done: 'Complete', partial: 'In progress', empty: 'Not started' };
+// 98.md §14 Defect 3d — the screening step's `detail` substate (from `_progress`)
+// labels the Screen phase more precisely than the coarse tri-state when the work
+// sits between screening stages. Substates not listed fall back to STEP_LABEL.
+const SCREENING_DETAIL_LABEL = {
+  awaiting_second_review: 'Awaiting second review',
+  conflicts_remaining: 'Conflicts remaining',
+};
 // Ordered workflow ids + a label map (from the legacy TABS — single source).
 const WORKFLOW_TABS = TABS.filter((t) => t.phase);
 const STAGE_LABEL = TABS.reduce((m, t) => { m[t.id] = t.label; return m; }, {});
@@ -131,7 +138,6 @@ export default function StitchProjectOverview() {
 
   const linkedId = project ? linkedSiftId(project) : null;
   const perms = project ? projectPerms(project) : null;
-  const screeningComplete = !!(project && project._linkedMetaSift && project._linkedMetaSift.progressStatus === 'done');
   // The pure engine helpers (stepStatus/auditProject) dereference project.studies
   // without a guard. The server blob is not guaranteed to carry a studies array
   // (legacy/non-standard blobs), so normalize once — matching how every other
@@ -144,6 +150,14 @@ export default function StitchProjectOverview() {
   // identical client model). Every number the Overview shows now derives from THIS so
   // the header bar, the rail dots and the on-page counts can never disagree.
   const progress = useProjectProgress(project);
+  // 98.md §14 Defect 3a — screeningComplete derives from THE canonical `_progress`
+  // screening step (done ⇒ complete), not the leader-editable progressStatus label
+  // (which the model now only honours when corroborated by evidence).
+  const screeningStep = useMemo(
+    () => (progress.steps || []).find((s) => s && s.id === 'screening') || null,
+    [progress],
+  );
+  const screeningComplete = !!(screeningStep && screeningStep.status === 'done');
   // Overlay the canonical per-step statuses onto the legacy map so the rail dots and
   // the per-phase rollup bars agree with the canonical pct. Falls back to stepStatus
   // for any id the model doesn't emit (there are none beyond the 15 workflow steps).
@@ -159,7 +173,11 @@ export default function StitchProjectOverview() {
   const phases = useMemo(() => PHASES.map((name) => ({
     name, label: phaseLabel(name), icon: PHASE_ICON[name],
     ...rollupPhase(PHASE_STEPS[name], statusMap),
-  })), [statusMap]);
+    // 98.md §14 Defect 3d — surface the screening substate on the Screen phase row
+    // ('Awaiting second review' / 'Conflicts remaining') while it is not complete.
+    ...(name === 'Screen' && screeningStep && SCREENING_DETAIL_LABEL[screeningStep.detail]
+      ? { detailLabel: SCREENING_DETAIL_LABEL[screeningStep.detail] } : {}),
+  })), [statusMap, screeningStep]);
   // Canonical single source: the workflow-steps percentage + the required-step tally.
   const overallPct = progress.pct;
   const stepsDone = progress.requiredDone;
@@ -503,7 +521,8 @@ function WorkflowRow({ index, phase, active, onOpen }) {
         </span>
         <span style={{ display: 'block', marginTop: 6 }}><StitchProgressBar value={phase.pct} tone={tone} height={5} /></span>
       </span>
-      <span style={{ fontSize: 11.5, fontWeight: 700, color: toneColor, flexShrink: 0, minWidth: 64, textAlign: 'right' }}>{STEP_LABEL[phase.status]}</span>
+      {/* 98.md §14 Defect 3d — the screening substate label wins when present. */}
+      <span style={{ fontSize: 11.5, fontWeight: 700, color: toneColor, flexShrink: 0, minWidth: 64, textAlign: 'right' }}>{phase.detailLabel || STEP_LABEL[phase.status]}</span>
     </button>
   );
 }

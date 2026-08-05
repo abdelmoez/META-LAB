@@ -43,6 +43,11 @@ export default defineConfig({
     { name: 'chromium', use: { ...devices['Desktop Chrome'] } },
     { name: 'firefox', use: { ...devices['Desktop Firefox'] }, grep: /@smoke/ },
     { name: 'webkit', use: { ...devices['Desktop Safari'] }, grep: /@smoke/ },
+    // 98.md §15 — the ENTIRE search-builder journey file runs under WebKit (not just
+    // @smoke): phrase selection, token-combine drag, chip merge/split, MeSH popovers,
+    // undo chords and autosave-reload are exactly the interactions Safari breaks
+    // first, so they get full engine coverage without tag creep.
+    { name: 'webkit-search', use: { ...devices['Desktop Safari'] }, testMatch: '**/search/searchWorkspace.spec.ts' },
     // Responsive projects only run the responsive specs (which assert layout at size).
     { name: 'mobile-chrome', use: { ...devices['Pixel 5'] }, testMatch: '**/responsive/**/*.spec.ts' },
     { name: 'tablet', use: { ...devices['iPad (gen 7) landscape'] }, testMatch: '**/responsive/**/*.spec.ts' },

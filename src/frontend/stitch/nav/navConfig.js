@@ -200,7 +200,7 @@ export function screeningSubHref(key, ctx = {}) {
  */
 export function searchStageHref(stageId, ctx = {}) {
   const pid = encodeURIComponent(ctx.projectId || '');
-  const id = encodeURIComponent(stageId || 'question');
+  const id = encodeURIComponent(stageId || 'terms'); // 98.md §3 — terms is the workflow home
   return `/app/project/${pid}?tab=search&stage=${id}`;
 }
 
@@ -282,17 +282,18 @@ export function readScreenParam(search) {
 }
 
 /** 75.md — parse the Search workflow stage (`?stage=`) — only meaningful while
- *  tab=search. Bare `?tab=search` (no stage) defaults to the first stage ('question').
- *  96.md — RETIRED stage params (concepts/refine) resolve through STAGE_ALIASES so a
- *  stale deep link highlights Terms & Vocabulary instead of a phantom submenu row
- *  (the `?tab=discovery`→search normalization precedent). */
+ *  tab=search. Bare `?tab=search` (no stage) defaults to the first stage ('terms' —
+ *  98.md §3 retired the Research Question stage; the question is edited inline).
+ *  96.md — RETIRED stage params (concepts/refine/question) resolve through
+ *  STAGE_ALIASES so a stale deep link highlights Select & Build Key Terms instead
+ *  of a phantom submenu row (the `?tab=discovery`→search normalization precedent). */
 export function readSearchStageParam(search) {
-  if (typeof search !== 'string' || !search) return 'question';
+  if (typeof search !== 'string' || !search) return 'terms';
   try {
     const qs = new URLSearchParams(search.startsWith('?') ? search.slice(1) : search);
-    return resolveStageAlias(qs.get('stage') || 'question');
+    return resolveStageAlias(qs.get('stage') || 'terms');
   } catch {
-    return 'question';
+    return 'terms';
   }
 }
 
@@ -345,7 +346,7 @@ export function categoryForStage(stageId) {
    pip NUMBER, not the icon, so these are cosmetic/shape-only; the un-numbered optional
    tools below use their real TABS icons.) */
 const SEARCH_STAGE_ICONS = {
-  question: 'target', terms: 'bookOpen', mode: 'settings',
+  terms: 'bookOpen', mode: 'settings',
   strategy: 'database', results: 'globe', documentation: 'fileText', screening: 'arrowRight',
 };
 
@@ -500,8 +501,8 @@ export function categoryShowsSubmenu(categoryId) {
  * The active submenu child key for the current route within its category.
  * For 'screen', the active child is the `?screen=` sub-page (or 'prisma' when
  * tab=prisma); for 'search', it is the `?stage=` workflow stage (bare ?tab=search →
- * 'question'); Living Review / Citation Mining open their own tabs so match their key
- * directly; for every other category it is the active stage id.
+ * 'terms', 98.md §3); Living Review / Citation Mining open their own tabs so match
+ * their key directly; for every other category it is the active stage id.
  */
 export function activeSubmenuKey(search) {
   const stage = activeProjectStage(search);

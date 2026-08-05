@@ -64,6 +64,12 @@ export function useProjectProgress(project) {
             screenablePool: lm.screenablePool,
             recordCount: lm.recordCount,
             progressStatus: lm.progressStatus,
+            // 98.md §14 Defect 2b — substep evidence (pending counts + the server
+            // `complete` predicate) rides on _linkedMetaSift when the payload
+            // carried it; forwarding it keeps the client recompute (e.g. after an
+            // optimistic edit dropped _progress) as honest as the server model.
+            ...(lm.pending ? { pending: lm.pending } : {}),
+            ...(typeof lm.complete === 'boolean' ? { complete: lm.complete } : {}),
           },
         }
       : {};

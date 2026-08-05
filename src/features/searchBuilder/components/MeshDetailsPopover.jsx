@@ -15,6 +15,10 @@
  */
 import { useEffect, useRef, useState } from 'react';
 import { C, FONT, MONO, alpha } from '../../../frontend/theme/tokens.js';
+// 98.md §10 — the details view names the EXACT syntax each selected database
+// receives for this heading (compileStrategy on a one-term strategy; pure, no fetch).
+import { compileStrategy } from '../../../research-engine/searchBuilder/compilers/index.js';
+import { getDatabase } from '../../../research-engine/searchBuilder/databases.js';
 
 function Row({ label, children }) {
   if (!children) return null;
@@ -26,7 +30,7 @@ function Row({ label, children }) {
   );
 }
 
-export default function MeshDetailsPopover({ term, addedTexts, onAddEntryTerm, onClose, readOnly }) {
+export default function MeshDetailsPopover({ term, addedTexts, onAddEntryTerm, onClose, readOnly, syntaxDbs }) {
   const t = term || {};
   const v = (t.vocab && typeof t.vocab === 'object') ? t.vocab : {};
   const descriptor = String(v.mesh || t.text || '').trim();
@@ -37,18 +41,27 @@ export default function MeshDetailsPopover({ term, addedTexts, onAddEntryTerm, o
   const rootRef = useRef(null);
   const [pos, setPos] = useState({ dx: 0, flipUp: false });
 
-  // Flip/clamp inside the viewport (client-only; SSR renders the default anchor).
+  // Flip/clamp inside the viewport — re-run on scroll/resize so an open popover
+  // never drifts off-screen (98.md §10; was mount-only). Client-only; SSR renders
+  // the default anchor.
   useEffect(() => {
-    const el = rootRef.current;
-    if (!el || typeof window === 'undefined' || !el.getBoundingClientRect) return;
-    try {
-      const r = el.getBoundingClientRect();
-      let dx = 0; let flipUp = false;
-      if (r.right > window.innerWidth - 8) dx = Math.min(0, window.innerWidth - 8 - r.right);
-      if (r.left + dx < 8) dx = 8 - r.left;
-      if (r.bottom > window.innerHeight - 8 && r.top > r.height + 16) flipUp = true;
-      if (dx !== 0 || flipUp) setPos({ dx, flipUp });
-    } catch { /* measurement is best-effort */ }
+    if (typeof window === 'undefined') return undefined;
+    const measure = () => {
+      const el = rootRef.current;
+      if (!el || !el.getBoundingClientRect) return;
+      try {
+        const r = el.getBoundingClientRect();
+        let dx = 0; let flipUp = false;
+        if (r.right > window.innerWidth - 8) dx = Math.min(0, window.innerWidth - 8 - r.right);
+        if (r.left + dx < 8) dx = 8 - r.left;
+        if (r.bottom > window.innerHeight - 8 && r.top > r.height + 16) flipUp = true;
+        setPos((p) => (p.dx === dx && p.flipUp === flipUp ? p : { dx, flipUp }));
+      } catch { /* measurement is best-effort */ }
+    };
+    measure();
+    window.addEventListener('scroll', measure, true);
+    window.addEventListener('resize', measure);
+    return () => { window.removeEventListener('scroll', measure, true); window.removeEventListener('resize', measure); };
   }, []);
 
   return (
@@ -66,7 +79,8 @@ export default function MeshDetailsPopover({ term, addedTexts, onAddEntryTerm, o
           &quot;{descriptor}&quot;<span style={{ color: C.acc }}>[MeSH]</span>
         </span>
         <button type="button" onClick={onClose} aria-label="Close MeSH details"
-          style={{ marginLeft: 'auto', background: 'none', border: 'none', color: C.muted, cursor: 'pointer', fontSize: 14, lineHeight: 1, padding: '2px 6px', minWidth: 22, minHeight: 22 }}>×</button>
+          onMouseDown={(e) => e.preventDefault()} /* 98.md §15 — Safari: keep the opener focused so blur can't unmount before the click */
+          style={{ marginLeft: 'auto', background: 'none', border: 'none', color: C.muted, cursor: 'pointer', fontSize: 14, lineHeight: 1, padding: '2px 6px', minWidth: 24, minHeight: 24 }}>×</button>
       </div>
 
       {v.scope && <Row label="Scope note">{v.scope}</Row>}
@@ -83,6 +97,7 @@ export default function MeshDetailsPopover({ term, addedTexts, onAddEntryTerm, o
                     <span style={{ fontSize: 9, color: C.grn, flexShrink: 0 }}>✓ added</span>
                   ) : (!readOnly && onAddEntryTerm && (
                     <button type="button" onClick={() => onAddEntryTerm(s)}
+                      onMouseDown={(e) => e.preventDefault()} /* 98.md §15 — Safari blur-before-click guard */
                       aria-label={`Add this term: ${s}`}
                       style={{ background: 'none', border: `1px solid ${alpha(C.acc, '55')}`, borderRadius: 6, color: C.acc, cursor: 'pointer', fontSize: 9.5, fontWeight: 700, fontFamily: FONT, padding: '1px 8px', minHeight: 20, flexShrink: 0 }}>
                       Add this term
@@ -104,6 +119,32 @@ export default function MeshDetailsPopover({ term, addedTexts, onAddEntryTerm, o
           ? 'Off — only records indexed with this exact heading are matched.'
           : 'On — records indexed with any narrower heading under this one are matched too. This changes database indexing behaviour; it does not add visible free-text terms.'}
       </Row>
+
+      {/* 98.md §10 — the exact controlled-vocabulary syntax per selected database
+          (one-term compile through the real renderers — the same code path the
+          strategy uses, so this can never drift from the compiled output). */}
+      {Array.isArray(syntaxDbs) && syntaxDbs.length > 0 && (
+        <Row label="Syntax by database">
+          {/* 98.md review (L17) — never silently truncate: all selected databases
+              render, bounded by an internal scroll. */}
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 2, maxHeight: 160, overflowY: 'auto' }}>
+            {syntaxDbs.map((dbId) => {
+              let res = null;
+              try { res = compileStrategy({ concepts: [{ id: 'x', label: '', op: 'AND', terms: [{ ...t, id: t.id || 'x', disabled: false }] }] }, dbId); } catch { res = null; }
+              if (!res || !res.query) return null;
+              const db = getDatabase(dbId);
+              const approx = !!(res.vocab && res.vocab.approximate);
+              return (
+                <div key={dbId} data-testid="sb-mesh-db-syntax" style={{ display: 'flex', gap: 8, alignItems: 'baseline' }}>
+                  <span style={{ flexShrink: 0, fontSize: 9.5, color: C.muted, minWidth: 72 }}>{(db && db.label) || dbId}</span>
+                  <span style={{ fontFamily: MONO, fontSize: 10, color: C.txt2, overflowWrap: 'anywhere' }}>{res.query}</span>
+                  {approx && <span title="Heuristic mapping — verify in the database" style={{ fontSize: 8.5, color: C.yel, flexShrink: 0 }}>approx.</span>}
+                </div>
+              );
+            })}
+          </div>
+        </Row>
+      )}
 
       <Row label="Source">{sourceLabel}</Row>
     </div>

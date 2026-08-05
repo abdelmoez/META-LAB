@@ -1,18 +1,19 @@
 /**
  * SearchPage.ts — the page object for the `search-protocol` area: the Protocol/PICO
- * tab, the STAGED Search workspace (96.md, relabeled by 97.md — 7 stages: Research
- * Question → Select & Build Key Terms → Search Mode → Database Strategies →
+ * tab, the STAGED Search workspace (96.md → 98.md — 6 stages (98.md §3 retired the standalone Research Question
+ * stage; the question is edited INLINE): Select & Build Key Terms → Search Mode → Database Strategies →
  * Results → Documentation → Send to Screening), and the embedded Pecan
  * "Search & Discovery" run surface.
  *
- * 97.md — the second stage is RENAMED (label-only) to "Select & Build Key Terms";
- * its stage id stays `terms` (deep links / aliases unchanged). The stage is a
- * direct Boolean workspace: question tokens (click / Shift-click span / drag-onto-
- * token combine), neutral "Search Group N" groups with OR chips joined by visible
- * OR separators, chip drag (reorder = insertion line; onto-chip = merge ring;
- * onto a navigator pill = move; onto "＋ New group" = move to a new group), the
- * dark-red exact-duplicate chip state, the MeSH details popover, and the explicit
- * Regenerate button + confirmation dialog.
+ * 97.md/98.md — the first stage is "Select & Build Key Terms" (stage id `terms`;
+ * deep links / aliases unchanged). The stage is a direct Boolean workspace:
+ * question tokens (click / Shift-click span / drag-onto-token combine), neutral
+ * "Concept N" groups rendered as a HORIZONTAL CONCEPT BOARD (98.md §9 — active
+ * card carries the editing surfaces; compact cards activate on click; AND/OR
+ * connector buttons between cards), chip drag (reorder = insertion line;
+ * onto-chip = merge ring; onto a CONCEPT CARD = move; onto "＋ New concept" =
+ * move to a new group), the dark-red exact-duplicate chip state, the MeSH
+ * details popover, and the explicit Regenerate button + confirmation dialog.
  *
  * It COMPOSES the shared `ShellNav` (chrome + overlays) rather than re-implementing
  * nav. Tab-content locators are scoped to the workspace tool body
@@ -100,14 +101,24 @@ export class SearchPage {
     }).toPass({ timeout: 30_000 });
   }
 
-  /* ── 96.md D1 — the Research Question stage EDITOR ───────────────────────── */
+  /* ── 98.md §3/§4 — the INLINE research-question editor (terms stage) ── */
 
   get questionEditor(): Locator { return this.body.getByTestId('search-question-editor'); }
+  get inlineQuestionEditor(): Locator { return this.body.getByTestId('sw-inline-question-editor'); }
+  get editQuestionButton(): Locator { return this.body.getByTestId('sb-edit-question'); }
+  get addQuestionButton(): Locator { return this.body.getByTestId('sb-add-question'); }
+  get questionDoneButton(): Locator { return this.body.getByTestId('sw-question-done'); }
 
   /** Write the research question on the question stage (whole-project autosave),
    *  then poll the server until it persisted (see 96.md race notes). */
   async setQuestion(projectId: string, text: string): Promise<void> {
-    await this.gotoStage(projectId, 'question');
+    // 98.md §3/§4 — the question stage is retired; edit INLINE on the terms stage.
+    await this.gotoStage(projectId, 'terms');
+    if (!(await this.inlineQuestionEditor.isVisible().catch(() => false))) {
+      const opener = (await this.addQuestionButton.isVisible().catch(() => false))
+        ? this.addQuestionButton : this.editQuestionButton;
+      await opener.click();
+    }
     await expect(this.questionEditor).toBeVisible();
     await this.questionEditor.fill(text);
     await expect(this.questionEditor).toHaveValue(text);
@@ -120,6 +131,10 @@ export class SearchPage {
         return (b && b.pico && b.pico.question) || '';
       }, { timeout: 20_000, message: 'research question never persisted to the project' })
       .toBe(text);
+    // Close the editor so the workspace below is unobstructed for the caller.
+    if (await this.questionDoneButton.isVisible().catch(() => false)) {
+      await this.questionDoneButton.click();
+    }
   }
 
   /**
@@ -155,9 +170,9 @@ export class SearchPage {
   phraseToken(text: string | RegExp): Locator {
     return this.questionCard.getByRole('button', { name: text });
   }
-  /** The manual "add a search group" box on the question card (97 wording). */
-  get addConceptInput(): Locator { return this.questionCard.getByLabel('Add a search group manually'); }
-  /** Create a search group from arbitrary text (label = sourcePhrase = text). */
+  /** The manual "add a concept" box on the question card (98 §8 wording). */
+  get addConceptInput(): Locator { return this.questionCard.getByLabel('Add a concept group manually'); }
+  /** Create a concept group from arbitrary text (label = sourcePhrase = text). */
   async addConceptGroup(text: string): Promise<void> {
     await expect(this.addConceptInput).toBeVisible();
     await this.addConceptInput.fill(text);
@@ -172,11 +187,20 @@ export class SearchPage {
   /** The compiled per-database preview cards inside the terms stage. */
   get dbPreviews(): Locator { return this.body.getByTestId('sb-db-previews'); }
 
-  /** Terms stage — master-detail surfaces. */
-  get conceptNavigator(): Locator { return this.body.getByTestId('sb-concept-navigator'); }
-  navigatorPill(name: string): Locator {
-    return this.conceptNavigator.getByRole('tab', { name: new RegExp(name, 'i') });
+  /** Terms stage — the 98.md §9 horizontal concept board. */
+  get conceptBoard(): Locator { return this.body.getByTestId('sb-concept-board'); }
+  /** Any concept card (active or compact) whose rename input names `name`. */
+  conceptCard(name: string): Locator {
+    return this.body.locator('[data-testid="sb-active-concept"], [data-testid="sb-concept-card"]')
+      .filter({ has: this.page.getByLabel(new RegExp(`Concept name: .*${name}`, 'i')) });
   }
+  /** Compact (inactive) cards only. */
+  get compactCards(): Locator { return this.body.getByTestId('sb-concept-card'); }
+  /** The AND/OR connector buttons between cards (98 §9). */
+  get andConnectors(): Locator { return this.body.getByTestId('sb-and-connector'); }
+  /** The §6 empty-state block + its primary action. */
+  get emptyBoard(): Locator { return this.body.getByTestId('sb-empty-board'); }
+  get createFirstConcept(): Locator { return this.body.getByTestId('sb-create-first-concept'); }
   get activeConcept(): Locator { return this.body.getByTestId('sb-active-concept'); }
   get addTermInput(): Locator { return this.body.getByTestId('sb-add-term-input'); }
   get addTermButton(): Locator { return this.body.getByTestId('sb-add-term-btn'); }

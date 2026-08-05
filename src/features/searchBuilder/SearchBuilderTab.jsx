@@ -16,6 +16,9 @@ import { databaseGroups, defaultSelectedDatabases, getDatabase, ACCESS_TIERS, AC
 import { compileStrategy, compileAll, capabilitiesFor } from "../../research-engine/searchBuilder/compilers/index.js"; // 73.md P6 — per-database strategy compiler (read-only consumer)
 import { searchQualityCheck } from "../../research-engine/searchBuilder/crossConcept.js"; // SB4 (97.md: the family key now lives only in dupSignals' SOFT "possible variant" hint)
 import { useRealtime } from "../../frontend/hooks/useRealtime.js"; // SE1 Task 5 — live collaborator sync (shared SSE poke channel)
+// 98.md §5 — the ONE engine-wide Beginner Mode (provider lives in SearchWorkspace;
+// direct module import — not the feature index — so no import cycle forms).
+import { useBeginnerMode } from "../searchWorkspace/beginnerMode.jsx";
 // 85.md A1 — pure engine modules for the redesigned Concepts / Terms & Vocabulary UI.
 import { liveTermsOf } from "../../research-engine/searchBuilder/termLiveness.js";
 import { setTermDisabled } from "../../research-engine/searchBuilder/searchState.js";
@@ -57,7 +60,8 @@ import { combineSpanFromTokens, normalizeReorderIndex } from "./dnd/dndModel.js"
 // 97.md Phase 4 — the pre-regeneration snapshot rides the existing version registry.
 import { searchVersionsApi } from "../searchWizard/searchVersionsApi.js";
 // 85.md A2 — extracted presentational leaves (SSR-contract-tested in searchBuilderUi.test.jsx).
-import ConceptNavigator from "./components/ConceptNavigator.jsx";
+// 98.md §9 — ConceptNavigator (master-detail pills) is RETIRED: the horizontal
+// concept board renders every group as a card; cards are the drop surface now.
 import ActiveConceptPanel from "./components/ActiveConceptPanel.jsx";
 import TermChipRow from "./components/TermChipRow.jsx";
 import TermEditorPopover from "./components/TermEditorPopover.jsx";
@@ -201,77 +205,28 @@ const CORE_VOCAB={
     synonyms:["death","survival","all-cause mortality"],scope:"All deaths in a given population.",children:["Hospital Mortality","Infant Mortality"]},
 };
 
-/* ---- syntax renderers (verified against library guides; see BACKEND_CONTRACT) ---- */
-function renderControlled(term,dbId){
-  const v=term.vocab, t=(term.text||"").trim();
-  // 85.md A2 — a controlled term with NO matched vocabulary must fall back to a
-  // free-text token: `"nonexistent heading"[Mesh]` is a heading that doesn't exist
-  // and would match nothing, while the editor copy has always promised "it will
-  // search as plain words until a match is found". Behaviour now matches the copy.
-  if(!v){
-    if(dbId==="pubmed") return pubmedFree(term);
-    const {token,field}=freeTextToken(term);
-    return `${token}${fieldSuffix(dbId,field)}`;
-  }
-  if(dbId==="pubmed"){ const d=v.mesh||t; return `"${d}"[Mesh${term.noExplode?":NoExp":""}]`; }
-  if(dbId==="cochrane"){ const d=v.mesh||t; return `[mh ${term.noExplode?"^":""}"${d}"]`; }
-  if(dbId==="embase"){ const d=v.emtree||t.toLowerCase(); return `'${d}'/${term.noExplode?"de":"exp"}`; }
-  return t;
-}
-function freeTextToken(term){
-  let t=(term.text||"").trim();
-  const trunc=term.truncate&&!t.includes(" ");
-  if(trunc) t=t.replace(/\*+$/,"")+"*";
-  const phrase=(t.includes(" ")||term.phrase)&&!trunc;
-  return { token: phrase?`"${t}"`:t, field: term.field||"tiab" };
-}
-function pubmedFree(term){
-  const {token,field}=freeTextToken(term);
-  const f=field==="ti"?"[ti]":field==="all"?"[all]":"[tiab]";
-  return `${token}${f}`;
-}
-function fieldSuffix(dbId,field){
-  if(dbId==="cochrane") return field==="ti"?":ti":":ti,ab,kw";
-  if(dbId==="embase")   return field==="ti"?":ti":field==="all"?":ab,ti,kw":":ab,ti";
-  return "";
-}
-/* 85.md A2 — exported so the unmatched-heading fallback above is unit-pinned. */
+/* ---- 98.md §12 — the LEGACY in-file syntax renderer is DELETED. It had drifted
+   from the real compilers (Embase ':ab,ti' vs ':ti,ab'; per-field free-text
+   grouping vs one clause per term), so the term-editor preview and the compiled
+   panels could show DIFFERENT strings for the same term. Every preview now goes
+   through compileStrategy — the ONE code path the compiled strategies use. ---- */
+
+/* The term-editor syntax preview: a one-term strategy through the REAL compiler.
+   Exported so the preview seam stays unit-pinned. */
 export function renderTerm(term,dbId){
-  if(!((term.text||"").trim())) return "";
-  if(term.type==="controlled") return renderControlled(term,dbId);
-  if(dbId==="pubmed") return pubmedFree(term);
-  const {token,field}=freeTextToken(term);
-  return `${token}${fieldSuffix(dbId,field)}`;
+  if(!term||!String(term.text||"").trim()) return "";
+  try{
+    const res=compileStrategy({concepts:[{id:"preview",label:"",op:"AND",terms:[{...term,id:term.id||"preview",disabled:false}]}]},dbId);
+    return (res&&res.query)||"";
+  }catch{ return ""; }
 }
+/* The whole-concept preview (beginner "compiles to" hint) — same single source. */
 function renderConcept(concept,dbId){
-  // review-round #4 — a switched-off term must not appear in any query rendering
-  // (the compilers already skip it; this legacy renderer must agree).
-  const live=liveTermsOf(concept);
-  if(!live.length) return "";
-  if(dbId==="pubmed"){
-    const parts=live.map(t=>t.type==="controlled"?renderControlled(t,dbId):pubmedFree(t));
-    return parts.length===1?parts[0]:"("+parts.join(" OR ")+")";
-  }
-  const controlled=live.filter(t=>t.type==="controlled").map(t=>renderControlled(t,dbId));
-  const freeByField={};
-  live.filter(t=>t.type==="freetext").forEach(t=>{
-    const {token,field}=freeTextToken(t);
-    (freeByField[field]=freeByField[field]||[]).push(token);
-  });
-  const freeGroups=Object.entries(freeByField).map(([field,tokens])=>{
-    const inner=tokens.length===1?tokens[0]:"("+tokens.join(" OR ")+")";
-    return `${inner}${fieldSuffix(dbId,field)}`;
-  });
-  const all=[...controlled,...freeGroups];
-  return all.length===1?all[0]:"("+all.join(" OR ")+")";
-}
-function renderSearch(concepts,dbId){
-  const blocks=concepts.map(c=>({label:c.label,q:renderConcept(c,dbId),op:c.op||"AND"})).filter(b=>b.q);
-  if(!blocks.length) return {full:"",lines:[]};
-  const lines=blocks.map((b,i)=>({n:i+1,label:b.label,q:b.q,op:i<blocks.length-1?b.op:null}));
-  let full="";
-  blocks.forEach((b,i)=>{ full+=(i>0?` ${blocks[i-1].op||"AND"} `:"")+b.q; });
-  return {full,lines};
+  if(!concept) return "";
+  try{
+    const res=compileStrategy({concepts:[{...concept,op:"AND"}]},dbId);
+    return (res&&res.query)||"";
+  }catch{ return ""; }
 }
 
 /* ---- plain-English mirror ---- */
@@ -362,10 +317,11 @@ function Help({text}){
     </span>
   );
 }
-/* 85.md A2 — dismissible 3-line mental-model intro for the Concepts stage
+/* 85.md A2 — dismissible 3-line mental-model intro for the keyword workspace
    (localStorage 'sb-intro-dismissed'; InfoBox/Note callout recipe — no paragraph
-   walls). Fixes audit M2: novices arrive expecting to "create concepts" and meet
-   pre-made groups with no framing. */
+   walls). 98.md §5 — Beginner-Mode content now: the parent renders it only when
+   Beginner Mode is ON; the per-user dismiss stays as a collapse within that mode
+   (turning Beginner Mode off and on again is the recovery path). */
 function ConceptsIntroStrip(){
   const [dismissed,setDismissed]=useState(()=>{ try{ return localStorage.getItem('sb-intro-dismissed')==='1'; }catch{ return false; } });
   if(dismissed) return null;
@@ -590,7 +546,7 @@ export function RegenerateDialog({open,busy,error,onCancel,onConfirm}){
    from the anchor); a visible instruction line is wired via aria-describedby.
    Every token button carries aria-label = its exact text (the e2e + SSR-pinned
    accessible-name contract) and the .sbkw-token focus ring. */
-export function QuestionPhraseCard({question,accent,isSelected,onTogglePhrase,onCombineSpan,onAddManual,onEditQuestion,readOnly}){
+export function QuestionPhraseCard({question,accent,isSelected,onTogglePhrase,onCombineSpan,onAddManual,onEditQuestion,readOnly,beginner}){
   const [manual,setManual]=useState("");
   const [anchorIdx,setAnchorIdx]=useState(null); // last plain-clicked token — the span anchor
   const tokens=useMemo(()=>tokenizeForSelection(question||""),[question]);
@@ -642,9 +598,10 @@ export function QuestionPhraseCard({question,accent,isSelected,onTogglePhrase,on
     <div data-testid="sb-question-card" style={{background:C.card,border:`1px solid ${C.brd}`,borderLeft:`3px solid ${accent}`,borderRadius:10,padding:"11px 13px",marginBottom:10}}>
       <div style={{display:"flex",alignItems:"baseline",gap:8,marginBottom:6}}>
         <span style={{fontSize:12,fontWeight:700,color:C.txt}}>Research question</span>
-        <span style={{fontSize:10.5,color:C.muted}}>click or drag the key ideas to build search groups</span>
+        {beginner&&<span style={{fontSize:10.5,color:C.muted}}>click or drag the key ideas to build concept groups</span>}
         {onEditQuestion&&(
-          <button type="button" onClick={onEditQuestion}
+          /* 98.md §4 — opens the INLINE editor above this card (never navigates away). */
+          <button type="button" onClick={onEditQuestion} data-testid="sb-edit-question"
             style={{marginLeft:"auto",background:"none",border:"none",color:C.acc,cursor:"pointer",fontSize:11,fontFamily:SANS,textDecoration:"underline",padding:0}}>
             Edit question
           </button>
@@ -665,9 +622,9 @@ export function QuestionPhraseCard({question,accent,isSelected,onTogglePhrase,on
                 disabled={readOnly}
                 ref={(el)=>{ tokenEls.current[i]=el; }}
                 {...(handle||{})}
-                title={sel?"Already a search group — click to open it (or remove it while unchanged)"
-                  :filler?"Common word — click if you really want a search group from it; Shift-click selects the whole phrase up to here"
-                  :"Click to create a search group from this phrase; Shift-click (or drag onto) another word to combine the phrase between them"}
+                title={sel?"Already a concept group — click to open it (or remove it while unchanged)"
+                  :filler?"Common word — click if you really want a concept group from it; Shift-click selects the whole phrase up to here"
+                  :"Click to create a concept group from this phrase; Shift-click (or drag onto) another word to combine the phrase between them"}
                 aria-label={tok.text} aria-pressed={sel} aria-describedby={hintId} className="sbkw-token"
                 style={{cursor:readOnly?"default":"pointer",fontFamily:SANS,fontSize:12.5,padding:"2px 8px",borderRadius:7,margin:"0 1px",
                   border:sel?`1px solid ${accent}`:filler?"1px dashed transparent":`1px ${tok.suggested?"solid":"dashed"} ${tok.suggested?alpha(accent,"66"):C.brd2}`,
@@ -690,21 +647,29 @@ export function QuestionPhraseCard({question,accent,isSelected,onTogglePhrase,on
             );
           })}
         </div>
-        <div id={hintId} data-testid="sb-span-hint" style={{fontSize:10,color:C.muted,marginTop:6}}>
-          Click a word to create a search group. Shift-click another word — or drag one word onto another — to combine the whole phrase between them.
+        {/* 98.md §5 — the hint is beginner guidance visually, but stays in the DOM
+            (visually hidden otherwise) so aria-describedby keeps working for SR users. */}
+        <div id={hintId} data-testid="sb-span-hint" style={beginner?{fontSize:10,color:C.muted,marginTop:6}
+          :{position:"absolute",width:1,height:1,padding:0,margin:-1,overflow:"hidden",clip:"rect(0 0 0 0)",whiteSpace:"nowrap",border:0}}>
+          Click a word to create a concept group. Shift-click another word — or drag one word onto another — to combine the whole phrase between them.
         </div>
         </>
       ):(
-        <div style={{fontSize:11.5,color:C.muted,fontStyle:"italic"}}>
-          No research question yet — add it in the <strong>Research Question</strong> stage, then click its key ideas here to build your search.
+        <div style={{fontSize:11.5,color:C.muted,fontStyle:"italic",display:"flex",alignItems:"center",gap:10,flexWrap:"wrap"}}>
+          {/* 98.md §3/§4 — the standalone question stage is gone; the inline editor is the home. */}
+          <span>No research question yet.</span>
+          {onEditQuestion&&!readOnly&&(
+            <button type="button" onClick={onEditQuestion} data-testid="sb-add-question"
+              style={{...btn("primary"),fontSize:11,fontStyle:"normal"}}>Write your research question</button>
+          )}
         </div>
       )}
       {!readOnly&&(
         <div style={{display:"flex",gap:6,marginTop:9}}>
           <input value={manual} onChange={e=>setManual(e.target.value)} onKeyDown={e=>{if(e.key==="Enter"){e.preventDefault();addManual();}}}
-            aria-label="Add a search group manually"
-            placeholder="Add a search group the question doesn't mention…" style={{...inputStyle,flex:1,fontSize:11.5}}/>
-          <button onClick={addManual} style={{...btn("ghost"),fontSize:11}}>+ Add search group</button>
+            aria-label="Add a concept group manually"
+            placeholder="Add a concept the question doesn't mention…" style={{...inputStyle,flex:1,fontSize:11.5}}/>
+          <button onClick={addManual} style={{...btn("ghost"),fontSize:11}}>+ Add concept</button>
         </div>
       )}
     </div>
@@ -732,7 +697,7 @@ export function PicoSourceSections({ pico, accent, isSelected, onTogglePhrase, r
       <div style={{ display: "flex", alignItems: "baseline", gap: 8, marginBottom: 4 }}>
         <span style={{ fontSize: 11.5, fontWeight: 700, color: C.txt }}>Protocol PICO — source text</span>
         <span style={{ fontSize: 10, color: C.muted }}>
-          reference only — click an idea to add a search group; these fields never reorganize your groups
+          reference only — click an idea to add a concept group; these fields never reorganize your concepts
         </span>
       </div>
       {rows.map((r) => (
@@ -746,8 +711,8 @@ export function PicoSourceSections({ pico, accent, isSelected, onTogglePhrase, r
                 <button key={i} type="button" disabled={!!readOnly}
                   onClick={() => { if (!readOnly && onTogglePhrase) onTogglePhrase(tok.text); }}
                   aria-label={tok.text} aria-pressed={sel} className="sbkw-token"
-                  title={sel ? "Already a search group — click to open it (or remove it while unchanged)"
-                    : `Click to create a search group from this ${r.label} phrase`}
+                  title={sel ? "Already a concept group — click to open it (or remove it while unchanged)"
+                    : `Click to create a concept group from this ${r.label} phrase`}
                   style={{ cursor: readOnly ? "default" : "pointer", fontFamily: SANS, fontSize: 11.5, padding: "1px 7px", borderRadius: 6, margin: "0 1px",
                     border: sel ? `1px solid ${accent}` : "1px dashed transparent",
                     background: sel ? `${alpha(accent, "22")}` : "transparent",
@@ -962,7 +927,7 @@ function LimitsPanel({ filters, setFilters, readOnly }) {
      loadSearch  func     — INTEGRATION: async (projectId) => savedState|null
      saveSearch  func     — INTEGRATION: async (projectId, state) => void
    ════════════════════════════════════════════════════════════════════════════ */
-export default function SearchBuilderTab({projectId,question:questionProp,pico,api,loadSearch,saveSearch,phase,onLiveQuery,onHitState,onRegisterHitRefresh,onGoToStage,onStats,onVersionsChanged,onRegisterAfterRestore,readOnly,visible=true}){
+export default function SearchBuilderTab({projectId,question:questionProp,pico,api,loadSearch,saveSearch,phase,onLiveQuery,onHitState,onRegisterHitRefresh,onGoToStage,onStats,onVersionsChanged,onRegisterAfterRestore,readOnly,visible=true,questionEditing=false,onEditQuestion=null}){
   const A=api||defaultApi;
   // 96.md — the research question is the ONE upstream text the builder reads
   // (`pico.question` stays a fallback seam so legacy mounts keep working; the
@@ -981,11 +946,12 @@ export default function SearchBuilderTab({projectId,question:questionProp,pico,a
   // persisted alongside the rest of the strategy (and surfaced to the run step).
   const [filters,setFilters]=useState({dateFrom:'',dateTo:'',languages:[],pubTypes:[]});
   const [activeDB,setActiveDB]=useState("pubmed");
-  // SB3 + 85.md A2 — beginner mode is the default; the choice persists per browser
-  // (localStorage 'sb-beginner') and the toggle is now exposed in the EMBEDDED
-  // workspace toolbar too (audit M9: workspace novices could never reach it).
-  const [beginner,setBeginner]=useState(()=>{ try{ return localStorage.getItem('sb-beginner')!=='0'; }catch{ return true; } });
-  const toggleBeginner=()=>setBeginner(b=>{ const next=!b; try{ localStorage.setItem('sb-beginner',next?'1':'0'); }catch{/* private mode */} return next; });
+  // 98.md §5 — Beginner Mode is ENGINE-WIDE now: the value comes from the shared
+  // provider mounted by SearchWorkspace (header toggle), same localStorage key
+  // 'sb-beginner'. Standalone/test mounts degrade to a local toggle (same hook).
+  // The default flipped OFF per 98.md §5 — the default experience is the focused
+  // professional tool; explanations reveal when Beginner Mode is turned on.
+  const { beginner }=useBeginnerMode();
   // SB3 — guided stepper position (1..5) and the selected databases / handoff marker.
   // selectedDbs [] means "use the catalogue defaults"; it is only written once the
   // user changes the selection, so existing projects don't trigger a spurious save.
@@ -994,6 +960,7 @@ export default function SearchBuilderTab({projectId,question:questionProp,pico,a
   const [dismissedWarnings,setDismissedWarnings]=useState([]); // SB4 — Search-Quality warnings the user kept anyway
   const [exportMsg,setExportMsg]=useState(""); // transient copy/export feedback
   const [showPlainMirror,setShowPlainMirror]=useState(false); // 73.md P6 — strategy-level plain-English mirror toggle
+  const [suggOpen,setSuggOpen]=useState({}); // 98.md §11 — per-concept "Show suggestions" visibility (session-scoped; hidden by default)
   const [editing,setEditing]=useState(null);
   const [loaded,setLoaded]=useState(false);
   const [limitedMode,setLimitedMode]=useState(false); // backend/NLM unreachable
@@ -1145,14 +1112,32 @@ export default function SearchBuilderTab({projectId,question:questionProp,pico,a
       lastSavedRef.current=serializeSearchState(saved);
       revisionRef.current=typeof saved.revision==="number"?saved.revision:0;
     } else {
-      // GET null (revision 0) → seed EMPTY from the question (96.md D2). The first
-      // autosave persists the seed (questionSnapshot rides along, omit-when-empty).
+      // GET null (revision 0) → seed EMPTY from the question (96.md D2).
+      // 98.md §6 — LAZY seed: no database record is created before the user acts.
+      // lastSavedRef is primed with the seeded state's signature, so the autosave
+      // sees NO diff on bare open (the pre-98 `lastSavedRef=''` fired a PUT ~800ms
+      // after first open, flipping project-overview Search to 'partial' with zero
+      // user action). The questionSnapshot needs no early persist either —
+      // stampSnapshotIfEmpty re-stamps it on the first real interaction, and the
+      // first genuine edit changes the signature and saves everything together.
       const seeded=seedStateFromQuestion(question);
       setConcepts([]);
       setQuestionSnapshot(seeded.questionSnapshot);
       setMeta(null);
-      lastSavedRef.current="";
-      revisionRef.current=0;
+      lastSavedRef.current=serializeSearchState({
+        concepts:[],overrides:{},ignored:[],databases:[],readyForScreening:false,
+        dismissedWarnings:[],filters:{dateFrom:"",dateTo:"",languages:[],pubTypes:[]},
+        rejectedSuggestions:[],questionSnapshot:seeded.questionSnapshot,
+      });
+      // 98.md review (H1) — a CONCEPTS-LESS module row can legitimately exist: the
+      // workspace's single-key {searchMode}/{readyForScreening} PUTs create the row
+      // before the builder ever saves concepts (reachable since the lazy seed —
+      // pre-98 the seed-save always created concepts:[] first). Hardcoding
+      // revision 0 here made every later full-state save stamp baseRevision:0
+      // against server revision ≥1 → a permanent CAS-409 dead-loop that lost the
+      // whole session's strategy. Adopt the server revision so the first real
+      // save passes CAS and shallow-merges concepts into the existing row.
+      revisionRef.current=(saved&&typeof saved.revision==="number")?saved.revision:0;
     }
     setLoaded(true);
   })();},[projectId]); // eslint-disable-line
@@ -1220,6 +1205,16 @@ export default function SearchBuilderTab({projectId,question:questionProp,pico,a
           let fresh=null;
           try{ if(loadSearch&&projectId) fresh=await loadSearch(projectId); }
           catch{/* reconcile is best-effort */}
+          // 98.md review (H1) — a CONCEPTS-LESS doc means the newer revision came
+          // from a single-key writer (searchMode / readyForScreening): by
+          // construction it changed NO strategy content, so it is always the H3
+          // envelope-bump case — fast-forward and resend, never adopt (coercing it
+          // to concepts:[] would wipe the user's in-flight strategy as a phantom
+          // "collaborator update").
+          if(fresh&&typeof fresh.revision==="number"&&fresh.revision>revisionRef.current&&!Array.isArray(fresh.concepts)){
+            revisionRef.current=fresh.revision;
+            continue;
+          }
           if(fresh&&Array.isArray(fresh.concepts)&&typeof fresh.revision==="number"&&fresh.revision>revisionRef.current){
             if(serializeSearchState(fresh)===lastSavedRef.current){
               // H3 — the newer revision holds EXACTLY the content we last knew:
@@ -1310,6 +1305,49 @@ export default function SearchBuilderTab({projectId,question:questionProp,pico,a
       doSave(p.sig,p.payload);
     }
   },[doSave]);
+  // 98.md §15 — TAB-CLOSE flush: SPA unmount never fires on window close, and
+  // Safari has no reliable beforeunload, so a close inside the 800ms debounce
+  // silently dropped the last edit in every browser. pagehide (the event Safari
+  // DOES fire reliably on close/navigate — deliberately NOT visibilitychange,
+  // which also fires on every tab switch and would bypass the CAS envelope for
+  // no reason) sends the pending PUT with fetch keepalive so it survives page
+  // teardown. baseRevision is deliberately NOT stamped here — doSave's CAS
+  // envelope needs its ack round-trip; the teardown write goes through
+  // saveSearch directly (last-writer-wins is correct for the same user's own
+  // final keystrokes at window close).
+  useEffect(()=>{
+    if(typeof window==='undefined'||readOnly) return undefined;
+    const flushKeepalive=()=>{
+      const p=pendingSaveRef.current;
+      if(!p||p.sig===lastSavedRef.current||saveStateRef.current==='error'||readOnlyRef.current) return;
+      clearTimeout(saveTimer.current);
+      // 98.md review (M2) — the teardown write carries the SAME CAS envelope as
+      // doSave: without baseRevision the server treats it as deliberate
+      // last-writer-wins and a closing tab's full STALE document could silently
+      // erase a collaborator's just-landed revision. With the stamp, a stale
+      // teardown write 409s and is simply dropped — worst case loses the closing
+      // user's final debounce window (the pre-98 status quo), never someone
+      // else's landed work.
+      try{ saveSearch(projectId,{...p.payload,baseRevision:revisionRef.current},{keepalive:true}); }catch{/* teardown best-effort */}
+    };
+    // 98.md review (M3/L21) — bfcache RESTORE: pagehide fired (possibly flushing
+    // via keepalive) but the page came back. Re-arm the pending save through the
+    // normal doSave chain: if the keepalive PUT landed, its ack already published
+    // through onSearchSaved (fast-forwarding revisionRef) and the resend is a
+    // CAS-safe no-op-diff; if it never landed, this recovers the edit instead of
+    // leaving the indicator stuck on "Saving…" forever. Never optimistically mark
+    // 'saved' at flush time — a failed keepalive would then silently drop the edit.
+    const onPageShow=(ev)=>{
+      if(!ev||!ev.persisted) return;
+      const p=pendingSaveRef.current;
+      if(!p||readOnlyRef.current) return;
+      clearTimeout(saveTimer.current);
+      saveTimer.current=setTimeout(()=>doSave(p.sig,p.payload),0);
+    };
+    window.addEventListener('pagehide',flushKeepalive);
+    window.addEventListener('pageshow',onPageShow);
+    return ()=>{ window.removeEventListener('pagehide',flushKeepalive); window.removeEventListener('pageshow',onPageShow); };
+  },[projectId,readOnly,saveSearch,doSave]);
 
   /* (96.md — the SE2 "auto-sync the five groups whenever PICO changes" effect is
      RETIRED with the PICO scaffold. Question edits never mutate concept groups;
@@ -1470,8 +1508,20 @@ export default function SearchBuilderTab({projectId,question:questionProp,pico,a
 
   /* ── MeSH lookup via API with offline fallback ─────────────────────────── */
   const tryLookup=useCallback(async (cid,tid,text,forceControlled)=>{
+    // 98.md §19 — STALE-RESPONSE GUARD: the lookup was fired for the term's text
+    // AT CALL TIME; if the user edits the term again before the response lands,
+    // attaching the old text's vocab would silently make the chip search the
+    // WRONG heading. Every apply below re-checks the term still carries the
+    // looked-up text (same race-guard pattern as the pubHash count machine).
+    const askedText=String(text||"").trim().toLowerCase();
+    const stillCurrent=()=>{
+      const c=conceptsRef.current.find(x=>x&&x.id===cid);
+      const t=c&&(c.terms||[]).find(x=>x&&x.id===tid);
+      return !!t&&String(t.text||"").trim().toLowerCase()===askedText;
+    };
     try{
       const v=await A.meshLookup(text);
+      if(!stillCurrent()) return; // superseded by a newer edit — drop silently
       if(v){
         if(v.source!=="live"&&v.source!=="live-nlm") setLimitedMode(true);
         setConcepts(cs=>cs.map(c=>c.id===cid?{...c,terms:c.terms.map(t=>t.id===tid?{...t,vocab:v,type:forceControlled?"controlled":(t.type==="controlled"?"controlled":t.type)}:t)}:c));
@@ -1492,6 +1542,7 @@ export default function SearchBuilderTab({projectId,question:questionProp,pico,a
       setLimitedMode(true);
       // fall back to offline core
       const v=await defaultApi.meshLookup(text);
+      if(!stillCurrent()) return; // 98.md §19 — same guard on the fallback path
       if(v) setConcepts(cs=>cs.map(c=>c.id===cid?{...c,terms:c.terms.map(t=>t.id===tid?{...t,vocab:v}:t)}:c));
     }
   },[A]);
@@ -1511,10 +1562,10 @@ export default function SearchBuilderTab({projectId,question:questionProp,pico,a
     if(o!=null) return o;
     // recs round — count the SAME string the compiled PubMed panel displays
     // (including embedded Limits), so the pulse/hit chip and the strategy
-    // workspace can never disagree about what "≈ N records" refers to. Falls
-    // back to the raw renderer (byte-identical when no filters are set).
-    try{ return compileStrategy({concepts,filters},"pubmed",{applyOverride:false}).query; }
-    catch{ return renderSearch(concepts,"pubmed").full; }
+    // workspace can never disagree about what "≈ N records" refers to.
+    // 98.md §12 — the renderSearch catch-fallback is gone with the legacy
+    // renderer (compileStrategy never throws — compilers/index.js contract).
+    return compileStrategy({concepts,filters},"pubmed",{applyOverride:false}).query;
   },[concepts,overrides,filters]);
   const pubHash=useMemo(()=>strategyHash(pubmedQuery),[pubmedQuery]);
 
@@ -1630,11 +1681,16 @@ export default function SearchBuilderTab({projectId,question:questionProp,pico,a
   // (the empty group vanishes on undo; terms added later keep it alive).
   const addConcept=()=>{
     const cid=uid();
-    const label=`Search Group ${conceptsRef.current.length+1}`;
+    const label=`Concept ${conceptsRef.current.length+1}`;
     touchMeta();
     setConcepts(cs=>[...cs,{id:cid,label,op:"AND",source:"user_added",terms:[]}]);
+    // 98.md review (H14) — the new concept opens as the ACTIVE card immediately
+    // (matching every other creation path): its add-term box is focusable, so a
+    // keyboard user is never stranded on an empty compact card with no
+    // activatable control.
+    setActiveConceptId(cid);
     setUndoStack(st=>recordAddConcept(st,{conceptId:cid,label}));
-    setUndoMsg(`Created group “${label}”`);
+    setUndoMsg(`Created concept “${label}”`);
   };
   const removeConcept=id=>{
     const c=concepts.find(x=>x.id===id);
@@ -1773,8 +1829,8 @@ export default function SearchBuilderTab({projectId,question:questionProp,pico,a
     const existing=findExactDuplicateInConcept(c,insertText,undefined,
       isMesh?{type:'controlled',vocab:sugg.vocab||null}:undefined);
     if(existing){
-      setBlockedNotice({text:`This exact term is already in ${c.label||'this group'}.`,cid,tid:existing.id});
-      announce(`“${text}” is already in ${c.label||'this group'}`);
+      setBlockedNotice({text:`This exact term is already in ${c.label||'this concept'}.`,cid,tid:existing.id});
+      announce(`“${text}” is already in ${c.label||'this concept'}`);
       return;
     }
     const tid=uid();
@@ -1797,8 +1853,8 @@ export default function SearchBuilderTab({projectId,question:questionProp,pico,a
     const clean=String(text||"").trim(); if(!clean) return;
     const existing=findExactDuplicateInConcept(c,clean);
     if(existing){
-      setBlockedNotice({text:`“${clean}” is already in ${c.label||'this group'}.`,cid,tid:existing.id});
-      announce(`“${clean}” is already in ${c.label||'this group'}`);
+      setBlockedNotice({text:`“${clean}” is already in ${c.label||'this concept'}.`,cid,tid:existing.id});
+      announce(`“${clean}” is already in ${c.label||'this concept'}`);
       return;
     }
     const tid=uid();
@@ -1806,7 +1862,7 @@ export default function SearchBuilderTab({projectId,question:questionProp,pico,a
     touchMeta();
     setUndoStack(st=>recordBulkAccept(st,{concept:c,termIds:[tid],label:clean}));
     setUndoMsg(`Added “${clean}”`);
-    announce(`Added “${clean}” to ${c.label||'the group'}`);
+    announce(`Added “${clean}” to ${c.label||'the concept'}`);
   };
 
   /* ── 85.md A2 — typed/pasted term entry through the ONE pure commit path ────
@@ -1989,7 +2045,7 @@ export default function SearchBuilderTab({projectId,question:questionProp,pico,a
     // entry records the group's ORIGIN term ids, so undo removes the group even
     // though it is born with its phrase term (work added later still protects it).
     setUndoStack(st=>recordAddConcept(st,{conceptId:cid,label:withIds.label||text,originTermIds:withIds.terms.map(t=>t.id)}));
-    setUndoMsg(`Created group “${withIds.label||text}”`);
+    setUndoMsg(`Created concept “${withIds.label||text}”`);
     return withIds;
   };
   /* 97.md Phase 6 — question-card drag-onto-token combine: create ONE search group
@@ -2053,11 +2109,15 @@ export default function SearchBuilderTab({projectId,question:questionProp,pico,a
   // snapshot → dirtied the autosave signature → fired a search-state PUT + a
   // collaborator poke per typing pause. Hidden builder = no snapshot churn; the
   // refresh happens once, when the user actually opens a builder stage.
+  // 98.md §4 — also gated on `!questionEditing`: with the INLINE editor the builder
+  // is visible while the user types, and each 500ms commit would otherwise stamp
+  // the snapshot (autosave churn) or flash the drift banner mid-sentence. Drift
+  // settles once, when the editing session ends (Done/blur/unmount).
   useEffect(()=>{
-    if(visible&&questionChanged&&drifted.length===0){
+    if(visible&&!questionEditing&&questionChanged&&drifted.length===0){
       setQuestionSnapshot(String(question||"").slice(0,2000).trim());
     }
-  },[visible,questionChanged,drifted.length,question]); // eslint-disable-line
+  },[visible,questionEditing,questionChanged,drifted.length,question]); // eslint-disable-line
   const keepDriftedConcepts=()=>{
     setQuestionSnapshot(String(question||"").slice(0,2000).trim());
     announce("Concepts kept — question snapshot updated");
@@ -2069,7 +2129,7 @@ export default function SearchBuilderTab({projectId,question:questionProp,pico,a
     const from=list.findIndex(c=>c&&c.id===cid);
     const next=reorderConceptState(list,cid,delta);
     if(next===list) return; // no-op (edge or unknown id)
-    const label=(list[from]&&list[from].label)||"Search group";
+    const label=(list[from]&&list[from].label)||"Concept";
     setConcepts(next);
     touchMeta();
     setUndoStack(st=>recordReorderConcept(st,{conceptId:cid,fromIndex:from,toIndex:from+(delta<0?-1:1),label}));
@@ -2088,7 +2148,7 @@ export default function SearchBuilderTab({projectId,question:questionProp,pico,a
     const step=to>from?1:-1;
     for(let i=from;i!==to;i+=step) next=reorderConceptState(next,cid,step);
     if(next===list) return;
-    const label=(list[from]&&list[from].label)||"Search group";
+    const label=(list[from]&&list[from].label)||"Concept";
     setConcepts(next);
     touchMeta();
     setUndoStack(st=>recordReorderConcept(st,{conceptId:cid,fromIndex:from,toIndex:to,label}));
@@ -2113,9 +2173,9 @@ export default function SearchBuilderTab({projectId,question:questionProp,pico,a
     // (they are recoverable via this merge's Undo entry).
     const skippedN=Array.isArray(res.skipped)?res.skipped.length:0;
     const skippedNote=skippedN?` · ${skippedN} duplicate term${skippedN===1?'':'s'} already present ${skippedN===1?'was':'were'} not moved`:'';
-    setUndoMsg(`Merged "${res.undo.fromConcept.label||"concept"}" into "${(target&&target.label)||"group"}"${skippedNote}`);
+    setUndoMsg(`Merged "${res.undo.fromConcept.label||"concept"}" into "${(target&&target.label)||"concept"}"${skippedNote}`);
     setActiveConceptId(intoId);
-    announce(`Merged "${res.undo.fromConcept.label||"concept"}" into "${(target&&target.label)||"group"}"${skippedNote}`);
+    announce(`Merged "${res.undo.fromConcept.label||"concept"}" into "${(target&&target.label)||"concept"}"${skippedNote}`);
   };
   const splitConceptTerms=(cid,termIds,newLabel)=>{
     const res=splitConceptState(conceptsRef.current,cid,termIds,newLabel);
@@ -2143,7 +2203,7 @@ export default function SearchBuilderTab({projectId,question:questionProp,pico,a
     touchMeta();
     setUndoStack(st=>recordReorderTerm(st,{conceptId:cid,termId:tid,fromIndex:from,toIndex:from+(delta<0?-1:1),text}));
     setUndoMsg(`Moved "${text}" ${delta<0?"earlier":"later"}`);
-    announce(`Moved "${text}" ${delta<0?"earlier":"later"} in ${c.label||"the group"}`);
+    announce(`Moved "${text}" ${delta<0?"earlier":"later"} in ${c.label||"the concept"}`);
   };
   /* 97.md Phase 6/11 — drag-reorder a term to an ARBITRARY position (insertion
      line). Repeated pure ±1 moves; ONE undo entry restores the original index. */
@@ -2164,7 +2224,7 @@ export default function SearchBuilderTab({projectId,question:questionProp,pico,a
     touchMeta();
     setUndoStack(st=>recordReorderTerm(st,{conceptId:cid,termId:tid,fromIndex:from,toIndex:to,text}));
     setUndoMsg(`Moved "${text}"`);
-    announce(`Moved "${text}" to position ${to+1} in ${c.label||"the group"}`);
+    announce(`Moved "${text}" to position ${to+1} in ${c.label||"the concept"}`);
   };
   /* 97.md Phase 10 — rename undo: ONE entry per editing session (recorded on blur,
      not per keystroke). renameBaseRef holds the label the session started from. */
@@ -2182,8 +2242,8 @@ export default function SearchBuilderTab({projectId,question:questionProp,pico,a
     if(now===base.label) return;
     touchMeta();
     setUndoStack(st=>recordRenameConcept(st,{conceptId:c.id,prevLabel:base.label,nextLabel:now}));
-    setUndoMsg(`Renamed group to “${now||'Untitled'}”`);
-    announce(`Renamed the group to “${now||'Untitled'}”`);
+    setUndoMsg(`Renamed concept to “${now||'Untitled'}”`);
+    announce(`Renamed the concept to “${now||'Untitled'}”`);
     renameBaseRef.current={cid:c.id,label:now};
   };
   // A new active group starts a fresh rename-tracking session.
@@ -2202,7 +2262,7 @@ export default function SearchBuilderTab({projectId,question:questionProp,pico,a
     const c=list.find(x=>x&&x.id===cid);
     setConcepts(next);
     touchMeta();
-    announce(`Updated the phrase for "${(c&&c.label)||"the group"}"`);
+    announce(`Updated the phrase for "${(c&&c.label)||"the concept"}"`);
   };
 
   /* ── 97.md Phase 11 — cross-group term movement via the pure moveTermToConcept
@@ -2220,21 +2280,21 @@ export default function SearchBuilderTab({projectId,question:questionProp,pico,a
     const res=moveTermToConcept(list,tid,fromCid,toCid,index);
     if(!res) return;
     if(res.blocked){
-      setBlockedNotice({text:`This exact term is already in ${to.label||'that group'}.`,cid:toCid,tid:res.existingTermId});
-      announce(`This exact term is already in ${to.label||'that group'} — nothing was moved.`);
+      setBlockedNotice({text:`This exact term is already in ${to.label||'that concept'}.`,cid:toCid,tid:res.existingTermId});
+      announce(`This exact term is already in ${to.label||'that concept'} — nothing was moved.`);
       return;
     }
     setConcepts(res.concepts);
     touchMeta();
     setUndoStack(st=>recordMoveTerm(st,res.undo));
-    setUndoMsg(`Moved “${t.text}” to ${to.label||'the other group'}`);
-    announce(`Moved “${t.text}” to ${to.label||'the other group'}`);
+    setUndoMsg(`Moved “${t.text}” to ${to.label||'the other concept'}`);
+    announce(`Moved “${t.text}” to ${to.label||'the other concept'}`);
     setEditing(null);
   };
   /* Move a term into a brand-NEW group — reuses the pure splitConcept op (already
      undoable as one entry: undo moves the term back AND removes the empty group). */
   const moveTermToNewGroup=(fromCid,tid)=>{
-    splitConceptTerms(fromCid,[tid],`Search Group ${conceptsRef.current.length+1}`);
+    splitConceptTerms(fromCid,[tid],`Concept ${conceptsRef.current.length+1}`);
   };
   /* 97.md Phases 9/11 — EXPLICIT copy (default drag always MOVES, never clones). */
   const doCopyTerm=(fromCid,tid,toCid /* null → new group */)=>{
@@ -2245,12 +2305,12 @@ export default function SearchBuilderTab({projectId,question:questionProp,pico,a
     let base=list, targetId=toCid, targetLabel='';
     if(toCid==null){
       targetId=uid();
-      targetLabel=`Search Group ${list.length+1}`;
+      targetLabel=`Concept ${list.length+1}`;
       base=[...list,{id:targetId,label:targetLabel,op:"AND",source:"user_added",terms:[]}];
     } else {
       const to=list.find(c=>c&&c.id===toCid);
       if(!to) return;
-      targetLabel=to.label||'the group';
+      targetLabel=to.label||'the concept';
     }
     const res=copyTermState(base,tid,fromCid,targetId);
     if(!res) return;
@@ -2278,8 +2338,8 @@ export default function SearchBuilderTab({projectId,question:questionProp,pico,a
       // of this group: blocked with the standard find-existing affordance
       // (mirrors every other same-group insertion path).
       const c=conceptsRef.current.find(x=>x&&x.id===cid);
-      setBlockedNotice({text:`This exact term is already in ${(c&&c.label)||'this group'}.`,cid,tid:res.existingTermId});
-      announce(`“${res.text}” is already in ${(c&&c.label)||'this group'} — nothing was combined.`);
+      setBlockedNotice({text:`This exact term is already in ${(c&&c.label)||'this concept'}.`,cid,tid:res.existingTermId});
+      announce(`“${res.text}” is already in ${(c&&c.label)||'this concept'} — nothing was combined.`);
       return;
     }
     setConcepts(res.concepts);
@@ -2315,7 +2375,7 @@ export default function SearchBuilderTab({projectId,question:questionProp,pico,a
     touchMeta();
     setUndoStack(st=>recordDupOverride(st,{key,label:t.text,changed:res.changed}));
     setUndoMsg(`Kept “${t.text}” intentionally`);
-    announce(`Kept “${t.text}” in both groups intentionally — the warning stays off until the term or groups change.`);
+    announce(`Kept “${t.text}” in both concepts intentionally — the warning stays off until the term or concepts change.`);
     setEditing(null);
   };
   const unkeepDup=(t)=>{
@@ -2342,8 +2402,8 @@ export default function SearchBuilderTab({projectId,question:questionProp,pico,a
     removeTerm(cid,tid);
     setEditing(null);
     requestFocusTerm(other.conceptId,other.termId);
-    setUndoMsg(`Kept “${t.text}” in ${other.conceptLabel||'the other group'} — removed this copy`);
-    announce(`“${t.text}” now lives only in ${other.conceptLabel||'the other group'}; the copy here was removed (undoable).`);
+    setUndoMsg(`Kept “${t.text}” in ${other.conceptLabel||'the other concept'} — removed this copy`);
+    announce(`“${t.text}” now lives only in ${other.conceptLabel||'the other concept'}; the copy here was removed (undoable).`);
   };
   const dismissWarning=(id)=>setDismissedWarnings(d=>d.includes(id)?d:[...d,id]);
   const restoreWarnings=()=>setDismissedWarnings([]);
@@ -2381,7 +2441,12 @@ export default function SearchBuilderTab({projectId,question:questionProp,pico,a
         .map(x=>{ const el=pillEls.current[x.id]; return (el&&typeof el.getBoundingClientRect==="function")?{id:x.id,rect:rectOf(el)}:null; })
         .filter(Boolean);
       const ng=(newGroupEl.current&&typeof newGroupEl.current.getBoundingClientRect==="function")?{rect:rectOf(newGroupEl.current)}:null;
-      return {chips,groups,newGroup:ng};
+      // 98.md review (L7) — bound the nearest-gap reorder band to the SOURCE
+      // card's rect: on the horizontal board, neighbouring cards/connectors/gaps
+      // share the chips' vertical band, and a drop there must cancel, not reorder.
+      const srcCardEl=pillEls.current[cid];
+      const rowBounds=(srcCardEl&&typeof srcCardEl.getBoundingClientRect==="function")?rectOf(srcCardEl):null;
+      return {chips,groups,newGroup:ng,rowBounds};
     },
     onDrop:(info,target)=>{
       const cid=info.meta&&info.meta.conceptId;
@@ -2568,38 +2633,27 @@ export default function SearchBuilderTab({projectId,question:questionProp,pico,a
             {remoteUpdatedBy&&(
               <span title={`This search was just updated by ${remoteUpdatedBy}`} style={{display:"inline-flex",alignItems:"center",gap:4,color:C.acc,fontSize:11,fontFamily:MONO}}>↻ {remoteUpdatedBy}</span>
             )}
-            <button onClick={toggleBeginner} role="switch" aria-checked={beginner} aria-label="Beginner mode"
-              style={{display:"flex",alignItems:"center",gap:8,padding:"4px 10px",borderRadius:20,cursor:"pointer",border:`1px solid ${beginner?C.grn:C.brd2}`,background:beginner?`${alpha(C.grn,"14")}`:"transparent",fontFamily:SANS}}>
-              <span aria-hidden="true" style={{width:26,height:14,borderRadius:9,background:beginner?C.grn:C.brd2,position:"relative",flexShrink:0}}>
-                <span style={{position:"absolute",top:2,left:beginner?14:2,width:10,height:10,borderRadius:"50%",background:"#fff",transition:"all .15s"}}/>
-              </span>
-              <span style={{fontSize:10.5,fontWeight:600,color:beginner?C.grn:C.muted}}>Beginner mode</span>
-            </button>
+            {/* 98.md §5 — the Beginner Mode toggle moved to the SearchWorkspace
+                header so it is reachable on EVERY stage (it was builder-only). */}
           </span>
         </div>
       )}
 
-      {/* 85.md A2 — dismissible mental-model intro, now atop Terms & Vocabulary
-          (the retired Concepts stage's framing rides with the merged workspace). */}
-      {phase==="terms"&&<ConceptsIntroStrip/>}
+      {/* 85.md A2 — dismissible mental-model intro, now atop the keyword workspace.
+          98.md §5 — Beginner-Mode content: hidden in the default experience. */}
+      {phase==="terms"&&beginner&&<ConceptsIntroStrip/>}
 
-      {/* ─────────── 85.md A2 — phase 'terms': MASTER-DETAIL (navigator → active
-          concept panel → strategy preview). 96.md QA L2 — the legacy standalone
-          concept-card grid that used to follow is DELETED (unreachable). */}
+      {/* ─────────── 98.md §9 — phase 'terms': the HORIZONTAL CONCEPT BOARD.
+          Every concept renders as its own bounded card, side by side with visible
+          AND/OR connectors between cards (flex-wrap keeps the reading order when
+          rows wrap; the connector leads its card so a wrapped row reads
+          "AND [card]"). The ACTIVE card carries the working surfaces (add box,
+          suggestions, group actions); inactive cards render compact chips and
+          activate on click. Replaces the 85.md master-detail navigator+panel
+          (96.md QA L2 already deleted the legacy standalone grid). */}
       {show(2)&&(()=>{
         const c=activeConcept;
-        const cIdx=c?(conceptIndexById[c.id]||0):0;
         const rejectedSet=rejectedSuggestions;
-        const cStatus=c?conceptStatus(c,{rejected:rejectedSet}):"empty";
-        // 97.md — MeSH suggestion rows carry a confidence marker where reliable
-        // (low-confidence is flagged, NEVER auto-added) and exact MeSH wording
-        // (UI-layer override of the engine's legacy "subject heading" why-copy).
-        const pending=(c?pendingSuggestions(c,rejectedSet):[])
-          .map(s=>s.kind==='mesh'
-            ?{...s,confidence:meshConfidence(s.sourceText,s.text),why:`Standard MeSH term for "${s.sourceText}"`}
-            :s);
-        const hasAnyText=c?(c.terms||[]).some(t=>(t.text||"").trim()):false;
-        const isTimeFrame=c&&c.picoField==="T";
         return(
           <div data-testid="sb-step-organize-concepts">
             {/* 96.md D13.1 + 97.md Phase 5 — the research question SOURCE section
@@ -2608,7 +2662,7 @@ export default function SearchBuilderTab({projectId,question:questionProp,pico,a
             <QuestionPhraseCard question={question} accent={C.acc}
               isSelected={isPhraseSelected} onTogglePhrase={togglePhrase}
               onCombineSpan={combineQuestionSpan} onAddManual={addManualConcept}
-              onEditQuestion={typeof onGoToStage==='function'?()=>onGoToStage('question'):null} readOnly={readOnly}/>
+              onEditQuestion={onEditQuestion} readOnly={readOnly} beginner={beginner}/>{/* 98.md §4 — inline editor, never a navigation */}
 
             {/* 97.md Phase 5 (QA M9) — the protocol's P/I/C/O text as read-only,
                 clearly-labeled SOURCE sections (tokens clickable like question
@@ -2618,8 +2672,10 @@ export default function SearchBuilderTab({projectId,question:questionProp,pico,a
               isSelected={isPhraseSelected} onTogglePhrase={togglePhrase} readOnly={readOnly}/>
 
             {/* 96.md D2 — "question changed" drift banner (never auto-deletes).
-                QA M4 — rows also offer an inline "Update phrase" editor. */}
-            {questionChanged&&(
+                QA M4 — rows also offer an inline "Update phrase" editor.
+                98.md §4 — deferred while the inline editor session is open, so a
+                mid-sentence deletion never flashes the banner. */}
+            {questionChanged&&!questionEditing&&(
               <QuestionDriftBanner drifted={drifted} readOnly={readOnly}
                 onKeepAll={keepDriftedConcepts}
                 onEditConcept={(id)=>setActiveConceptId(id)}
@@ -2662,42 +2718,148 @@ export default function SearchBuilderTab({projectId,question:questionProp,pico,a
               </div>
             )}
 
-            {/* Group navigator — one tab stop, arrow keys, fixed-height row.
-                97.md: also the cross-group DROP surface (pills + "New group") and
-                the group-reorder/merge drag handles. */}
-            <ConceptNavigator
-              concepts={concepts}
-              activeId={c?c.id:null}
-              onSelect={(id)=>{ if(pillDrag.wasDragClick&&pillDrag.wasDragClick()) return; setActiveConceptId(id); }}
-              statusFor={(x)=>conceptStatus(x,{rejected:rejectedSet})}
-              suggestionCounts={suggCounts.perConcept}
-              registerPillEl={(id,el)=>{ pillEls.current[id]=el; }}
-              dropTargetGroupId={chipDropGroupId||pillMergeTargetId}
-              showNewGroupTarget={!!(chipDrag.state&&chipDrag.state.active)}
-              registerNewGroupEl={(el)=>{ newGroupEl.current=el; }}
-              pillDragHandleFor={readOnly?null:(id)=>pillDrag.handleFor(id,{})}
-              pillInsertIndex={pillInsertIndex}
-            />
-
-            {c&&(
-              <ActiveConceptPanel concept={c} conceptIndex={cIdx} status={cStatus}
-                readOnly={readOnly}
-                onRename={readOnly?null:(label)=>updateConcept(c.id,{label})}
-                onRenameCommit={readOnly?null:commitRename}
-                onUpdateSourcePhrase={readOnly?null:(phrase)=>updateSourcePhrase(c.id,phrase)}
-                onRequestSplit={readOnly||((c.terms||[]).filter(t=>(t.text||"").trim()).length<2)?null
-                  :()=>{setSplitDraft({cid:c.id,selected:{},label:""});setMergeOpen(false);setConfirmDeleteId(null);}}>
+            {/* ── 98.md §9 — THE HORIZONTAL CONCEPT BOARD ──────────────────────
+                One bounded card per concept, side by side (flex-wrap), joined by
+                visible AND/OR connectors. Each card is the cross-group DROP
+                surface (was: navigator pills) and carries the group-reorder/
+                merge drag handle in its header. The connector LEADS its card so
+                a wrapped row reads "AND [card]" — connectors never strand at a
+                row end. Semantics ride the accessible names, never colour alone. */}
+            {/* a11y — role="group" (NOT "list"): the board also hosts non-concept
+                children (the §6 empty block, the "+ Add concept" ghost card, the
+                drag-time "New concept" drop zone), which a list role forbids
+                (axe aria-required-children, critical). The group label carries
+                the AND semantics; each card is its own labelled <section>. */}
+            <div data-testid="sb-concept-board" role="group" aria-label="Concept groups"
+              style={{display:'flex',flexWrap:'wrap',alignItems:'stretch',gap:10,marginBottom:4}}>
+              {concepts.map((c,cIdx)=>{
+                const active=!!(activeConcept&&activeConcept.id===c.id);
+                const cStatus=conceptStatus(c,{rejected:rejectedSet});
+                // 97.md — MeSH suggestion rows carry a confidence marker where reliable
+                // (low-confidence is flagged, NEVER auto-added) and exact MeSH wording.
+                const pending=(active?pendingSuggestions(c,rejectedSet):[])
+                  .map(s=>s.kind==='mesh'
+                    ?{...s,confidence:meshConfidence(s.sourceText,s.text),why:`Standard MeSH term for "${s.sourceText}"`}
+                    :s);
+                const hasAnyText=(c.terms||[]).some(t=>(t.text||"").trim());
+                const isTimeFrame=c.picoField==="T";
+                // 98.md review (M5) — the connector must show the operator the
+                // compilers will ACTUALLY use: composeConcepts joins surviving
+                // blocks with the previous SURVIVING block's op. When the previous
+                // card is empty or a Time-frame note (never compiles), the live
+                // operator comes from the nearest preceding LIVE concept — and when
+                // either side doesn't compile at all, the connector is inert (a
+                // muted glyph, no toggle promise the compiled query won't keep).
+                const isLiveConcept=(x)=>!!x&&x.picoField!=="T"&&liveTermsOf(x).length>0;
+                const prevC=cIdx>0?concepts[cIdx-1]:null;
+                let prevLive=null;
+                for(let k=cIdx-1;k>=0;k--){ if(isLiveConcept(concepts[k])){ prevLive=concepts[k]; break; } }
+                const connectorTarget=(prevC&&isLiveConcept(prevC))?prevC:((isLiveConcept(c)&&prevLive)?prevLive:null);
+                const prevOp=connectorTarget?(connectorTarget.op||"AND"):"AND";
+                const insertLineEl=(
+                  <span data-testid="sb-pill-insert-line" aria-hidden="true"
+                    style={{display:'inline-block',width:3,alignSelf:'stretch',minHeight:40,borderRadius:2,background:C.acc,boxShadow:`0 0 0 1px ${alpha(C.acc,'66')}`,flexShrink:0}}/>
+                );
+                return(
+                  <div key={c.id||cIdx}
+                    style={{display:'flex',alignItems:'stretch',gap:10,boxSizing:'border-box',maxWidth:'100%',
+                      // 98.md §9 — the active (working) card takes the full row for its
+                      // editing surfaces; inactive cards sit side by side and wrap
+                      // naturally by viewport width (no horizontal-scroll-only path).
+                      flex:active?'1 1 100%':'1 1 300px',
+                      minWidth:active?undefined:260}}>
+                    {pillInsertIndex===cIdx&&insertLineEl}
+                    {cIdx>0&&(
+                      /* 98.md §9 — the polished AND connector: clearly not a term chip,
+                         semantic text in the accessible name, and (96.md D13.4) still
+                         the between-group operator TOGGLE for editors. Review (M5) —
+                         a connector adjacent to a non-compiling card renders INERT. */
+                      <span style={{display:'flex',alignItems:'center',flexShrink:0}}>
+                        {connectorTarget?(
+                          <button type="button" data-testid="sb-and-connector"
+                            disabled={!!readOnly}
+                            onClick={readOnly?undefined:()=>updateConcept(connectorTarget.id,{op:prevOp==="OR"?"AND":"OR"})}
+                            aria-label={`${connectorTarget.label||'The previous concept'} is combined with ${c.label||`Concept ${cIdx+1}`} using ${prevOp}${readOnly?'':` — activate to switch to ${prevOp==="OR"?"AND":"OR"}`}`}
+                            title={readOnly?undefined:`Records must match ${prevOp==="OR"?"either concept":"both concepts"}. Click to switch to ${prevOp==="OR"?"AND":"OR"}.`}
+                            style={{fontFamily:MONO,fontSize:10.5,fontWeight:800,letterSpacing:0.8,color:prevOp==="OR"?C.yel:C.acc,
+                              background:alpha(prevOp==="OR"?C.yel:C.acc,'0e'),border:`1.5px solid ${alpha(prevOp==="OR"?C.yel:C.acc,'55')}`,
+                              borderRadius:7,padding:'5px 8px',cursor:readOnly?'default':'pointer',flexShrink:0}}>
+                            {prevOp}
+                          </button>
+                        ):(
+                          <span data-testid="sb-and-connector-inert" aria-hidden="true"
+                            title="Takes effect once both neighbouring concepts have terms"
+                            style={{fontFamily:MONO,fontSize:10.5,fontWeight:800,letterSpacing:0.8,color:C.dim,
+                              border:`1.5px dashed ${C.brd2}`,borderRadius:7,padding:'5px 8px',flexShrink:0}}>
+                            AND
+                          </span>
+                        )}
+                      </span>
+                    )}
+                    <ActiveConceptPanel concept={c} conceptIndex={cIdx} status={cStatus}
+                      readOnly={readOnly}
+                      active={active} compact={!active} beginner={beginner}
+                      testId={active?'sb-active-concept':'sb-concept-card'}
+                      onActivate={active?null:()=>{ /* 98.md review (L8) — the trailing click after EITHER drag kind must not activate */ if((pillDrag.wasDragClick&&pillDrag.wasDragClick())||(chipDrag.wasDragClick&&chipDrag.wasDragClick())) return; setActiveConceptId(c.id); }}
+                      dragHandle={readOnly?null:pillDrag.handleFor(c.id,{})}
+                      registerEl={(el)=>{ pillEls.current[c.id]=el; }}
+                      isDropTarget={(chipDropGroupId||pillMergeTargetId)===c.id}
+                      suggestionCount={suggCounts.perConcept[c.id]||0}
+                      onRename={readOnly?null:(label)=>updateConcept(c.id,{label})}
+                      onRenameCommit={readOnly?null:commitRename}
+                      onRenameBegin={readOnly?null:()=>beginRenameTracking(c.id)} /* 98.md review (M4) — compact-card renames get their own undo session */
+                      onUpdateSourcePhrase={readOnly?null:(phrase)=>updateSourcePhrase(c.id,phrase)}
+                      onRequestSplit={readOnly||((c.terms||[]).filter(t=>(t.text||"").trim()).length<2)?null
+                        :()=>{setSplitDraft({cid:c.id,selected:{},label:""});setMergeOpen(false);setConfirmDeleteId(null);}}>
+                      {!active?(
+                        /* Compact card — the concept's chips at a glance; any
+                           interaction activates the card (editing surfaces open there). */
+                        isTimeFrame?(
+                          <div style={{fontSize:11,color:c.note?C.txt2:C.muted}}>
+                            {c.note?<span><span style={{color:C.muted}}>⏱ </span><span style={{fontWeight:600}}>{c.note}</span></span>
+                              :<span style={{fontStyle:"italic"}}>No time restriction set</span>}
+                          </div>
+                        ):hasAnyText?(
+                          <TermChipRow
+                            concept={c}
+                            beginner={beginner}
+                            syntaxDbs={effectiveDbs}
+                            readOnly={readOnly}
+                            dupSignalFor={dupSignalFor}
+                            editingTermId={null}
+                            onOpenEditor={(tid)=>{ if(chipDrag.wasDragClick&&chipDrag.wasDragClick()) return; setActiveConceptId(c.id); setEditing({conceptId:c.id,termId:tid}); }}
+                            onRemove={(tid)=>removeTerm(c.id,tid)}
+                            dragState={chipDrag.state}
+                            dragHandleFor={readOnly?null:(tid)=>chipDrag.handleFor(tid,{conceptId:c.id})}
+                            registerChipEl={(tid,el)=>{ chipEls.current[tid]=el; }}
+                            focusTermId={focusTerm&&focusTerm.cid===c.id?focusTerm.tid:null}
+                            onFocusedTerm={()=>setFocusTerm(null)}
+                            onAddEntryTerm={readOnly?null:(_tid,text)=>addEntryTerm(c.id,text)}
+                          />
+                        ):(
+                          readOnly?(
+                            <div style={{fontSize:11,color:C.muted,fontStyle:'italic'}}>No terms yet.</div>
+                          ):(
+                            /* 98.md review (H14) — a real button, so an emptied
+                               compact card stays keyboard-reachable. */
+                            <button type="button" onClick={()=>setActiveConceptId(c.id)}
+                              style={{background:'none',border:'none',padding:0,fontSize:11,color:C.acc,fontStyle:'italic',cursor:'pointer',fontFamily:SANS,textDecoration:'underline'}}>
+                              No terms yet — select the card to add some.
+                            </button>
+                          )
+                        )
+                      ):(<>{/* Active card — the full working surfaces follow. */}
                 {/* 96.md D13.3 — group management for ANY group (legacy PICO groups
                     included — the picoField delete-guard is retired): reorder up/down,
                     merge into another group, split terms out, delete with an inline
                     confirm. Every operation is undoable via the snackbar. */}
                 {!readOnly&&(
                   <div data-testid="sb-group-actions" style={{display:"flex",alignItems:"center",gap:6,flexWrap:"wrap",marginBottom:10}}>
-                    <span style={{fontSize:9.5,fontWeight:700,color:C.muted,letterSpacing:.5,textTransform:"uppercase",marginRight:2}}>Group</span>
-                    <button type="button" onClick={()=>moveConceptBy(c.id,-1)} disabled={cIdx===0} aria-label={`Move ${c.label} up`} title="Move this group earlier in the search" style={{...btn("ghost"),fontSize:10,padding:"3px 9px",opacity:cIdx===0?0.45:1}}>↑ Move up</button>
-                    <button type="button" onClick={()=>moveConceptBy(c.id,1)} disabled={cIdx>=concepts.length-1} aria-label={`Move ${c.label} down`} title="Move this group later in the search" style={{...btn("ghost"),fontSize:10,padding:"3px 9px",opacity:cIdx>=concepts.length-1?0.45:1}}>↓ Move down</button>
+                    <span style={{fontSize:9.5,fontWeight:700,color:C.muted,letterSpacing:.5,textTransform:"uppercase",marginRight:2}}>Concept</span>
+                    <button type="button" onClick={()=>moveConceptBy(c.id,-1)} disabled={cIdx===0} aria-label={`Move ${c.label} up`} title="Move this concept earlier in the search" style={{...btn("ghost"),fontSize:10,padding:"3px 9px",opacity:cIdx===0?0.45:1}}>↑ Move up</button>
+                    <button type="button" onClick={()=>moveConceptBy(c.id,1)} disabled={cIdx>=concepts.length-1} aria-label={`Move ${c.label} down`} title="Move this concept later in the search" style={{...btn("ghost"),fontSize:10,padding:"3px 9px",opacity:cIdx>=concepts.length-1?0.45:1}}>↓ Move down</button>
                     <span style={{position:"relative",display:"inline-block"}}>
-                      <button type="button" onClick={()=>{setMergeOpen(o=>!o);setSplitDraft(null);setConfirmDeleteId(null);}} aria-expanded={mergeOpen} aria-label={`Merge ${c.label} into another group`} disabled={concepts.length<2} style={{...btn("ghost"),fontSize:10,padding:"3px 9px",opacity:concepts.length<2?0.45:1}}>⇄ Merge into…</button>
+                      <button type="button" onClick={()=>{setMergeOpen(o=>!o);setSplitDraft(null);setConfirmDeleteId(null);}} aria-expanded={mergeOpen} aria-label={`Merge ${c.label} into another concept`} disabled={concepts.length<2} style={{...btn("ghost"),fontSize:10,padding:"3px 9px",opacity:concepts.length<2?0.45:1}}>⇄ Merge into…</button>
                       {mergeOpen&&(
                         <span style={{position:"absolute",zIndex:75,top:"100%",left:0,marginTop:4,background:C.card,border:`1px solid ${C.brd2}`,borderRadius:8,boxShadow:"0 14px 40px var(--t-shadow)",overflow:"hidden",minWidth:200}}>
                           <span style={{display:"block",fontSize:9,fontWeight:700,color:C.muted,letterSpacing:.5,textTransform:"uppercase",padding:"6px 10px 2px"}}>Merge “{c.label}” into</span>
@@ -2723,26 +2885,26 @@ export default function SearchBuilderTab({projectId,question:questionProp,pico,a
                         <button type="button" onClick={()=>setConfirmDeleteId(null)} style={{...btn("ghost"),fontSize:10,padding:"3px 9px"}}>Cancel</button>
                       </span>
                     ):(
-                      <button type="button" onClick={()=>{setConfirmDeleteId(c.id);setMergeOpen(false);setSplitDraft(null);}} aria-label={`Delete group ${c.label}`} title="Delete this group (undoable)" style={{...btn("danger"),fontSize:10,padding:"3px 9px",marginLeft:"auto"}}>× Delete group</button>
+                      <button type="button" onClick={()=>{setConfirmDeleteId(c.id);setMergeOpen(false);setSplitDraft(null);}} aria-label={`Delete concept ${c.label}`} title="Delete this concept (undoable)" style={{...btn("danger"),fontSize:10,padding:"3px 9px",marginLeft:"auto"}}>× Delete concept</button>
                     )}
                   </div>
                 )}
                 {splitDraft&&splitDraft.cid===c.id&&(
                   <div data-testid="sb-split-panel" style={{background:C.surf,border:`1px solid ${C.brd2}`,borderRadius:8,padding:"9px 11px",marginBottom:10}}>
-                    <div style={{fontSize:10.5,fontWeight:700,color:C.muted,letterSpacing:.4,textTransform:"uppercase",marginBottom:6}}>Move selected terms to a new group</div>
+                    <div style={{fontSize:10.5,fontWeight:700,color:C.muted,letterSpacing:.4,textTransform:"uppercase",marginBottom:6}}>Move selected terms to a new concept</div>
                     <div style={{display:"flex",flexWrap:"wrap",gap:6,marginBottom:8}}>
                       {(c.terms||[]).filter(t=>(t.text||"").trim()).map(t=>{
                         const on=!!splitDraft.selected[t.id];
                         return(
                           <label key={t.id} style={{display:"inline-flex",alignItems:"center",gap:5,background:on?alpha(C.acc,"14"):C.card,border:`1px solid ${on?alpha(C.acc,"66"):C.brd2}`,borderRadius:6,padding:"3px 8px",fontSize:11,color:C.txt2,cursor:"pointer"}}>
-                            <input type="checkbox" checked={on} onChange={()=>setSplitDraft(s=>({...s,selected:{...s.selected,[t.id]:!s.selected[t.id]}}))} aria-label={`Select ${t.text} for the new group`}/>
+                            <input type="checkbox" checked={on} onChange={()=>setSplitDraft(s=>({...s,selected:{...s.selected,[t.id]:!s.selected[t.id]}}))} aria-label={`Select ${t.text} for the new concept`}/>
                             {t.text}
                           </label>
                         );
                       })}
                     </div>
                     <div style={{display:"flex",gap:6,alignItems:"center",flexWrap:"wrap"}}>
-                      <input value={splitDraft.label} onChange={e=>setSplitDraft(s=>({...s,label:e.target.value}))} placeholder="New group name…" aria-label="New group name" style={{...inputStyle,flex:1,minWidth:160,fontSize:11.5}}/>
+                      <input value={splitDraft.label} onChange={e=>setSplitDraft(s=>({...s,label:e.target.value}))} placeholder="New concept name…" aria-label="New concept name" style={{...inputStyle,flex:1,minWidth:160,fontSize:11.5}}/>
                       {(()=>{ const ids=Object.keys(splitDraft.selected).filter(k=>splitDraft.selected[k]); return (
                         <button type="button" disabled={!ids.length} onClick={()=>{setSplitDraft(null);splitConceptTerms(c.id,ids,splitDraft.label);}} style={{...btn("primary"),fontSize:10.5,opacity:ids.length?1:0.5}}>Split {ids.length||""} term{ids.length===1?"":"s"}</button>
                       );})()}
@@ -2789,6 +2951,7 @@ export default function SearchBuilderTab({projectId,question:questionProp,pico,a
                         <TermChipRow
                           concept={c}
                           beginner={beginner}
+                          syntaxDbs={effectiveDbs}
                           readOnly={readOnly}
                           dupSignalFor={dupSignalFor}
                           editingTermId={editing&&editing.conceptId===c.id?editing.termId:null}
@@ -2850,6 +3013,8 @@ export default function SearchBuilderTab({projectId,question:questionProp,pico,a
                       <SuggestionsDisclosure
                         suggestions={pending}
                         readOnly={readOnly}
+                        open={!!suggOpen[c.id]} /* 98.md §11 — hidden by default; per-concept session state */
+                        onToggleOpen={()=>setSuggOpen(o=>({...o,[c.id]:!o[c.id]}))}
                         onAccept={(s)=>acceptSuggestion(c.id,s)}
                         onDismiss={dismissSuggestion}
                         onAcceptEntryTerm={(_s,syn)=>addEntryTerm(c.id,syn)}
@@ -2878,11 +3043,55 @@ export default function SearchBuilderTab({projectId,question:questionProp,pico,a
                     </div>
                   </>
                 )}
-              </ActiveConceptPanel>
-            )}
-
-            {/* QA M8 — '+ Add search group' is a mutating control: hidden for viewers. */}
-            {!readOnly&&<button onClick={addConcept} style={{...btn("ghost"),width:"100%",justifyContent:"center",borderStyle:"dashed",marginTop:12}}>+ Add search group</button>}
+              </>)}
+                    </ActiveConceptPanel>
+                  </div>
+                );
+              })}
+              {/* Insertion line after the LAST card (drop a reordered concept at the end). */}
+              {pillInsertIndex===concepts.length&&(
+                <span data-testid="sb-pill-insert-line" aria-hidden="true"
+                  style={{display:'inline-block',width:3,alignSelf:'stretch',minHeight:40,borderRadius:2,background:C.acc,boxShadow:`0 0 0 1px ${alpha(C.acc,'66')}`,flexShrink:0}}/>
+              )}
+              {/* 97.md Phase 11 — during a chip drag, a "New concept" drop zone appears
+                  so a term can be dragged straight into a brand-new concept group. */}
+              {!!(chipDrag.state&&chipDrag.state.active)&&(
+                <span
+                  data-testid="sb-new-group-target"
+                  ref={(el)=>{ newGroupEl.current=el; }}
+                  style={{display:'inline-flex',alignItems:'center',justifyContent:'center',gap:6,flexShrink:0,fontSize:11.5,fontWeight:700,
+                    color:C.acc,background:alpha(C.acc,'0c'),border:`2px dashed ${C.acc}`,borderRadius:10,padding:'14px 18px',minWidth:140}}>
+                  ＋ New concept
+                </span>
+              )}
+              {/* 98.md §6 — the INTENTIONALLY EMPTY start: no auto-created concepts, one
+                  clean primary action. QA M8 — mutating controls hidden for viewers. */}
+              {concepts.length===0?(
+                readOnly?(
+                  <div data-testid="sb-empty-board" style={{flex:'1 1 100%',background:C.surf,border:`1px dashed ${C.brd2}`,borderRadius:10,padding:'18px 20px',fontSize:12,color:C.muted}}>
+                    No concept groups yet.
+                  </div>
+                ):(
+                  <div data-testid="sb-empty-board" style={{flex:'1 1 100%',display:'flex',alignItems:'center',gap:14,flexWrap:'wrap',background:C.surf,border:`1px dashed ${C.brd2}`,borderRadius:10,padding:'18px 20px'}}>
+                    <button type="button" data-testid="sb-create-first-concept" onClick={addConcept}
+                      style={{...btn("primary"),fontSize:12.5,padding:'9px 18px'}}>
+                      Create first concept
+                    </button>
+                    <span style={{fontSize:11.5,color:C.muted,lineHeight:1.6,flex:1,minWidth:200}}>
+                      …or click a phrase in your research question above — each key idea becomes a concept.
+                    </span>
+                  </div>
+                )
+              ):(
+                /* '+ Add concept' — a slim ghost card at the end of the AND chain. */
+                !readOnly&&!(chipDrag.state&&chipDrag.state.active)&&(
+                  <button onClick={addConcept} data-testid="sb-add-concept-card"
+                    style={{...btn("ghost"),borderStyle:"dashed",borderRadius:10,minWidth:130,alignSelf:'stretch',justifyContent:"center",flexShrink:0}}>
+                    + Add concept
+                  </button>
+                )
+              )}
+            </div>
 
             <div style={{marginTop:12}}>
               <StrategyPreviewPanel
@@ -2947,9 +3156,10 @@ export default function SearchBuilderTab({projectId,question:questionProp,pico,a
             <div style={{background:C.card,border:`1px solid ${C.brd}`,borderRadius:10,padding:14,marginBottom:12}}>
               <div style={{fontSize:9.5,fontWeight:700,color:C.muted,letterSpacing:.5,textTransform:"uppercase",marginBottom:8}}>How your search fits together</div>
               <ConceptBlocksBar concepts={concepts}/>
-              <div style={{fontSize:11,color:C.muted,marginTop:10,lineHeight:1.55}}>
+              {/* 98.md §5 — the repeated AND/OR explainer is Beginner-Mode content. */}
+              {beginner&&<div style={{fontSize:11,color:C.muted,marginTop:10,lineHeight:1.55}}>
                 Similar terms inside one concept are joined with <strong style={{color:C.yel}}>OR</strong> (any one counts); different concepts are joined with <strong style={{color:C.acc}}>AND</strong> (all must appear).
-              </div>
+              </div>}
               {plain&&(
                 <div style={{marginTop:8}}>
                   {!beginner&&<button onClick={()=>setShowPlainMirror(s=>!s)} aria-expanded={beginner||showPlainMirror} style={{...btn("ghost"),fontSize:10,padding:"3px 9px"}}>{showPlainMirror?"Hide plain English":"Show in plain English"}</button>}

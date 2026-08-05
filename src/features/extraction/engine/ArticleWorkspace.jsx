@@ -386,7 +386,17 @@ export default function ArticleWorkspace({
 
     const extra = conv.length ? { conversions: [...(Array.isArray(study.conversions) ? study.conversions : []), ...conv], converted: true } : {};
     const { written, replaced } = writeValues(values, { method: 'click', page: payload.page || null, bbox: payload.spanBox || null, fileKey: effFileKey || null, excerpt: runStr }, extra);
-    if (!written.length) return;
+    if (!written.length) {
+      // 98.md §16 — re-clicking the value already stored is a deliberate no-op
+      // (writeValues bails per-field on identical values): CONFIRM it aloud instead of
+      // silence, so "did my click land?" is never left to guesswork.
+      // 98.md review (L20) — ratio measures store es/lo/hi on the ln scale; the
+      // announcement back-transforms to the clinical scale (never raw logs).
+      const displayVal = (f, v) => (RATIO_MEASURES.includes(study.esType) && ['es', 'lo', 'hi'].includes(f) && Number.isFinite(Number(v)))
+        ? Math.exp(Number(v)).toFixed(2) : v;
+      setStatus(`Already captured ${Object.entries(values).map(([f, v]) => `${displayVal(f, v)} into ${FIELD_LABELS[f] || f}`).join(', ')} — no change.`);
+      return;
+    }
 
     // Human-readable confirmation (aria-live) — say what filled and what was replaced.
     const names = written.map((f) => FIELD_LABELS[f] || f);
@@ -397,8 +407,11 @@ export default function ArticleWorkspace({
       setStatus(`Captured ${names.join(', ')} from the PDF.`);
     }
 
-    // Auto-advance the active field to the next empty required field (fills a→b→c→d).
-    if (advance) {
+    // Auto-advance the active field to the next empty required field (fills a→b→c→d) —
+    // but ONLY when this capture FILLED a previously empty target. A REPLACEMENT keeps
+    // the field active: auto-advancing after capture-wrong-then-click-correct sent the
+    // correction into the NEXT field (98.md §16).
+    if (advance && !replaced.some((r) => r.field === target)) {
       const after = { ...study, ...values };
       const next = nextAssignableField(after, target);
       if (next && next !== target) setActiveField(next);
@@ -791,6 +804,7 @@ function Field({ field, value, onChange, readOnly, hasSource, onJump, numeric, p
         ) : null}
       </div>
       <input value={value} onChange={(e) => onChange(e.target.value)} disabled={readOnly}
+        data-testid={`pex-field-${field}`}
         inputMode={numeric ? 'decimal' : undefined}
         onFocus={picking ? onFocusField : undefined}
         aria-label={active ? `${FIELD_LABELS[field] || field} — active pick target` : undefined}

@@ -34,3 +34,24 @@ export function isScreeningComplete(c = {}) {
     && n('secondReviewPending') === 0
     && n('includedFinal') > 0;
 }
+
+/**
+ * isScreeningWorkComplete — the workflow-PROGRESS completeness predicate
+ * (98.md §14 Defect 2b). Same substep conjunction as isScreeningComplete with ONE
+ * deliberate divergence: `includedFinal > 0` is NOT required. A screen where every
+ * record is terminally decided and every record was rejected (zero included
+ * studies) IS finished screening work — the review may be an honest empty review.
+ * isScreeningComplete keeps its includedFinal>0 clause because it also gates the
+ * "ready for Data Extraction" hand-off framing; the progress step must not.
+ *
+ * @param {object} c same counts shape as isScreeningComplete (includedFinal ignored)
+ * @returns {boolean}
+ */
+export function isScreeningWorkComplete(c = {}) {
+  const n = k => (Number.isFinite(c[k]) ? c[k] : 0);
+  return n('total') > 0
+    && n('unresolvedDuplicateGroups') === 0
+    && n('titleAbstractPending') === 0
+    && n('unresolvedConflicts') === 0
+    && n('secondReviewPending') === 0;
+}

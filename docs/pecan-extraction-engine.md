@@ -4,8 +4,8 @@ Feature flag: `extractionEngine` (default **OFF**). When an admin enables it in 
 project **Data Extraction** tab *becomes* the Pecan Extraction Engine: a full-screen, article-centred
 workspace — an article list (statuses, progress, validation counts, PDF availability, analysis-sync
 state, search / sort / filters, continue-where-you-left-off) that opens each article into a resizable
-PDF-left / form-right split with three extraction methods (Table Extractor, Click-to-Capture, Manual
-Entry), per-value provenance with one-click jump-to-source, honest autosave status, three-tier
+PDF-left / form-right split with two extraction methods (Click-to-Capture "Pick from PDF" and Manual
+Entry, plus the Converter panel), per-value provenance with one-click jump-to-source, honest autosave status, three-tier
 validation, a completion/reopen workflow with a durable audit trail, and per-article analysis-sync
 status. The flag is **independent of `extractionAssist`** (the 66.md structured stack) — both read the
 same project `studies[]` blob. Flag **OFF** preserves the current split-screen extraction tab
@@ -75,23 +75,29 @@ Reads require `canView`; state changes require `canEdit`; lock/unlock requires `
 mutations load the blob fresh, mutate only `study.extractionMeta`, persist the whole project row,
 emit a realtime `project.updated`, stamp project activity, and write one audit row (best-effort).
 
-## Three extraction methods
+## Extraction methods
 
-All three live in `ArticleWorkspace.jsx` and reuse the proven pure engine + the split-panel widgets
-(`TableRegionMapper`, `PlotDigitizer`, `DraftReviewList`, `usePdfSource`) — data written here is
-identical to and interoperable with the classic tab.
+Two user-facing input methods live in `ArticleWorkspace.jsx` (77.md §3 removed the table/figure
+recognition modes from the workflow; the pure grid/digitizer engines remain in the repo for reuse),
+plus the Converter panel — data written here is identical to and interoperable with the classic tab.
 
-- **Table Extractor** — drag a rectangle around a table; the PDF text region runs through the pure
-  grid pipeline (`normalizeItems` → `itemsToRows` → `detectColumns` → `buildGrid`) and opens in
-  `TableRegionMapper` for confirmation. Confirmed cells become drafts (`mkExtractionRecord`) that the
-  reviewer confirms into study fields. A `Figure` mode digitizes plots via `PlotDigitizer` (no model
-  call). Table/figure failures never block the other methods.
-- **Click-to-Capture** — click a number in the PDF; `snapToken` / `findNumberTokens` smart-parse the
-  clicked token (ratio+CI, range, event/total pair, mean±SD, single value), fill the chosen field(s),
-  and store **per-value provenance** (page + span bbox). An overwrite guard (`decideWrite`) refuses to
-  silently replace an existing human value; ratio measures are stored ln-transformed.
+- **Click-to-Capture ("Pick from PDF")** — choose/focus a field, then click its number in the PDF;
+  `snapToken` / `findNumberTokens` smart-parse the clicked token (ratio+CI, range, event/total pair,
+  mean±SD, single value), fill the active field(s), and store **per-value provenance** (page + span
+  bbox + file key). Replacement is **immediate** (77.md §2, 98.md §16): clicking a different number
+  over an occupied field replaces it right away — no confirmation dialog — with the prior value
+  recorded in that field's provenance `history`, so a correction is one click and never a silent
+  loss. A capture into a previously *empty* field auto-advances the active field (a→b→c→d); a
+  **replacement keeps the field active** so a follow-up correction lands in the same field, and
+  re-clicking an identical value is announced ("Already captured …") rather than silent. Ratio
+  measures are stored ln-transformed. The classic flag-OFF panel mirrors the same immediate-replace
+  click semantics, preserving the prior value in its `[click pN]` notes trail; the `decideWrite`
+  precedence ladder remains the canonical guard for *machine*-sourced writes (auto-extract / table /
+  figure drafts), not for reviewer-aimed clicks.
 - **Manual Entry** — the always-visible structured form; every identity/value field is directly
   editable and auditable, with a free-text notes field for assumptions and conversions.
+- **Converter** (77.md §4, 82.md) — recovers mean/SD, SE, counts and log-ratios from what the paper
+  reports, writing through the same immediate-replace + provenance path.
 
 ## Provenance & jump-to-source (§15)
 

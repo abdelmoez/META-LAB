@@ -7,9 +7,10 @@
  * and `test.skip`s honestly if its precondition is off, so the file stays correct if
  * the rollout changes.
  *
- * 96.md NOTE: with `searchEngine` ON the Search tab ALWAYS renders the staged
- * workspace (7 stages, `?tab=search&stage=<id>`; the old `searchWorkspaceV2` flag is
- * deprecated/ignored). The deep workspace journeys live in
+ * 96.md/98.md NOTE: with `searchEngine` ON the Search tab ALWAYS renders the staged
+ * workspace (6 stages, `?tab=search&stage=<id>` — 98.md §3 retired the standalone
+ * Research Question stage; `?stage=question` aliases to `terms`; the old
+ * `searchWorkspaceV2` flag is deprecated/ignored). The deep workspace journeys live in
  * e2e/search/searchWorkspace.spec.ts; this file keeps the cheap smoke +
  * persistence checks alongside the Protocol-side surfaces (which KEEP PICO — 96.md
  * removed it from the Search engine only).
@@ -85,14 +86,28 @@ test.describe('Search / PICO / Protocol', () => {
       test.skip(!flags.searchEngine, 'TODO: searchEngine OFF → legacy SearchTab, no staged workspace');
     });
 
-    test('@smoke renders the 7-stage workspace with Research Question active', async ({ page, tmpProject }) => {
+    test('@smoke renders the 6-stage workspace with Select & Build Key Terms active', async ({ page, tmpProject }) => {
       const sp = new SearchPage(page);
       await sp.openStagedWorkspace(tmpProject.id);
-      await expect(sp.stageSurface).toHaveAttribute('data-stage', 'question');
-      await expect(page.getByText('Stage 1 of 7')).toBeVisible();
-      // The retired stages never appear.
+      // 98.md §3 — the question stage is retired: bare ?tab=search lands on terms.
+      await expect(sp.stageSurface).toHaveAttribute('data-stage', 'terms');
+      await expect(page.getByText('Stage 1 of 6')).toBeVisible();
+      // The retired stages never appear — Research Question included (98.md §3).
+      await expect(sp.stageNav.getByRole('button', { name: /Research Question/ })).toHaveCount(0);
       await expect(sp.stageNav.getByRole('button', { name: /Test & Refine/ })).toHaveCount(0);
       await expect(sp.stageNav.getByRole('button', { name: /^Concepts$/ })).toHaveCount(0);
+    });
+
+    test('a retired ?stage=question deep link alias-redirects to terms and rewrites the URL', async ({ page, tmpProject }) => {
+      // Mirrors the ?stage=concepts precedent in e2e/responsive/search-workspace.spec.ts.
+      const sp = new SearchPage(page);
+      await expect(async () => {
+        await sp.shell.goto(`/app/project/${encodeURIComponent(tmpProject.id)}?tab=search&stage=question`);
+        await expect(sp.stageSurface).toHaveAttribute('data-stage', 'terms', { timeout: 5_000 });
+      }).toPass({ timeout: 30_000 });
+      // The alias is REWRITTEN in the URL (never a phantom ?stage=question).
+      await expect.poll(() => new URL(page.url()).searchParams.get('stage')).toBe('terms');
+      await expect(sp.questionCard).toBeVisible();
     });
 
     test('a concept group created from the manual add box autosaves and survives reload', async ({ page, request, tmpProject }) => {
@@ -126,7 +141,7 @@ test.describe('Search / PICO / Protocol', () => {
       await expect(sp.termChip(label)).toBeVisible();
     });
 
-    test('the Pecan estimate control rides Terms & Vocabulary (pecanSearch ON), not an enable-in-Ops note', async ({ page, request, tmpProject }) => {
+    test('the Pecan estimate control rides Select & Build Key Terms (pecanSearch ON), not an enable-in-Ops note', async ({ page, request, tmpProject }) => {
       const flags = await publicFlags(request);
       test.skip(!flags.pecanSearch, 'TODO: pecanSearch OFF → PreviewEstimates intentionally shows the "enable it in Ops" note');
 

@@ -19,6 +19,8 @@ import { recordUsage, USAGE } from '../utils/usage.js';
 // 93.md §5.3 — activation funnel (fire-and-forget; FIRST_* once-per-user via DB PK).
 import { recordEvent, recordFirstEvent } from '../services/analytics.js';
 import { screeningCountSelect, DECIDED_FINAL_STATUSES, classifyDecided } from '../utils/screeningCounts.js';
+// 98.md §14 Defect 2b — full screening substep evidence for the detail GETs.
+import { loadScreeningProgressEvidence } from '../screening/progressEvidence.js';
 import { onlineCountsFor } from '../realtime/presence.js';
 // 75.md Phases 8-9 (Workstream D) — the ONE canonical workflow-progress model.
 import { computeProjectProgress } from '../../src/research-engine/progress/projectProgress.js';
@@ -46,6 +48,13 @@ function progressAnnotation(projectObj, linkedSift, progressCtx) {
       screenablePool: linkedSift.screenablePool,
       recordCount: linkedSift.recordCount,
       progressStatus: linkedSift.progressStatus,
+      // 98.md §14 Defect 2b — substep evidence: the detail path carries the FULL
+      // pending bag + the server-computed `complete` predicate; the list path
+      // carries only the cheaply-batched counts (no `complete`); legacy shapes
+      // carry neither. screeningRule handles every variant.
+      ...(linkedSift.pending ? { pending: linkedSift.pending } : {}),
+      ...(typeof linkedSift.complete === 'boolean' ? { complete: linkedSift.complete } : {}),
+      ...(typeof linkedSift.includedFinal === 'number' ? { includedFinal: linkedSift.includedFinal } : {}),
     } : null,
   };
   if (progressCtx && progressCtx.search) evidence.search = progressCtx.search;
@@ -68,9 +77,18 @@ async function loadProgressEvidence(projectId, flags) {
     const mod = await getModuleState(projectId, SEARCH_MODULE_KEY);
     if (mod && mod.revision > 0) {
       const st = mod.state || {};
+      // 98.md §6 — conceptCount counts LIVE concept groups only: a group with ≥1
+      // term whose text is non-blank and not disabled. Empty seed groups (created
+      // by a no-user-action save) are NOT search progress. Mirrors
+      // src/research-engine/searchBuilder/termLiveness.js isLiveTerm, inlined here
+      // because the module state is plain JSON and this server file must not pull
+      // in the client search stack.
+      const concepts = Array.isArray(st.concepts) ? st.concepts : [];
+      const liveConceptCount = concepts.filter((c) => c && Array.isArray(c.terms)
+        && c.terms.some((t) => t && String(t.text || '').trim() !== '' && t.disabled !== true)).length;
       ctx.search = {
         revision: mod.revision,
-        conceptCount: Array.isArray(st.concepts) ? st.concepts.length : 0,
+        conceptCount: liveConceptCount,
         searchMode: st.searchMode || null,
         readyForScreening: !!st.readyForScreening,
       };
@@ -132,6 +150,12 @@ function linkedSiftSummary(linked) {
     memberCount: linked.memberCount ?? 0,
     decidedCount: linked.decidedCount ?? 0,
     onlineCount: linked.onlineCount ?? 0,
+    // 98.md §14 Defect 2b — substep evidence rides through when the caller
+    // resolved it (detail path: full bag + `complete`; list path: cheap counts).
+    // Keys stay ABSENT when unresolved so the uniform base shape is unchanged.
+    ...(linked.pending ? { pending: linked.pending } : {}),
+    ...(typeof linked.complete === 'boolean' ? { complete: linked.complete } : {}),
+    ...(typeof linked.includedFinal === 'number' ? { includedFinal: linked.includedFinal } : {}),
   };
 }
 
@@ -294,17 +318,48 @@ async function enrichSummaryCounts(summary) {
   // the Overview). Defaults to recordCount so list and detail agree even if the
   // count fails. recordCount stays the raw "studies imported" KPI.
   let screenablePool = summary.recordCount ?? 0;
+  // 98.md §14 Defect 2b — the detail path computes the FULL substep evidence
+  // (quorum-aware titleAbstractPending, unresolved conflicts/dup groups,
+  // secondReviewPending) + the server-side `complete` predicate with real queries;
+  // decidedCount/screenablePool ride along from the same load (decidedCount is
+  // isDuplicate-filtered — Defect 2a). Best-effort: on failure fall back to the
+  // two simple counts below so getProject never breaks.
+  let substeps = null;
   try {
-    decidedCount = await prisma.screenRecord.count({
-      where: { projectId: summary.id, finalStatus: { in: DECIDED_FINAL_STATUSES } },
-    });
-  } catch { /* best-effort — a count failure must never break getProject */ }
-  try {
-    screenablePool = await prisma.screenRecord.count({
-      where: { projectId: summary.id, isDuplicate: false },
-    });
-  } catch { /* best-effort — fall back to recordCount */ }
-  return { ...summary, decidedCount, screenablePool, onlineCount: onlineCountsFor([summary.id])[summary.id] || 0 };
+    substeps = await loadScreeningProgressEvidence(summary.id);
+    decidedCount = substeps.decidedCount;
+    screenablePool = substeps.screenablePool;
+  } catch { /* best-effort — degrade to the simple counts */ }
+  if (!substeps) {
+    try {
+      decidedCount = await prisma.screenRecord.count({
+        // 98.md §14 Defect 2a — isDuplicate:false: a record finalized and THEN swept
+        // into a duplicate group must not keep counting toward progress.
+        where: { projectId: summary.id, isDuplicate: false, finalStatus: { in: DECIDED_FINAL_STATUSES } },
+      });
+    } catch { /* best-effort — a count failure must never break getProject */ }
+    try {
+      screenablePool = await prisma.screenRecord.count({
+        where: { projectId: summary.id, isDuplicate: false },
+      });
+    } catch { /* best-effort — fall back to recordCount */ }
+  }
+  return {
+    ...summary,
+    decidedCount,
+    screenablePool,
+    ...(substeps ? {
+      complete: substeps.complete,
+      includedFinal: substeps.includedFinal,
+      pending: {
+        titleAbstractPending: substeps.titleAbstractPending,
+        unresolvedConflicts: substeps.unresolvedConflicts,
+        unresolvedDuplicateGroups: substeps.unresolvedDuplicateGroups,
+        secondReviewPending: substeps.secondReviewPending,
+      },
+    } : {}),
+    onlineCount: onlineCountsFor([summary.id])[summary.id] || 0,
+  };
 }
 
 /**
@@ -430,7 +485,11 @@ export async function listProjects(req, res) {
     if (allScreenProjectIds.length) {
       const decidedRows = await prisma.screenRecord.groupBy({
         by: ['projectId'],
-        where: { projectId: { in: allScreenProjectIds }, finalStatus: { in: DECIDED_FINAL_STATUSES } },
+        // 98.md §14 Defect 2a — isDuplicate:false: decided must be counted over the
+        // SAME population as screenablePool. Without the filter, records finalized
+        // and THEN swept into duplicate groups kept inflating `decided` and could
+        // fake `decided >= pool` while live records sat unscreened.
+        where: { projectId: { in: allScreenProjectIds }, isDuplicate: false, finalStatus: { in: DECIDED_FINAL_STATUSES } },
         _count: { _all: true },
       });
       decidedByScreenId = classifyDecided(decidedRows);
@@ -451,6 +510,49 @@ export async function listProjects(req, res) {
       screenablePoolByScreenId = classifyDecided(poolRows);
     }
 
+    // 98.md §14 Defect 2b (list path) — batch the CHEAP substep counts for every
+    // card in three more groupBy queries (same decidedByScreenId pattern, no N+1):
+    // unresolved conflicts + unresolved duplicate groups + full_text-undecided
+    // (secondReviewPending). The quorum-aware titleAbstractPending REMAINS
+    // detail-only — it needs per-record DISTINCT-reviewer decision groupBys across
+    // every listed project (unbounded row counts, unbatchable), so that residual,
+    // smaller flicker class persists; the project detail GET carries the full
+    // evidence (loadScreeningProgressEvidence).
+    let conflictsByScreenId = new Map();
+    let dupGroupsByScreenId = new Map();
+    let secondReviewByScreenId = new Map();
+    if (allScreenProjectIds.length) {
+      const conflictRows = await prisma.screenConflict.groupBy({
+        by: ['projectId'],
+        where: { projectId: { in: allScreenProjectIds }, resolvedAt: null },
+        _count: { _all: true },
+      });
+      conflictsByScreenId = classifyDecided(conflictRows); // generic projectId→count reducer
+      const dupGroupRows = await prisma.screenDuplicateGroup.groupBy({
+        by: ['projectId'],
+        where: { projectId: { in: allScreenProjectIds }, resolvedAt: null },
+        _count: { _all: true },
+      });
+      dupGroupsByScreenId = classifyDecided(dupGroupRows);
+      // 98.md review — Finding C: sign-off corroboration was detail-path-only, so a
+      // signed-off project with pending full-text work read Complete on dashboard
+      // cards but partial on the detail view (flicker). ONE more batched groupBy —
+      // full_text-stage, non-duplicate records without a terminal finalStatus —
+      // gives every card the SAME secondReviewPending evidence screeningRule already
+      // consumes from the detail bag, so the demotion is identical on both paths.
+      // finalStatus is a non-nullable string (default "" — see schema), so notIn is
+      // NULL-safe and matches exactly the undecided full_text records.
+      const secondReviewRows = await prisma.screenRecord.groupBy({
+        by: ['projectId'],
+        where: {
+          projectId: { in: allScreenProjectIds }, isDuplicate: false,
+          currentStage: 'full_text', finalStatus: { notIn: DECIDED_FINAL_STATUSES },
+        },
+        _count: { _all: true },
+      });
+      secondReviewByScreenId = classifyDecided(secondReviewRows);
+    }
+
     // 63.md AREA 4 — per-ScreenProject online counts from the in-memory presence
     // rooms (sync, cheap, never throws). Keyed by ScreenProject id.
     const onlineByScreenId = onlineCountsFor(allScreenProjectIds);
@@ -463,6 +565,15 @@ export async function listProjects(req, res) {
       // 63.md M6 — duplicate-free pool; default to the raw recordCount (then 0)
       // when no rows came back, so the denominator is never below the numerator.
       screenablePool: screenablePoolByScreenId.get(summary.id) ?? summary.recordCount ?? 0,
+      // 98.md §14 Defect 2b — PARTIAL pending bag (cheap batched counts only; the
+      // quorum-aware counts are detail-path-only, see the comment above).
+      pending: {
+        unresolvedConflicts: conflictsByScreenId.get(summary.id) || 0,
+        unresolvedDuplicateGroups: dupGroupsByScreenId.get(summary.id) || 0,
+        // 98.md review — Finding C: cards see the same second-review evidence
+        // the detail path has, so sign-off demotion no longer flickers.
+        secondReviewPending: secondReviewByScreenId.get(summary.id) || 0,
+      },
       onlineCount: onlineByScreenId[summary.id] || 0,
     };
 

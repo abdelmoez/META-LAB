@@ -1,41 +1,52 @@
 /**
- * searchWorkspace.spec.ts — 74.md + 96.md + 97.md: the staged Search Workspace.
+ * searchWorkspace.spec.ts — 74.md + 96.md + 97.md + 98.md: the staged Search
+ * Workspace.
  *
- * 97.md renames the second stage (label-only) to "Select & Build Key Terms" and
- * turns it into a direct Boolean workspace: neutral "Search Group N" groups,
- * visible OR separators + AND connectors, hand-rolled pointer drag (reorder /
- * combine / move between groups), dark-red exact-duplicate chips with a full
- * resolution menu, individual MeSH acceptance (NO bulk accept-all), the MeSH
- * details popover, the explicit Regenerate button with a snapshot-first
- * confirmation, and global Ctrl/Cmd+Z guarded against typing surfaces.
+ * 98.md redesigns the workspace around the Select & Build Key Terms stage:
+ *  - §3 the standalone Research Question stage is RETIRED (6 stages; automated
+ *    mode drops Database Strategies → 5). `?stage=question` aliases to terms.
+ *  - §4 the question is edited INLINE above the builder (sw-inline-question-editor,
+ *    opened from the question card; auto-opens for projects without a question).
+ *  - §9 the master-detail navigator is GONE: a HORIZONTAL CONCEPT BOARD renders
+ *    one card per concept (active card = full editing surfaces, inactive cards
+ *    are compact and activate on click), joined by AND/OR connector buttons.
+ *    Cross-group chip drops land ON A CARD; group reorder/merge drags by the
+ *    card's grip handle (sb-card-drag-handle).
+ *  - §5 Beginner Mode (default OFF) gates all instructional copy engine-wide.
+ *  - §6 empty strategy = sb-empty-board + "Create first concept"; gated stages
+ *    unlock on live TERMS (an empty concept unlocks nothing).
+ *  - §8 the user-facing noun is Concept ("Concept N" defaults, "Delete concept",
+ *    "New concept name…", "+ Add concept").
+ *  - §11 vocabulary suggestions are hidden behind a "Show suggestions (N)"
+ *    toggle; rows are NOT in the DOM while closed.
  *
  * What this spec drives end-to-end in a real browser:
- *   - the 7-stage rail (renamed pip); automated mode still drops Database
- *     Strategies; retired deep links land on the terms stage;
- *   - the terms-centric journey: question → phrase click creates a search group →
- *     add terms → preview updates; drift keep/remove; merge/split/delete + Undo;
- *   - 97.md: drag-combine (token + chip merge targets are DISTINCT from reorder),
- *     chip drag onto a navigator pill MOVES (never clones), duplicate dark-red
- *     journey (find-other / keep-both / persistence), same-group add prevention
- *     with Find existing term, MeSH popover + per-entry-term add (seeded vocab —
- *     no live NLM), Regenerate cancel/confirm/undo (+ "Before regeneration"
- *     snapshot in Versions), Ctrl+Z outside vs inside a text field;
- *   - the mode/persistence/two-writer/keyboard journeys from 96.md, relabeled;
- *   - axe scans of the question + terms stages.
+ *   - the 6-stage rail; retired deep links (concepts/refine/question) land on
+ *     terms; automated mode renumbers to 5 stages;
+ *   - the §22 journey: inline question editing → phrase click creates a concept
+ *     card → empty board's "Create first concept" → AND connectors between
+ *     cards; drift keep/remove; merge/split/delete + Undo;
+ *   - drag surfaces: token-combine, chip merge (distinct from reorder), chip
+ *     drop ONTO A CARD moves (never clones), grip-handle reorder + merge;
+ *   - duplicates: dark-red journey across cards (both copies visible on the
+ *     board now), same-group add prevention, MeSH popover + per-entry-term add
+ *     (seeded vocab — no live NLM), Regenerate cancel/confirm/undo, Ctrl+Z;
+ *   - the mode/persistence/two-writer/keyboard journeys from 96.md;
+ *   - axe scans of the inline question editor + the terms board.
  *
- * Net-new drag surface = the highest flake risk: gestures use explicit
- * mouse.down/move/up with steps, generous hover holds for merge arming, and
- * poll-based API waits before any hard navigation.
+ * Drag gestures use explicit mouse.down/move/up with steps, generous hover
+ * holds for merge arming, and poll-based API waits before any hard navigation.
  */
 import { test, expect } from '../fixtures/stitch-test';
 import { SearchPage } from '../page-objects/SearchPage';
 import { expectNoSeriousA11y } from '../helpers/axe';
 
-test.describe('97.md — the staged Search Workspace (Select & Build Key Terms)', () => {
+test.describe('98.md — the staged Search Workspace (concept board)', () => {
   const rail = (sp: SearchPage) => sp.stageNav;
   const stageSurface = (sp: SearchPage) => sp.stageSurface;
   const termsPip = (sp: SearchPage) => rail(sp).getByRole('button', { name: /Select & Build Key Terms/ });
   const dbStrategiesPip = (sp: SearchPage) => rail(sp).getByRole('button', { name: /Database Strategies/ });
+  const resultsPip = (sp: SearchPage) => rail(sp).getByRole('button', { name: /Run Externally/ });
   const manualCard = (sp: SearchPage) => sp.page.getByTestId('search-mode-card-manual');
   const automatedCard = (sp: SearchPage) => sp.page.getByTestId('search-mode-card-automated');
   const modeBadge = (sp: SearchPage) => sp.page.getByTestId('search-mode-badge');
@@ -45,7 +56,7 @@ test.describe('97.md — the staged Search Workspace (Select & Build Key Terms)'
     await expect(manualCard(sp)).toBeVisible();
   }
 
-  /** Open the terms stage and create a search group via the manual add box. */
+  /** Open the terms stage and create a concept via the manual add box. */
   async function seedGroup(sp: SearchPage, projectId: string, label: string): Promise<void> {
     await sp.gotoStage(projectId, 'terms');
     await expect(sp.questionCard).toBeVisible();
@@ -54,25 +65,34 @@ test.describe('97.md — the staged Search Workspace (Select & Build Key Terms)'
     await expect(sp.activeConcept.getByLabel(/Concept name/)).toHaveValue(label);
   }
 
-  test('@smoke an undecided project renders the full 7-stage rail with the renamed terms pip', async ({ page, tmpProject }) => {
+  /** 98.md §9 — activate a compact card by clicking its header ordinal (a safe
+   *  click surface that can never open a chip's term editor). */
+  async function activateCard(sp: SearchPage, name: string): Promise<void> {
+    await sp.conceptCard(name).getByTestId('sb-group-ordinal').click();
+    await expect(sp.activeConcept.getByLabel(/Concept name/)).toHaveValue(name);
+  }
+
+  test('@smoke an undecided project renders the full 6-stage rail, terms first (question stage retired)', async ({ page, tmpProject }) => {
     const sp = new SearchPage(page);
     await sp.openStagedWorkspace(tmpProject.id);
 
+    // 98.md §3 — bare ?tab=search lands on the terms stage.
+    await expect(stageSurface(sp)).toHaveAttribute('data-stage', 'terms');
     await expect(dbStrategiesPip(sp)).toBeVisible();
-    await expect(rail(sp).getByRole('button', { name: /Run Externally/ })).toBeVisible();
-    // 97.md Phase 5 — the renamed pip; the old label is GONE.
+    await expect(resultsPip(sp)).toBeVisible();
     await expect(termsPip(sp)).toBeVisible();
     await expect(rail(sp).getByRole('button', { name: /Terms & Vocabulary/ })).toHaveCount(0);
-    await expect(page.getByText('Stage 1 of 7')).toBeVisible();
-    // 96.md — the retired stages never render as pips.
+    await expect(page.getByText('Stage 1 of 6')).toBeVisible();
+    // The retired stages never render as pips — Research Question included (98.md §3).
+    await expect(rail(sp).getByRole('button', { name: /Research Question/ })).toHaveCount(0);
     await expect(rail(sp).getByRole('button', { name: /Test & Refine/ })).toHaveCount(0);
     await expect(rail(sp).getByRole('button', { name: /^Concepts$/ })).toHaveCount(0);
     await expect(modeBadge(sp)).toHaveCount(0);
   });
 
-  test('96.md — retired deep links (?stage=concepts / ?stage=refine) land on the terms stage', async ({ page, tmpProject }) => {
+  test('96.md/98.md — retired deep links (?stage=concepts / refine / question) land on the terms stage', async ({ page, tmpProject }) => {
     const sp = new SearchPage(page);
-    for (const retired of ['concepts', 'refine']) {
+    for (const retired of ['concepts', 'refine', 'question']) {
       await expect(async () => {
         await sp.shell.goto(`/app/project/${encodeURIComponent(tmpProject.id)}?tab=search&stage=${retired}`);
         await expect(stageSurface(sp)).toHaveAttribute('data-stage', 'terms', { timeout: 5_000 });
@@ -81,52 +101,135 @@ test.describe('97.md — the staged Search Workspace (Select & Build Key Terms)'
     }
   });
 
-  test('the Research Question stage is an EDITOR whose text feeds the terms workspace', async ({ page, tmpProject }) => {
+  test('98.md §4/§22 — the research question is edited INLINE on the terms stage (auto-open when empty; Edit/Done/Escape)', async ({ page, tmpProject }) => {
     const sp = new SearchPage(page);
     const q = 'Do SGLT2 inhibitors reduce hospital readmission in adults with heart failure?';
-    await sp.setQuestion(tmpProject.id, q);
-    await expect(stageSurface(sp).getByText(/Population \/ Problem/)).toHaveCount(0);
-
     await sp.gotoStage(tmpProject.id, 'terms');
-    await expect(sp.questionCard).toBeVisible();
+
+    // A project with NO question auto-opens the compact editor above the builder,
+    // and the question card offers the explicit CTA.
+    await expect(sp.inlineQuestionEditor).toBeVisible();
+    await expect(sp.addQuestionButton).toBeVisible();
+
+    // Type the question; blur flushes the commit; it persists on the project.
+    await sp.questionEditor.fill(q);
+    await expect(sp.questionEditor).toHaveValue(q);
+    await sp.questionEditor.blur();
+    await expect
+      .poll(async () => {
+        const r = await page.request.get(`/api/projects/${encodeURIComponent(tmpProject.id)}`);
+        if (!r.ok()) return null;
+        const b = await r.json().catch(() => null);
+        return (b && b.pico && b.pico.question) || '';
+      }, { timeout: 20_000, message: 'research question never persisted to the project' })
+      .toBe(q);
+
+    // Done closes the editor; the question card now renders clickable tokens
+    // (the curated phrase tokenizer emits "heart failure" as ONE token).
+    await sp.questionDoneButton.click();
+    await expect(sp.inlineQuestionEditor).toHaveCount(0);
     await expect(sp.phraseToken('heart failure')).toBeVisible();
+    await expect(sp.addQuestionButton).toHaveCount(0);
+
+    // "Edit question" re-opens the editor IN PLACE (never a navigation); Escape closes.
+    await sp.editQuestionButton.click();
+    await expect(sp.inlineQuestionEditor).toBeVisible();
+    await expect(stageSurface(sp)).toHaveAttribute('data-stage', 'terms');
+    await sp.questionEditor.press('Escape');
+    await expect(sp.inlineQuestionEditor).toHaveCount(0);
+    // No standalone question stage surface exists anywhere.
+    await expect(stageSurface(sp).getByText(/Population \/ Problem/)).toHaveCount(0);
   });
 
-  test('@smoke terms journey: phrase click creates a search group; duplicate click focuses/dequeues; preview ANDs groups', async ({ page, tmpProject }) => {
+  test('98.md §6/§22 — empty board → Create first concept → + Add concept; AND connector toggles; stages unlock on live TERMS', async ({ page, tmpProject }) => {
+    const sp = new SearchPage(page);
+    await sp.gotoStage(tmpProject.id, 'terms');
+
+    // §6 — the intentionally empty start: the board renders the empty block with
+    // ONE clean primary action.
+    await expect(sp.conceptBoard).toBeVisible();
+    await expect(sp.emptyBoard).toBeVisible();
+    await expect(sp.createFirstConcept).toBeVisible();
+    await expect(sp.compactCards).toHaveCount(0);
+
+    // Create first concept → an ACTIVE card named "Concept 1" (98.md §8).
+    await sp.createFirstConcept.click();
+    await expect(sp.emptyBoard).toHaveCount(0);
+    await expect(sp.activeConcept).toBeVisible();
+    await expect(sp.activeConcept.getByLabel(/Concept name/)).toHaveValue('Concept 1');
+
+    // §6 — an EMPTY concept does not unlock the gated stages; live TERMS do.
+    // The footer "Next" gate (Database Strategies → Run Externally) carries the
+    // new disabled reason.
+    await dbStrategiesPip(sp).click();
+    await expect(stageSurface(sp)).toHaveAttribute('data-stage', 'strategy');
+    const nextResults = page.getByRole('button', { name: /Next: Run Externally/ });
+    await expect(nextResults).toBeDisabled();
+    await expect(nextResults).toHaveAttribute('title', /Add terms to a concept first — select phrases from your research question or type them in/);
+
+    // Add a live TERM → the gate opens.
+    await termsPip(sp).click();
+    await expect(sp.activeConcept).toBeVisible();
+    await sp.addTermToActiveConcept('alpha blockers');
+    await expect(sp.termChip('alpha blockers')).toBeVisible();
+    await dbStrategiesPip(sp).click();
+    await expect(page.getByRole('button', { name: /Next: Run Externally/ })).toBeEnabled({ timeout: 15_000 });
+    await termsPip(sp).click();
+    await expect(sp.activeConcept).toBeVisible();
+
+    // "+ Add concept" (the ghost card) grows the AND chain: a second card appears
+    // (compact — the first card stays active) with an AND connector LEADING it.
+    await page.getByTestId('sb-add-concept-card').click();
+    await expect(sp.conceptCard('Concept 2')).toBeVisible();
+    await expect(sp.compactCards).toHaveCount(1);
+    await expect(sp.andConnectors).toHaveCount(1);
+    await expect(sp.andConnectors.first()).toHaveText('AND');
+
+    // §9 — the connector is the between-concept operator TOGGLE and shows the
+    // PREVIOUS card's op.
+    await sp.andConnectors.first().click();
+    await expect(sp.andConnectors.first()).toHaveText('OR');
+    await sp.andConnectors.first().click();
+    await expect(sp.andConnectors.first()).toHaveText('AND');
+  });
+
+  test('@smoke terms journey: phrase click creates a concept card; duplicate click focuses; preview ANDs concepts', async ({ page, tmpProject }) => {
     const sp = new SearchPage(page);
     const q = 'Does metformin reduce mortality in adults with obesity?';
     await sp.setQuestion(tmpProject.id, q);
     await sp.gotoStage(tmpProject.id, 'terms');
     await expect(sp.questionCard).toBeVisible();
 
-    // Click a token → a search group appears, active, holding the phrase as a term.
+    // Click a token → a concept card appears, active, holding the phrase as a term.
     await sp.phraseToken(/^metformin$/).click();
     await expect(sp.activeConcept).toBeVisible();
     await expect(sp.activeConcept.getByLabel(/Concept name/)).toHaveValue('metformin');
     await expect(sp.termChip('metformin')).toBeVisible();
     await expect(sp.phraseToken(/metformin/)).toHaveAttribute('aria-pressed', 'true');
 
-    // Add a synonym; the group now holds MORE than its origin term…
+    // Add a synonym; the concept now holds MORE than its origin term…
     await sp.addTermToActiveConcept('dimethylbiguanide');
     await expect(sp.termChip('dimethylbiguanide')).toBeVisible();
     // 97.md Phase 8 — the OR relationship is explicit between chips.
     await expect(sp.activeConcept.getByText('OR', { exact: true }).first()).toBeVisible();
-    // …so clicking the token again FOCUSES the group (never silently deletes work).
+    // …so clicking the token again FOCUSES the card (never silently deletes work).
     await sp.phraseToken(/metformin/).click();
     await expect(sp.activeConcept.getByLabel(/Concept name/)).toHaveValue('metformin');
     await expect(sp.termChip('dimethylbiguanide')).toBeVisible();
 
-    // A second group from another phrase; the preview shows both, AND-connected.
+    // A second concept from another phrase; the preview shows both, AND-connected,
+    // and the board joins the two cards with an AND connector (98.md §9).
     await sp.phraseToken(/^mortality$/).click();
     await expect(sp.strategyPreview).toContainText('metformin');
     await expect(sp.strategyPreview).toContainText('mortality');
     await expect(sp.strategyPreview.getByTestId('sb-preview-op').first()).toContainText('AND');
+    await expect(sp.andConnectors).toHaveCount(1);
 
     // 97.md Phase 7 — no "Search Quality Check" card anywhere on the stage.
     await expect(stageSurface(sp).getByText(/Search Quality Check/i)).toHaveCount(0);
   });
 
-  test('97.md Phase 6 — dragging a question token onto another combines the span into one phrase group', async ({ page, tmpProject }) => {
+  test('97.md Phase 6 — dragging a question token onto another combines the span into one phrase concept', async ({ page, tmpProject }) => {
     const sp = new SearchPage(page);
     await sp.setQuestion(tmpProject.id, 'Does endoscopic drainage of malignant biliary obstruction improve survival?');
     await sp.gotoStage(tmpProject.id, 'terms');
@@ -135,7 +238,7 @@ test.describe('97.md — the staged Search Workspace (Select & Build Key Terms)'
     // "malignant biliary obstruction" is a CURATED phrase — the tokenizer emits
     // it as ONE token, so the drag-combine journey needs two separate word
     // tokens. Drag "endoscopic" onto "drainage": the merge ring arms after the
-    // hover threshold and the drop creates ONE group from the contiguous span.
+    // hover threshold and the drop creates ONE concept from the contiguous span.
     const from = sp.phraseToken(/^endoscopic$/);
     const to = sp.phraseToken(/^drainage$/);
     await expect(from).toBeVisible();
@@ -144,9 +247,9 @@ test.describe('97.md — the staged Search Workspace (Select & Build Key Terms)'
     // The combine toast offers Undo (97: "Combined into … — Undo").
     await expect(sp.undoSnackbar).toBeVisible();
     await expect(sp.undoSnackbar).toContainText('Combined into');
-    // Undo removes the freshly created group again.
+    // Undo removes the freshly created concept card again.
     await sp.undoSnackbar.getByRole('button', { name: 'Undo' }).click();
-    await expect(sp.navigatorPill('endoscopic drainage')).toHaveCount(0);
+    await expect(sp.conceptCard('endoscopic drainage')).toHaveCount(0);
   });
 
   test('97.md Phase 6 — chip drag: merge target is DISTINCT from reorder and combines into a phrase (split restores)', async ({ page, tmpProject }) => {
@@ -172,36 +275,72 @@ test.describe('97.md — the staged Search Workspace (Select & Build Key Terms)'
     await expect(sp.termChip('biliary stent')).toHaveCount(0);
   });
 
-  test('97.md Phase 11 — chip drag onto a navigator pill MOVES the term (never clones); explicit copy duplicates', async ({ page, tmpProject }) => {
+  test('98.md §9 — chip drag onto a CONCEPT CARD moves the term (never clones); explicit copy duplicates', async ({ page, tmpProject }) => {
     const sp = new SearchPage(page);
     await seedGroup(sp, tmpProject.id, 'obstruction');
     await sp.addTermToActiveConcept('stricture');
     await sp.addConceptGroup('drainage');
     await expect(sp.activeConcept.getByLabel(/Concept name/)).toHaveValue('drainage');
 
-    // Work from the FIRST group; drag its chip onto the second group's pill.
-    await sp.navigatorPill('obstruction').click();
+    // Work from the FIRST concept; drag its chip onto the second concept's CARD
+    // (the whole card is the cross-group drop surface — was the navigator pill).
+    await activateCard(sp, 'obstruction');
     await expect(sp.termChip('stricture')).toBeVisible();
-    await sp.dragTo(sp.termChip('stricture'), sp.navigatorPill('drainage'));
+    await sp.dragTo(sp.termChip('stricture'), sp.conceptCard('drainage'));
     // Default drag MOVES: gone here…
     await expect(sp.termChip('stricture')).toHaveCount(0);
     // …present there (with Undo offered — "Moved “stricture” to drainage").
     await expect(sp.undoSnackbar).toContainText('Moved “stricture” to drainage');
-    await sp.navigatorPill('drainage').click();
+    await activateCard(sp, 'drainage');
     await expect(sp.termChip('stricture')).toBeVisible();
 
-    // EXPLICIT copy via the popover menu (Phase 9 — duplication is deliberate).
+    // EXPLICIT copy via the popover menu (duplication is deliberate).
     await sp.termChip('stricture').click();
     await sp.termEditor.getByTestId('sb-copy-btn').click();
     await sp.termEditor.getByRole('button', { name: 'obstruction', exact: true }).click();
-    // The copy lands in the other group; this one keeps its chip.
-    await sp.navigatorPill('obstruction').click();
+    // The copy lands in the other concept; this one keeps its chip.
+    await activateCard(sp, 'obstruction');
     await expect(sp.termChip('stricture')).toBeVisible();
-    await sp.navigatorPill('drainage').click();
+    await activateCard(sp, 'drainage');
     await expect(sp.termChip('stricture')).toBeVisible();
   });
 
-  test('drift: editing the question flags groups whose phrase left it — keep/remove, never auto-delete', async ({ page, tmpProject }) => {
+  test('98.md §9 — the card grip handle drags a concept: edge drop reorders the AND chain; centre drop (held) merges', async ({ page, tmpProject }) => {
+    const sp = new SearchPage(page);
+    await seedGroup(sp, tmpProject.id, 'alpha');
+    await sp.addConceptGroup('beta');
+    await sp.addConceptGroup('gamma');
+    await expect(sp.activeConcept.getByLabel(/Concept name/)).toHaveValue('gamma');
+    await expect(sp.conceptCard('gamma').getByTestId('sb-group-ordinal')).toHaveText('Concept 3');
+
+    // REORDER: drag gamma's grip onto beta's LEFT EDGE (outside the central merge
+    // zone, no hold) → the insertion line target → gamma lands BEFORE beta.
+    const betaBox = await sp.conceptCard('beta').boundingBox();
+    if (!betaBox) throw new Error('beta card has no bounding box');
+    await sp.dragTo(
+      sp.conceptCard('gamma').getByTestId('sb-card-drag-handle'),
+      sp.conceptCard('beta'),
+      { offsetX: -(betaBox.width / 2 - 14) },
+    );
+    await expect(sp.conceptCard('gamma').getByTestId('sb-group-ordinal')).toHaveText('Concept 2');
+    await expect(sp.conceptCard('beta').getByTestId('sb-group-ordinal')).toHaveText('Concept 3');
+
+    // MERGE: drag beta's grip onto alpha's CENTRE and HOLD past the arming
+    // threshold → beta merges into alpha (terms move; beta's card goes).
+    await sp.dragTo(
+      sp.conceptCard('beta').getByTestId('sb-card-drag-handle'),
+      sp.conceptCard('alpha'),
+      { holdMs: 600 },
+    );
+    await expect(sp.conceptCard('beta')).toHaveCount(0);
+    await expect(sp.activeConcept.getByLabel(/Concept name/)).toHaveValue('alpha');
+    await expect(sp.termChip('beta')).toBeVisible();
+    await expect(sp.undoSnackbar).toBeVisible();
+    await sp.undoSnackbar.getByRole('button', { name: 'Undo' }).click();
+    await expect(sp.conceptCard('beta')).toBeVisible();
+  });
+
+  test('drift: editing the question flags concepts whose phrase left it — keep/remove, never auto-delete', async ({ page, tmpProject }) => {
     const sp = new SearchPage(page);
     await sp.setQuestion(tmpProject.id, 'Does metformin reduce mortality in adults?');
     await sp.gotoStage(tmpProject.id, 'terms');
@@ -209,88 +348,80 @@ test.describe('97.md — the staged Search Workspace (Select & Build Key Terms)'
     await expect(sp.activeConcept).toBeVisible();
     await sp.awaitStrategySaved(tmpProject.id, 1);
 
+    // 98.md §4 — the question edit happens through the INLINE editor now.
     await sp.setQuestion(tmpProject.id, 'Does metformin reduce cardiovascular events in adults?');
     await sp.gotoStage(tmpProject.id, 'terms');
 
     await expect(sp.driftBanner).toBeVisible();
     await expect(sp.driftBanner).toContainText('mortality');
-    await expect(sp.navigatorPill('mortality')).toBeVisible();
+    await expect(sp.conceptCard('mortality')).toBeVisible();
 
     await sp.driftBanner.getByRole('button', { name: /Keep concepts/ }).click();
     await expect(sp.driftBanner).toHaveCount(0);
-    await expect(sp.navigatorPill('mortality')).toBeVisible();
+    await expect(sp.conceptCard('mortality')).toBeVisible();
   });
 
-  test('group management: merge, split and delete-with-confirm are undoable', async ({ page, tmpProject }) => {
+  test('concept management: merge, split and delete-with-confirm are undoable (98.md §8 wording)', async ({ page, tmpProject }) => {
     const sp = new SearchPage(page);
     await seedGroup(sp, tmpProject.id, 'heart failure');
     await sp.addTermToActiveConcept('cardiac failure');
     await sp.addConceptGroup('cardiomyopathy');
     await expect(sp.activeConcept.getByLabel(/Concept name/)).toHaveValue('cardiomyopathy');
 
-    // MERGE cardiomyopathy into heart failure — the term moves, the group goes.
-    await sp.groupActions.getByRole('button', { name: /Merge cardiomyopathy into another group/ }).click();
+    // MERGE cardiomyopathy into heart failure — the term moves, the card goes.
+    await sp.groupActions.getByRole('button', { name: /Merge cardiomyopathy into another concept/ }).click();
     await sp.page.getByRole('button', { name: 'heart failure', exact: true }).click();
     await expect(sp.activeConcept.getByLabel(/Concept name/)).toHaveValue('heart failure');
     await expect(sp.termChip('cardiomyopathy')).toBeVisible();
-    await expect(sp.navigatorPill('cardiomyopathy')).toHaveCount(0);
+    await expect(sp.conceptCard('cardiomyopathy')).toHaveCount(0);
     await expect(sp.undoSnackbar).toBeVisible();
     await sp.undoSnackbar.getByRole('button', { name: 'Undo' }).click();
-    await expect(sp.navigatorPill('cardiomyopathy')).toBeVisible();
+    await expect(sp.conceptCard('cardiomyopathy')).toBeVisible();
 
-    // SPLIT: move "cardiac failure" out of heart failure into a new group.
-    await sp.navigatorPill('heart failure').click();
+    // SPLIT: move "cardiac failure" out of heart failure into a new concept.
+    await activateCard(sp, 'heart failure');
     await sp.groupActions.getByRole('button', { name: /Split terms out of heart failure/ }).click();
     await expect(sp.splitPanel).toBeVisible();
     await sp.splitPanel.getByLabel(/Select cardiac failure/).check();
-    await sp.splitPanel.getByLabel('New group name').fill('cardiac failure');
+    await sp.splitPanel.getByLabel('New concept name').fill('cardiac failure');
     await sp.splitPanel.getByRole('button', { name: /Split 1 term/ }).click();
     await expect(sp.activeConcept.getByLabel(/Concept name/)).toHaveValue('cardiac failure');
     await expect(sp.termChip('cardiac failure')).toBeVisible();
 
-    // DELETE any group needs an inline confirm; Undo restores it.
-    await sp.groupActions.getByRole('button', { name: /Delete group cardiac failure/ }).click();
+    // DELETE any concept needs an inline confirm; Undo restores it.
+    await sp.groupActions.getByRole('button', { name: /Delete concept cardiac failure/ }).click();
     await sp.groupActions.getByRole('button', { name: /Confirm delete cardiac failure/ }).click();
-    await expect(sp.navigatorPill('cardiac failure')).toHaveCount(0);
+    await expect(sp.conceptCard('cardiac failure')).toHaveCount(0);
     await expect(sp.undoSnackbar).toBeVisible();
     await sp.undoSnackbar.getByRole('button', { name: 'Undo' }).click();
-    await expect(sp.navigatorPill('cardiac failure')).toBeVisible();
+    await expect(sp.conceptCard('cardiac failure')).toBeVisible();
   });
 
-  test('97.md Phase 12 — duplicate journey: dark-red chips, find other, keep both intentionally, persistence', async ({ page, tmpProject }) => {
+  test('97.md Phase 12 — duplicate journey: dark-red chips on BOTH board cards, find other, keep both, persistence', async ({ page, tmpProject }) => {
     const sp = new SearchPage(page);
     await seedGroup(sp, tmpProject.id, 'obstruction');
     await sp.addTermToActiveConcept('EUS');
     await sp.addConceptGroup('drainage');
-    await sp.addTermToActiveConcept('EUS'); // exact duplicate ACROSS groups — allowed, warned
+    await sp.addTermToActiveConcept('EUS'); // exact duplicate ACROSS concepts — allowed, warned
 
-    // EVERY affected chip gets the dark-red Duplicate badge (icon + SR label).
-    // The workspace is master-detail — only the ACTIVE group's chips render —
-    // so assert the badge on each group's copy in turn.
-    await expect(sp.dupBadges).toHaveCount(1);
-    await expect(sp.dupBadges.first()).toHaveAttribute('aria-label', /Exact duplicate across AND groups/);
-    await sp.navigatorPill('obstruction').click();
-    await expect(sp.dupBadges).toHaveCount(1);
-    await expect(sp.dupBadges.first()).toHaveAttribute('aria-label', /Exact duplicate across AND groups/);
-    await sp.navigatorPill('drainage').click();
-    await expect(sp.dupBadges).toHaveCount(1);
+    // 98.md §9 — the board renders EVERY concept's chips side by side, so BOTH
+    // copies carry the dark-red Duplicate badge at once (icon + SR label).
+    await expect(sp.dupBadges).toHaveCount(2);
+    await expect(sp.dupBadges.first()).toHaveAttribute('aria-label', /Exact duplicate across AND concepts/);
 
-    // Find other duplicate: scrolls + focuses the other copy (group switches).
+    // Find other duplicate: activates the other card + focuses the other copy.
     await sp.termChip('EUS').click();
     await expect(sp.dupActions).toBeVisible();
     await sp.dupActions.getByRole('button', { name: 'Find other duplicate' }).click();
     await expect(sp.activeConcept.getByLabel(/Concept name/)).toHaveValue('obstruction');
     await expect(sp.termChip('EUS')).toBeFocused();
 
-    // Keep both intentionally → warning mutes on BOTH chips; the calm marker shows
-    // (checked per group — master-detail renders one group's chips at a time).
+    // Keep both intentionally → warning mutes on BOTH chips; the calm marker
+    // shows on both cards (they all render on the board now).
     await sp.termChip('EUS').click();
     await sp.dupActions.getByRole('button', { name: 'Keep both intentionally' }).click();
     await expect(sp.dupBadges).toHaveCount(0);
-    await expect(sp.intentionalBadges.first()).toBeVisible();
-    await sp.navigatorPill('drainage').click();
-    await expect(sp.dupBadges).toHaveCount(0);
-    await expect(sp.intentionalBadges.first()).toBeVisible();
+    await expect(sp.intentionalBadges).toHaveCount(2);
 
     // The decision persists (term-level dupOverride rides inside `concepts`).
     await sp.awaitStrategySaved(tmpProject.id, 2);
@@ -305,7 +436,7 @@ test.describe('97.md — the staged Search Workspace (Select & Build Key Terms)'
       .toBe(true);
     await sp.gotoStage(tmpProject.id, 'terms');
     await expect(sp.dupBadges).toHaveCount(0);
-    await expect(sp.intentionalBadges.first()).toBeVisible();
+    await expect(sp.intentionalBadges).toHaveCount(2);
   });
 
   test('97.md Phase 12 — same-group exact duplicates are PREVENTED with Find existing term', async ({ page, tmpProject }) => {
@@ -322,12 +453,12 @@ test.describe('97.md — the staged Search Workspace (Select & Build Key Terms)'
     await expect(sp.termChip('EUS')).toBeFocused();
   });
 
-  test('97.md Phase 13 — MeSH details popover: informational, per-entry-term add only (seeded vocab, no live NLM)', async ({ page, tmpProject }) => {
+  test('97.md Phase 13 — MeSH details popover: informational, per-entry-term add only + Syntax by database (seeded vocab, no live NLM)', async ({ page, tmpProject }) => {
     const sp = new SearchPage(page);
     // Seed a controlled term WITH its vocab record directly through the API —
     // hermetic: no vocabulary lookups run for already-attached vocab.
     await sp.seedStrategy(tmpProject.id, [{
-      id: 'g1', label: 'Search Group 1', op: 'AND', source: 'user_added',
+      id: 'g1', label: 'Concept 1', op: 'AND', source: 'user_added',
       terms: [{
         id: 'tm1', text: 'heart failure', type: 'controlled', field: 'tiab', source: 'user_added',
         vocab: {
@@ -348,6 +479,9 @@ test.describe('97.md — the staged Search Workspace (Select & Build Key Terms)'
     await expect(sp.meshPopover).toContainText('D006333');
     await expect(sp.meshPopover).toContainText('Include narrower indexed terms');
     await expect(sp.meshPopover).toContainText('not added automatically');
+    // 98.md — the popover gained a per-database syntax row.
+    await expect(sp.meshPopover).toContainText('Syntax by database');
+    await expect(sp.meshPopover.getByTestId('sb-mesh-db-syntax').first()).toBeVisible();
 
     // ONE entry term is added through its EXPLICIT action; the other is NOT.
     await sp.meshPopover.getByRole('button', { name: 'Add this term: cardiac failure', exact: true }).click();
@@ -363,7 +497,7 @@ test.describe('97.md — the staged Search Workspace (Select & Build Key Terms)'
     const sp = new SearchPage(page);
     // Hermetic: seeded vocab + a routed no-match lookup — no live NLM anywhere.
     await sp.seedStrategy(tmpProject.id, [{
-      id: 'g1', label: 'Search Group 1', op: 'AND', source: 'user_added',
+      id: 'g1', label: 'Concept 1', op: 'AND', source: 'user_added',
       terms: [{
         id: 'tm1', text: 'heart failure', type: 'controlled', field: 'tiab', source: 'user_added',
         vocab: { mesh: 'Heart Failure', meshUI: 'D006333', synonyms: ['cardiac failure'], source: 'core' },
@@ -390,7 +524,7 @@ test.describe('97.md — the staged Search Workspace (Select & Build Key Terms)'
     await expect(chip).not.toContainText('Heart Failure');
   });
 
-  test('97.md Phase 4 — Regenerate: cancel keeps everything; confirm snapshots first, rebuilds, Undo restores', async ({ page, tmpProject }) => {
+  test('97.md Phase 4 — Regenerate: cancel keeps everything; confirm snapshots first, rebuilds "Concept N" cards, Undo restores', async ({ page, tmpProject }) => {
     const sp = new SearchPage(page);
     await sp.setQuestion(tmpProject.id, 'Does endoscopic ultrasound guided drainage reduce mortality in malignant biliary obstruction?');
     await sp.gotoStage(tmpProject.id, 'terms');
@@ -398,24 +532,25 @@ test.describe('97.md — the staged Search Workspace (Select & Build Key Terms)'
     await sp.addTermToActiveConcept('handmade term');
     await sp.awaitStrategySaved(tmpProject.id, 1);
 
-    // CANCEL leaves all state unchanged.
+    // CANCEL leaves all state unchanged. 98.md §8 — "concept groups" dialog copy.
     await sp.regenerateButton.click();
     await expect(sp.regenerateDialog).toBeVisible();
     await expect(sp.regenerateDialog).toContainText('Regenerate search strategy?');
+    await expect(sp.regenerateDialog).toContainText('concept groups from the current research question');
     await expect(sp.regenerateDialog).toContainText('Your current manual organization may change.');
     await sp.regenerateDialog.getByRole('button', { name: 'Cancel', exact: true }).click();
     await expect(sp.regenerateDialog).toHaveCount(0);
-    await expect(sp.navigatorPill('my manual group')).toBeVisible();
+    await expect(sp.conceptCard('my manual group')).toBeVisible();
     await expect(sp.termChip('handmade term')).toBeVisible();
 
-    // CONFIRM: a "Before regeneration" snapshot lands in Versions, the groups are
-    // rebuilt with neutral names, and the toast offers Undo.
+    // CONFIRM: a "Before regeneration" snapshot lands in Versions, the concepts
+    // are rebuilt with neutral "Concept N" names (98.md §8), and the toast offers Undo.
     await sp.regenerateButton.click();
     await sp.regenerateDialog.getByRole('button', { name: 'Regenerate', exact: true }).click();
     await expect(sp.regenerateDialog).toHaveCount(0, { timeout: 15_000 });
     await expect(sp.undoSnackbar).toContainText('Search strategy regenerated.');
-    await expect(sp.navigatorPill('Search Group 1')).toBeVisible();
-    await expect(sp.navigatorPill('my manual group')).toHaveCount(0);
+    await expect(sp.conceptCard('Concept 1')).toBeVisible();
+    await expect(sp.conceptCard('my manual group')).toHaveCount(0);
     await expect
       .poll(async () => {
         const r = await page.request.get(`/api/search-builder/${encodeURIComponent(tmpProject.id)}/versions`);
@@ -427,7 +562,7 @@ test.describe('97.md — the staged Search Workspace (Select & Build Key Terms)'
 
     // UNDO restores the pre-regeneration workspace wholesale.
     await sp.undoSnackbar.getByRole('button', { name: 'Undo' }).click();
-    await expect(sp.navigatorPill('my manual group')).toBeVisible();
+    await expect(sp.conceptCard('my manual group')).toBeVisible();
     await expect(sp.termChip('handmade term')).toBeVisible();
   });
 
@@ -462,6 +597,41 @@ test.describe('97.md — the staged Search Workspace (Select & Build Key Terms)'
     await expect(stageSurface(sp).getByText(/Versions/)).toBeVisible();
   });
 
+  test('98.md §5 — Beginner Mode (default OFF) gates the instructional copy engine-wide', async ({ page, tmpProject }) => {
+    const sp = new SearchPage(page);
+    await sp.setQuestion(tmpProject.id, 'Does exercise reduce falls in older adults?');
+    await sp.gotoStage(tmpProject.id, 'terms');
+    await expect(sp.questionCard).toBeVisible();
+
+    // Default = professional experience: toggle OFF, no StageIntro paragraph,
+    // no intro strip; the span hint stays in the DOM (aria-describedby keeps
+    // working for SR users) but is visually hidden.
+    const toggle = page.getByTestId('sw-beginner-toggle');
+    await expect(toggle).toBeVisible();
+    await expect(toggle).toHaveAttribute('aria-checked', 'false');
+    await expect(page.getByText(/Build your search here: click or drag the key ideas/)).toHaveCount(0);
+    await expect(page.getByTestId('sb-intro-strip')).toHaveCount(0);
+    const hint = page.getByTestId('sb-span-hint');
+    await expect(hint).toBeAttached();
+    expect(((await hint.boundingBox()) || { width: 0 }).width).toBeLessThanOrEqual(1);
+
+    // Toggle ON → instructional surfaces appear: StageIntro, intro strip, the
+    // visible span hint and the per-concept AND/OR explainer.
+    await toggle.click();
+    await expect(toggle).toHaveAttribute('aria-checked', 'true');
+    await expect(page.getByText(/Build your search here: click or drag the key ideas/)).toBeVisible();
+    await expect(page.getByTestId('sb-intro-strip')).toBeVisible();
+    expect(((await hint.boundingBox()) || { width: 0 }).width).toBeGreaterThan(1);
+    await sp.phraseToken(/^exercise$/).click();
+    await expect(sp.activeConcept).toBeVisible();
+    await expect(sp.activeConcept.getByText(/any one of them counts as a match/)).toBeVisible();
+
+    // Toggle back OFF → the explainer leaves the DOM again.
+    await toggle.click();
+    await expect(toggle).toHaveAttribute('aria-checked', 'false');
+    await expect(sp.activeConcept.getByText(/any one of them counts as a match/)).toHaveCount(0);
+  });
+
   test('choosing Automated instantly removes Database Strategies and renumbers the rail — and Manual restores it', async ({ page, tmpProject }) => {
     const sp = new SearchPage(page);
     await sp.openStagedWorkspace(tmpProject.id);
@@ -471,14 +641,14 @@ test.describe('97.md — the staged Search Workspace (Select & Build Key Terms)'
     await expect(automatedCard(sp)).toHaveAttribute('aria-checked', 'true');
     await expect(dbStrategiesPip(sp)).toHaveCount(0);
     await expect(rail(sp).getByRole('button', { name: /Automated Search/ })).toBeVisible();
-    await expect(page.getByText('Stage 3 of 6')).toBeVisible();
+    await expect(page.getByText('Stage 2 of 5')).toBeVisible();
     await expect(modeBadge(sp)).toContainText('Automated search');
 
     await manualCard(sp).click();
     await expect(manualCard(sp)).toHaveAttribute('aria-checked', 'true');
     await expect(dbStrategiesPip(sp)).toBeVisible();
     await expect(rail(sp).getByRole('button', { name: /Run Externally/ })).toBeVisible();
-    await expect(page.getByText('Stage 3 of 7')).toBeVisible();
+    await expect(page.getByText('Stage 2 of 6')).toBeVisible();
     await expect(modeBadge(sp)).toContainText('Manual search');
   });
 
@@ -511,7 +681,7 @@ test.describe('97.md — the staged Search Workspace (Select & Build Key Terms)'
           ? b.concepts.flatMap((c: any) => (Array.isArray(c?.terms) ? c.terms.map((t: any) => t?.text) : []))
           : [];
         return terms.includes(label);
-      }, { timeout: 15_000, message: 'builder never autosaved the concept group' })
+      }, { timeout: 15_000, message: 'builder never autosaved the concept' })
       .toBe(true);
 
     await openModeStage(sp);
@@ -595,14 +765,14 @@ test.describe('97.md — the staged Search Workspace (Select & Build Key Terms)'
     await expect(manualCard(sp)).toBeFocused();
   });
 
-  test('vocabulary suggestions — one MeSH term per accept; dismiss persists across reload; NO bulk accept-all (seeded vocab, no live NLM)', async ({ page, tmpProject }) => {
+  test('98.md §11 — suggestions hide behind "Show suggestions (N)"; one MeSH term per accept; dismiss persists; NO bulk accept-all (seeded vocab)', async ({ page, tmpProject }) => {
     const sp = new SearchPage(page);
     // QA M26 — HERMETIC: seed free-text terms WITH their vocab records through
     // the API. pendingSuggestions derives its rows from the vocab already riding
     // on the terms, so this journey performs NO live NLM vocabulary lookups
     // (97: automated tests must not make live external controlled-vocab calls).
     await sp.seedStrategy(tmpProject.id, [{
-      id: 'g1', label: 'Search Group 1', op: 'AND', source: 'user_added',
+      id: 'g1', label: 'Concept 1', op: 'AND', source: 'user_added',
       terms: [
         {
           id: 'tm1', text: 'heart failure', type: 'freetext', field: 'tiab', source: 'user_added',
@@ -615,6 +785,16 @@ test.describe('97.md — the staged Search Workspace (Select & Build Key Terms)'
       ],
     }]);
     await sp.gotoStage(tmpProject.id, 'terms');
+    await expect(sp.activeConcept).toBeVisible({ timeout: 15_000 });
+
+    // 98.md §11 — CLOSED by default: no suggestion rows in the DOM, only the
+    // one-click toggle with the pending count.
+    const toggle = page.getByTestId('sb-suggestions-toggle');
+    await expect(page.getByTestId('sb-suggestion-row')).toHaveCount(0);
+    await expect(toggle).toHaveText(/Show suggestions \(2\)/);
+    await expect(toggle).toHaveAttribute('aria-expanded', 'false');
+    await toggle.click();
+    await expect(toggle).toHaveAttribute('aria-expanded', 'true');
 
     // Rows derive from the seeded vocab. Locate the MESH rows by their full
     // "why" line: a bare quoted source text would ALSO match the follow-up
@@ -648,6 +828,10 @@ test.describe('97.md — the staged Search Workspace (Select & Build Key Terms)'
     await sp.gotoStage(tmpProject.id, 'terms');
     await expect(sp.activeConcept).toBeVisible({ timeout: 15_000 });
     await expect(sp.termChip('Heart Failure')).toBeVisible();
+    // The disclosure re-opens CLOSED (session state); the dismissed row stays
+    // gone even with the panel open.
+    await expect(page.getByTestId('sb-suggestions-toggle')).toHaveAttribute('aria-expanded', 'false');
+    await page.getByTestId('sb-suggestions-toggle').click();
     await expect(sp.suggestionRow('Standard MeSH term for "hypertension"')).toHaveCount(0);
   });
 
@@ -741,16 +925,22 @@ test.describe('97.md — the staged Search Workspace (Select & Build Key Terms)'
 
   /* ════════ axe scans of the reworked stages ════════ */
 
-  test('a11y: the Research Question stage has no serious/critical violations', async ({ page, tmpProject }, testInfo) => {
+  test('a11y: the INLINE research-question editor (terms stage) has no serious/critical violations', async ({ page, tmpProject }, testInfo) => {
     const sp = new SearchPage(page);
+    // 98.md §3/§4 — the question stage is retired; scan the terms stage with the
+    // inline editor OPEN (the surface that replaced it).
     await sp.setQuestion(tmpProject.id, 'Does exercise reduce falls in older adults?');
+    await sp.gotoStage(tmpProject.id, 'terms');
+    await sp.editQuestionButton.click();
+    await expect(sp.inlineQuestionEditor).toBeVisible();
+    await expect(sp.questionEditor).toBeVisible();
     await expectNoSeriousA11y(page, {
       include: '[data-testid="stitch-main-content"]',
-      testInfo, label: 'search-question',
+      testInfo, label: 'search-question-inline',
     });
   });
 
-  test('a11y: the Select & Build Key Terms stage (incl. a dark-red duplicate chip) has no serious/critical violations', async ({ page, tmpProject }, testInfo) => {
+  test('a11y: the Select & Build Key Terms board (incl. a dark-red duplicate chip) has no serious/critical violations', async ({ page, tmpProject }, testInfo) => {
     const sp = new SearchPage(page);
     await sp.setQuestion(tmpProject.id, 'Does exercise reduce falls in older adults?');
     await sp.gotoStage(tmpProject.id, 'terms');

@@ -616,7 +616,22 @@ function ControlTab({project,onAnnotate,setTab,presence,onDeleted}){
       // progress, Stitch stepper) update instantly, matching the twin ProjectControlTab
       // which calls refreshProject(). Spread the existing summary so recordCount/title/
       // decidedCount are preserved (only progressStatus changes).
-      onAnnotate(project.id,{_linkedMetaSift:{...(project._linkedMetaSift||{}),progressStatus:v}});
+      // 98.md §14 Defect 6 — also DROP the stale server `_progress` annotation
+      // (computed before this status change): useProjectProgress then recomputes
+      // client-side from the patched _linkedMetaSift counts, so no surface keeps
+      // serving the pre-edit canonical steps until the next fetch.
+      onAnnotate(project.id,{_linkedMetaSift:{...(project._linkedMetaSift||{}),progressStatus:v},
+        /* 98.md review (M10) — patch _progress SURGICALLY: the legacy Workspace host
+           merges locally with NO refetch, so nulling the whole annotation degraded
+           Search/RoB to blob heuristics (permanent red for new-engine projects).
+           Only the screening step changes, and only conservatively: a non-done
+           sign-off downgrades it to 'partial'; 'done' is never granted optimistically
+           (the canonical server model is the only path to done). */
+        _progress:(project._progress&&Array.isArray(project._progress.steps))?{
+          ...project._progress,
+          steps:project._progress.steps.map(st=>st&&st.id==='screening'&&v!=='done'&&st.status==='done'
+            ?{...st,status:'partial',reason:'Sign-off withdrawn'}:st),
+        }:project._progress||null});
       setStatusFlash(true);setTimeout(()=>setStatusFlash(false),1400);
     }catch(e){
       setSp(s=>({...s,progressStatus:prev}));

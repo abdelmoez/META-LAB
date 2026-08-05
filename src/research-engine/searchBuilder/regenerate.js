@@ -6,7 +6,7 @@
  * 96 removed the protocol PICO fields from the builder entirely and Phase 8
  * forbids resurrecting the P/I/C/O organization — so regeneration reads ONLY the
  * research-question text (which is where PICO thinking lives post-96), and the
- * groups it emits are labeled `Search Group 1..N`, NEVER picoField-labeled.
+ * groups it emits are labeled `Concept 1..N` (98.md §8), NEVER picoField-labeled.
  * `syncSearchBuilderFromPico` stays untouched (legacy tests only).
  *
  * The flow around this engine (client-side, plan §9): confirm dialog → snapshot
@@ -27,7 +27,7 @@ export const REGENERATED_SOURCE = 'generated';
 
 /**
  * Rebuild id-less concept groups from the research question. Each connector-split
- * segment of the question becomes one OR group: label `Search Group N`,
+ * segment of the question becomes one OR group: label `Concept N`,
  * `sourcePhrase` = the cleaned segment (it appears verbatim in the question, so
  * drift detection anchors correctly), `source:'generated'`, terms = the extraction
  * engine's family ladder / synonyms / abbreviation expansion for that segment
@@ -57,12 +57,12 @@ export function regenerateConceptsFromQuestion(question) {
       });
     }
   }
-  return out.map((c, i) => ({ ...c, label: `Search Group ${i + 1}` }));
+  return out.map((c, i) => ({ ...c, label: `Concept ${i + 1}` })); // 98.md §8 — the ONE user-facing noun
 }
 
 /**
  * The UI-facing wrapper (SearchBuilderTab codes against this exact name/shape):
- * regenerateFromQuestion(question) → { concepts } — neutral "Search Group N"
+ * regenerateFromQuestion(question) → { concepts } — neutral "Concept N"
  * labels, no picoField anywhere; the caller stamps ids and meta. Pure.
  */
 export function regenerateFromQuestion(question) {
@@ -94,7 +94,7 @@ export function buildRegenerateState({ question, user, at } = {}) {
  *  contract tests share one source of truth. */
 export const REGENERATE_CONFIRM_COPY = {
   title: 'Regenerate search strategy?',
-  body: 'This will rebuild the automatically generated keywords and search groups from the current research question and PICO. Your current manual organization may change.',
+  body: 'This will rebuild the automatically generated keywords and concept groups from the current research question. Your current manual organization may change.',
   cancel: 'Cancel',
   confirm: 'Regenerate',
 };

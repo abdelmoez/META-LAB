@@ -84,6 +84,9 @@ Content-Type: `application/json` for all request bodies unless noted.
 
 Prompt6 behavior:
 - **Status events**: a *real* `progressStatus` transition (old ≠ new) writes a `ScreenProjectStatusEvent` row (`projectId`, `status`, `previousStatus`, `changedById`, `changedByName`) + audit entry, feeding the ops done-today/week/month distinct metrics. Same-value writes create no event.
+
+98.md §14 behavior (additive):
+- **Sign-off corroboration warning**: setting `progressStatus: "done"` while the screening substep evidence shows pending work (records missing, title/abstract below quorum, unresolved conflicts/duplicate groups, or full-text decisions outstanding) still succeeds (leader freedom — never hard-rejected), but the 200 response additionally carries `statusWarning` (string) explaining what is pending, and the `PROJECT_STATUS_CHANGED` audit details gain `pendingWorkAtSignOff: true`. The canonical `_progress` model does not report Screening as complete until the evidence corroborates the sign-off.
 - **Rename sync (sync-if-in-sync)**: when `title` changes and the linked META·LAB project's name equals the *old* SIFT title (and the link invariant holds — same owner, live project), the META·LAB name is updated too. Diverged titles never sync. Best-effort; the mirror behavior exists on `PUT /api/projects/:id` (see `api-contract.md`).
 - Requires settings permission (`canManageSettings` — implicit for owner/leader); members without it get **403**.
 

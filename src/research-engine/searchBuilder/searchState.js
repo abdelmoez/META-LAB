@@ -793,15 +793,16 @@ export function renameConcept(concepts, conceptId, label) {
 }
 
 /**
- * 97.md Phase 8 — the default name for a NEW group: `Search Group N` with N =
- * group count + 1, bumped past any existing label collision. Pure.
+ * 97.md Phase 8 — the default name for a NEW group, renamed by 98.md §8 to the
+ * ONE user-facing noun: `Concept N` with N = group count + 1, bumped past any
+ * existing label collision. Pure.
  */
 export function defaultGroupLabel(concepts) {
   const list = Array.isArray(concepts) ? concepts : [];
   const taken = new Set(list.map((c) => norm(c && c.label)).filter(Boolean));
   let n = list.length + 1;
-  while (taken.has(norm(`Search Group ${n}`))) n += 1;
-  return `Search Group ${n}`;
+  while (taken.has(norm(`Concept ${n}`))) n += 1;
+  return `Concept ${n}`;
 }
 
 /* Canonical PICO labels (normalized) a legacy group may still carry — the
@@ -816,9 +817,11 @@ const CANONICAL_PICO_LABELS = new Set([
  * 97.md Phases 8/15 (plan §15) — IDEMPOTENT legacy-label migration. Every legacy
  * PICO group (`picoField` / `source:'pico_auto'`) whose label still EXACTLY
  * matches a canonical PICO label (normalized; user-renamed labels never match and
- * are preserved) is renamed to `Search Group <n>` (n = its 1-based position among
+ * are preserved) is renamed to `Concept <n>` (n = its 1-based position among
  * ALL groups) and stamped with the per-concept conversion marker
- * `labelMigrated: 1` (rides inside `concepts` — no putSearch branch, invariant 1).
+ * `labelMigrated` (rides inside `concepts` — no putSearch branch, invariant 1).
+ * 98.md §8 — a second one-shot pass also renames 97-era default `Search Group N`
+ * labels to `Concept N` (same number preserved; marker value 2).
  *
  * `picoField` is deliberately RETAINED (invariant 5): the drift exemption
  * (conceptDrift), the empty-group QC exemption (crossConcept), Time-Frame note
@@ -836,11 +839,23 @@ export function migrateLegacyGroupLabels(concepts) {
   const list = Array.isArray(concepts) ? concepts : [];
   let changed = false;
   const out = list.map((c, i) => {
-    if (!c || c.labelMigrated) return c;
+    if (!c) return c;
+    // 98.md §8 — SECOND one-shot rename: default 97-era `Search Group N` labels
+    // (normalized exact match — user renames never match) become `Concept N`,
+    // keeping the SAME number so collaborators' mental mapping survives. Marker
+    // bumps to 2; `Concept N` never matches either legacy pattern → idempotent.
+    const sgMatch = /^search group (\d+)$/.exec(norm(c.label));
+    if (sgMatch && c.labelMigrated !== 2) {
+      changed = true;
+      return { ...c, label: `Concept ${sgMatch[1]}`, labelMigrated: 2 };
+    }
+    if (c.labelMigrated) return c;
     if (!(c.picoField || c.source === 'pico_auto')) return c;
     if (!CANONICAL_PICO_LABELS.has(norm(c.label))) return c; // user-renamed → kept
     changed = true;
-    return { ...c, label: `Search Group ${i + 1}`, labelMigrated: 1 };
+    // 97 Phase 15 pattern, 98.md §8 terminology: legacy PICO labels go straight
+    // to the final `Concept <n>` form (position-based, as before).
+    return { ...c, label: `Concept ${i + 1}`, labelMigrated: 2 };
   });
   return changed ? out : list;
 }

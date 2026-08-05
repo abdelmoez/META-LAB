@@ -3,7 +3,7 @@
  * step must turn complete ONLY when every screening substep is finished.
  */
 import { describe, it, expect } from 'vitest';
-import { isScreeningComplete } from '../../server/utils/screeningCompletion.js';
+import { isScreeningComplete, isScreeningWorkComplete } from '../../server/utils/screeningCompletion.js';
 
 const complete = {
   total: 50, unresolvedDuplicateGroups: 0, titleAbstractPending: 0,
@@ -45,5 +45,36 @@ describe('isScreeningComplete', () => {
     expect(isScreeningComplete({})).toBe(false);
     expect(isScreeningComplete()).toBe(false);
     expect(isScreeningComplete({ total: 10 })).toBe(false);
+  });
+});
+
+/* 98.md §14 — the workflow-PROGRESS predicate. Same conjunction, ONE divergence:
+   includedFinal>0 is NOT required (an all-rejected screen IS finished work). */
+describe('isScreeningWorkComplete', () => {
+  it('true when every substep is finished', () => {
+    expect(isScreeningWorkComplete(complete)).toBe(true);
+  });
+
+  it('true even when zero studies were included (all-rejected empty review)', () => {
+    expect(isScreeningWorkComplete({ ...complete, includedFinal: 0 })).toBe(true);
+    // …where isScreeningComplete deliberately stays false (extraction hand-off gate).
+    expect(isScreeningComplete({ ...complete, includedFinal: 0 })).toBe(false);
+  });
+
+  it('false before any records exist', () => {
+    expect(isScreeningWorkComplete({ ...complete, total: 0 })).toBe(false);
+  });
+
+  it('false while any substep is pending', () => {
+    expect(isScreeningWorkComplete({ ...complete, unresolvedDuplicateGroups: 2 })).toBe(false);
+    expect(isScreeningWorkComplete({ ...complete, titleAbstractPending: 5 })).toBe(false);
+    expect(isScreeningWorkComplete({ ...complete, unresolvedConflicts: 1 })).toBe(false);
+    expect(isScreeningWorkComplete({ ...complete, secondReviewPending: 3 })).toBe(false);
+  });
+
+  it('does not crash on missing / partial input', () => {
+    expect(isScreeningWorkComplete({})).toBe(false);
+    expect(isScreeningWorkComplete()).toBe(false);
+    expect(isScreeningWorkComplete({ total: 10 })).toBe(true); // no pending counts, records exist
   });
 });

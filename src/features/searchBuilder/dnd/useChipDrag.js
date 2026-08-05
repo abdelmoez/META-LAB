@@ -21,6 +21,30 @@ import {
   shouldStartDrag, resolveDropTarget, trackMergeHover, mergeArmed,
 } from './dndModel.js';
 
+/* 98.md review (M19) — body-level user-select suppression is shared by ALL hook
+   instances (question tray + chips + pills coexist): a module-scoped refcount
+   prevents a second concurrent drag from capturing the first drag's 'none' as
+   its "previous" value and re-pinning it forever. */
+let suppressCount = 0;
+let savedUserSelect = '';
+function suppressSelection() {
+  try {
+    if (++suppressCount === 1) {
+      savedUserSelect = document.body.style.userSelect || '';
+      document.body.style.userSelect = 'none';
+      document.body.style.webkitUserSelect = 'none';
+    }
+  } catch { /* SSR */ }
+}
+function restoreSelection() {
+  try {
+    if (suppressCount > 0 && --suppressCount === 0) {
+      document.body.style.userSelect = savedUserSelect;
+      document.body.style.webkitUserSelect = savedUserSelect;
+    }
+  } catch { /* SSR */ }
+}
+
 export default function useChipDrag({ getGeometry, onDrop, onCancel, disabled, mergeOnly } = {}) {
   const [state, setState] = useState(null); // { active, dragId, meta, target, armed, pointer }
   const sessionRef = useRef(null);          // mutable per-gesture bookkeeping
@@ -41,8 +65,12 @@ export default function useChipDrag({ getGeometry, onDrop, onCancel, disabled, m
     try {
       window.removeEventListener('pointermove', s.onMove);
       window.removeEventListener('pointerup', s.onUp);
+      window.removeEventListener('pointercancel', s.onPointerCancel);
       window.removeEventListener('keydown', s.onKey, true);
     } catch { /* listeners best-effort */ }
+    // 98.md §15 — restore text selection suppressed for the drag's duration
+    // (refcounted; only sessions that actually ACTIVATED suppressed).
+    if (s.active) restoreSelection();
     if (fire && s.active && s.target) {
       const isMerge = s.target.kind === 'merge';
       if (!isMerge || mergeArmed(s.hover, Date.now())) {
@@ -69,16 +97,21 @@ export default function useChipDrag({ getGeometry, onDrop, onCancel, disabled, m
       const s = {
         dragId: id, meta, start, active: false, target: null, hover: null, geometry: null,
         pointerId: e.pointerId,
-        onMove: null, onUp: null, onKey: null,
+        onMove: null, onUp: null, onKey: null, onPointerCancel: null,
       };
       s.onMove = (ev) => {
+        // 98.md §15 — a second finger (iPad) must never drive someone else's drag.
+        if (s.pointerId != null && ev.pointerId != null && ev.pointerId !== s.pointerId) return;
         const p = { x: ev.clientX, y: ev.clientY };
         if (!s.active) {
           if (!shouldStartDrag(s.start, p)) return;
           s.active = true;
           const getGeo = cbRef.current.getGeometry;
           s.geometry = typeof getGeo === 'function' ? getGeo({ dragId: s.dragId, meta: s.meta }) : null;
-          // While dragging, suppress accidental text selection.
+          // 98.md §15 — Safari starts a page text selection mid-drag regardless of
+          // preventDefault on pointermove; suppress selection at the body for the
+          // drag's duration (refcounted module-wide; restored in endSession).
+          suppressSelection();
           try { ev.preventDefault(); } catch { /* passive listener */ }
         }
         const target = s.geometry
@@ -92,7 +125,17 @@ export default function useChipDrag({ getGeometry, onDrop, onCancel, disabled, m
           pointer: p,
         });
       };
-      s.onUp = () => endSession(true);
+      s.onUp = (ev) => {
+        if (s.pointerId != null && ev && ev.pointerId != null && ev.pointerId !== s.pointerId) return;
+        endSession(true);
+      };
+      // 98.md §15 — iOS Safari fires pointercancel (not pointerup) when the browser
+      // claims the gesture (scroll/zoom); without this the session leaked its window
+      // listeners and stayed visually active until an unrelated pointerup.
+      s.onPointerCancel = (ev) => {
+        if (s.pointerId != null && ev && ev.pointerId != null && ev.pointerId !== s.pointerId) return;
+        endSession(false);
+      };
       s.onKey = (ev) => {
         if (ev.key === 'Escape') { ev.stopPropagation(); endSession(false); }
       };
@@ -100,6 +143,7 @@ export default function useChipDrag({ getGeometry, onDrop, onCancel, disabled, m
       try {
         window.addEventListener('pointermove', s.onMove);
         window.addEventListener('pointerup', s.onUp);
+        window.addEventListener('pointercancel', s.onPointerCancel);
         window.addEventListener('keydown', s.onKey, true);
       } catch { sessionRef.current = null; }
     },

@@ -6,31 +6,36 @@
  *
  * Shape: a LEFT vertical stage rail (modeled on StitchWorkflowStepper — numbered pips
  * that always show the number, status by icon+colour not colour-only, disabled-with-
- * reason, aria-current, keyboard) with 7 stages (96.md — Concepts and Test & Refine
- * are retired; Terms & Vocabulary is the central workspace), and a RIGHT pane that
- * renders the current stage by composing existing components:
+ * reason, aria-current, keyboard) with 6 stages (96.md — Concepts and Test & Refine
+ * are retired; 98.md §3 — the standalone Research Question stage is retired too:
+ * the question is edited INLINE at the top of the keyword workspace), and a RIGHT
+ * pane that renders the current stage by composing existing components:
  *
- *   1. Research Question   — the research-question EDITOR (96.md D1: writes
- *                            updNested('pico','question') — the authoritative home;
- *                            whole-project autosave persists it). NO PICO cards.
- *   2. Terms & Vocabulary  — <SearchBuilderTab phase="terms"/> — THE search-building
- *                            workspace: question phrase-selection → concept groups,
- *                            synonyms/MeSH, Boolean chips, quality card, per-database
- *                            previews + <PreviewEstimates/> + <SearchVersionsPanel/>.
- *   3. Search Mode         — 73.md P5: the explicit two-path choice — MANUAL (PecanRev
+ *   1. Select & Build Key Terms — <SearchBuilderTab phase="terms"/> — THE search-
+ *                            building workspace: the inline research-question editor
+ *                            (98.md §4: writes updNested('pico','question') — the
+ *                            authoritative home; whole-project autosave persists it),
+ *                            question phrase-selection → concept groups, synonyms/
+ *                            MeSH, Boolean chips, per-database previews +
+ *                            <PreviewEstimates/> + <SearchVersionsPanel/>.
+ *   2. Search Mode         — 73.md P5: the explicit two-path choice — MANUAL (PecanRev
  *                            compiles a strategy per database, you run it yourself) vs
  *                            AUTOMATED (PecanRev runs its connected databases for you).
  *                            Persisted additively as `searchMode` on the search module.
- *   4. Database Strategies — MANUAL-ONLY (74.md): <SearchBuilderTab phase="build"/>
+ *   3. Database Strategies — MANUAL-ONLY (74.md): <SearchBuilderTab phase="build"/>
  *                            (databases + the 73.md P6 per-database compiled strategy
  *                            workspace) + (studio) <StrategyStudioPanel/>. In automated
  *                            mode this stage does not exist — the run surface owns its
  *                            own source selection and per-source override editor.
- *   5. Automated Search / Run Externally — mode-aware: <PecanSearchTab embedded/> (run +
+ *   4. Automated Search / Run Externally — mode-aware: <PecanSearchTab embedded/> (run +
  *                            live monitor + dedupe + history) OR the manual run guidance.
- *   6. Documentation       — <SearchExportPanel/> (methods text + PRISMA-S) + (studio)
+ *   5. Documentation       — <SearchExportPanel/> (methods text + PRISMA-S) + (studio)
  *                            <RecallReportPanel/>.
- *   7. Send to Screening   — the readyForScreening marker + the "Go to Screening" handoff.
+ *   6. Send to Screening   — the readyForScreening marker + the "Go to Screening" handoff.
+ *
+ * 98.md §5 — ONE engine-wide Beginner Mode (provider in the default export, toggle
+ * in the header): instructional copy on every stage renders only when it is ON;
+ * the default experience shows just the working surfaces.
  *
  * 74.md — ONE workflow at a time: `stagesFor(searchMode)` is the single source of truth
  * for the visible stage list. Automated mode REMOVES the manual-only stages (Database
@@ -67,6 +72,8 @@ import { STAGES, stagesFor, stageAfterModeChange, reconcileStageUrl } from './se
 // 85.md — also publish the honest per-stage statuses so the side-menu stepper glyphs
 // reflect real completion (navConfig.searchSubmenu reads the same store).
 import { publishSearchMode, publishSearchStageStatuses } from './searchModeStore.js';
+// 98.md §5 — ONE engine-wide Beginner Mode (provider + header toggle + hook).
+import { BeginnerModeProvider, BeginnerModeToggle, useBeginnerMode } from './beginnerMode.jsx';
 import { Icon } from '../../frontend/components/icons.jsx';
 import { SearchBuilderTab, searchBuilderApi, loadSearch, saveSearch, relativeTime } from '../searchBuilder/index.js';
 // 96.md QA M18 — the Research Question editor claims the SAME 'pico.question'
@@ -75,6 +82,8 @@ import { SearchBuilderTab, searchBuilderApi, loadSearch, saveSearch, relativeTim
 // the dispatcher; without a linked workspace the hook fails open (never blocks).
 import { useFieldEditing } from '../../frontend/screening/hooks/usePresence.js';
 import { getDatabase, defaultSelectedDatabases, DATABASE_CATALOG } from '../../research-engine/searchBuilder/databases.js';
+// 98.md §6 — downstream stages gate on live terms, not bare group existence.
+import { anyLiveTerms } from '../../research-engine/searchBuilder/searchState.js';
 import PecanSearchTab from '../pecanSearch/PecanSearchTab.jsx';
 import { pecanSearchApi } from '../pecanSearch/pecanSearchApi.js';
 import {
@@ -86,7 +95,7 @@ import { Card, Note } from '../pecanSearch/components/parts.jsx';
 /* STAGES / stagesFor / stageAfterModeChange now live in ./searchStages.js (75.md) —
    imported above and re-exported via index.js. */
 
-const DISABLED_REASON = 'Select phrases from your research question first';
+const DISABLED_REASON = 'Add terms to a concept first — select phrases from your research question or type them in'; // 98.md §6 — live-term gating
 
 /* 75.md — read the active Search stage from the URL (`?tab=search&stage=<id>`). The
    white project side-menu drives stages via react-router navigation, so the body
@@ -414,6 +423,8 @@ function ModeCard({ id, checked, onChoose, onArrow, title, tagline, body, benefi
 }
 
 function ModeStage({ searchMode, onSelect, err, pecanEnabled }) {
+  // 98.md §5 — reassurance copy is Beginner-Mode content on this stage.
+  const { beginner } = useBeginnerMode();
   // Live provider names when the automated engine is on (soft — static copy otherwise).
   const [providerNames, setProviderNames] = useState(null);
   useEffect(() => {
@@ -471,9 +482,13 @@ function ModeStage({ searchMode, onSelect, err, pecanEnabled }) {
         />
       </div>
       {err && <div style={{ marginTop: 12 }}><Note tone="error" role="alert">{err}</Note></div>}
-      <div style={{ marginTop: 14, fontSize: 11.5, color: C.muted, lineHeight: 1.65 }}>
-        You can switch modes at any time — your question, concepts, terms and limits are shared. Manual strategy edits and automated run history are each kept.
-      </div>
+      {/* 98.md §5 — the "switch any time" reassurance repeated the card's own desc
+          and the StageIntro; the single beginner-gated copy of it lives here. */}
+      {beginner && (
+        <div style={{ marginTop: 14, fontSize: 11.5, color: C.muted, lineHeight: 1.65 }}>
+          You can switch modes at any time — your question, concepts, terms and limits are shared. Manual strategy edits and automated run history are each kept.
+        </div>
+      )}
     </Card>
   );
 }
@@ -496,16 +511,21 @@ function ModeChooserStrip({ onChoose, busy, goMode }) {
 function ManualRunStage({ getLive, goStrategy, goMode, readOnly }) {
   const live = getLive() || {};
   const dbs = Array.isArray(live.databases) && live.databases.length ? live.databases : defaultSelectedDatabases();
+  // 98.md §5 — the long how-it-works ¶ is Beginner-Mode content; the checklist and
+  // the import CTA are the essential interface.
+  const { beginner } = useBeginnerMode();
   return (
     <>
       <div data-testid="manual-run-guide">
       <Card title="Run your search externally" icon="globe"
         desc="Manual mode: you execute each database's compiled strategy in the database itself, then bring the exports back into PecanRev.">
-        <div style={{ fontSize: 12.5, color: C.txt2, lineHeight: 1.7, marginBottom: 14 }}>
-          PecanRev compiled a paste-ready strategy for every database you selected. Run each one in your own database account
-          (institutional access where needed), export the results (RIS / CSV / nbib), and import them into <strong style={{ color: C.txt }}>Screening</strong> —
-          the import is de-duplicated there and each record keeps its source.
-        </div>
+        {beginner && (
+          <div style={{ fontSize: 12.5, color: C.txt2, lineHeight: 1.7, marginBottom: 14 }}>
+            PecanRev compiled a paste-ready strategy for every database you selected. Run each one in your own database account
+            (institutional access where needed), export the results (RIS / CSV / nbib), and import them into <strong style={{ color: C.txt }}>Screening</strong> —
+            the import is de-duplicated there and each record keeps its source.
+          </div>
+        )}
         <div style={{ fontSize: 10.5, fontWeight: 700, color: C.muted, letterSpacing: 0.5, textTransform: 'uppercase', marginBottom: 7 }}>Your database checklist</div>
         <ul style={{ listStyle: 'none', margin: '0 0 14px', padding: 0, display: 'flex', flexDirection: 'column', gap: 6 }}>
           {dbs.map((id) => {
@@ -525,9 +545,11 @@ function ManualRunStage({ getLive, goStrategy, goMode, readOnly }) {
           <a href={screeningImportHref()} style={{ ...primaryBtn(), textDecoration: 'none', display: 'inline-flex', alignItems: 'center', gap: 8 }}>
             <Icon name="arrowRight" size={14} /> Import your results
           </a>
-          <span style={{ fontSize: 11.5, color: C.muted, lineHeight: 1.6, flex: 1, minWidth: 220 }}>
-            Opens the Screening import view — upload each database&apos;s export there; duplicates are matched, not re-added.
-          </span>
+          {beginner && (
+            <span style={{ fontSize: 11.5, color: C.muted, lineHeight: 1.6, flex: 1, minWidth: 220 }}>
+              Opens the Screening import view — upload each database&apos;s export there; duplicates are matched, not re-added.
+            </span>
+          )}
         </div>
       </Card>
       </div>
@@ -551,6 +573,8 @@ function SendToScreeningStage({ projectId, pecanEnabled, readOnly, searchMode, g
   const [ready, setReady] = useState(null); // null=unknown | boolean
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
+  // 98.md §5 — the long mode-aware how-it-works ¶ is Beginner-Mode content.
+  const { beginner } = useBeginnerMode();
 
   // 75.md — report the loaded/toggled ready value up so the workspace footer's
   // "Continue to Screening" enables ONLY once the handoff is actually complete.
@@ -587,23 +611,25 @@ function SendToScreeningStage({ projectId, pecanEnabled, readOnly, searchMode, g
   return (
     <>
       <Card title="Send to screening" icon="arrowRight" desc="Hand the de-duplicated search results to this project's screening workspace, with a reproducible record of exactly what ran.">
-        <div style={{ fontSize: 12.5, color: C.txt2, lineHeight: 1.7, marginBottom: 14 }}>
-          {automated ? (
-            <>
-              When you run the strategy in <strong style={{ color: C.txt }}>Automated Search</strong>, every connected database is searched, the records are
-              de-duplicated, and the new ones are imported into <strong style={{ color: C.txt }}>Screening</strong> tagged with the
-              <strong style={{ color: C.txt }}> Pecan Search</strong> badge — automatically. Records already in the project are matched (not re-added), and
-              ambiguous matches go to duplicate review before you begin title/abstract screening. The saved strategy version is the record of
-              what was searched.
-            </>
-          ) : (
-            <>
-              In manual mode you run each database&apos;s compiled strategy yourself (see <strong style={{ color: C.txt }}>Database Strategies</strong>),
-              export the results, and import them in <strong style={{ color: C.txt }}>Screening</strong>. The import de-duplicates against records already in the
-              project, and the saved strategy version is the reproducible record of what was searched where.
-            </>
-          )}
-        </div>
+        {beginner && (
+          <div style={{ fontSize: 12.5, color: C.txt2, lineHeight: 1.7, marginBottom: 14 }}>
+            {automated ? (
+              <>
+                When you run the strategy in <strong style={{ color: C.txt }}>Automated Search</strong>, every connected database is searched, the records are
+                de-duplicated, and the new ones are imported into <strong style={{ color: C.txt }}>Screening</strong> tagged with the
+                <strong style={{ color: C.txt }}> Pecan Search</strong> badge — automatically. Records already in the project are matched (not re-added), and
+                ambiguous matches go to duplicate review before you begin title/abstract screening. The saved strategy version is the record of
+                what was searched.
+              </>
+            ) : (
+              <>
+                In manual mode you run each database&apos;s compiled strategy yourself (see <strong style={{ color: C.txt }}>Database Strategies</strong>),
+                export the results, and import them in <strong style={{ color: C.txt }}>Screening</strong>. The import de-duplicates against records already in the
+                project, and the saved strategy version is the reproducible record of what was searched where.
+              </>
+            )}
+          </div>
+        )}
 
         {!readOnly && (
           <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap', marginBottom: 12 }}>
@@ -625,9 +651,7 @@ function SendToScreeningStage({ projectId, pecanEnabled, readOnly, searchMode, g
           <a href={screeningImportHref()} style={{ ...primaryBtn(), textDecoration: 'none', display: 'inline-flex', alignItems: 'center', gap: 8 }}>
             <Icon name="arrowRight" size={14} /> Go to Screening
           </a>
-          <span style={{ fontSize: 11.5, color: C.muted, lineHeight: 1.6, flex: 1, minWidth: 220 }}>
-            Opens the screening import view for this project, where imported records and their source runs are listed.
-          </span>
+          {/* 98.md §5 — the explainer duplicated the button label; removed. */}
         </div>
       </Card>
 
@@ -654,20 +678,24 @@ function SendToScreeningStage({ projectId, pecanEnabled, readOnly, searchMode, g
   );
 }
 
-/* ════════════ RESEARCH QUESTION — the editor (96.md D1) ════════════
-   A prominent research-question EDITOR: the text lives at project.pico.question
-   (the authoritative home every mirror reads — overview subtitle, manuscript,
-   screening snapshot), written via updNested('pico','question') so the existing
-   whole-project autosave persists it. NO P/I/C/O cards or copy — the Search
-   Engine builds directly from this question in Terms & Vocabulary.
-   96.md QA M18 — claims/respects the SAME 'pico.question' field lock as
-   ProtocolModulePanel (disabled + "X is editing" when a teammate holds it).
-   96.md QA L28 — edits land in a LOCAL draft and commit to updNested on blur +
-   a 500ms debounce, so typing never re-renders the (always-mounted) heavy
-   builder or churns the whole-project autosave per keystroke.
-   96.md QA L24 — a legacy project with structured P/I/C/O but no free-text
-   question gets explicit "planned with PICO" helper copy, not a bare empty state. */
-function QuestionStage({ pico, updNested, readOnly, goTerms, lockCtx }) {
+/* ════════════ INLINE RESEARCH QUESTION EDITOR (98.md §3/§4) ════════════
+   The standalone Research Question STAGE is retired; the question is edited in
+   this compact editor at the top of the Select & Build Key Terms workspace —
+   opened by the question card's "Edit question" control (or automatically when
+   the project has no question yet). All 96.md guarantees carry over verbatim:
+   - D1: the text lives at project.pico.question (the authoritative home every
+     mirror reads), written via updNested('pico','question') so the existing
+     conflict-safe whole-project autosave persists it;
+   - QA M18: claims/respects the SAME 'pico.question' field lock as
+     ProtocolModulePanel (disabled + "X is editing" when a teammate holds it);
+   - QA L28: edits land in a LOCAL draft and commit on blur + a 500ms debounce,
+     so typing never re-renders the heavy builder per keystroke;
+   - QA L24: a legacy project with structured P/I/C/O but no free-text question
+     gets explicit "planned with PICO" helper copy.
+   98.md §4 — save state is surfaced honestly: the host threads the whole-project
+   autosave status (`saveStatus`: saving|saved|error|conflict) and it renders next
+   to the editor; without the prop the static explanation stands. */
+export function InlineQuestionEditor({ pico, updNested, readOnly, lockCtx, onClose, saveStatus, onEditingChange, focusOnMount }) {
   const q = (pico && pico.question) || '';
   const canEdit = !readOnly && typeof updNested === 'function';
   const lc = lockCtx || {};
@@ -695,8 +723,14 @@ function QuestionStage({ pico, updNested, readOnly, goTerms, lockCtx }) {
     committedRef.current = q;
     if (!focusedRef.current) setDraft(q);
   }, [q]);
-  // Unmount (stage switch) flushes a pending commit so the last edit never lags.
+  // Unmount (stage switch / Done) flushes a pending commit so the last edit never lags.
   useEffect(() => () => { clearTimeout(timerRef.current); commitRef.current(draftRef.current); }, []);
+  // 98.md §4 — report the editing session up so the builder can defer drift
+  // re-evaluation until the user finishes (see SearchBuilderTab questionEditing).
+  useEffect(() => {
+    if (typeof onEditingChange === 'function') onEditingChange(true);
+    return () => { if (typeof onEditingChange === 'function') onEditingChange(false); };
+  }, [onEditingChange]);
   const onEdit = (e) => {
     if (lockedBy) return; // the textarea is disabled too; this closes the propagation window
     const v = e.target.value;
@@ -705,67 +739,72 @@ function QuestionStage({ pico, updNested, readOnly, goTerms, lockCtx }) {
     clearTimeout(timerRef.current);
     timerRef.current = setTimeout(() => commitRef.current(v), 500);
   };
+  const done = () => {
+    commit(draftRef.current);
+    if (typeof onClose === 'function') onClose();
+  };
+  // 98.md §4 — honest save-state line (saving/saved/error/conflict) when threaded.
+  const saveLine = saveStatus === 'saving' ? { color: C.yel, text: 'Saving…' }
+    : saveStatus === 'saved' ? { color: C.grn, text: 'Saved' }
+      : saveStatus === 'error' ? { color: C.red, text: 'Save failed — your edits are kept locally; retry from the header' }
+        : saveStatus === 'conflict' ? { color: C.red, text: 'Updated elsewhere — the latest version was reloaded' }
+          : null;
+
+  if (!canEdit) {
+    // Read-only viewers see nothing extra — the question card in the workspace
+    // below already displays the saved question (or its empty state).
+    return null;
+  }
   return (
-    <Card title="Research question" icon="target" desc="Your search strategy is built directly from this question in Select & Build Key Terms.">
-      {canEdit ? (
-        <>
-          <label htmlFor="search-question-editor" style={{ display: 'block', fontSize: 10.5, fontWeight: 700, color: C.muted, letterSpacing: 0.5, textTransform: 'uppercase', marginBottom: 6 }}>
-            What question should this review answer?
-          </label>
-          {legacyEmpty && (
-            <div style={{ marginBottom: 8 }}>
-              <Note tone="info">This project was planned with PICO. Write the research question here to drive Select &amp; Build Key Terms — your saved P/I/C/O text stays untouched in the Protocol module.</Note>
-            </div>
-          )}
-          <textarea
-            id="search-question-editor"
-            data-testid="search-question-editor"
-            value={draft}
-            onChange={onEdit}
-            disabled={!!lockedBy}
-            onFocus={() => { focusedRef.current = true; ed.onFocus(); }}
-            onBlur={() => { focusedRef.current = false; commit(draftRef.current); ed.onBlur(); }}
-            placeholder="e.g. Do SGLT2 inhibitors reduce hospital readmission in adults with heart failure?"
-            rows={3}
-            style={{
-              width: '100%', boxSizing: 'border-box', resize: 'vertical', minHeight: 74,
-              background: C.surf, border: `1px solid ${C.brd2}`, borderLeft: `3px solid ${C.acc}`,
-              borderRadius: 10, padding: '12px 14px', fontSize: 13.5, color: C.txt, lineHeight: 1.6,
-              fontFamily: FONT, outline: 'none',
-              opacity: lockedBy ? 0.6 : 1, cursor: lockedBy ? 'not-allowed' : 'text',
-            }}
-          />
-          {lockedBy && (
-            <div data-testid="search-question-locked" style={{ fontSize: 10.5, color: C.yel, marginTop: 4, display: 'inline-flex', alignItems: 'center', gap: 5 }}>
-              <span aria-hidden="true" style={{ width: 6, height: 6, borderRadius: '50%', background: C.yel, display: 'inline-block' }} />
-              {lockedBy.name} is editing…
-            </div>
-          )}
-          <div style={{ marginTop: 8, fontSize: 11, color: C.muted, lineHeight: 1.6 }}>
-            One clear sentence naming the key ideas works best — you&apos;ll click those ideas in the next stage to build the search.
-            Saved automatically with the project.
-          </div>
-        </>
-      ) : q ? (
-        <div style={{ background: C.surf, border: `1px solid ${C.brd2}`, borderLeft: `3px solid ${C.acc}`, borderRadius: 10, padding: '12px 14px', fontSize: 13, color: C.txt, lineHeight: 1.6 }}>
-          {q}
-        </div>
-      ) : hasLegacyPico ? (
-        <Note tone="info">This project was planned with PICO. An editor can write the research question here to drive Terms &amp; Vocabulary.</Note>
-      ) : (
-        <Note tone="info">No research question yet. An editor can write it here — the search strategy is built directly from it.</Note>
-      )}
-      <div style={{ marginTop: 14, display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
-        <span style={{ fontSize: 11.5, color: C.muted, lineHeight: 1.6, flex: 1, minWidth: 220 }}>
-          Next: select the important words and phrases from this question in <strong style={{ color: C.txt2 }}>Terms &amp; Vocabulary</strong> — each becomes a concept group of your search.
-        </span>
-        {typeof goTerms === 'function' && (
-          <button type="button" onClick={goTerms} style={primaryBtn()}>
-            Next: Terms &amp; Vocabulary →
-          </button>
+    <div data-testid="sw-inline-question-editor" style={{ background: C.card, border: `1px solid ${C.brd}`, borderLeft: `3px solid ${C.acc}`, borderRadius: 10, padding: '12px 14px', marginBottom: 10, fontFamily: FONT }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
+        <label htmlFor="search-question-editor" style={{ flex: 1, fontSize: 10.5, fontWeight: 700, color: C.muted, letterSpacing: 0.5, textTransform: 'uppercase' }}>
+          Research question
+        </label>
+        {saveLine && (
+          <span role="status" aria-live="polite" style={{ fontSize: 10.5, fontWeight: 600, color: saveLine.color }}>{saveLine.text}</span>
         )}
+        <button type="button" onClick={done} data-testid="sw-question-done" style={{ ...ghostBtn(), fontSize: 10.5, padding: '3px 12px' }}>
+          Done
+        </button>
       </div>
-    </Card>
+      {legacyEmpty && (
+        <div style={{ marginBottom: 8 }}>
+          <Note tone="info">This project was planned with PICO. Write the research question here to drive Select &amp; Build Key Terms — your saved P/I/C/O text stays untouched in the Protocol module.</Note>
+        </div>
+      )}
+      <textarea
+        id="search-question-editor"
+        data-testid="search-question-editor"
+        value={draft}
+        onChange={onEdit}
+        disabled={!!lockedBy}
+        autoFocus={focusOnMount !== false} /* 98.md review (M15) — focus once per open-session, not per stage re-entry */
+        onFocus={() => { focusedRef.current = true; ed.onFocus(); }}
+        onBlur={() => { focusedRef.current = false; commit(draftRef.current); ed.onBlur(); }}
+        onKeyDown={(e) => { if (e.key === 'Escape') { e.preventDefault(); done(); } }}
+        placeholder="e.g. Do SGLT2 inhibitors reduce hospital readmission in adults with heart failure?"
+        rows={2}
+        style={{
+          width: '100%', boxSizing: 'border-box', resize: 'vertical', minHeight: 56,
+          background: C.surf, border: `1px solid ${C.brd2}`,
+          borderRadius: 8, padding: '10px 12px', fontSize: 13, color: C.txt, lineHeight: 1.6,
+          fontFamily: FONT, outline: 'none',
+          opacity: lockedBy ? 0.6 : 1, cursor: lockedBy ? 'not-allowed' : 'text',
+        }}
+      />
+      {lockedBy && (
+        <div data-testid="search-question-locked" style={{ fontSize: 10.5, color: C.yel, marginTop: 4, display: 'inline-flex', alignItems: 'center', gap: 5 }}>
+          <span aria-hidden="true" style={{ width: 6, height: 6, borderRadius: '50%', background: C.yel, display: 'inline-block' }} />
+          {lockedBy.name} is editing…
+        </div>
+      )}
+      {!saveLine && (
+        <div style={{ marginTop: 6, fontSize: 10.5, color: C.muted, lineHeight: 1.5 }}>
+          Saved automatically with the project. Your concept groups are kept when the question changes — anything no longer found in it is flagged for review, never deleted.
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -784,14 +823,28 @@ function StageIntro({ title, children }) {
    mounted — hidden — on ALL of them, so its hit machine keeps running). */
 const PULSE_STAGES = new Set(['terms', 'mode', 'strategy', 'results']);
 
-export default function SearchWorkspace({
-  // 96.md D1 — `updNested` is threaded from the dispatcher so the Research
-  // Question stage edits project.pico.question (whole-project autosave persists
+/* 98.md §5 — the default export wraps the body in the ONE engine-wide
+   BeginnerModeProvider so every stage (and the embedded builder) reads the same
+   Beginner Mode value from the header toggle. */
+export default function SearchWorkspace(props) {
+  return (
+    <BeginnerModeProvider>
+      <SearchWorkspaceBody {...props} />
+    </BeginnerModeProvider>
+  );
+}
+
+function SearchWorkspaceBody({
+  // 96.md D1 — `updNested` is threaded from the dispatcher so the inline
+  // question editor edits project.pico.question (whole-project autosave persists
   // it). `pico` stays a props seam, but ONLY `pico.question` is read.
   // QA M18 — `lockCtx` ({ pid, myUserId, locks }) threads the presence field-lock
   // context from the dispatcher so the question editor shares the Protocol
   // editor's 'pico.question' lock. Optional: absent → fail-open (never blocks).
   projectId, pico, updNested, readOnly, pecanEnabled, initialStage, initialSearchMode, lockCtx,
+  // 98.md §4 — the host's whole-project autosave status (saving|saved|error|conflict),
+  // surfaced by the inline question editor so save state is never invisible.
+  saveStatus,
   // 75.md — external stage control. `hideRail` (set by StitchProjectWorkspace) drops
   // the in-body StageRail when the white project side-menu is driving stages, so the
   // numbered workflow is never shown twice. `onStageChange(id)` lets the router-aware
@@ -800,12 +853,17 @@ export default function SearchWorkspace({
   hideRail, onStageChange,
 }) {
   // 74.md/75.md — the initial stage prefers the URL (`?stage=`), then the seed prop,
-  // then Research Question — and must already respect the initial mode's stage list
+  // then Select & Build Key Terms (98.md §3 — the retired 'question' stage resolves
+  // here via STAGE_ALIASES) — and must already respect the initial mode's stage list
   // (e.g. a 'strategy' deep link under an automated seed lands on Results).
   const [stage, setStage] = useState(() => stageAfterModeChange(
-    readStageFromUrl() || initialStage || 'question',
+    readStageFromUrl() || initialStage || 'terms',
     initialSearchMode === 'manual' || initialSearchMode === 'automated' ? initialSearchMode : null,
   ));
+
+  // 98.md §5 — the engine-wide Beginner Mode (provider mounted by the default
+  // export; fail-safe local state in bare test mounts).
+  const { beginner } = useBeginnerMode();
 
   // Live in-memory query reported by the embedded builder — held in a ref so continuous
   // edits never re-render this shell (which would thrash the heavy builder). Snapshotted
@@ -899,7 +957,10 @@ export default function SearchWorkspace({
 
   const onLiveQuery = useCallback((s) => {
     liveRef.current = s || liveRef.current;
-    const hc = !!(s && Array.isArray(s.concepts) && s.concepts.length > 0);
+    // 98.md §6 — downstream stages unlock on LIVE TERMS, not bare (possibly empty)
+    // groups: one empty concept must not make "Run Externally" / "Send to
+    // Screening" look actionable (consistent with stageStatus's liveness rule).
+    const hc = !!(s && Array.isArray(s.concepts) && anyLiveTerms(s.concepts));
     setHasConcepts((prev) => (prev === hc ? prev : hc));
   }, []);
   const getLive = useCallback(() => liveRef.current, []);
@@ -1058,6 +1119,32 @@ export default function SearchWorkspace({
   // 97 QA M9 — the structured P/I/C/O text is additionally threaded for the
   // read-only SOURCE sections (display only — never an organization input).
   const question = (pico && pico.question) || '';
+
+  // ── 98.md §3/§4 — inline question editing on the terms stage. The editor opens
+  // via the question card's "Edit question" control (or automatically when the
+  // project has no question yet) and renders ABOVE the builder. While it is open,
+  // `questionEditing` is threaded into the builder so drift re-evaluation and the
+  // silent snapshot refresh wait for the editing session to end (each 500ms commit
+  // would otherwise flash the drift banner mid-sentence). ──
+  const [editingQuestion, setEditingQuestion] = useState(() => !readOnly && !question.trim());
+  // 98.md review (M15) — the editor auto-focuses ONCE per open-session: leaving
+  // and re-entering the terms stage remounts it, and re-yanking focus each time
+  // is hostile to keyboard/SR users. Closing restores focus to the opener.
+  const questionFocusConsumedRef = useRef(false);
+  useEffect(() => {
+    // Mark the open-session focus as consumed AFTER the editor's first visible
+    // mount (effect, not render — StrictMode-safe), so stage re-entries with the
+    // editor still open never re-yank focus.
+    if (stage === 'terms' && editingQuestion) questionFocusConsumedRef.current = true;
+  }, [stage, editingQuestion]);
+  const openQuestionEditor = useCallback(() => { questionFocusConsumedRef.current = false; setEditingQuestion(true); }, []);
+  const closeQuestionEditor = useCallback(() => {
+    setEditingQuestion(false);
+    try {
+      const opener = document.querySelector('[data-testid="sb-edit-question"], [data-testid="sb-add-question"]');
+      if (opener && typeof opener.focus === 'function') opener.focus();
+    } catch { /* focus restore is best-effort */ }
+  }, []);
   // 97 QA M7/M11 — the builder registers its after-restore adopter here, so a
   // version restore refreshes the ACTOR's builder immediately (the realtime poke
   // excludes the actor) and the restore becomes undoable in-session.
@@ -1078,6 +1165,8 @@ export default function SearchWorkspace({
       phase={builderPhase}
       readOnly={readOnly}
       visible={builderVisible} // QA L28 — gates the silent questionSnapshot refresh (no PUT churn while hidden)
+      questionEditing={editingQuestion} // 98.md §4 — defer drift churn while the inline editor is open
+      onEditQuestion={readOnly ? null : openQuestionEditor} // 98.md §4 — "Edit question" opens the inline editor (never navigates away)
       onLiveQuery={onLiveQuery}
       onHitState={onHitState}
       onRegisterHitRefresh={onRegisterHitRefresh}
@@ -1086,7 +1175,7 @@ export default function SearchWorkspace({
       onVersionsChanged={bumpPanels} // 97.md Phase 4 — the pre-regeneration snapshot must appear in the Versions panel
       onRegisterAfterRestore={onRegisterAfterRestore} // 97 QA M7/M11 — restore adoption + in-session restore undo
     />
-  ), [projectId, question, pico, builderPhase, readOnly, builderVisible, onLiveQuery, onHitState, onRegisterHitRefresh, onGoToStage, onStats, bumpPanels, onRegisterAfterRestore]);
+  ), [projectId, question, pico, builderPhase, readOnly, builderVisible, editingQuestion, openQuestionEditor, onLiveQuery, onHitState, onRegisterHitRefresh, onGoToStage, onStats, bumpPanels, onRegisterAfterRestore]);
 
   const modeLabel = searchMode === 'automated' ? 'Automated search' : searchMode === 'manual' ? 'Manual search' : null;
 
@@ -1124,11 +1213,18 @@ export default function SearchWorkspace({
               {modeLabel} selected. The workflow now has {stages.length} stages.
             </span>
           )}
+          {/* 98.md §5 — ONE engine-wide Beginner Mode toggle, reachable on every
+              stage (it used to hide inside the builder toolbar, unreachable on
+              non-builder stages). The header ¶ that used to follow is retired —
+              its content is the beginner-gated StageIntro material now. */}
+          <span style={{ marginLeft: 'auto' }}><BeginnerModeToggle /></span>
         </div>
-        <p style={{ margin: 0, paddingLeft: 46, fontSize: 12.5, color: C.muted, lineHeight: 1.6, maxWidth: 820 }}>
-          Build one concept-based strategy, test and refine it, then run it — yourself or automatically — and hand the de-duplicated
-          results straight to screening. Work through the stages at your own pace — your strategy is saved as you go.
-        </p>
+        {beginner && (
+          <p style={{ margin: 0, paddingLeft: 46, fontSize: 12.5, color: C.muted, lineHeight: 1.6, maxWidth: 820 }}>
+            Build one concept-based strategy, then run it — yourself or automatically — and hand the de-duplicated
+            results straight to screening. Your strategy is saved as you go.
+          </p>
+        )}
       </header>
 
       {/* 73.md P3 — sticky PubMed pulse (visible on the build/mode/run stages). */}
@@ -1158,14 +1254,23 @@ export default function SearchWorkspace({
             {stage === 'strategy' && searchMode == null && !readOnly && (
               <ModeChooserStrip onChoose={changeMode} busy={modeBusy} goMode={() => goTo('mode')} />
             )}
-            {stage === 'terms' && (
+            {/* 98.md §5 — the instructional StageIntro paragraphs are Beginner-Mode
+                content now; the default experience shows only the working surfaces. */}
+            {stage === 'terms' && beginner && (
               <StageIntro title="Select & build key terms">
-                Build your search here: click or drag the key ideas in your research question to create search groups, broaden each
-                group with synonyms and MeSH terms (controlled vocabulary stays separate from free text), arrange terms with OR inside
-                a group and AND between groups, and watch the compiled per-database queries update live below.
+                Build your search here: click or drag the key ideas in your research question to create concept groups, broaden each
+                concept with synonyms and MeSH terms, and watch the compiled per-database queries update live below.
               </StageIntro>
             )}
-            {stage === 'strategy' && (
+            {/* 98.md §3/§4 — the inline research-question editor (replaces the retired
+                Research Question stage). Rendered only on the terms stage, above the
+                builder, so the question is edited exactly where it is used. */}
+            {stage === 'terms' && editingQuestion && (
+              <InlineQuestionEditor pico={pico} updNested={updNested} readOnly={readOnly} lockCtx={lockCtx}
+                saveStatus={saveStatus} onClose={closeQuestionEditor}
+                focusOnMount={!questionFocusConsumedRef.current} />
+            )}
+            {stage === 'strategy' && beginner && (
               <StageIntro title="Database strategies">
                 Choose your databases and review the compiled, paste-ready strategy for each one — with warnings, vocabulary status and
                 run guidance per database, and a live PubMed hit count. Override any database&apos;s query manually when you need to.
@@ -1193,16 +1298,17 @@ export default function SearchWorkspace({
             )}
           </div>
 
-          {stage === 'question' && (
-            <QuestionStage pico={pico} updNested={updNested} readOnly={readOnly} goTerms={() => goTo('terms')} lockCtx={lockCtx} />
-          )}
+          {/* 98.md §3 — the standalone Research Question stage is retired; the inline
+              editor above (terms stage) is the question's editing home now. */}
 
           {stage === 'mode' && (
             <>
-              <StageIntro title="Search mode">
-                Decide who executes the search. Both paths share the same question, concepts, terms and limits — and both end with
-                de-duplicated records in Screening.
-              </StageIntro>
+              {beginner && (
+                <StageIntro title="Search mode">
+                  Decide who executes the search. Both paths share the same question, concepts, terms and limits — and both end with
+                  de-duplicated records in Screening.
+                </StageIntro>
+              )}
               {readOnly
                 ? (
                   <Card title="How do you want to run this search?" icon="settings" desc="Read-only access — the search mode is chosen by an editor.">
@@ -1258,13 +1364,17 @@ export default function SearchWorkspace({
 
           {stage === 'documentation' && (
             <>
-              <StageIntro title="Documentation">
-                Produce the reproducible record of your search: a ready-to-paste methods paragraph and a PRISMA-S search-reporting export
-                for your protocol or manuscript.{' '}
-                {searchMode === 'automated'
-                  ? 'Automated runs record every per-database translation and count for you.'
-                  : 'For manually-run databases, note the run date and any interface-side limits alongside the exported strategy.'}
-              </StageIntro>
+              {/* 98.md §5 — the intro duplicates SearchExportPanel's own description;
+                  beginner-gated (the panel remains self-explanatory by itself). */}
+              {beginner && (
+                <StageIntro title="Documentation">
+                  Produce the reproducible record of your search: a ready-to-paste methods paragraph and a PRISMA-S search-reporting export
+                  for your protocol or manuscript.{' '}
+                  {searchMode === 'automated'
+                    ? 'Automated runs record every per-database translation and count for you.'
+                    : 'For manually-run databases, note the run date and any interface-side limits alongside the exported strategy.'}
+                </StageIntro>
+              )}
               <SearchExportPanel projectId={projectId} getLive={getLive} pecanEnabled={pecanEnabled} readOnly={readOnly} strategyStudioEnabled={studioEnabled} />
               {studioEnabled && <RecallReportPanel projectId={projectId} readOnly={readOnly} pecanEnabled={pecanEnabled} />}
             </>

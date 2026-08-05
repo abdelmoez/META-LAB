@@ -104,6 +104,12 @@ export function resolveDropTarget(geometry, pointer, opts = {}) {
   if (mergeOnly) return null; // no gap/insert resolution for the question tray
 
   // 4. Inside the row band (vertically) but between/past chips → nearest gap.
+  //    98.md review (L7) — the horizontal board places OTHER surfaces (compact
+  //    cards, AND connectors, gaps) on the same row as the source card's chips,
+  //    so the band needs a HORIZONTAL bound too: when the caller supplies
+  //    `rowBounds` (the source card's rect), a pointer outside it cancels
+  //    instead of silently snapping to a nearest-gap reorder.
+  if (g.rowBounds && !pointInRect(p, g.rowBounds)) return null;
   const bandTop = Math.min(...chips.map((c) => c.rect.top));
   const bandBottom = Math.max(...chips.map((c) => c.rect.bottom));
   if (p.y < bandTop || p.y > bandBottom) return null;

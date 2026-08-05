@@ -7,8 +7,9 @@
  * reuses so a new database is a thin file of a few hooks:
  *   - token building (phrase quoting, truncation with a per-db minimum stem)
  *   - special-character escaping (double- vs single-quote grammars)
- *   - concept OR-grouping + AND/OR concept chaining (byte-identical to the way
- *     SearchBuilderTab.renderSearch chains concept blocks via the PREVIOUS block's op)
+ *   - concept OR-grouping + AND/OR concept chaining (concept.op governs the join
+ *     to the NEXT concept; 98.md §12 — this is THE one renderer, the legacy
+ *     SearchBuilderTab copy is deleted)
  *   - the standard run loop (runRenderer) that assembles the public result contract
  *
  * We NEVER fabricate provider syntax and NEVER silently drop a feature — anything a
@@ -142,16 +143,28 @@ export function ncbiToken(term) {
 }
 
 /* ── grouping + chaining ─────────────────────────────────────────────────────── */
-/** OR the clauses of one concept; a single clause is returned bare, ≥2 parenthesized. */
+/** OR the clauses of one concept; a single clause is returned bare, ≥2 parenthesized.
+ *  98.md §12 — exact duplicate clauses (case-insensitive) are collapsed: legacy
+ *  saves can carry in-group exact duplicates (the UI now prevents new ones), and
+ *  `x[tiab] OR x[tiab]` adds nothing but noise to the compiled strategy.
+ *  Cross-group duplicates are untouched (semantically meaningful under AND). */
 export function orGroup(clauses) {
   const live = clauses.filter(Boolean);
   if (!live.length) return '';
-  return live.length === 1 ? live[0] : `(${live.join(' OR ')})`;
+  const seen = new Set();
+  const deduped = [];
+  for (const cl of live) {
+    const key = String(cl).trim().toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    deduped.push(cl);
+  }
+  return deduped.length === 1 ? deduped[0] : `(${deduped.join(' OR ')})`;
 }
 
 /**
- * composeConcepts(blocks, joiner?) — chain concept blocks exactly the way
- * SearchBuilderTab.renderSearch does: skip empty-query blocks, and join each
+ * composeConcepts(blocks, joiner?) — chain concept blocks: skip empty-query
+ * blocks, and join each
  * surviving block to the next using the PREVIOUS surviving block's op (so concept.op
  * governs the join to the NEXT concept; default AND). `joiner(op)` overrides the
  * literal join string (Google Scholar joins AND concepts with a bare space).
@@ -237,7 +250,11 @@ export function runRenderer(ir, cap, hooks) {
   const andTok = hooks.andToken || 'AND';
   const wrap = hooks.wrapConcepts !== false;
   let query = conceptExpr;
-  if (filterClauses.length) {
+  // 98.md §12 — an EMPTY strategy must never compile to a runnable string: with
+  // zero live concepts, persisted filters used to produce a bare filters-only
+  // query (e.g. a date range with no search terms) while the note below claimed
+  // the query was empty. Filters apply only when there is something to filter.
+  if (filterClauses.length && blockCount > 0) {
     // A mixed-operator chain is already one fully-parenthesized group; don't
     // double-wrap it before appending the filter limits.
     const needsWrap = wrap && blockCount > 1 && conceptExpr && !isFullyParenthesized(conceptExpr);

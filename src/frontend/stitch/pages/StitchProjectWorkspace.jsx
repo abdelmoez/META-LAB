@@ -154,12 +154,15 @@ function DeepToolPage({ stage }) {
   const attentionMap = useMemo(() => ({ screen: screenNeedsAttention(summary) }), [summary]);
 
   const safeStudies = project && Array.isArray(project.studies) ? project.studies : [];
-  const screeningComplete = !!(project && project._linkedMetaSift && project._linkedMetaSift.progressStatus === 'done');
 
   // 75.md WS-F — the ONE canonical workflow progress (server `_progress`, else the
   // identical client model). Drives the thin header underline; null while loading so
   // the bar only appears once the project resolves (no flash of 0%).
   const progress = useProjectProgress(project);
+  // 98.md §14 Defect 3a — screeningComplete derives from THE canonical `_progress`
+  // screening step (done ⇒ complete), not the leader-editable progressStatus label
+  // (which the model now only honours when corroborated by evidence).
+  const screeningComplete = (progress.steps || []).some((s) => s && s.id === 'screening' && s.status === 'done');
   // 75.md recs (Finding 4) — overlay the canonical per-step statuses onto the legacy
   // blob-only map (mirrors StitchProjectOverview) so the workflow rail + white submenu
   // agree with the header pct. Without this, evidence the blob can't see — e.g. RoB
@@ -315,7 +318,8 @@ function DeepToolPage({ stage }) {
     // hide its duplicate in-body rail. `onStageChange` lets the body's Back/Next push
     // `?stage=` through react-router (keeps the side-menu highlight + deep links synced).
     body = (<LazySearch project={project} activeId={projectId} updNested={doc.updNested} upd={doc.upd} readOnly={readOnly}
-      hideRail initialStage={readSearchStageParam(search)} onStageChange={(id) => navigate(searchStageHref(id, { projectId }))} />);
+      hideRail initialStage={readSearchStageParam(search)} onStageChange={(id) => navigate(searchStageHref(id, { projectId }))}
+      saveStatus={doc.saveStatus} /> /* 98.md §4 — the inline question editor surfaces the real autosave state */);
   } else if (stage === 'prisma') {
     body = (<LazyPrisma project={project} updNested={doc.updNested} updateProject={doc.updateProject} activeId={projectId} setTab={goStage} />);
   } else if (stage === 'extraction') {

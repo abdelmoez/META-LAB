@@ -123,7 +123,8 @@ describe('navConfig — active-route matching (preserve deep links)', () => {
     // honours ?stage=); the flag is threaded to see it.
     const items = submenuForCategory('search', { projectId: 'p1', searchWorkspaceV2Enabled: true });
     const stageKeys = items.filter((i) => !i.utility).map((i) => i.key);
-    expect(stageKeys).toEqual(['question', 'terms', 'mode', 'strategy', 'results', 'documentation', 'screening']);
+    // 98.md §3 — the standalone Research Question stage is retired (edited inline on terms).
+    expect(stageKeys).toEqual(['terms', 'mode', 'strategy', 'results', 'documentation', 'screening']);
     expect(items.some((i) => i.key === 'living' && i.utility)).toBe(true);
   });
   it('search submenu falls back to the single legacy Search destination when the flag is OFF (75.md recs)', () => {

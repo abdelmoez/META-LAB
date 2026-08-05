@@ -359,7 +359,10 @@ export function stepStatus(project, screeningComplete, opts={}){ // eslint-disab
     // "partial" while there are records / included studies in progress. (Old rule
     // flipped to done as soon as any study was included — too early.)
     screening: (()=>{ const lm=p._linkedMetaSift; const recs=(lm&&lm.recordCount)||0; const inc=prisma.included||0; if(screeningComplete) return "done"; return (inc||recs)?"partial":"empty"; })(),
-    prisma: prisma.included?"done":(prisma.dbs||prisma.dedupe)?"partial":"empty",
+    // 98.md §14 Defect 5 — mirrors the canonical prismaRule: "done" needs a POSITIVE
+    // include count ("0" auto-filled from an empty workspace is at most partial);
+    // non-numeric non-empty legacy strings stay done for back-compat.
+    prisma: (prisma.included&&String(prisma.included).trim()!==""&&(Number.isNaN(Number(prisma.included))||Number(prisma.included)>0))?"done":(prisma.included||prisma.dbs||prisma.dedupe)?"partial":"empty",
     extraction: (()=>{
       if(p.studies.length===0) return "empty";
       const anyErr=p.studies.some(s=>validateStudy(s).some(i=>i.sev==="error"));

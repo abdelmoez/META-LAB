@@ -1,7 +1,9 @@
 /**
- * searchStageStatus.test.js — 85.md A1, re-keyed by 96.md D5. Per-stage completion
- * statuses for the 7-stage Search workflow: honest, visited-agnostic, and PICO-free
- * (question = the research-question text; terms = generic concept groups).
+ * searchStageStatus.test.js — 85.md A1, re-keyed by 96.md D5 and 98.md §3. Per-stage
+ * completion statuses for the 6-stage Search workflow: honest, visited-agnostic, and
+ * PICO-free (98.md retired the standalone Research Question stage — the question is
+ * edited inline on 'terms', so no 'question' status is emitted; terms = generic
+ * concept groups).
  */
 import { describe, it, expect } from 'vitest';
 import {
@@ -20,11 +22,15 @@ describe('STAGE_IDS stays in sync with searchStages.js', () => {
     expect([...STAGE_IDS]).toEqual(STAGES.map((s) => s.id));
   });
   it('the retired stages are gone from BOTH lists and alias to terms', () => {
-    for (const retired of ['concepts', 'refine']) {
+    // 96.md retired concepts/refine; 98.md §3 retires the question stage too.
+    for (const retired of ['concepts', 'refine', 'question']) {
       expect(STAGE_IDS).not.toContain(retired);
       expect(STAGES.some((s) => s.id === retired)).toBe(false);
       expect(STAGE_ALIASES[retired]).toBe('terms');
     }
+  });
+  it('pins the NEW 6-stage list exactly (98.md §3)', () => {
+    expect([...STAGE_IDS]).toEqual(['terms', 'mode', 'strategy', 'results', 'documentation', 'screening']);
   });
   it('every emitted status is a known value for every stage id', () => {
     const out = computeStageStatuses({});
@@ -33,17 +39,17 @@ describe('STAGE_IDS stays in sync with searchStages.js', () => {
   });
 });
 
-describe('question stage — the research-question text (96.md D5)', () => {
-  it('done when the question is non-blank, empty otherwise', () => {
-    expect(computeStageStatuses({ question: 'Do SGLT2i reduce readmission?' }).question).toBe('done');
-    expect(computeStageStatuses({ question: '   ' }).question).toBe('empty');
-    expect(computeStageStatuses({}).question).toBe('empty');
+describe('98.md §3 — the question stage is retired (no status emitted)', () => {
+  it('never emits a question key, even when a question is threaded', () => {
+    expect(computeStageStatuses({}).question).toBeUndefined();
+    expect(computeStageStatuses({ question: 'Do SGLT2i reduce readmission?' }).question).toBeUndefined();
+    expect('question' in computeStageStatuses({ question: 'x' })).toBe(false);
   });
-  it('legacy fallback: pico.question still counts when no question is threaded', () => {
-    expect(computeStageStatuses({ pico: { question: 'legacy question' } }).question).toBe('done');
-  });
-  it('a filled P/I/C/O with NO question is NOT done (PICO gating removed)', () => {
-    expect(computeStageStatuses({ pico: { P: 'adults', I: 'metformin' } }).question).toBe('empty');
+  it('opts.question / opts.pico are accepted-and-ignored (existing callers keep working)', () => {
+    // Identical output with and without the retired inputs — they change nothing.
+    const base = computeStageStatuses({});
+    expect(computeStageStatuses({ question: 'legacy question' })).toEqual(base);
+    expect(computeStageStatuses({ pico: { question: 'legacy', P: 'adults', I: 'metformin' } })).toEqual(base);
   });
 });
 

@@ -582,7 +582,7 @@ export function undoLast(stack, state) {
     return {
       stack: rest,
       state: { ...state, concepts: concepts.filter((c) => !(c && c.id === entry.conceptId)), ignored },
-      description: `Removed group "${entry.label || String(target.label || '')}"`,
+      description: `Removed concept "${entry.label || String(target.label || '')}"`,
     };
   }
 

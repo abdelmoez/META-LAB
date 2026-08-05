@@ -33,6 +33,9 @@ import PdfWorker from 'pdfjs-dist/legacy/build/pdf.worker.min.mjs?worker';
 import { C, FONT, MONO, alpha } from '../theme/tokens.js';
 import { findMatchesInText } from './pdfSearch.js';
 import { revealBoxFor, revealScrollTop, isExactRegion } from './pdfRevealBox.js';
+// 79.md §4 + 98.md §16 — click-to-pick caret resolution (caret APIs cross-validated
+// against the click point, geometric fallback). Extracted for unit tests.
+import { caretOffsetInSpan } from './pdfCaret.js';
 
 if (typeof window !== 'undefined' && typeof Worker !== 'undefined') {
   try { pdfjsLib.GlobalWorkerOptions.workerPort = new PdfWorker(); } catch { /* falls back to fake worker */ }
@@ -98,8 +101,11 @@ const HL_CURRENT = 'rgba(255,138,0,0.75)';
 // Minimal, SCOPED text-layer CSS (mirrors pdfjs-dist/web/pdf_viewer.css, class-scoped
 // to avoid leaking global `.textLayer` rules into the token theme). Injected once.
 const TEXTLAYER_STYLE_ID = 'mlpdf-textlayer-style';
+// 98.md §16 — overflow:hidden BEFORE overflow:clip: Safari <16 doesn't parse `clip`
+// and would drop the declaration entirely (unclipped text layer); the hidden fallback
+// applies there, and browsers that know `clip` take the later declaration.
 const TEXTLAYER_CSS = `
-.mlpdf-tl{position:absolute;inset:0;overflow:clip;line-height:1;text-align:initial;
+.mlpdf-tl{position:absolute;inset:0;overflow:hidden;overflow:clip;line-height:1;text-align:initial;
   transform-origin:0 0;forced-color-adjust:none;z-index:2;text-size-adjust:none;}
 .mlpdf-tl :is(span,br){color:transparent;position:absolute;white-space:pre;transform-origin:0% 0%;}
 .mlpdf-tl[data-main-rotation="90"]{transform:rotate(90deg) translateY(-100%);}
@@ -630,9 +636,12 @@ export default function AppPdfViewer({
         <TbIcon label="Zoom in" onClick={zoomIn} disabled={!canZoomIn}><PathPlus /></TbIcon>
         <Sep />
         {/* Region-select reports coordinates in the UNROTATED page space, so rotation
-            is disabled while a region tool is armed to keep crops/tables aligned. */}
-        <TbIcon label="Rotate left" onClick={rotateLeft} disabled={loading || !!error || (interaction && interaction.mode === 'region')}><PathRotateLeft /></TbIcon>
-        <TbIcon label="Rotate right" onClick={rotateRight} disabled={loading || !!error || (interaction && interaction.mode === 'region')}><PathRotateRight /></TbIcon>
+            is disabled while a region tool is armed to keep crops/tables aligned.
+            98.md §16 — click-to-pick shares the same frame: cssToUser ignores rotation,
+            so a click on a rotated page would store provenance (bbox) in the wrong
+            coordinates. Rotation is disabled while EITHER capture tool is armed. */}
+        <TbIcon label="Rotate left" onClick={rotateLeft} disabled={loading || !!error || (interaction && (interaction.mode === 'region' || interaction.mode === 'click'))}><PathRotateLeft /></TbIcon>
+        <TbIcon label="Rotate right" onClick={rotateRight} disabled={loading || !!error || (interaction && (interaction.mode === 'region' || interaction.mode === 'click'))}><PathRotateRight /></TbIcon>
         <div style={{ flex: 1 }} />
         <TbIcon label="Previous page" onClick={prev} disabled={loading || !!error || pageNum <= 1}><PathChevronUp /></TbIcon>
         <span style={{ fontSize: 11, fontFamily: MONO, color: C.txt2, minWidth: 56, textAlign: 'center' }}>
@@ -731,80 +740,9 @@ export default function AppPdfViewer({
   );
 }
 
-/* Resolve the character offset within a text-layer span's ORIGINAL text (dataset.t) at a
-   screen point. Highlight passes replace a span's single text node with text + <mark>
-   nodes, but the concatenated textContent still equals dataset.t, so we sum node lengths in
-   DFS order up to the caret node. Returns null when the point is not inside the span text.
-
-   Safari/WebKit note (79.md §4): document.caretPositionFromPoint arrived only in Safari 17,
-   and both caret-from-point APIs can return a caret in a DIFFERENT node — or nothing — for
-   the CSS-transformed text-layer spans this viewer draws. So when the caret APIs don't land
-   inside `span`, we fall back to a purely GEOMETRIC resolver (Range.getBoundingClientRect
-   per character, supported everywhere) so click-to-pick lands on the exact number under the
-   cursor in every browser, not just Chromium/Firefox. */
-function caretOffsetInSpan(span, clientX, clientY) {
-  let node = null, off = 0;
-  try {
-    if (document.caretPositionFromPoint) {
-      const pos = document.caretPositionFromPoint(clientX, clientY);
-      if (pos && span.contains(pos.offsetNode)) { node = pos.offsetNode; off = pos.offset; }
-    }
-    if (!node && document.caretRangeFromPoint) {
-      const r = document.caretRangeFromPoint(clientX, clientY);
-      if (r && span.contains(r.startContainer)) { node = r.startContainer; off = r.startOffset; }
-    }
-  } catch { node = null; }
-  if (node) {
-    let total = 0, done = false;
-    const walk = (n) => {
-      if (done) return;
-      if (n === node) {
-        if (n.nodeType === 3) total += off;
-        else for (let i = 0; i < off && i < n.childNodes.length; i++) total += (n.childNodes[i].textContent || '').length;
-        done = true; return;
-      }
-      if (n.nodeType === 3) { total += (n.textContent || '').length; return; }
-      for (const c of n.childNodes) { walk(c); if (done) return; }
-    };
-    walk(span);
-    if (done) return total;
-  }
-  // Fallback: browser-independent geometry (fixes Safari/WebKit click-to-pick).
-  return caretOffsetByGeometry(span, clientX, clientY);
-}
-
-/* Character offset within `span` nearest the screen point, using per-character Range
-   rects only. Returns the offset of the character whose rect contains the point, else
-   the nearest character on the clicked line; null when the span has no measurable text. */
-function caretOffsetByGeometry(span, clientX, clientY) {
-  try {
-    let acc = 0, best = null, bestDist = Infinity;
-    const rng = document.createRange();
-    const consider = (textNode) => {
-      const len = textNode.textContent ? textNode.textContent.length : 0;
-      for (let i = 0; i < len; i++) {
-        let r;
-        try { rng.setStart(textNode, i); rng.setEnd(textNode, i + 1); r = rng.getBoundingClientRect(); }
-        catch { continue; }
-        if (!r || (r.width === 0 && r.height === 0)) continue;
-        const onLine = clientY >= r.top - 2 && clientY <= r.bottom + 2;
-        if (onLine && clientX >= r.left && clientX <= r.right) return acc + i; // exact hit
-        const mid = (r.left + r.right) / 2;
-        const dist = Math.abs(clientX - mid) + (onLine ? 0 : 10000); // prefer the clicked line
-        if (dist < bestDist) { bestDist = dist; best = acc + i; }
-      }
-      acc += len;
-      return null;
-    };
-    const walk = (n) => {
-      if (n.nodeType === 3) return consider(n);
-      for (const c of n.childNodes) { const hit = walk(c); if (hit != null) return hit; }
-      return null;
-    };
-    const hit = walk(span);
-    return hit != null ? hit : best;
-  } catch { return null; }
-}
+/* Caret resolution (caretOffsetInSpan / caretOffsetByGeometry) lives in ./pdfCaret.js
+   — 79.md §4 geometric fallback + 98.md §16 caret-API cross-validation, extracted so
+   the Safari/WebKit behavior is unit-testable (tests/unit/extraction/pdfCaret.test.js). */
 
 /* ── A single continuous page: canvas + real text layer + match highlighting ─── */
 function PdfPageView({ doc, pageNumber, scale, rotation, dpr, term, searchOptions, currentLocal, onDims, interaction = null, overlay = null, highlight = null }) {
@@ -925,7 +863,16 @@ function PdfPageView({ doc, pageNumber, scale, rotation, dpr, term, searchOption
   function onTextClickCapture(e) {
     if (!clickable || !interaction.onTextClick) return;
     // Only react to a click that lands on a text span (has text), not empty gaps.
-    const span = e.target.closest && e.target.closest('span');
+    let span = e.target.closest && e.target.closest('span');
+    // 98.md §16 — a micro-drag between pointerdown and pointerup can retarget the click
+    // to the .mlpdf-tl container itself (no span ancestor) even though the pointer sits
+    // on a glyph. Re-resolve via elementFromPoint before treating it as a miss; only a
+    // span INSIDE this text layer counts (never an overlay/other page's span).
+    if (!span && typeof document !== 'undefined' && document.elementFromPoint) {
+      const el = document.elementFromPoint(e.clientX, e.clientY);
+      const hit = el && el.closest ? el.closest('span') : null;
+      if (hit && e.currentTarget.contains(hit)) span = hit;
+    }
     const str = span ? (span.dataset.t != null ? span.dataset.t : span.textContent) : '';
     if (!str || !str.trim()) {
       // e1 — feedback on a miss (gap click / scanned page) instead of a silent no-op.

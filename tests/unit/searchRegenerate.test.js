@@ -16,11 +16,11 @@ import { conceptDrift, serializeSearchState } from '../../src/research-engine/se
 const QUESTION = 'Does metformin reduce mortality in adults with type 2 diabetes?';
 
 describe('regenerateConceptsFromQuestion — neutral groups from the question', () => {
-  it('labels every group "Search Group N" and NEVER stamps picoField (97 Phase 8)', () => {
+  it('labels every group "Concept N" (98.md §8) and NEVER stamps picoField (97 Phase 8)', () => {
     const out = regenerateConceptsFromQuestion(QUESTION);
     expect(out.length).toBeGreaterThanOrEqual(2);
     out.forEach((c, i) => {
-      expect(c.label).toBe(`Search Group ${i + 1}`);
+      expect(c.label).toBe(`Concept ${i + 1}`);
       expect(c.picoField).toBeUndefined();
       expect(c.source).toBe(REGENERATED_SOURCE);
       expect(c.op).toBe('AND');
@@ -103,11 +103,11 @@ describe('buildRegenerateState — the complete regenerated slice', () => {
   });
 });
 
-describe('97 Phase 4 pinned copy', () => {
+describe('97 Phase 4 pinned copy (98.md §8 — concept groups, PICO mention removed)', () => {
   it('confirmation dialog copy matches the spec verbatim', () => {
     expect(REGENERATE_CONFIRM_COPY.title).toBe('Regenerate search strategy?');
     expect(REGENERATE_CONFIRM_COPY.body).toBe(
-      'This will rebuild the automatically generated keywords and search groups from the current research question and PICO. Your current manual organization may change.',
+      'This will rebuild the automatically generated keywords and concept groups from the current research question. Your current manual organization may change.',
     );
     expect(REGENERATE_CONFIRM_COPY.cancel).toBe('Cancel');
     expect(REGENERATE_CONFIRM_COPY.confirm).toBe('Regenerate');

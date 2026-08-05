@@ -8,13 +8,17 @@ import { test, expect } from '../fixtures/stitch-test';
 import { createProject, deleteProject } from '../helpers/api';
 
 /**
- * Build a tiny, valid single-page PDF with one selectable Helvetica text run, with a
+ * Build a tiny, valid single-page PDF with selectable Helvetica text run(s), with a
  * correctly computed xref table so pdf.js parses it in every engine (incl. WebKit).
  * Committable (no binary fixture) and deterministic. 79.md §4.
+ * A plain string draws one run at (40,100); an array of {x,y,t} draws one run each —
+ * separate runs become separate text-layer spans, so a click test can target ONE
+ * number without smart-parse composite ambiguity (98.md §16).
  */
-function minimalPdf(text: string): Buffer {
-  const esc = text.replace(/([()\\])/g, '\\$1');
-  const stream = `BT /F1 24 Tf 40 100 Td (${esc}) Tj ET`;
+function minimalPdf(text: string | Array<{ x: number; y: number; t: string }>): Buffer {
+  const runs = typeof text === 'string' ? [{ x: 40, y: 100, t: text }] : text;
+  const esc = (s: string) => s.replace(/([()\\])/g, '\\$1');
+  const stream = runs.map((r) => `BT /F1 24 Tf ${r.x} ${r.y} Td (${esc(r.t)}) Tj ET`).join('\n');
   const objs = [
     '<</Type/Catalog/Pages 2 0 R>>',
     '<</Type/Pages/Kids[3 0 R]/Count 1>>',
@@ -157,6 +161,145 @@ test.describe('Pecan Extraction Engine', () => {
 
       // No uncaught errors in WebKit during PDF load + interaction (§9.13).
       expect(pageErrors, `WebKit page errors:\n${pageErrors.join('\n')}`).toEqual([]);
+    } finally {
+      await deleteProject(request, project.id);
+    }
+  });
+
+  // 98.md §16 — click-to-capture value fidelity + second-click replacement. The exact
+  // clicked value must land in the target input; a differing second click REPLACES it
+  // immediately (no dialog, no manual delete); a replacement keeps the field ACTIVE
+  // (no auto-advance, so a follow-up correction lands in the same field); re-clicking
+  // an identical value is announced, not silent.
+  test('click fills the exact value; a second click replaces it in place @smoke', async ({ page, request, setFlags, browserName }) => {
+    test.skip(browserName === 'firefox', 'dev-mode module-worker + synthetic-blob-PDF flake; covered by WebKit + Chromium');
+    await setFlags({ extractionEngine: true });
+    const project = await createProject(request, `E2E Pecan Replace ${Date.now()}`);
+    try {
+      // OR → click-to-pick targets the 2×2 cells; the active field defaults to `a`.
+      const res = await request.post(`/api/projects/${project.id}/studies`, {
+        data: { author: 'Rework', year: '2024', outcome: 'Mortality', esType: 'OR' },
+      });
+      expect(res.ok(), `seed study failed: ${res.status()}`).toBeTruthy();
+
+      await page.goto(`/app/project/${project.id}?tab=extraction`);
+      await page.getByText('Rework').first().click();
+      await expect(page.getByTestId('pex-workspace')).toBeVisible({ timeout: 15000 });
+
+      // Two separate text runs → two spans → each click targets exactly one number.
+      const fileInput = page.locator('input[type="file"][accept*="pdf"]');
+      await fileInput.setInputFiles({
+        name: 'counts.pdf', mimeType: 'application/pdf',
+        buffer: minimalPdf([{ x: 40, y: 130, t: '12' }, { x: 40, y: 60, t: '99' }]),
+      });
+      const span12 = page.locator('.mlpdf-tl span', { hasText: '12' }).first();
+      const span99 = page.locator('.mlpdf-tl span', { hasText: '99' }).first();
+      await expect(span12).toBeVisible({ timeout: 25000 });
+
+      const target = page.locator('#pex-active-field');
+      await expect(target).toHaveValue('a');
+
+      // First click: the EXACT value lands in the target input; the previously-EMPTY
+      // field auto-advances the pick cursor (a → b).
+      await span12.click();
+      await expect(page.getByTestId('pex-field-a')).toHaveValue('12');
+      await expect(target).toHaveValue('b');
+
+      // Re-arm the same field, click a DIFFERENT number: replaced immediately — no
+      // Keep/Replace dialog, no manual delete — and the field STAYS active.
+      await target.selectOption('a');
+      await span99.click();
+      await expect(page.getByTestId('pex-field-a')).toHaveValue('99');
+      await expect(page.getByRole('alertdialog')).toHaveCount(0);
+      const status = page.locator('[role="status"][aria-live="polite"]');
+      await expect(status).toContainText('Replaced');
+      await expect(status).toContainText('was 12');
+      await expect(target).toHaveValue('a');
+
+      // Clicking the SAME value again is an announced no-op, never silence.
+      await span99.click();
+      await expect(status).toContainText('Already captured');
+      await expect(page.getByTestId('pex-field-a')).toHaveValue('99');
+    } finally {
+      await deleteProject(request, project.id);
+    }
+  });
+
+  // 98.md §16 — changing the effect measure must never leave a stale pick target: the
+  // clamp re-drives the active field to one the NEW measure actually uses, and the next
+  // click still captures (previously the value landed in a hidden field = dead click).
+  test('capture still works after changing the effect measure @smoke', async ({ page, request, setFlags, browserName }) => {
+    test.skip(browserName === 'firefox', 'dev-mode module-worker + synthetic-blob-PDF flake; covered by WebKit + Chromium');
+    await setFlags({ extractionEngine: true });
+    const project = await createProject(request, `E2E Pecan Measure Switch ${Date.now()}`);
+    try {
+      const res = await request.post(`/api/projects/${project.id}/studies`, {
+        data: { author: 'Measura', year: '2023', outcome: 'Pain score', esType: 'OR' },
+      });
+      expect(res.ok(), `seed study failed: ${res.status()}`).toBeTruthy();
+
+      await page.goto(`/app/project/${project.id}?tab=extraction`);
+      await page.getByText('Measura').first().click();
+      await expect(page.getByTestId('pex-workspace')).toBeVisible({ timeout: 15000 });
+
+      const fileInput = page.locator('input[type="file"][accept*="pdf"]');
+      await fileInput.setInputFiles({ name: 'n.pdf', mimeType: 'application/pdf', buffer: minimalPdf([{ x: 40, y: 100, t: '42' }]) });
+      const span42 = page.locator('.mlpdf-tl span', { hasText: '42' }).first();
+      await expect(span42).toBeVisible({ timeout: 25000 });
+
+      const target = page.locator('#pex-active-field');
+      await expect(target).toHaveValue('a'); // OR → first 2×2 cell
+
+      // OR → MD: the stale `a` target is clamped onto the continuous field set.
+      await page.getByTestId('pex-esType').selectOption('MD');
+      await expect(target).toHaveValue('nExp');
+
+      // …and the click CAPTURES into a visible field (no dead click).
+      await span42.click();
+      await expect(page.getByTestId('pex-field-nExp')).toHaveValue('42');
+      await expect(target).toHaveValue('meanExp'); // empty-field capture advances
+    } finally {
+      await deleteProject(request, project.id);
+    }
+  });
+
+  // 98.md §16 — CLASSIC panel (flag OFF, the DEFAULT user surface): a click capture
+  // lands, and a differing second click replaces IMMEDIATELY — the old blocking
+  // Keep/Replace alertdialog must not appear (its stale-dialog bug rode along).
+  test('classic click-assign captures and a second click replaces without a dialog @smoke', async ({ page, request, setFlags, browserName }) => {
+    test.skip(browserName === 'firefox', 'dev-mode module-worker + synthetic-blob-PDF flake; covered by WebKit + Chromium');
+    await setFlags({ extractionEngine: false });
+    const project = await createProject(request, `E2E Classic Click ${Date.now()}`);
+    try {
+      // COR keeps es on the RAW scale (no ln transform) → exact status assertions.
+      const res = await request.post(`/api/projects/${project.id}/studies`, {
+        data: { author: 'Classico', year: '2020', outcome: 'Pain', esType: 'COR' },
+      });
+      expect(res.ok(), `seed study failed: ${res.status()}`).toBeTruthy();
+
+      await page.goto(`/app/project/${project.id}?tab=extraction`);
+      // The classic split-screen workspace mounts (first study is auto-selected).
+      await expect(page.getByText('EXTRACTION WORKSPACE')).toBeVisible({ timeout: 15000 });
+      await page.getByRole('button', { name: 'Click-assign' }).click();
+
+      const fileInput = page.locator('input[type="file"][accept*="pdf"]').first();
+      await fileInput.setInputFiles({
+        name: 'classic.pdf', mimeType: 'application/pdf',
+        buffer: minimalPdf([{ x: 40, y: 130, t: '2.45' }, { x: 40, y: 60, t: '1.10' }]),
+      });
+      const spanA = page.locator('.mlpdf-tl span', { hasText: '2.45' }).first();
+      await expect(spanA).toBeVisible({ timeout: 25000 });
+
+      // Smart capture (COR uses the effect slot) → the exact value reaches es.
+      const status = page.locator('[role="status"][aria-live="polite"]');
+      await spanA.click();
+      await expect(status).toContainText('Assigned 2.45→es');
+
+      // Differing second click → immediate replace + announcement; NO alertdialog.
+      await page.locator('.mlpdf-tl span', { hasText: '1.10' }).first().click();
+      await expect(page.getByRole('alertdialog')).toHaveCount(0);
+      await expect(status).toContainText('Replaced');
+      await expect(status).toContainText('was 2.45');
     } finally {
       await deleteProject(request, project.id);
     }

@@ -10,7 +10,7 @@
  *      signature, so historical saves never trigger a spurious autosave);
  *   2. compileStrategy(…, 'pubmed') — the strategy compiler accepts the shape;
  *   3. computeStageStatuses — the stage rail derives without throwing and
- *      always emits all 7 stage ids;
+ *      always emits all 6 stage ids (98.md §3 — no 'question' status);
  *   4. diffStrategies(x, x) — the version-diff round-trip reports no changes
  *      for an identical snapshot (identity stability incl. legacy picoField).
  *
@@ -186,7 +186,7 @@ describe('96.md Phase 10 — migration fixtures load through every seam (QA L30)
         expect(typeof r.query).toBe('string');
         expect(Array.isArray(r.warnings)).toBe(true);
       });
-      it('derives all 7 stage statuses without throwing', () => {
+      it('derives all 6 stage statuses without throwing', () => {
         const st = computeStageStatuses({
           concepts: fx.concepts,
           question: fx.questionSnapshot || '',
@@ -220,10 +220,10 @@ describe('96.md Phase 10 — migration fixtures load through every seam (QA L30)
 
 import { migrateLegacyGroupLabels } from '../../src/research-engine/searchBuilder/searchState.js';
 
-describe('97.md — migrateLegacyGroupLabels across the archetypes', () => {
-  it('archetype 2 (five-group scaffold) converts ONCE to Search Group 1..5, then no-ops by signature', () => {
+describe('97.md — migrateLegacyGroupLabels across the archetypes (98.md §8 — Concept N)', () => {
+  it('archetype 2 (five-group scaffold) converts ONCE to Concept 1..5, then no-ops by signature', () => {
     const once = migrateLegacyGroupLabels(LEGACY_FIVE_GROUP.concepts);
-    expect(once.map((c) => c.label)).toEqual(['Search Group 1', 'Search Group 2', 'Search Group 3', 'Search Group 4', 'Search Group 5']);
+    expect(once.map((c) => c.label)).toEqual(['Concept 1', 'Concept 2', 'Concept 3', 'Concept 4', 'Concept 5']);
     expect(once.map((c) => c.picoField)).toEqual(['P', 'I', 'C', 'O', 'T']); // retained (invariant 5)
     const state = (concepts) => serializeSearchState({ ...LEGACY_FIVE_GROUP, concepts });
     expect(state(once)).not.toBe(state(LEGACY_FIVE_GROUP.concepts)); // signature flips exactly once…
@@ -233,19 +233,41 @@ describe('97.md — migrateLegacyGroupLabels across the archetypes', () => {
 
   it('archetype 3 (Concepts-era, no picoField) converts by canonical label too', () => {
     const out = migrateLegacyGroupLabels(LEGACY_CONCEPTS_ERA.concepts);
-    expect(out.map((c) => c.label)).toEqual(['Search Group 1', 'Search Group 2']);
-    expect(out.every((c) => c.labelMigrated === 1)).toBe(true);
+    expect(out.map((c) => c.label)).toEqual(['Concept 1', 'Concept 2']);
+    expect(out.every((c) => c.labelMigrated === 2)).toBe(true);
   });
 
   it('archetype 9 (user-renamed group) keeps the custom name and gets no marker', () => {
     const out = migrateLegacyGroupLabels(LEGACY_RENAMED_GROUP.concepts);
     expect(out[0].label).toBe('People with diabetes');
     expect(out[0].labelMigrated).toBeUndefined();
-    expect(out[1].label).toBe('Search Group 2');
+    expect(out[1].label).toBe('Concept 2');
   });
 
-  it('archetypes 10/11 (already-migrated / post-97) and 1/4 (no legacy groups) are byte-stable no-ops', () => {
-    for (const fx of [MIGRATED_NEUTRAL_LABELS, WITH_META_AND_OVERRIDES, NEW_NO_PICO, WITH_OVERRIDES]) {
+  it('98.md §8 — archetypes 10/11 (97-era "Search Group N" defaults) take the SECOND one-shot pass', () => {
+    // The 97-era default labels are renamed Concept N (SAME number — position is
+    // irrelevant), marker bumps to 2; then the doc is byte-stable forever.
+    for (const fx of [MIGRATED_NEUTRAL_LABELS, WITH_META_AND_OVERRIDES]) {
+      const once = migrateLegacyGroupLabels(fx.concepts);
+      expect(once).not.toBe(fx.concepts);
+      once.forEach((c, i) => {
+        const m = /^Search Group (\d+)$/.exec(fx.concepts[i].label);
+        expect(c.label).toBe(m ? `Concept ${m[1]}` : fx.concepts[i].label);
+        expect(c.labelMigrated).toBe(2);
+      });
+      expect(migrateLegacyGroupLabels(once)).toBe(once); // idempotent from here on
+    }
+  });
+
+  it('archetypes 1/4 (no legacy groups) and a 98-era Concept-labeled doc are byte-stable no-ops', () => {
+    const CONCEPT_LABELED = {
+      concepts: [
+        { id: 'g1', label: 'Concept 1', labelMigrated: 2, source: 'user_added', op: 'AND', terms: [] },
+        { id: 'g2', label: 'Drainage', source: 'user_added', op: 'AND', terms: [] },
+      ],
+      overrides: {}, ignored: [],
+    };
+    for (const fx of [NEW_NO_PICO, WITH_OVERRIDES, CONCEPT_LABELED]) {
       expect(migrateLegacyGroupLabels(fx.concepts || [])).toBe(fx.concepts || []); // SAME reference
       expect(serializeSearchState({ ...fx, concepts: migrateLegacyGroupLabels(fx.concepts || []) }))
         .toBe(serializeSearchState(fx));

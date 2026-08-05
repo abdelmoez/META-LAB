@@ -192,10 +192,10 @@ export default function TermEditorPopover({
       {dupInfo && exactDup && (
         <div data-testid="sb-dup-actions" style={{ background: DUP_RED_BG, border: `1px solid ${DUP_RED_BORDER}`, borderRadius: 7, padding: '8px 10px', marginBottom: 10, fontSize: 11, color: C.txt, lineHeight: 1.5 }}>
           <div style={{ marginBottom: 6 }}>
-            <strong><span aria-hidden="true">⚠ </span>Exact duplicate{dupInfo.kind === 'exact-in-group' ? ' in this group' : ' across AND groups'}.</strong>{' '}
+            <strong><span aria-hidden="true">⚠ </span>Exact duplicate{dupInfo.kind === 'exact-in-group' ? ' in this concept' : ' across AND concepts'}.</strong>{' '}
             {dupInfo.kind === 'exact-in-group'
-              ? `“${t.text}” appears more than once in this group — duplicate copies only add noise.`
-              : `“${t.text}” also appears in ${dupInfo.otherLabel}. Because search groups are connected with AND, this may make the search unnecessarily restrictive.`}
+              ? `“${t.text}” appears more than once in this concept — duplicate copies only add noise.`
+              : `“${t.text}” also appears in ${dupInfo.otherLabel}. Because concept groups are connected with AND, this may make the search unnecessarily restrictive.`}
           </div>
           <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
             {dupInfo.onFindOther && (
@@ -211,7 +211,7 @@ export default function TermEditorPopover({
               <button type="button" onClick={dupInfo.onKeepBoth} style={dupActionBtn}>Keep both intentionally</button>
             )}
             {dupInfo.onDismiss && dupInfo.kind === 'exact-cross' && (
-              <button type="button" onClick={dupInfo.onDismiss} title="Hide this warning for this exact configuration — it returns if the terms or groups change" style={dupActionBtn}>Dismiss warning</button>
+              <button type="button" onClick={dupInfo.onDismiss} title="Hide this warning for this exact configuration — it returns if the terms or concepts change" style={dupActionBtn}>Dismiss warning</button>
             )}
           </div>
         </div>
@@ -229,13 +229,13 @@ export default function TermEditorPopover({
       )}
 
       {onReorder && (
-        <Section label="Position in this group">
+        <Section label="Position in this concept">
           <div style={{ display: 'flex', gap: 6 }}>
             <button type="button" data-testid="sb-term-move-earlier"
               onClick={() => canMoveEarlier && onReorder(-1)}
               disabled={!canMoveEarlier} aria-disabled={!canMoveEarlier || undefined}
-              aria-label={`Move ${t.text || 'term'} earlier in the group`}
-              title={canMoveEarlier ? 'Move this term earlier in the OR chain' : 'Already first in the group'}
+              aria-label={`Move ${t.text || 'term'} earlier in the concept`}
+              title={canMoveEarlier ? 'Move this term earlier in the OR chain' : 'Already first in the concept'}
               style={{
                 flex: 1, cursor: canMoveEarlier ? 'pointer' : 'not-allowed', fontFamily: FONT, fontSize: 10.5, fontWeight: 600, minHeight: 26,
                 color: C.txt2, background: 'transparent', border: `1px solid ${C.brd2}`, borderRadius: 7, padding: '4px 6px', opacity: canMoveEarlier ? 1 : 0.5,
@@ -245,8 +245,8 @@ export default function TermEditorPopover({
             <button type="button" data-testid="sb-term-move-later"
               onClick={() => canMoveLater && onReorder(1)}
               disabled={!canMoveLater} aria-disabled={!canMoveLater || undefined}
-              aria-label={`Move ${t.text || 'term'} later in the group`}
-              title={canMoveLater ? 'Move this term later in the OR chain' : 'Already last in the group'}
+              aria-label={`Move ${t.text || 'term'} later in the concept`}
+              title={canMoveLater ? 'Move this term later in the OR chain' : 'Already last in the concept'}
               style={{
                 flex: 1, cursor: canMoveLater ? 'pointer' : 'not-allowed', fontFamily: FONT, fontSize: 10.5, fontWeight: 600, minHeight: 26,
                 color: C.txt2, background: 'transparent', border: `1px solid ${C.brd2}`, borderRadius: 7, padding: '4px 6px', opacity: canMoveLater ? 1 : 0.5,
@@ -323,7 +323,7 @@ export default function TermEditorPopover({
         {(targets.length > 0 || onMoveToNewGroup) && (
           <span style={{ position: 'relative', display: 'inline-block' }}>
             <button type="button" onClick={() => { setMoveOpen((o) => !o); setCopyOpen(false); setCombineOpen(false); }} aria-expanded={moveOpen} style={menuBtn}>
-              Move to group…
+              Move to concept…
             </button>
             {moveOpen && (
               <span style={{ position: 'absolute', zIndex: 75, bottom: 'calc(100% + 4px)', left: 0, background: C.card, border: `1px solid ${C.brd2}`, borderRadius: 8, boxShadow: `0 14px 40px var(--t-shadow)`, overflow: 'hidden', minWidth: 180 }}>
@@ -335,7 +335,7 @@ export default function TermEditorPopover({
                 {onMoveToNewGroup && (
                   <button type="button" data-testid="sb-move-new-group" onClick={() => { setMoveOpen(false); onMoveToNewGroup(); }}
                     style={{ ...menuItem, color: C.acc, borderTop: targets.length ? `1px solid ${C.brd}` : 'none' }}>
-                    ＋ New search group
+                    ＋ New concept
                   </button>
                 )}
               </span>
@@ -346,7 +346,7 @@ export default function TermEditorPopover({
           <span style={{ position: 'relative', display: 'inline-block' }}>
             <button type="button" data-testid="sb-copy-btn" onClick={() => { setCopyOpen((o) => !o); setMoveOpen(false); setCombineOpen(false); }} aria-expanded={copyOpen}
               title="Duplicate this term intentionally into another group (dragging always MOVES — copying is explicit)" style={menuBtn}>
-              Copy to group…
+              Copy to concept…
             </button>
             {copyOpen && (
               <span style={{ position: 'absolute', zIndex: 75, bottom: 'calc(100% + 4px)', left: 0, background: C.card, border: `1px solid ${C.brd2}`, borderRadius: 8, boxShadow: `0 14px 40px var(--t-shadow)`, overflow: 'hidden', minWidth: 180 }}>
@@ -357,7 +357,7 @@ export default function TermEditorPopover({
                 ))}
                 <button type="button" onClick={() => { setCopyOpen(false); onCopyTo(null); }}
                   style={{ ...menuItem, color: C.acc, borderTop: targets.length ? `1px solid ${C.brd}` : 'none' }}>
-                  ＋ New search group
+                  ＋ New concept
                 </button>
               </span>
             )}

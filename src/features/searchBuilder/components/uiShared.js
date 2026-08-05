@@ -61,6 +61,14 @@ export function termMicroBadges(term) {
     else out.push({ key: 'field', label: 'title/abstract' });
     if (t.truncate && !String(t.text || '').includes(' ')) out.push({ key: 'truncate', label: 'endings*' });
     if (t.phrase && String(t.text || '').includes(' ')) out.push({ key: 'phrase', label: 'phrase' });
+  } else if (t.vocab && typeof t.vocab === 'object' && String(t.vocab.mesh || '').trim()) {
+    // 98.md §10 — the COMPACT controlled-vocabulary form must indicate (a) whether
+    // hierarchy explosion is off (default is exploded — only the exception is
+    // badged) and (b) that mapped entry terms ride along, with their count. The
+    // full list stays in the details popover; the strategy keeps every mapped term.
+    if (t.noExplode) out.push({ key: 'noexp', label: 'no narrower terms' });
+    const entryN = Array.isArray(t.vocab.synonyms) ? t.vocab.synonyms.filter((s) => String(s || '').trim()).length : 0;
+    if (entryN > 0) out.push({ key: 'entryCount', label: `+${entryN} entry term${entryN === 1 ? '' : 's'}` });
   }
   // Provenance: synonym-ladder / suggestion acceptances read "suggested"; terms the
   // user typed or clicked read "manual"; legacy pico_auto terms read "suggested"

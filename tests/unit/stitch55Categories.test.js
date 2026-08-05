@@ -82,7 +82,8 @@ describe('55.md — submenu visibility (Overview/Control/Reference reclaim width
     const items = submenuForCategory('search', { ...CTX, searchWorkspaceV2Enabled: true });
     // Numbered workflow stages first (manual/undecided → the full stage list).
     const stageKeys = items.filter((i) => !i.utility).map((i) => i.key);
-    expect(stageKeys).toEqual(['question', 'terms', 'mode', 'strategy', 'results', 'documentation', 'screening']);
+    // 98.md §3 — the standalone Research Question stage is retired (edited inline on terms).
+    expect(stageKeys).toEqual(['terms', 'mode', 'strategy', 'results', 'documentation', 'screening']);
     // …each a ?stage= deep link into the one unified Search workspace.
     expect(items.find((i) => i.key === 'terms').href).toBe('/app/project/p1?tab=search&stage=terms');
     // …then Living Review as an UN-numbered optional tool opening its own tab, carrying

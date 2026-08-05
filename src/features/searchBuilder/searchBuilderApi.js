@@ -70,11 +70,15 @@ export async function loadSearch(projectId) {
 // the server revision for conflict-safe live sync and adopt the server-stamped
 // meta identity), or null on any failure. Every ack is also published on the
 // shared revision channel above.
-export async function saveSearch(projectId, state) {
+// 98.md §15 — opts.keepalive: the tab-close flush path sets it so the PUT
+// survives page teardown (Safari has no reliable beforeunload; fetch keepalive
+// is the standards-based way to not lose the final debounce window).
+export async function saveSearch(projectId, state, opts) {
   try {
     const r = await fetch(`${BASE}/${projectId}`, {
       method: 'PUT', credentials: 'include',
       headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(state),
+      ...(opts && opts.keepalive ? { keepalive: true } : {}),
     });
     if (!r.ok) return null;
     const ack = await r.json();

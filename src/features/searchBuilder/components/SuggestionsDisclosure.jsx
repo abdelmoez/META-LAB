@@ -1,6 +1,8 @@
 /**
- * SuggestionsDisclosure.jsx — 85.md A2, reworked by 97.md Phase 13. The
- * "Suggestions to review (N)" area for the active search group (native <details>):
+ * SuggestionsDisclosure.jsx — 85.md A2, reworked by 97.md Phase 13 and 98.md §11.
+ * The "Show suggestions (N)" area for the active concept group — HIDDEN by
+ * default, revealed with one click (controlled `open`/`onToggleOpen` from the
+ * parent; children mount only while open, §20):
  *
  *  - kind 'mesh' rows: ONE MeSH term per row (exact terminology — never "subject
  *    heading"), with a confidence marker where the match is low-confidence
@@ -14,7 +16,6 @@
  * Presentational leaf: plain props + callbacks, no fetch.
  */
 import { C, FONT, MONO, alpha } from '../../../frontend/theme/tokens.js';
-import { Disclosure } from '../../pecanSearch/components/parts.jsx';
 
 const KIND_LABEL = { mesh: 'MeSH', synonyms: 'Entry terms' };
 
@@ -26,6 +27,11 @@ export default function SuggestionsDisclosure({
   suggestions, readOnly, onAccept, onDismiss, onAcceptEntryTerm,
   rejectedEntries, showDismissed, onToggleShowDismissed, onUnreject,
   ignoredGroups, onRestoreTerm, onRestoreField, onRestoreAll,
+  // 98.md §11 — CONTROLLED visibility: suggestions are hidden by default and
+  // revealed with one click; the open state lives with the parent (per concept,
+  // session-scoped — §19 "suggestion visibility" in the canonical view state) so
+  // a pending-count change can never force the panel open mid-work.
+  open, onToggleOpen,
 }) {
   const pending = Array.isArray(suggestions) ? suggestions : [];
   const rejected = Array.isArray(rejectedEntries) ? rejectedEntries : [];
@@ -34,10 +40,21 @@ export default function SuggestionsDisclosure({
   const empty = !pending.length && !rejected.length && !hiddenCount;
   const RO_TITLE = 'Read-only access — ask a project editor to review suggestions';
   const roBtn = (base) => (readOnly ? { ...base, cursor: 'not-allowed', opacity: 0.55 } : base);
+  const isOpen = !!open;
 
   return (
     <div data-testid="sb-suggestions" style={{ fontFamily: FONT }}>
-      <Disclosure summary={`Suggestions to review`} count={pending.length} defaultOpen={pending.length > 0}>
+      {/* 98.md §11/§20 — one-click reveal with a compact count; children are
+          MOUNTED only while open (never hundreds of hidden synonym rows). */}
+      <button type="button" data-testid="sb-suggestions-toggle"
+        onClick={onToggleOpen}
+        aria-expanded={isOpen}
+        style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 11.5, color: C.muted, display: 'inline-flex', alignItems: 'center', gap: 6, padding: '2px 0', marginTop: 8, fontFamily: FONT }}>
+        <span aria-hidden="true" style={{ fontSize: 9 }}>{isOpen ? '▾' : '▸'}</span>
+        {isOpen ? 'Hide suggestions' : 'Show suggestions'}{pending.length > 0 ? ` (${pending.length})` : ''}
+      </button>
+      {isOpen && (
+      <div style={{ marginTop: 6 }}>
         {empty && (
           <div style={{ fontSize: 11.5, color: C.muted, fontStyle: 'italic' }}>
             No suggestions right now — they appear as you add terms.
@@ -151,7 +168,8 @@ export default function SuggestionsDisclosure({
             ))}
           </div>
         )}
-      </Disclosure>
+      </div>
+      )}
     </div>
   );
 }

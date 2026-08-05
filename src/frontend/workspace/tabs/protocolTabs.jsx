@@ -276,7 +276,7 @@ function PICODispatcher({project,updNested,upd,lockCtx,activeId}){
    would overwrite the precise location, see usePresence.js). An explicitly
    passed `lockCtx` prop wins, so a future host can thread its own. Fail-open:
    no linked workspace / no auth provider → pid null → editing never blocks. */
-function SearchWizardDispatcher({project,activeId,updNested,upd,readOnly,hideRail,initialStage,onStageChange,lockCtx}){
+function SearchWizardDispatcher({project,activeId,updNested,upd,readOnly,hideRail,initialStage,onStageChange,lockCtx,saveStatus}){
   const[flags,setFlags]=useState(null); // null=checking; {searchEngine,pecan}
   // Hooks run unconditionally (before the early returns) — fixed order.
   let authUser=null;
@@ -295,7 +295,7 @@ function SearchWizardDispatcher({project,activeId,updNested,upd,readOnly,hideRai
   },[]);
   if(flags===null) return <div style={{padding:40,textAlign:"center",color:C.muted,fontSize:13}}>Loading Search…</div>;
   if(!flags.searchEngine) return <SearchTab project={project} updNested={updNested} upd={upd}/>;
-  return <SearchWorkspace projectId={activeId} pico={project.pico} updNested={updNested} readOnly={readOnly} pecanEnabled={flags.pecan} hideRail={hideRail} initialStage={initialStage} onStageChange={onStageChange} lockCtx={effectiveLockCtx}/>;
+  return <SearchWorkspace projectId={activeId} pico={project.pico} updNested={updNested} readOnly={readOnly} pecanEnabled={flags.pecan} hideRail={hideRail} initialStage={initialStage} onStageChange={onStageChange} lockCtx={effectiveLockCtx} saveStatus={saveStatus}/>;
 }
 
 /* ════════════ TAB: SEARCH ════════════ */

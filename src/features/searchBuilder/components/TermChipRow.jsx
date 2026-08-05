@@ -36,7 +36,7 @@ export const DUP_RED_BG = 'rgba(185, 28, 28, 0.14)';
 export const DUP_RED_BADGE_BG = '#7f1d1d';
 
 export const EXACT_DUP_TOOLTIP = (text) => (
-  `Exact duplicate across AND groups — “${text}” appears in more than one search group. `
+  `Exact duplicate across AND concepts — “${text}” appears in more than one concept group. `
   + 'Because these groups are connected with AND, this may make the search unnecessarily restrictive.'
 );
 
@@ -48,6 +48,7 @@ export default function TermChipRow({
   focusTermId, onFocusedTerm,
   // MeSH details popover seams:
   onAddEntryTerm,
+  syntaxDbs, // 98.md §10 — selected databases for the popover's "Syntax by database" row
 }) {
   const RO_TITLE = 'Read-only access — ask a project editor to change terms';
   const allTerms = (concept && Array.isArray(concept.terms)) ? concept.terms : [];
@@ -172,10 +173,10 @@ export default function TermChipRow({
                       data-testid="sb-dup-badge"
                       role="img"
                       aria-label={dup.kind === 'exact-in-group'
-                        ? `Exact duplicate inside this group — “${t.text}” appears more than once`
-                        : `Exact duplicate across AND groups — “${t.text}” also appears in ${otherLabels.join(' and ') || 'another search group'}`}
+                        ? `Exact duplicate inside this concept — “${t.text}” appears more than once`
+                        : `Exact duplicate across AND concepts — “${t.text}” also appears in ${otherLabels.join(' and ') || 'another concept group'}`}
                       title={dup.kind === 'exact-in-group'
-                        ? `“${t.text}” appears more than once in this group. Duplicate copies do not broaden the search — open the chip to resolve it.`
+                        ? `“${t.text}” appears more than once in this concept. Duplicate copies do not broaden the search — open the chip to resolve it.`
                         : EXACT_DUP_TOOLTIP(t.text)}
                       style={{ display: 'inline-flex', alignItems: 'center', gap: 3, fontSize: 8.5, fontWeight: 700, letterSpacing: 0.3, color: '#fff', textTransform: 'uppercase', background: DUP_RED_BADGE_BG, border: `1px solid ${DUP_RED_BORDER}`, borderRadius: 4, padding: '0 5px' }}>
                       <span aria-hidden="true">⚠</span>Duplicate
@@ -189,8 +190,8 @@ export default function TermChipRow({
                   )}
                   {variant && (
                     <span data-testid="sb-dup-variant" role="img"
-                      aria-label={`Possible variant — a similar term also appears in ${otherLabels.join(' and ') || 'another search group'}`}
-                      title={`Possible variant of a term in ${otherLabels.join(' and ') || 'another search group'}. Similar terms can be valid synonyms — nothing is flagged as an exact duplicate.`}
+                      aria-label={`Possible variant — a similar term also appears in ${otherLabels.join(' and ') || 'another concept group'}`}
+                      title={`Possible variant of a term in ${otherLabels.join(' and ') || 'another concept group'}. Similar terms can be valid synonyms — nothing is flagged as an exact duplicate.`}
                       style={{ fontSize: 8.5, fontWeight: 600, letterSpacing: 0.3, color: C.txt2, textTransform: 'uppercase', background: 'transparent', border: `1px dashed ${C.brd2}`, borderRadius: 4, padding: '0 4px' }}>
                       Possible variant
                     </span>
@@ -221,6 +222,7 @@ export default function TermChipRow({
                   addedTexts={allTerms.map((x) => x && x.text).filter(Boolean)}
                   onAddEntryTerm={onAddEntryTerm ? (text) => onAddEntryTerm(t.id, text) : null}
                   onClose={() => setMeshOpenId(null)}
+                  syntaxDbs={syntaxDbs}
                 />
               )}
               {/* Keyboard access to the hover popover: a small focusable info affordance.
@@ -244,8 +246,8 @@ export default function TermChipRow({
                     if (to && wrap && typeof wrap.contains === 'function' && wrap.contains(to)) return; // focus moved into the popover
                     setMeshOpenId((id) => (id === t.id ? null : id));
                   }}
-                  style={{ position: 'absolute', top: -6, right: -6, width: 16, height: 16, borderRadius: '50%', border: `1px solid ${alpha(C.acc, '66')}`, background: C.card, color: C.acc, fontSize: 9, fontWeight: 700, lineHeight: 1, padding: 0, cursor: 'pointer' }}>
-                  i
+                  style={{ position: 'absolute', top: -10, right: -10, width: 24, height: 24, borderRadius: '50%', border: 'none', background: 'transparent', color: C.acc, fontSize: 9, fontWeight: 700, lineHeight: 1, padding: 0, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }}>
+                  <span aria-hidden="true" style={{ width: 16, height: 16, borderRadius: '50%', border: `1px solid ${alpha(C.acc, '66')}`, background: C.card, display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }}>i</span>
                 </button>
               )}
             </span>

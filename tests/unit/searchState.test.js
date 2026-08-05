@@ -963,9 +963,9 @@ describe('97.md — pickPersisted meta (the ONE new top-level key, omit-when-emp
   });
 });
 
-describe('97.md — renameConcept / defaultGroupLabel', () => {
+describe('97.md — renameConcept / defaultGroupLabel (98.md §8 — the noun is Concept)', () => {
   const list = [
-    { id: 'a', label: 'Search Group 1', op: 'AND', terms: [] },
+    { id: 'a', label: 'Concept 1', op: 'AND', terms: [] },
     { id: 'b', label: 'Drainage', op: 'AND', terms: [] },
   ];
   it('renames one group (new array), no-ops for unknown id / blank / unchanged (SAME array)', () => {
@@ -978,10 +978,12 @@ describe('97.md — renameConcept / defaultGroupLabel', () => {
     expect(renameConcept(list, 'b', 'Drainage')).toBe(list);
     expect(renameConcept(list, 'b', 'L'.repeat(300))[1].label.length).toBe(200);
   });
-  it('defaultGroupLabel: Search Group N with collision bump', () => {
-    expect(defaultGroupLabel([])).toBe('Search Group 1');
-    expect(defaultGroupLabel(list)).toBe('Search Group 3');
-    expect(defaultGroupLabel([{ id: 'x', label: 'Search Group 1' }])).toBe('Search Group 2');
+  it('defaultGroupLabel: Concept N with collision bump (98.md §8)', () => {
+    expect(defaultGroupLabel([])).toBe('Concept 1');
+    expect(defaultGroupLabel(list)).toBe('Concept 3');
+    expect(defaultGroupLabel([{ id: 'x', label: 'Concept 1' }])).toBe('Concept 2');
+    // a label collision at the counted position bumps past it
+    expect(defaultGroupLabel([{ id: 'x', label: 'Concept 2' }])).toBe('Concept 3');
   });
 });
 
@@ -994,10 +996,10 @@ describe('97.md Phases 8/15 — migrateLegacyGroupLabels (idempotent, marker-sta
     { id: 'cT', label: 'Time Frame', picoField: 'T', field: 'Time Frame', source: 'pico_auto', op: 'AND', note: 'Last 5 years', terms: [] },
   ];
 
-  it('rewrites canonical PICO labels to "Search Group N" and stamps labelMigrated:1', () => {
+  it('rewrites canonical PICO labels to "Concept N" (98.md §8) and stamps labelMigrated:2', () => {
     const out = migrateLegacyGroupLabels(legacyFiveGroup());
-    expect(out.map((c) => c.label)).toEqual(['Search Group 1', 'Search Group 2', 'Search Group 3', 'Search Group 4', 'Search Group 5']);
-    out.forEach((c) => expect(c.labelMigrated).toBe(1));
+    expect(out.map((c) => c.label)).toEqual(['Concept 1', 'Concept 2', 'Concept 3', 'Concept 4', 'Concept 5']);
+    out.forEach((c) => expect(c.labelMigrated).toBe(2));
   });
 
   it('RETAINS picoField (invariant 5) — QC/drift exemptions and rejectionKey scope survive', () => {
@@ -1019,7 +1021,7 @@ describe('97.md Phases 8/15 — migrateLegacyGroupLabels (idempotent, marker-sta
     const out = migrateLegacyGroupLabels(renamed);
     expect(out[0].label).toBe('People with diabetes');
     expect(out[0].labelMigrated).toBeUndefined();
-    expect(out[1].label).toBe('Search Group 2'); // numbering = position among ALL groups
+    expect(out[1].label).toBe('Concept 2'); // numbering = position among ALL groups
   });
 
   it('legacy Concepts-era groups (source pico_auto, NO picoField) migrate by label too', () => {
@@ -1028,7 +1030,36 @@ describe('97.md Phases 8/15 — migrateLegacyGroupLabels (idempotent, marker-sta
       { id: 'k2', label: 'Outcome', field: 'Outcome', source: 'pico_auto', op: 'AND', terms: [] },
     ];
     const out = migrateLegacyGroupLabels(era);
-    expect(out.map((c) => c.label)).toEqual(['Search Group 1', 'Search Group 2']);
+    expect(out.map((c) => c.label)).toEqual(['Concept 1', 'Concept 2']);
+  });
+
+  /* 98.md §8 — the SECOND one-shot pass: default 97-era "Search Group N" labels
+     become "Concept N" (same number preserved — collaborators' mental mapping
+     survives), stamped labelMigrated:2. User renames never match the pattern. */
+  it('98.md §8 — renames a default "Search Group N" label to "Concept N" keeping the SAME number', () => {
+    const era97 = [
+      { id: 'g1', label: 'Search Group 3', source: 'user_added', op: 'AND', terms: [] },
+      { id: 'g2', label: 'Drainage', source: 'user_added', op: 'AND', terms: [] },
+      { id: 'g3', label: 'search group 1', source: 'generated', op: 'AND', terms: [] }, // case-insensitive
+    ];
+    const out = migrateLegacyGroupLabels(era97);
+    expect(out.map((c) => c.label)).toEqual(['Concept 3', 'Drainage', 'Concept 1']); // number preserved, NOT position
+    expect(out[0].labelMigrated).toBe(2);
+    expect(out[1].labelMigrated).toBeUndefined(); // custom name untouched, no marker
+    expect(out[2].labelMigrated).toBe(2);
+  });
+
+  it('98.md §8 — the second pass is idempotent and leaves non-matching labels alone', () => {
+    const era97 = [{ id: 'g1', label: 'Search Group 2', source: 'user_added', op: 'AND', terms: [] }];
+    const once = migrateLegacyGroupLabels(era97);
+    expect(once[0].label).toBe('Concept 2');
+    expect(migrateLegacyGroupLabels(once)).toBe(once); // SAME array — no churn
+    // "Concept N" never matches either legacy pattern
+    const done = [{ id: 'g1', label: 'Concept 2', labelMigrated: 2, source: 'user_added', op: 'AND', terms: [] }];
+    expect(migrateLegacyGroupLabels(done)).toBe(done);
+    // near-miss labels are user text, not defaults
+    const nearMiss = [{ id: 'g1', label: 'Search Group A', source: 'user_added', op: 'AND', terms: [] }];
+    expect(migrateLegacyGroupLabels(nearMiss)).toBe(nearMiss);
   });
 
   it('never touches user-created groups — even one the user happened to call "Population"', () => {

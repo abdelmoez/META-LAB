@@ -1,6 +1,6 @@
 /**
  * searchStages.js — the ONE pure, React-free source of truth for the Search
- * workflow's stage list (73.md P5 + 74.md + 75.md; reshaped by 96.md).
+ * workflow's stage list (73.md P5 + 74.md + 75.md; reshaped by 96.md and 98.md).
  *
  * This table used to live inside SearchWorkspace.jsx; 75.md moves the numbered
  * Search workflow into the WHITE project side-menu (navConfig → the shared
@@ -12,9 +12,11 @@
  *
  * 96.md — the Concepts and Test & Refine stages are RETIRED: phrase selection,
  * concept-group management, quality checks, preview counts and versions all live in
- * the single Terms & Vocabulary workspace now. Stale deep links (`?stage=concepts`,
- * `?stage=refine`) resolve through STAGE_ALIASES so browser history / bookmarks
- * land on Terms & Vocabulary and the URL is rewritten (never a phantom stage).
+ * the single Terms & Vocabulary workspace now. 98.md §3 — the standalone Research
+ * Question stage is retired too: the question is edited INLINE at the top of the
+ * keyword workspace. Stale deep links (`?stage=concepts`, `?stage=refine`,
+ * `?stage=question`) resolve through STAGE_ALIASES so browser history / bookmarks
+ * land on Select & Build Key Terms and the URL is rewritten (never a phantom stage).
  *
  * `num` drives the always-numbered pip; `builder`/`phase` mark the stages that render
  * the (persistent) Search Builder; `needsConcepts` marks stages that are only
@@ -23,25 +25,30 @@
  * automated mode (74.md — the run surface owns sources/overrides there).
  */
 export const STAGES = [
-  { id: 'question',      num: 1, label: 'Research Question',   desc: 'Frame the question' },
+  // 98.md §3 — the standalone Research Question stage is RETIRED: the question is
+  // edited inline in the Select & Build Key Terms workspace (STAGE_ALIASES sends
+  // `?stage=question` deep links there; the pico.question DATA is untouched).
   // 97.md Phase 5 — label-only rename (stage id `terms` NEVER changes: deep links,
-  // STAGE_ALIASES concepts/refine→terms and stored URLs all key off the id).
-  { id: 'terms',         num: 2, label: 'Select & Build Key Terms', desc: 'Build your search',  builder: true, phase: 'terms' },
-  { id: 'mode',          num: 3, label: 'Search Mode',         desc: 'Manual or automated' },
-  { id: 'strategy',      num: 4, label: 'Database Strategies', desc: 'Per-database syntax',    builder: true, phase: 'build', manualOnly: true },
-  { id: 'results',       num: 5, label: 'Run Externally',      desc: 'Your database accounts', needsConcepts: true },
-  { id: 'documentation', num: 6, label: 'Documentation',       desc: 'Methods & PRISMA-S' },
-  { id: 'screening',     num: 7, label: 'Send to Screening',   desc: 'Prepare the import',     needsConcepts: true },
+  // STAGE_ALIASES concepts/refine/question→terms and stored URLs all key off the id).
+  { id: 'terms',         num: 1, label: 'Select & Build Key Terms', desc: 'Build your search',  builder: true, phase: 'terms' },
+  { id: 'mode',          num: 2, label: 'Search Mode',         desc: 'Manual or automated' },
+  { id: 'strategy',      num: 3, label: 'Database Strategies', desc: 'Per-database syntax',    builder: true, phase: 'build', manualOnly: true },
+  { id: 'results',       num: 4, label: 'Run Externally',      desc: 'Your database accounts', needsConcepts: true },
+  { id: 'documentation', num: 5, label: 'Documentation',       desc: 'Methods & PRISMA-S' },
+  { id: 'screening',     num: 6, label: 'Send to Screening',   desc: 'Prepare the import',     needsConcepts: true },
 ];
 
 /* 96.md — retired stage ids → their surviving home. Consumed by
    `stageAfterModeChange` (and therefore `reconcileStageUrl`) plus
    navConfig.readSearchStageParam, so a stale `?stage=concepts` / `?stage=refine`
    deep link resolves to Terms & Vocabulary everywhere with ONE map (the
-   `?tab=discovery`→search precedent). Pure data + exported for tests. */
+   `?tab=discovery`→search precedent). 98.md §3 — 'question' joins the map: the
+   question now lives (editable) inside the keyword workspace. Pure data +
+   exported for tests. */
 export const STAGE_ALIASES = Object.freeze({
   concepts: 'terms',
   refine: 'terms',
+  question: 'terms',
 });
 
 /** Resolve a possibly-retired stage id through STAGE_ALIASES (identity otherwise). */
@@ -95,19 +102,20 @@ export function reconcileStageUrl(urlStage, searchMode, currentStage) {
    deep links land on Terms & Vocabulary rather than walking from a ghost position.
    Stays put when the stage survives; otherwise walks FORWARD through the master
    order to the nearest surviving stage (Database Strategies → Results), then
-   backward, then home. Unknown ids resolve to 'question'. Pure + exported. */
+   backward, then home. Unknown ids resolve to 'terms' (98.md §3 — the keyword
+   workspace is the workflow's home now). Pure + exported. */
 export function stageAfterModeChange(currentStageId, searchMode) {
   const resolved = resolveStageAlias(currentStageId);
   const next = stagesFor(searchMode);
   if (next.some((s) => s.id === resolved)) return resolved;
   const order = STAGES.map((s) => s.id);
   const idx = order.indexOf(resolved);
-  if (idx === -1) return 'question';
+  if (idx === -1) return 'terms';
   for (let i = idx + 1; i < order.length; i++) {
     if (next.some((s) => s.id === order[i])) return order[i];
   }
   for (let i = idx - 1; i >= 0; i--) {
     if (next.some((s) => s.id === order[i])) return order[i];
   }
-  return 'question';
+  return 'terms';
 }

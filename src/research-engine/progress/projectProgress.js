@@ -96,12 +96,17 @@ function prosperoRule(p) {
 
 function searchRule(p, ev) {
   // REAL evidence: the saved search strategy (WorkflowModuleState 'search'). A saved
-  // revision with ≥1 concept is a genuine strategy — the meaningful signal, not the
-  // stale "≥3 database checkboxes" heuristic. Used verbatim when the server loads it.
+  // revision with ≥1 LIVE concept group is a genuine strategy — the meaningful
+  // signal, not the stale "≥3 database checkboxes" heuristic. Used verbatim when the
+  // server loads it. `conceptCount` counts LIVE groups only (see JSDoc + 98.md §6).
   const s = ev && ev.search;
   if (s) {
-    if (s.revision > 0 && (s.conceptCount || 0) > 0) return S('done', 'Search strategy saved with concepts');
-    if (s.revision > 0 || (s.conceptCount || 0) > 0 || s.readyForScreening) return S('partial');
+    const liveConcepts = s.conceptCount || 0;
+    if (s.revision > 0 && liveConcepts > 0) return S('done', 'Search strategy saved with concepts');
+    // 98.md §6 — a bare revision is NOT progress: the workspace's no-user-action
+    // seed save already writes revision 1 with zero content. Partial requires
+    // actual content (a live concept group) or the explicit screening hand-off.
+    if (s.revision > 0 && (liveConcepts > 0 || s.readyForScreening)) return S('partial');
     return S('empty');
   }
   // Fallback (list path / no module loaded): legacy blob heuristic.
@@ -113,26 +118,112 @@ function searchRule(p, ev) {
   return S('empty');
 }
 
+/* 98.md §14 Defect 5 — "0" is not completion evidence. The PRISMA auto-fill writes
+   String(count) fields — a "0" from an empty screening workspace used to satisfy
+   nonEmpty and flip prisma 'done'. A numeric value must be POSITIVE; non-numeric
+   non-empty legacy strings (e.g. "12 (3 RCTs)", "n/a") keep the old nonEmpty
+   behaviour for back-compat with hand-typed blobs. */
+function positiveOrLegacyCount(v) {
+  if (!nonEmpty(v)) return false;
+  const n = Number(v);
+  return Number.isNaN(n) ? true : n > 0;
+}
+
+/* 98.md §14 Defect 2b — resolve the screening evidence bag. The server-derived
+   `ev.screening` wins; on the client-side recompute (no server evidence, e.g. after
+   an optimistic edit dropped `_progress` — Defect 6) the SAME shape is rebuilt from
+   the transient `_linkedMetaSift` annotation so both paths judge the same counts. */
+function screeningEvidenceBag(p, ev) {
+  if (ev && ev.screening) return ev.screening;
+  const lm = p._linkedMetaSift;
+  if (!lm) return null;
+  const bag = {
+    decidedCount: lm.decidedCount,
+    screenablePool: lm.screenablePool,
+    recordCount: lm.recordCount,
+    progressStatus: lm.progressStatus,
+  };
+  if (lm.pending && typeof lm.pending === 'object') bag.pending = lm.pending;
+  if (typeof lm.complete === 'boolean') bag.complete = lm.complete;
+  return bag;
+}
+
+/* 98.md §14 — the optional screening substate, emitted as an ADDITIVE `detail`
+   field on the screening step ('not_started' | 'in_progress' |
+   'awaiting_second_review' | 'conflicts_remaining' | 'completed') so the Overview
+   can label the real substep. Consumers that ignore it see the unchanged
+   status/reason contract. Purely derived from the same evidence as the status. */
+function screeningDetail(sc, status) {
+  if (status === 'done') return 'completed';
+  if (status === 'empty') return 'not_started';
+  const pending = (sc && sc.pending) || {};
+  if ((pending.unresolvedConflicts || 0) > 0) return 'conflicts_remaining';
+  // Title/abstract KNOWN finished (count present and zero) with full-text work
+  // outstanding = the between-stages wait. Only computable on the detail path,
+  // where the quorum-aware count travels.
+  if (pending.titleAbstractPending === 0 && (pending.secondReviewPending || 0) > 0) return 'awaiting_second_review';
+  return 'in_progress';
+}
+
 function screeningRule(p, ev) {
-  const sc = ev && ev.screening;
-  const progressStatus = sc ? sc.progressStatus : (p._linkedMetaSift && p._linkedMetaSift.progressStatus);
-  const decided = sc ? (sc.decidedCount || 0) : 0;
-  const pool = sc ? (sc.screenablePool || 0) : 0;
-  const records = sc ? (sc.recordCount || 0) : 0;
-  // Human sign-off wins (leader marks the workspace 'done') — preserved.
-  if (progressStatus === 'done') return S('done', 'Screening signed off');
-  // Derived completion: every screenable record has a terminal decision.
-  if (pool > 0 && decided >= pool) return S('done', 'All screenable records decided');
-  if (decided > 0 || records > 0) return S('partial');
-  // Legacy blob fallback when there is no linked workspace summary.
-  if (p.prisma && nonEmpty(p.prisma.included)) return S('partial');
-  return S('empty');
+  const sc = screeningEvidenceBag(p, ev);
+  // Legacy blob fallback when there is no linked workspace summary at all
+  // (98.md §14 scenario: migrated legacy project). "0" is not evidence (Defect 5).
+  if (!sc) {
+    if (p.prisma && positiveOrLegacyCount(p.prisma.included)) return { ...S('partial'), detail: 'in_progress' };
+    return { ...S('empty'), detail: 'not_started' };
+  }
+  const decided = sc.decidedCount || 0;
+  const pool = sc.screenablePool || 0;
+  const records = sc.recordCount || 0;
+  // Substep counts (98.md §14 Defect 2b). The detail GET carries the FULL bag plus
+  // the server-computed `complete` (isScreeningWorkComplete over quorum-aware
+  // counts); the list GET carries only the cheaply-batched counts (conflicts +
+  // duplicate groups) and NO `complete` — see projectsController.listProjects.
+  const pending = (sc.pending && typeof sc.pending === 'object') ? sc.pending : {};
+  const pendingWork = Object.values(pending).some((n) => Number.isFinite(n) && n > 0);
+  // Server-computed completeness is authoritative when present; otherwise the
+  // decided/pool heuristic. decidedCount is isDuplicate-filtered server-side
+  // (Defect 2a), so records swept into duplicate groups AFTER being finalized can
+  // no longer fake `decided >= pool` while live records sit unscreened.
+  const evidenceComplete = typeof sc.complete === 'boolean'
+    ? sc.complete
+    : (pool > 0 && decided >= pool && !pendingWork);
+  const withDetail = (res) => ({ ...res, detail: screeningDetail(sc, res.status) });
+
+  if (sc.progressStatus === 'done') {
+    // 98.md §14 Defect 1 — human sign-off stays meaningful but must be CORROBORATED:
+    // affirmative counter-evidence (zero records, pending substeps, or the server's
+    // complete:false) downgrades the report to partial — the canonical progress
+    // must not lie even though the write itself is accepted (leader freedom).
+    // NOTE `decided < pool` alone is NOT counter-evidence: title/abstract-excluded
+    // records never receive a finalStatus, so finished screens legitimately sit
+    // below the pool (the Defect 2 mismatched-population bug).
+    if (records === 0 || sc.complete === false || pendingWork) {
+      return withDetail(S('partial', 'Signed off, but screening work is pending'));
+    }
+    return withDetail(S('done', 'Screening signed off'));
+  }
+  if (evidenceComplete) {
+    return withDetail(S('done', typeof sc.complete === 'boolean'
+      ? 'All screening steps complete'
+      : 'All screenable records decided'));
+  }
+  if (decided > 0 || records > 0) return withDetail(S('partial'));
+  // 98.md review (L12) — a LINKED-BUT-EMPTY workspace (0 records, 0 decided)
+  // carries no counter-evidence, so hand-typed PRISMA numbers still count:
+  // legacy projects screened externally must not regress from partial to empty
+  // just because a (never-used) workspace was linked. '0' is still not evidence.
+  if (p.prisma && positiveOrLegacyCount(p.prisma.included)) return withDetail(S('partial'));
+  return withDetail(S('empty'));
 }
 
 function prismaRule(p) {
   const prisma = p.prisma || {};
-  if (nonEmpty(prisma.included)) return S('done');
-  if (nonEmpty(prisma.dbs) || nonEmpty(prisma.dedupe)) return S('partial');
+  // 98.md §14 Defect 5 — done needs a POSITIVE include count (or a non-numeric
+  // legacy string); the auto-filled "0" of an empty workspace is at most partial.
+  if (positiveOrLegacyCount(prisma.included)) return S('done');
+  if (nonEmpty(prisma.included) || nonEmpty(prisma.dbs) || nonEmpty(prisma.dedupe)) return S('partial');
   return S('empty');
 }
 
@@ -225,14 +316,25 @@ function manuscriptRule(p) {
  * @param {object} project  parsed Project blob (pico, prospero, prisma, search,
  *                          studies[], grade, reportChecked, manuscripts[], …).
  * @param {object} [evidence] server-derived counts NOT in the blob:
- *   - screening?: { decidedCount, screenablePool, recordCount, progressStatus }
+ *   - screening?: { decidedCount, screenablePool, recordCount, progressStatus,
+ *                   complete?, pending?, includedFinal? }
+ *       decidedCount is isDuplicate-filtered (98.md §14 Defect 2a). `complete` is
+ *       the server-computed substep predicate (isScreeningWorkComplete — note it
+ *       does NOT require includedFinal>0; an all-rejected screen IS complete) and
+ *       travels on the detail GET only. `pending` = { titleAbstractPending?,
+ *       unresolvedConflicts?, unresolvedDuplicateGroups?, secondReviewPending? } —
+ *       any count may be absent (the list GET batches only the cheap ones).
  *   - search?:    { revision, conceptCount, searchMode, readyForScreening }
+ *       conceptCount = LIVE concept groups only (≥1 term with non-blank text and
+ *       disabled!==true — mirrors searchBuilder/termLiveness.js), NOT raw groups;
+ *       empty seed groups never count toward Search progress (98.md §6).
  *   - rob?:       { assessed }   (distinct studyIds with a RobAssessment row)
  *   Any field may be omitted; each rule falls back to the blob.
  * @param {object} [opts]  feature flags. `networkMetaAnalysis:true` makes `nma` a
  *                         required (counted) step.
- * @returns {{ pct:number, steps:Array<{id,label,num,required,status,reason?}>,
+ * @returns {{ pct:number, steps:Array<{id,label,num,required,status,reason?,detail?}>,
  *            requiredDone:number, requiredTotal:number, nextStepId:string|null }}
+ *   `detail` (98.md §14, additive) is currently emitted by the screening step only.
  */
 export function computeProjectProgress(project, evidence = {}, opts = {}) {
   const p = project || {};
@@ -261,10 +363,13 @@ export function computeProjectProgress(project, evidence = {}, opts = {}) {
   };
 
   const steps = STEP_DEFS.map((def) => {
-    const { status, reason } = ruleFor[def.id]();
+    const { status, reason, detail } = ruleFor[def.id]();
     const required = def.optionalUnlessFlag ? !!flags[def.optionalUnlessFlag] : true;
     const step = { id: def.id, label: def.label, num: def.num, required, status };
     if (reason) step.reason = reason;
+    // 98.md §14 — additive substate (screening only today); absent elsewhere so
+    // existing consumers are unaffected.
+    if (detail) step.detail = detail;
     return step;
   });
 

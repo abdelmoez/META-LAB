@@ -154,6 +154,26 @@ describe('statusOf', () => {
     const p = { _linkedMetaSift: null };
     expect(statusOf(p)).toBe('active');
   });
+
+  // 98.md §14 Defect 3b — the canonical `_progress` screening step wins over the
+  // leader-editable progressStatus label when the annotation is present.
+  it('prefers the canonical _progress screening step over the manual label', () => {
+    const signedOffButPending = {
+      _linkedMetaSift: { progressStatus: 'done' },
+      _progress: { pct: 40, steps: [{ id: 'screening', status: 'partial' }] },
+    };
+    expect(statusOf(signedOffButPending)).toBe('in_progress');
+    const evidencedDone = {
+      _linkedMetaSift: { progressStatus: 'in_progress' },
+      _progress: { pct: 90, steps: [{ id: 'screening', status: 'done' }] },
+    };
+    expect(statusOf(evidencedDone)).toBe('done');
+    const notStarted = {
+      _linkedMetaSift: { progressStatus: 'in_progress' },
+      _progress: { pct: 0, steps: [{ id: 'screening', status: 'empty' }] },
+    };
+    expect(statusOf(notStarted)).toBe('active');
+  });
 });
 
 /* ═══════════════════════════════════════════════════════════════════════════
@@ -350,6 +370,31 @@ describe('progressOf', () => {
   it('returns null when screenablePool is 0 (nothing screenable yet)', () => {
     const p = { _linkedMetaSift: { progressStatus: 'in_progress', recordCount: 5, decidedCount: 0, screenablePool: 0 } };
     expect(progressOf(p)).toBeNull();
+  });
+
+  // 98.md §14 Defect 3b — derive from the canonical `_progress` when present.
+  it('an uncorroborated "done" label no longer paints a full bar when _progress says otherwise', () => {
+    const p = {
+      _linkedMetaSift: { progressStatus: 'done', recordCount: 40, decidedCount: 10, screenablePool: 40 },
+      _progress: { pct: 40, steps: [{ id: 'screening', status: 'partial' }] },
+    };
+    expect(progressOf(p)).toBe(25); // the real decided/pool ratio, not 100
+  });
+
+  it('returns 100 when the canonical screening step is done, whatever the label says', () => {
+    const p = {
+      _linkedMetaSift: { progressStatus: 'in_progress', recordCount: 40, decidedCount: 8, screenablePool: 40 },
+      _progress: { pct: 90, steps: [{ id: 'screening', status: 'done' }] },
+    };
+    expect(progressOf(p)).toBe(100);
+  });
+
+  it('caps the ratio at 99 when the canonical step says screening is not done', () => {
+    const p = {
+      _linkedMetaSift: { progressStatus: 'in_progress', recordCount: 40, decidedCount: 40, screenablePool: 40 },
+      _progress: { pct: 60, steps: [{ id: 'screening', status: 'partial' }] },
+    };
+    expect(progressOf(p)).toBe(99); // never a "finished" bar while work remains
   });
 });
 

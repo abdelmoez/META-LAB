@@ -1,6 +1,7 @@
 /**
  * stageStatus.js — 85.md A1, re-keyed by 96.md. Pure, React-free per-stage
- * completion status for the 7-stage Search workflow. The UI (workspace rail +
+ * completion status for the 6-stage Search workflow (98.md §3 retired the
+ * standalone Research Question stage). The UI (workspace rail +
  * white side-menu stepper) maps these to glyphs/colours; THIS module owns the
  * honesty rules.
  *
@@ -30,10 +31,11 @@ import { searchQualityCheck } from './crossConcept.js';
 import { suggestionCount } from './suggestionReview.js';
 import { liveTermsOf } from './termLiveness.js';
 
-/** The 7 stage ids, in workflow order (mirror of searchStages.js STAGES).
- *  96.md — 'concepts' and 'refine' are retired (STAGE_ALIASES map them to 'terms'). */
+/** The 6 stage ids, in workflow order (mirror of searchStages.js STAGES).
+ *  96.md — 'concepts' and 'refine' are retired (STAGE_ALIASES map them to 'terms');
+ *  98.md §3 — 'question' is retired too (the question is edited inline on 'terms'). */
 export const STAGE_IDS = Object.freeze([
-  'question', 'terms', 'mode', 'strategy', 'results', 'documentation', 'screening',
+  'terms', 'mode', 'strategy', 'results', 'documentation', 'screening',
 ]);
 
 /** The status vocabulary (for consumers building legends/maps). */
@@ -43,7 +45,7 @@ const hasText = (v) => typeof v === 'string' && v.trim().length > 0;
 
 /**
  * computeStageStatuses(opts) → { [stageId]: 'done'|'partial'|'empty'|'attention' }
- * Always emits ALL 7 ids; mode-scoped consumers (stagesFor) simply ignore the
+ * Always emits ALL 6 ids; mode-scoped consumers (stagesFor) simply ignore the
  * stages their rail removed.
  *
  * @param {object} opts
@@ -63,11 +65,9 @@ export function computeStageStatuses(opts = {}) {
   const o = opts && typeof opts === 'object' ? opts : {};
   const concepts = Array.isArray(o.concepts) ? o.concepts : [];
 
-  // ── question: the research-question text is captured (96.md D5). The legacy
-  //    `pico.question` fallback keeps pre-96 callers honest without PICO gating. ──
-  const pico = o.pico && typeof o.pico === 'object' ? o.pico : {};
-  const questionText = hasText(o.question) ? o.question : pico.question;
-  const questionStatus = hasText(questionText) ? 'done' : 'empty';
+  // 98.md §3 — the 'question' stage is retired; its status is no longer emitted.
+  // (`opts.question`/`opts.pico` stay accepted-and-ignored so existing callers
+  // keep working — the question is edited inline on the terms stage now.)
 
   // ── terms: ≥1 concept group with ≥1 live term = done (generic — no PICO roles);
   //    'attention' overlays when actionable findings await: pending vocabulary
@@ -105,7 +105,6 @@ export function computeStageStatuses(opts = {}) {
   const screeningStatus = o.readyForScreening ? 'done' : 'empty';
 
   return {
-    question: questionStatus,
     terms: termsStatus,
     mode: modeStatus,
     strategy: strategyStatus,

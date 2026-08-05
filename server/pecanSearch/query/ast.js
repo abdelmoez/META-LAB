@@ -89,8 +89,18 @@ export function normalizeField(f) {
 /** A phrase = contains internal whitespace (must be quoted in most providers). */
 export function isPhrase(text) { return /\s/.test(str(text).trim()); }
 
-/** Escape embedded double-quotes for a quoted phrase. */
-export function escapeQuotes(text) { return str(text).replace(/"/g, '\\"'); }
+/** 98.md §12 — Unicode hygiene applied at the ONE normalization choke point:
+ *  NFC-normalize and fold curly quotes/apostrophes to their ASCII equivalents
+ *  (“Crohn’s disease” pasted from a paper must compile exactly like "Crohn's
+ *  disease" — no provider treats the curly forms as quote grammar). */
+export function foldUnicodePunctuation(text) {
+  let s = str(text);
+  try { s = s.normalize('NFC'); } catch { /* older runtimes */ }
+  return s.replace(/[“”„]/g, '"').replace(/[‘’‚]/g, "'");
+}
+
+/** Escape embedded double-quotes for a quoted phrase (curly forms folded first). */
+export function escapeQuotes(text) { return foldUnicodePunctuation(text).replace(/"/g, '\\"'); }
 
 /** Quote a term iff it is a phrase (or force-quoted). */
 export function quoteIfPhrase(text, force = false) {
@@ -117,12 +127,34 @@ export function normalizeCanonical(input = {}) {
       // isLiveTerm); this module stays dependency-light, but the rule MUST match or
       // the manual preview and the automated run silently diverge.
       if (t.disabled === true) continue;
-      const text = clampStr(t.text, QUERY_LIMITS.MAX_TERM_LEN).trim();
+      // 98.md §12 — Unicode folding rides normalization so every connector sees
+      // clean ASCII quote/apostrophe forms.
+      const text = foldUnicodePunctuation(clampStr(t.text, QUERY_LIMITS.MAX_TERM_LEN)).trim();
       if (!text) continue;
+      const type = t.type === 'controlled' ? 'controlled' : 'freetext';
+      // 98.md §12 — SINGLE SOURCE OF TRUTH FIX: the Search Builder stamps
+      // controlled terms with field:'tiab' (their field selector is a free-text
+      // concept), so without this coercion the manual compiled preview showed
+      // "X"[Mesh] while the automated run executed "X"[Title/Abstract] — silently
+      // dropping MeSH indexing + explosion. A controlled term with a mapped vocab
+      // record ALWAYS searches the vocabulary field unless the caller explicitly
+      // named a different specific field (mesh/kw/etc. pass through normalizeField
+      // untouched; tiab/blank/all are the builder's defaults → coerced). Covers
+      // legacy saved strategies too — the coercion is at the ONE normalization
+      // choke point every run path goes through.
+      // Review (M13) — the whitelist must be the VOCABULARY fields, not the
+      // builder defaults: every client renderer ignores term.field for controlled
+      // terms and always renders the vocabulary clause, so a controlled term
+      // carrying ti/ab (settable via the term editor's scope buttons before
+      // converting to MeSH) previews "X"[Mesh] while a field-respecting run
+      // would execute "x"[Title]. Coerce EVERYTHING except an explicit
+      // vocabulary-ish field (mesh/kw) to FIELD.MESH.
+      const nf = normalizeField(t.field);
+      const field = (type === 'controlled' && nf !== FIELD.MESH && nf !== FIELD.KEYWORD) ? FIELD.MESH : nf;
       terms.push({
         text,
-        type: t.type === 'controlled' ? 'controlled' : 'freetext',
-        field: normalizeField(t.field),
+        type,
+        field,
         vocab: t.vocab && typeof t.vocab === 'object' ? t.vocab : null,
         noExplode: !!t.noExplode,
         truncate: !!t.truncate,

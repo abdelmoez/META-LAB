@@ -22,26 +22,26 @@ import { publishSearchStageStatuses, __resetSearchModeStore } from '../../src/fe
 
 // 75.md recs (Finding 1) — the numbered Search WORKFLOW submenu is gated behind the
 // staged workspace flag (searchWorkspaceV2), because only then does the body honour
-// `?stage=`. Every "9 stages" test therefore threads searchWorkspaceV2Enabled:true; a
-// dedicated block below pins the legacy single-'Search' fallback when the flag is off.
+// `?stage=`. Every numbered-stages test therefore threads searchWorkspaceV2Enabled:true;
+// a dedicated block below pins the legacy single-'Search' fallback when the flag is off.
 const CTX = { projectId: 'p1', linkedSiftId: 's1', searchWorkspaceV2Enabled: true };
 const stageKeysOf = (items) => items.filter((i) => !i.utility).map((i) => i.key);
 const toolsOf = (items) => items.filter((i) => i.utility);
 
 describe('75.md — submenuForCategory("search") is the mode-scoped Search workflow', () => {
-  it('undecided / manual → the full 7-stage numbered workflow (96.md — concepts/refine retired)', () => {
+  it('undecided / manual → the full 6-stage numbered workflow (96/98.md — concepts/refine/question retired)', () => {
     for (const ctx of [CTX, { ...CTX, searchMode: null }, { ...CTX, searchMode: 'manual' }]) {
       const items = submenuForCategory('search', ctx);
       expect(stageKeysOf(items)).toEqual([
-        'question', 'terms', 'mode', 'strategy', 'results', 'documentation', 'screening',
+        'terms', 'mode', 'strategy', 'results', 'documentation', 'screening',
       ]);
     }
   });
 
-  it('automated → drops Database Strategies (6 numbered stages) — matches stagesFor', () => {
+  it('automated → drops Database Strategies (5 numbered stages) — matches stagesFor', () => {
     const items = submenuForCategory('search', { ...CTX, searchMode: 'automated' });
     expect(stageKeysOf(items)).toEqual([
-      'question', 'terms', 'mode', 'results', 'documentation', 'screening',
+      'terms', 'mode', 'results', 'documentation', 'screening',
     ]);
     expect(stageKeysOf(items).some((k) => k === 'strategy')).toBe(false);
   });
@@ -55,9 +55,9 @@ describe('75.md — submenuForCategory("search") is the mode-scoped Search workf
 
   it('each stage is a ?tab=search&stage=<id> deep link, labelled from the stage table', () => {
     const items = submenuForCategory('search', CTX);
-    const q = items.find((i) => i.key === 'question');
-    expect(q.href).toBe('/app/project/p1?tab=search&stage=question');
-    expect(q.label).toBe('Research Question');
+    const t = items.find((i) => i.key === 'terms');
+    expect(t.href).toBe('/app/project/p1?tab=search&stage=terms');
+    expect(t.label).toBe('Select & Build Key Terms');
     expect(items.find((i) => i.key === 'screening').href).toBe('/app/project/p1?tab=search&stage=screening');
     // no stage item is disabled from the nav layer (in-body gating handles needsConcepts)
     expect(items.filter((i) => !i.utility).every((i) => !!i.href)).toBe(true);
@@ -103,36 +103,36 @@ describe('85.md — additive per-stage `status` on the Search submenu items', ()
   it('an explicit ctx.searchStageStatuses wins and maps per stage id', () => {
     const items = submenuForCategory('search', {
       ...CTX,
-      searchStageStatuses: { question: 'done', terms: 'attention' },
+      searchStageStatuses: { terms: 'attention', strategy: 'done' },
     });
     const byKey = Object.fromEntries(items.map((i) => [i.key, i]));
-    expect(byKey.question.status).toBe('done');
     expect(byKey.terms.status).toBe('attention');
+    expect(byKey.strategy.status).toBe('done');
     expect(byKey.mode.status).toBeNull(); // unknown stages stay glyph-less
   });
 
   it('falls back to the shared store the mounted workspace publishes to', () => {
-    publishSearchStageStatuses('p1', { question: 'done', screening: 'empty' });
+    publishSearchStageStatuses('p1', { terms: 'done', screening: 'empty' });
     const items = submenuForCategory('search', CTX);
     const byKey = Object.fromEntries(items.map((i) => [i.key, i]));
-    expect(byKey.question.status).toBe('done');
+    expect(byKey.terms.status).toBe('done');
     expect(byKey.screening.status).toBe('empty');
   });
 
   it('submenuSteps prefers the item status over the legacy statusMap', () => {
     const steps = submenuSteps('search', {
       ...CTX,
-      searchStageStatuses: { question: 'done', terms: 'attention' },
+      searchStageStatuses: { terms: 'attention', strategy: 'done' },
     }, { statusMap: {} });
     const byKey = Object.fromEntries(steps.map((s) => [s.key, s]));
-    expect(byKey.question.status).toBe('done');
     expect(byKey.terms.status).toBe('attention');
+    expect(byKey.strategy.status).toBe('done');
     expect(byKey.mode.status).toBe('empty'); // no truth → the calm default
     expect(byKey.living.status).toBeNull();   // utility rows stay status-less
   });
 
   it('the legacy (flag OFF) single-Search submenu is untouched by the store', () => {
-    publishSearchStageStatuses('p1', { question: 'done' });
+    publishSearchStageStatuses('p1', { terms: 'done' });
     const items = submenuForCategory('search', { projectId: 'p1', linkedSiftId: 's1' });
     const search = items.find((i) => i.key === 'search');
     expect(search.status).toBeUndefined(); // legacy item shape is unchanged
@@ -154,7 +154,7 @@ describe('75.md recs (Finding 1) — flag OFF falls back to the legacy single-Se
     expect(search.href).toBe('/app/project/p1?tab=search'); // the classic host route, no ?stage=
     expect(search.completionKey).toBe('search');
     // NONE of the workflow stage ids leak into the legacy submenu.
-    for (const id of ['question', 'terms', 'mode', 'strategy', 'documentation']) {
+    for (const id of ['terms', 'mode', 'strategy', 'documentation']) {
       expect(items.some((i) => i.key === id)).toBe(false);
     }
   });
@@ -187,25 +187,32 @@ describe('75.md recs (Finding 1) — flag OFF falls back to the legacy single-Se
 });
 
 describe('75.md — searchStageHref / readSearchStageParam / activeSubmenuKey', () => {
-  it('builds a stage deep link', () => {
+  it('builds a stage deep link (98.md §3 — the default stage is terms)', () => {
     expect(searchStageHref('terms', { projectId: 'p1' })).toBe('/app/project/p1?tab=search&stage=terms');
     expect(searchStageHref('mode', { projectId: 'a b' })).toBe('/app/project/a%20b?tab=search&stage=mode');
-    expect(searchStageHref(undefined, { projectId: 'p1' })).toBe('/app/project/p1?tab=search&stage=question');
+    expect(searchStageHref(undefined, { projectId: 'p1' })).toBe('/app/project/p1?tab=search&stage=terms');
   });
-  it('reads ?stage= (bare ?tab=search → question)', () => {
+  it('reads ?stage= (bare ?tab=search → terms, 98.md §3)', () => {
     expect(readSearchStageParam('?tab=search&stage=mode')).toBe('mode');
-    expect(readSearchStageParam('?tab=search')).toBe('question');
-    expect(readSearchStageParam('')).toBe('question');
+    expect(readSearchStageParam('?tab=search')).toBe('terms');
+    expect(readSearchStageParam('')).toBe('terms');
   });
-  it('96.md — RETIRED stage params resolve through STAGE_ALIASES to terms', () => {
+  it('96/98.md — RETIRED stage params (incl. question) resolve through STAGE_ALIASES to terms', () => {
     expect(readSearchStageParam('?tab=search&stage=concepts')).toBe('terms');
     expect(readSearchStageParam('?tab=search&stage=refine')).toBe('terms');
+    expect(readSearchStageParam('?tab=search&stage=question')).toBe('terms');
     expect(activeSubmenuKey('?tab=search&stage=concepts')).toBe('terms');
     expect(activeSubmenuKey('?tab=search&stage=refine')).toBe('terms');
+    expect(activeSubmenuKey('?tab=search&stage=question')).toBe('terms');
+  });
+  it('a blank/absent ?stage= value falls back to terms (the workflow home)', () => {
+    expect(readSearchStageParam('?tab=search&stage=')).toBe('terms'); // blank value → the default
+    expect(readSearchStageParam(null)).toBe('terms');
+    expect(readSearchStageParam(undefined)).toBe('terms');
   });
   it('activeSubmenuKey resolves the Search stage, and Living/Citation match their own key', () => {
     expect(activeSubmenuKey('?tab=search&stage=terms')).toBe('terms');
-    expect(activeSubmenuKey('?tab=search')).toBe('question');
+    expect(activeSubmenuKey('?tab=search')).toBe('terms');
     expect(activeSubmenuKey('?tab=living')).toBe('living');
     expect(activeSubmenuKey('?tab=citation')).toBe('citation');
     // unchanged for the other categories
@@ -215,27 +222,27 @@ describe('75.md — searchStageHref / readSearchStageParam / activeSubmenuKey', 
 });
 
 describe('75.md — submenuSteps("search"): numbered workflow + un-numbered optional tools', () => {
-  it('numbers ONLY the workflow stages 1..7; Living/Citation are num:null utility rows', () => {
+  it('numbers ONLY the workflow stages 1..6; Living/Citation are num:null utility rows', () => {
     const steps = submenuSteps('search', { ...CTX, citationMiningEnabled: true }, { statusMap: {} });
     const byKey = Object.fromEntries(steps.map((s) => [s.key, s]));
-    expect(byKey.question.num).toBe(1);
-    expect(byKey.screening.num).toBe(7);
-    // the numbered stages count 1..7 with no gaps
+    expect(byKey.terms.num).toBe(1);
+    expect(byKey.screening.num).toBe(6);
+    // the numbered stages count 1..6 with no gaps
     const nums = steps.filter((s) => s.num != null).map((s) => s.num);
-    expect(nums).toEqual([1, 2, 3, 4, 5, 6, 7]);
+    expect(nums).toEqual([1, 2, 3, 4, 5, 6]);
     // optional tools are NOT numbered
     expect(byKey.living.num).toBeNull();
     expect(byKey.citation.num).toBeNull();
     // and the group label survives to the stepper for the separator
     expect(byKey.living.groupLabel).toBe('Optional tools');
     // per-stage helper copy comes from the stage table
-    expect(byKey.question.desc).toBe('Frame the question');
+    expect(byKey.terms.desc).toBe('Build your search');
   });
 
-  it('automated → 6 numbered stages (Database Strategies gone), tools unchanged', () => {
+  it('automated → 5 numbered stages (Database Strategies gone), tools unchanged', () => {
     const steps = submenuSteps('search', { ...CTX, searchMode: 'automated' }, { statusMap: {} });
     const nums = steps.filter((s) => s.num != null).map((s) => s.num);
-    expect(nums).toEqual([1, 2, 3, 4, 5, 6]);
+    expect(nums).toEqual([1, 2, 3, 4, 5]);
     expect(steps.some((s) => s.key === 'strategy')).toBe(false);
     expect(steps.find((s) => s.key === 'living').num).toBeNull();
   });

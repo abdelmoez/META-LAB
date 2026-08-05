@@ -67,6 +67,8 @@ const DUP_TYPE_LABEL = {
 import { DEFAULT_INCLUDE_KEYWORDS, DEFAULT_EXCLUDE_KEYWORDS } from '../../src/research-engine/screening/defaultKeywords.js';
 import { effectiveKeywords } from '../../src/research-engine/screening/criteriaKeywords.js';
 import { isScreeningComplete } from '../utils/screeningCompletion.js';
+// 98.md §14 Defect 1 — substep evidence for the 'done' sign-off corroboration warning.
+import { loadScreeningProgressEvidence } from '../screening/progressEvidence.js';
 import { mkProject } from '../../src/research-engine/project-model/defaults.js';
 import { filterRecordsByKeywords, countArticlesByKeyword } from '../../src/research-engine/screening/keywordFilter.js';
 import { studyFromRecord } from './screeningReviewController.js';
@@ -427,6 +429,28 @@ export async function updateProject(req, res) {
 
     const updated = await prisma.screenProject.update({ where: { id: p.id }, data });
 
+    // 98.md §14 Defect 1 — sign-off corroboration. The leader may still mark the
+    // workspace 'done' freely (deliberately NOT hard-rejected), but when the
+    // substep evidence says screening work is pending we return an ADDITIVE
+    // warning with the row — the canonical progress model no longer trusts an
+    // uncorroborated sign-off, and the client should be able to say why.
+    let statusWarning;
+    if (data.progressStatus === 'done') {
+      try {
+        const evd = await loadScreeningProgressEvidence(updated);
+        if (!evd.complete) {
+          const parts = [];
+          if (evd.total === 0) parts.push('no records imported');
+          if (evd.titleAbstractPending > 0) parts.push(`${evd.titleAbstractPending} awaiting title/abstract review`);
+          if (evd.unresolvedConflicts > 0) parts.push(`${evd.unresolvedConflicts} unresolved conflict${evd.unresolvedConflicts === 1 ? '' : 's'}`);
+          if (evd.unresolvedDuplicateGroups > 0) parts.push(`${evd.unresolvedDuplicateGroups} unresolved duplicate group${evd.unresolvedDuplicateGroups === 1 ? '' : 's'}`);
+          if (evd.secondReviewPending > 0) parts.push(`${evd.secondReviewPending} awaiting a full-text decision`);
+          statusWarning = `Marked done, but screening work is pending${parts.length ? ` (${parts.join(', ')})` : ''}. `
+            + 'Project progress will not show Screening as complete until the work is finished.';
+        }
+      } catch { /* corroboration is best-effort — never blocks or slows the save */ }
+    }
+
     // Audit blind-mode changes (Part 5).
     if (blindMode !== undefined && !!blindMode !== p.blindMode) {
       await writeAudit(p.id, req.user, blindMode ? 'BLIND_MODE_ON' : 'BLIND_MODE_OFF', { entityType: 'project', entityId: p.id });
@@ -473,7 +497,9 @@ export async function updateProject(req, res) {
         });
         await writeAudit(p.id, req.user, 'PROJECT_STATUS_CHANGED', {
           entityType: 'project', entityId: p.id,
-          details: { from: p.progressStatus, to: data.progressStatus },
+          // 98.md §14 Defect 1 — leave a trail when 'done' was signed off with
+          // screening work still pending (the write is accepted regardless).
+          details: { from: p.progressStatus, to: data.progressStatus, ...(statusWarning ? { pendingWorkAtSignOff: true } : {}) },
         });
       } catch { /* metric trail is best-effort */ }
       emitToProjectMembers(p.id, { type: 'status.changed' }, { exclude: req.user.id });
@@ -503,7 +529,9 @@ export async function updateProject(req, res) {
     // Realtime poke (Task 7) — thin, fire-and-forget, error-swallowed.
     emitToProjectMembers(p.id, { type: 'project.updated' }, { exclude: req.user.id });
 
-    res.json(updated);
+    // 98.md §14 Defect 1 — `statusWarning` is additive; the wire contract stays
+    // "the updated ScreenProject object" for every consumer that ignores it.
+    res.json(statusWarning ? { ...updated, statusWarning } : updated);
   } catch (err) {
     console.error('[screening] updateProject:', err.message);
     res.status(500).json({ error: 'Internal server error' });
@@ -2443,10 +2471,17 @@ export async function getMetaLabSummary(req, res) {
       ...dupGroups.map(g => g.resolvedAt || g.createdAt),
     ].filter(Boolean).map(t => new Date(t).getTime()).filter(n => Number.isFinite(n));
     const dedupLastRunAt = dedupPerformed && dedupTimes.length ? new Date(Math.max(...dedupTimes)).toISOString() : null;
-    const fullTextAssessed   = records.filter(r => r.currentStage === 'full_text').length;
+    // 98.md review — Finding B (mirror of progressEvidence.js): the full_text
+    // population is !isDuplicate-filtered TOGETHER (all three counts, so the
+    // secondReviewPending subtraction below stays consistent) — a record swept into
+    // a duplicate group after reaching full text must not inflate the pending count
+    // (blocking screeningComplete forever) nor keep counting as assessed/accepted/
+    // rejected. Also keeps the PRISMA funnel over one population: `screened` already
+    // excludes duplicates, so a duplicate-swept record cannot exceed it downstream.
+    const fullTextAssessed   = records.filter(r => !r.isDuplicate && r.currentStage === 'full_text').length;
     const excludedTitleAbstract = Math.max(0, screened - fullTextAssessed);
-    const fullTextExcluded   = records.filter(r => r.finalStatus === 'rejected').length;
-    const acceptedRecords    = records.filter(r => r.finalStatus === 'accepted');
+    const fullTextExcluded   = records.filter(r => !r.isDuplicate && r.finalStatus === 'rejected').length;
+    const acceptedRecords    = records.filter(r => !r.isDuplicate && r.finalStatus === 'accepted');
     const includedFinal      = acceptedRecords.length;
 
     // prompt29 Part 9 — true screening completeness for the main workflow stepper.
