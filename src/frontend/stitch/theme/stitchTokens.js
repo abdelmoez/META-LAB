@@ -71,6 +71,8 @@ export const STITCH_LIGHT = {
   shadowSm:          '0 1px 2px rgba(16,18,30,0.06)',
   shadow1:           '0 4px 20px rgba(16,18,30,0.06)',
   shadow2:           '0 15px 35px rgba(16,18,30,0.12)',
+  // The colour alone, for the many `box-shadow: <offsets> var(--t-shadow)` sites.
+  shadowColor:       'rgba(16,18,30,0.16)',
   ring:              'rgba(93,80,155,0.30)',
 };
 
@@ -115,6 +117,8 @@ export const STITCH_DARK = {
   shadowSm:          '0 1px 2px rgba(0,0,0,0.4)',
   shadow1:           '0 4px 20px rgba(0,0,0,0.45)',
   shadow2:           '0 15px 35px rgba(0,0,0,0.55)',
+  // The colour alone, for the many `box-shadow: <offsets> var(--t-shadow)` sites.
+  shadowColor:       'rgba(0,0,0,0.50)',
   ring:              'rgba(202,190,255,0.40)',
 };
 
@@ -242,7 +246,15 @@ function legacyRemap(p) {
     '--t-teal-bg': p.infoSoft,
     '--t-gold': p.warn,
     '--t-gold-bg': p.warnSoft,
-    '--t-shadow': p.shadow1,
+    /* 99.md — `--t-shadow` is a shadow COLOUR, not a complete shadow. Every one of
+       the ~16 call sites writes `box-shadow: <offsets> var(--t-shadow)` (the legacy
+       theme has always emitted a colour here — tokens.js `shadow: 'rgba(...)'`).
+       Remapping it to the composite `shadow1` expanded those to
+       `0 14px 40px 0 4px 20px rgba(...)`, which is invalid at computed-value time,
+       so the browser silently dropped the whole declaration and EVERY elevation in
+       stitch mode — dropdowns, popovers, modals, `.hover-lift` — rendered flat.
+       `shadow1`/`shadow2` stay available for surfaces that want the composite. */
+    '--t-shadow': p.shadowColor,
   };
 }
 

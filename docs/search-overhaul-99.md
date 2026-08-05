@@ -112,6 +112,24 @@ Autosave and the byte-stability contract are unaffected: expansion state never e
 
 1. **View Transitions are Chromium-only today.** Firefox and Safari take the instant-commit path — correct, just without the morph; the CSS fade-slide entrance softens it. No behavioural difference, and the reduced-motion path exercises the same code.
 2. **The view-transition rules are declared globally** (the tab's `<style>` is unscoped, matching the file's existing rules), including the `root` snap. Only this tab starts view transitions today, so there is nothing to collide with — but if another surface adopts them, these need scoping by transition name first, and the `root` rule in particular would suppress a cross-fade that another feature might want.
-3. **Pre-existing, found while debugging the shadow bug (not fixed here):** several inline `boxShadow: "0 14px 40px var(--t-shadow)"` declarations elsewhere in the app (the merge dropdown, the add-term listbox, and others) have the same invalid-CSS shape and are silently rendering **no shadow**. Fixing them is a one-token change per site but would alter visuals in many unrelated places, so it belongs in its own reviewed pass.
+3. ~~Pre-existing invalid shadows elsewhere in the app.~~ **Fixed — see §9.**
 4. **Expansion state is not restored across reloads** — deliberate (99.md: "treated as UI state unless there is a strong reason to persist it"). If usage shows people repeatedly reopening the same concept after a reload, per-project session storage would be the smallest fix.
 5. The 98.md limitations remain open and untouched: `TermEditorPopover` is absolute-positioned rather than portaled, Beginner Mode persists per-browser, and within-group Boolean is fixed to OR.
+
+## 9. Follow-up: every elevation in the app was silently disabled
+
+Chasing the dead hover ring in §5 turned up a bug well outside this prompt's scope, so it is recorded here with its fix.
+
+**`--t-shadow` meant two different things.** The legacy theme has always emitted a shadow **colour** (`tokens.js`: `shadow: 'rgba(17,24,39,0.08)'`), and all ~16 call sites are written for that — `box-shadow: <offsets> var(--t-shadow)`. The Stitch remap, however, pointed the same variable at the **composite** `shadow1` (`0 4px 20px rgba(…)`). Every one of those declarations therefore expanded to nonsense:
+
+```
+box-shadow: 0 14px 40px 0 4px 20px rgba(0,0,0,0.45);   /* invalid → dropped whole */
+```
+
+CSS discards the entire declaration when a `var()` substitution is invalid at computed-value time, and it does so **silently** — no console warning, no lint error, and nothing a DOM-shape test can see. Because the app ships in Stitch mode, this meant term-editor and MeSH popovers, the add-term listbox, the merge dropdown, the undo snackbar, modals, drawers and the global `.hover-lift` utility had all been rendering **completely flat**.
+
+**Fix:** the Stitch palettes gained a `shadowColor` entry and the remap now maps `--t-shadow` to it, restoring the contract every call site was written against. `shadow1`/`shadow2` remain for surfaces that want the composite. One line of 99.md's own CSS was reverted to explicit offsets to match.
+
+Verified in the browser by computed style: `--t-shadow` resolves to `rgba(0,0,0,0.50)`, and the undo snackbar — which asks for `0 10px 30px var(--t-shadow)` — now computes `rgba(0,0,0,0.5) 0px 10px 30px 0px` where it previously computed `none`.
+
+**Worth internalising:** a shadow that renders nothing looks like a design choice, so this survived several redesigns. The only reason it surfaced now is that visual verification measured a computed style instead of trusting the code to mean what it says. Assertions on computed values are cheap and catch a class of bug that DOM-shape tests structurally cannot.

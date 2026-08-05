@@ -2833,10 +2833,7 @@ export default function SearchBuilderTab({projectId,question:questionProp,pico,a
    landing wherever the View Transition morph is unavailable). All motion is
    removed under prefers-reduced-motion, matching the pv-* house pattern. */
 .sb-card-shell{transition:box-shadow .18s var(--ease-out,cubic-bezier(.22,.61,.36,1)),transform .18s var(--ease-out,cubic-bezier(.22,.61,.36,1));}
-/* NB: --t-shadow is a COMPLETE shadow value ("0 4px 20px rgba(…)"), not a colour —
-   writing "0 6px 16px var(--t-shadow)" makes the whole declaration invalid at
-   computed-value time and the browser silently drops it (caught in 99.md visual QA). */
-.sb-card-shell[data-compact="true"]:hover{box-shadow:0 0 0 1px ${alpha(C.acc,'66')},var(--t-shadow);transform:translateY(-1px);}
+.sb-card-shell[data-compact="true"]:hover{box-shadow:0 0 0 1px ${alpha(C.acc,'66')},0 6px 16px var(--t-shadow);transform:translateY(-1px);}
 .sb-card-shell[data-compact="true"]:focus-visible{outline:2px solid ${C.acc};outline-offset:2px;}
 .sb-card-chevron{transition:transform .18s var(--ease-out,cubic-bezier(.22,.61,.36,1));}
 .sb-card-chevron[data-open="true"]{transform:rotate(180deg);}
