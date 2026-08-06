@@ -13,7 +13,7 @@ describe('empty + degenerate strategies', () => {
     const r = compileStrategy({}, 'pubmed');
     expect(r.query).toBe('');
     expect(r.notes.some((n) => /No concepts with search terms/.test(n))).toBe(true);
-    expect(r.vocab).toEqual({ system: 'mesh', mapped: 0, unmapped: 0, approximate: false });
+    expect(r.vocab).toEqual({ system: 'mesh', mapped: 0, unmapped: 0, fallback: 0, approximate: false });
     expect(r.filtersApplied).toBe(false);
   });
 

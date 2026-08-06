@@ -45,6 +45,16 @@ export const screeningApi = {
     return req('GET', `/projects/${pid}/records${qs ? '?' + qs : ''}`);
   },
   getKeywordStats: (pid) => req('GET', `/projects/${pid}/keyword-stats`),
+  // 100.md §§12-15 — "where did I stop?", per user + project + screening stage.
+  // → { stage, status:'resume'|'reopen'|'start'|'complete'|'empty', recordId, wrapped,
+  //     position, page, limit, pending, decided, stageTotal, listTotal,
+  //     lastDecidedAt, message }
+  // Derived server-side from THIS reviewer's decision history — never a shared
+  // project-wide pointer and never browser storage.
+  getResumePoint: (pid, params = {}) => {
+    const qs = new URLSearchParams(params).toString();
+    return req('GET', `/projects/${pid}/resume${qs ? '?' + qs : ''}`);
+  },
   deleteRecord: (pid, rid) => req('DELETE', `/projects/${pid}/records/${rid}`),
   // 96.md 5D — article-level import provenance: which searches/files introduced
   // or re-found this record and which metadata fields later imports changed.

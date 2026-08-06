@@ -72,8 +72,10 @@ function renderTerm(t, warnings, unsupported) {
   // Controlled-vocabulary terms (e.g. MeSH) have no registry equivalent — use the
   // human-readable heading text as free text rather than dropping the concept.
   let text = t.text;
-  if (t.type === 'controlled' && t.vocab) {
-    const heading = t.vocab.mesh || t.vocab.heading || t.text;
+  if (t.type === 'controlled') {
+    // 100.md §3 — search the concept's NATURAL word order, not the inverted indexed
+    // string: no trial registration is titled "Diabetes Mellitus, Type 2".
+    const heading = t.freeTextHeading || (t.vocab && (t.vocab.mesh || t.vocab.heading)) || t.text;
     if (heading && heading !== t.text) {
       text = String(heading);
       warnings.push(`Controlled term "${t.text}" was searched as the free-text phrase "${text}" (no trial-registry controlled vocabulary).`);

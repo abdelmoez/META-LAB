@@ -4,9 +4,20 @@
  * next to each compiled strategy so a user knows how to paste/run it. Pure data.
  *
  * Fields:
- *   vocabSystem   'mesh'|'emtree'|'cinahl'|'apa'|'decs'|'none' (matches result.vocab.system)
- *   controlledVocab  has a native subject-heading field we can target
- *   explosion        supports explode / no-explode control on subject headings
+ *   vocabSystem   'mesh'|'emtree'|'cinahl'|'apa'|'decs'|'none' — the thesaurus this
+ *                 database is INDEXED with (matches result.vocab.system)
+ *   controlledVocab  100.md §3 — true only when Pecan can target that thesaurus with a
+ *                 heading it can VERIFY. It is therefore false for Embase (Emtree),
+ *                 CINAHL (CINAHL Headings) and PsycInfo (APA Thesaurus): those
+ *                 vocabularies are proprietary, no authoritative MeSH crosswalk is
+ *                 published, and inventing a heading is exactly what 100.md forbids.
+ *                 `vocabSystem` still names the real thesaurus so the compiler can say
+ *                 WHICH vocabulary it could not reach; those databases fall back to a
+ *                 properly-formatted free-text phrase (see compilers/shared.js).
+ *   explosion        supports explode / no-explode CONTROL on subject headings
+ *   explosionDefault when explosion is false: 'explode' | 'exact' — which way the
+ *                 database's heading field behaves, so the mismatch is reported in the
+ *                 right direction instead of a generic "narrower topics were dropped"
  *   fieldTags        supports field-level targeting (title / abstract / …)
  *   phrase           phrase delimiter: 'double' | 'single' | 'none'
  *   truncation       right-truncation wildcard character, or null
@@ -34,13 +45,18 @@ export const CAPABILITIES = {
   },
   embase: {
     id: 'embase', label: 'Embase',
-    vocabSystem: 'emtree', controlledVocab: true, explosion: true, fieldTags: true,
+    // 100.md §3 — Embase is indexed with Emtree, but Emtree is Elsevier-proprietary and
+    // no authoritative MeSH↔Emtree crosswalk exists, so Pecan cannot name the equivalent
+    // heading. Subject terms compile to verified Embase free text instead of an invented
+    // '…'/exp clause.
+    vocabSystem: 'emtree', controlledVocab: false, explosion: true, fieldTags: true,
     phrase: 'single', truncation: '*', truncationMinStem: 4, wildcard: '?',
     proximity: { op: 'NEAR/n', syntax: "'a' NEAR/3 'b'" },
     booleans: ['AND', 'OR', 'NOT'], filters: { date: true, language: true, pubType: false },
     syntaxLevel: 'native',
     notes: [
-      'Use Embase.com → Search → Quick search (Advanced) and paste the string; Emtree terms use /exp (explode) or /de.',
+      'Use Embase.com → Search → Quick search (Advanced) and paste the string.',
+      'Emtree headings are not generated: no public MeSH↔Emtree crosswalk exists, so your subject terms ride as Embase free text. Add the real Emtree term with /exp through the Edit button if you need heading-level recall.',
       'Apply the publication-type limit from the Embase results-page filters — it is not embedded in the string.',
     ],
   },
@@ -89,7 +105,7 @@ export const CAPABILITIES = {
     syntaxLevel: 'native',
     notes: [
       'Paste into Scopus → Advanced document search; TITLE-ABS-KEY() covers title, abstract, and keywords.',
-      'INDEXTERMS() reuses your MeSH terms and is approximate — Scopus has no MeSH/Emtree thesaurus.',
+      'Scopus indexes no medical subject-heading thesaurus, so your subject terms ride as TITLE-ABS-KEY free text — which already reaches Scopus\'s own author and index keywords.',
     ],
   },
   wos: {
@@ -101,7 +117,7 @@ export const CAPABILITIES = {
     syntaxLevel: 'native',
     notes: [
       'Paste into the Web of Science Advanced Search; TS= is Topic (title, abstract, keywords), TI= is title only.',
-      'Web of Science has no controlled-vocabulary thesaurus, so MeSH terms were searched as topic text ($ is its single-character wildcard).',
+      'Web of Science has no subject-heading thesaurus, so your subject terms ride as Topic text in natural word order ($ is its single-character wildcard).',
     ],
   },
   gscholar: {
@@ -118,26 +134,31 @@ export const CAPABILITIES = {
   },
   cinahl: {
     id: 'cinahl', label: 'CINAHL',
-    vocabSystem: 'cinahl', controlledVocab: true, explosion: true, fieldTags: true,
+    // 100.md §3 — CINAHL Headings are an EBSCO thesaurus with no published MeSH
+    // crosswalk; pasting a MeSH string into (MH "…") silently returns zero whenever the
+    // two vocabularies word a concept differently. Free text is the honest translation.
+    vocabSystem: 'cinahl', controlledVocab: false, explosion: true, fieldTags: true,
     phrase: 'double', truncation: '*', truncationMinStem: 0, wildcard: '#',
     proximity: { op: 'N/n', syntax: 'a N3 b (W/n for order)' },
     booleans: ['AND', 'OR', 'NOT'], filters: { date: true, language: true, pubType: true },
     syntaxLevel: 'native',
     notes: [
-      'Paste into CINAHL (EBSCOhost) Advanced Search; (MH "Heading+") explodes a CINAHL Heading, TI/AB are field codes.',
-      'The CINAHL Headings were carried over from your MeSH terms and are approximate — confirm them in the CINAHL Headings thesaurus.',
+      'Paste into CINAHL (EBSCOhost) Advanced Search; TI/AB are its field codes and the limits ride inside the string.',
+      'CINAHL Headings are not generated: EBSCO publishes no MeSH crosswalk, so your subject terms ride as CINAHL free text. Look the heading up in the CINAHL Headings browser and add (MH "Heading+") through the Edit button when you need it.',
     ],
   },
   psycinfo: {
     id: 'psycinfo', label: 'PsycINFO',
-    vocabSystem: 'apa', controlledVocab: true, explosion: true, fieldTags: true,
+    // 100.md §3 — the APA Thesaurus of Psychological Index Terms is proprietary and
+    // worded quite differently from MeSH; DE "<MeSH heading>" matched almost nothing.
+    vocabSystem: 'apa', controlledVocab: false, explosion: true, fieldTags: true,
     phrase: 'double', truncation: '*', truncationMinStem: 0, wildcard: '#',
     proximity: { op: 'N/n', syntax: 'a N3 b (W/n for order)' },
     booleans: ['AND', 'OR', 'NOT'], filters: { date: true, language: true, pubType: true },
     syntaxLevel: 'native',
     notes: [
-      'Paste into APA PsycInfo (EBSCOhost) Advanced Search; DE "descriptor" targets the APA Thesaurus, TI/AB are field codes.',
-      'Descriptors were carried over from your MeSH terms and are approximate — the APA Thesaurus differs from MeSH.',
+      'Paste into APA PsycInfo (EBSCOhost) Advanced Search; TI/AB are its field codes and the limits ride inside the string.',
+      'APA descriptors are not generated: the APA Thesaurus has no public MeSH crosswalk, so your subject terms ride as PsycInfo free text. Add DE "descriptor" through the Edit button once you have looked the term up.',
     ],
   },
   proquest: {
@@ -148,7 +169,8 @@ export const CAPABILITIES = {
     booleans: ['AND', 'OR', 'NOT'], filters: { date: false, language: false, pubType: false },
     syntaxLevel: 'native',
     notes: [
-      'Paste into ProQuest Advanced Search; TI,AB(...) scopes to title + abstract and MAINSUBJECT.EXACT() is approximate.',
+      'Paste into ProQuest Advanced Search; TI,AB(...) scopes to title + abstract.',
+      'ProQuest carries no medical subject-heading thesaurus, so your subject terms ride as TI,AB free text.',
       'Set the publication-date and language limits with the ProQuest limiters below the search box.',
     ],
   },
@@ -167,19 +189,23 @@ export const CAPABILITIES = {
   },
   europepmc: {
     id: 'europepmc', label: 'Europe PMC',
-    vocabSystem: 'mesh', controlledVocab: true, explosion: false, fieldTags: true,
+    // Indexes MEDLINE's own MeSH annotations → the identity mapping applies. `MESH:`
+    // matches the heading exactly; there is no explosion form (explosionDefault:'exact').
+    vocabSystem: 'mesh', controlledVocab: true, explosion: false, explosionDefault: 'exact', fieldTags: true,
     phrase: 'double', truncation: '*', truncationMinStem: 0, wildcard: '?',
     proximity: null,
     booleans: ['AND', 'OR', 'NOT'], filters: { date: true, language: true, pubType: true },
     syntaxLevel: 'native',
     notes: [
       'Paste into the Europe PMC search box; TITLE:/ABSTRACT: are native fields and PUB_YEAR/LANG carry your limits.',
-      'MESH: is best-effort — Europe PMC has no MeSH explosion, so coverage can differ from PubMed.',
+      'MESH: uses the same MeSH descriptor PubMed does, but matches it exactly (no explosion) and only on records MEDLINE has already indexed.',
     ],
   },
   pmc: {
     id: 'pmc', label: 'PubMed Central',
-    vocabSystem: 'mesh', controlledVocab: true, explosion: false, fieldTags: true,
+    // Indexes MeSH → identity mapping. `[MeSH Terms]` ALWAYS explodes and PMC exposes
+    // no NoExp form (explosionDefault:'explode').
+    vocabSystem: 'mesh', controlledVocab: true, explosion: false, explosionDefault: 'explode', fieldTags: true,
     phrase: 'double', truncation: '*', truncationMinStem: 0, wildcard: null,
     proximity: null,
     booleans: ['AND', 'OR', 'NOT'], filters: { date: true, language: true, pubType: true },
@@ -198,7 +224,7 @@ export const CAPABILITIES = {
     syntaxLevel: 'native',
     notes: [
       'Use IEEE Xplore → Advanced Search → Command Search and paste the string ("Document Title":, "Abstract": are its fields).',
-      'IEEE has no controlled-vocabulary thesaurus, so any MeSH terms were searched as full-text words.',
+      'IEEE has no subject-heading thesaurus, so your subject terms ride as Document Title / Abstract text.',
     ],
   },
   acm: {
@@ -210,7 +236,7 @@ export const CAPABILITIES = {
     syntaxLevel: 'native',
     notes: [
       'Use the ACM DL Advanced Search; Title:(...) and Abstract:(...) are its field-scoped groups.',
-      'ACM has no controlled-vocabulary thesaurus and applies date limits from the results-page filters, not the query string.',
+      'ACM has no subject-heading thesaurus (subject terms ride as Title / Abstract text) and applies date limits from the results-page filters, not the query string.',
     ],
   },
 };

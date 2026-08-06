@@ -12,13 +12,8 @@ import { fieldBody } from '../shared.js';
 
 export const clinicaltrials = {
   id: 'clinicaltrials',
-  renderControlled(term, vocab, warnings, unsupported) {
-    const heading = (term.vocab && term.vocab.mesh) || term.text;
-    vocab.unmapped++;
-    vocab.approximate = true;
-    unsupported.push({ feature: 'controlled-vocabulary', detail: `ClinicalTrials.gov has no controlled-vocabulary field; the MeSH term "${heading}" was searched as a plain phrase.` });
-    return fieldBody({ text: heading, type: 'freetext', phrase: true }, { quoteChar: '"', wildcard: null, warnings });
-  },
+  /* 100.md §3 — no controlled-vocabulary field (capabilities: controlledVocab:false);
+     the shared vocabulary layer records it and renders the concept as a plain phrase. */
   renderFree(term, warnings) {
     return fieldBody(term, { quoteChar: '"', wildcard: null, warnings });
   },

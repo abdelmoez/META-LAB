@@ -34,7 +34,7 @@ import { buildUrl, contentHashId, clampPageSize } from './base.js';
 import { makeThrottle } from '../throttle.js';
 import { normalizeRecord, NORMALIZATION_VERSION } from '../normalize.js';
 import {
-  FIELD, normalizeCanonical, validateCanonical, makeTranslated,
+  FIELD, normalizeCanonical, validateCanonical, makeTranslated, searchableText,
 } from '../query/ast.js';
 import { toCrossrefType, parseDateBound } from '../query/vocab.js';
 import { PecanError } from '../errors.js';
@@ -115,13 +115,16 @@ function translateCrossref(canonicalInput, { override } = {}) {
   for (const concept of canonical.concepts) {
     if (concept.terms.length > 1 && concept.op === 'OR') multiConceptOrTerm = true;
     for (const t of concept.terms) {
-      const text = String(t.text || '').trim();
+      // 100.md §3 — Crossref has no controlled index, so a subject heading is searched
+      // as the CONCEPT in natural word order (searchableText), never as the inverted
+      // catalogue string and never as invented syntax.
+      const text = String(searchableText(t) || '').trim();
       if (!text) continue;
       supported.push(`${t.field}:${t.text}`);
       // Truncation/MeSH explosion are PubMed-style features Crossref cannot honor.
       if (t.truncate) warnings.push(`Truncation on "${t.text}" is not supported by Crossref (free-text relevance ranking is used instead).`);
       if (t.type === 'controlled' || t.field === FIELD.MESH) {
-        warnings.push(`Controlled-vocabulary term "${t.text}" was searched as free text — Crossref has no MeSH/controlled index.`);
+        warnings.push(`Controlled-vocabulary term "${t.text}" was searched as the free text "${text}" — Crossref has no MeSH/controlled index.`);
       }
       // All term text always feeds the bibliographic relevance query.
       biblioTerms.push(text);

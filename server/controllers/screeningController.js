@@ -29,6 +29,11 @@ import { getProjectAccess, ensureLeaderMember, writeAudit, QUORUM } from '../scr
 import { rankItems } from '../../src/research-engine/screening/ai/ranking.js';
 import { splitBySource } from '../../src/research-engine/screening/sourceClassify.js';
 import { fastListEligible, buildFastListQuery } from '../../src/research-engine/screening/recordListQuery.js';
+// 100.md §§12-15 — pure Resume Screening logic (target selection, keyset cursor, page
+// math, user-facing wording), shared with the client so both say the same thing.
+import {
+  normalizeResumeStage, afterCursor, pickResumeTarget, resumePage, resumeMessage,
+} from '../../src/research-engine/screening/resumeState.js';
 import { aiFlagEnabled, stripAiInternals } from '../services/screeningAiService.js';
 // 62.md — export logic moved into a shared service so the sync route + the async export
 // worker share one CSV schema and one row mapping. CV is now capped + run off the event
@@ -103,6 +108,11 @@ async function getOwnedProject(pid, userId) {
 // keeps the requirement sane.
 const REQUIRED_REVIEWERS_MIN = 2;
 const REQUIRED_REVIEWERS_MAX = 10;
+
+// 100.md §14 — the user-facing name of each screening stage, used in the Resume
+// Screening wording ("You have completed screening for Title & Abstract."). Mirrors
+// the client labels in src/frontend/screening/pages/SiftProject.jsx.
+const STAGE_LABELS = { title_abstract: 'Title & Abstract', full_text: 'Final Review' };
 
 /**
  * Effective number of DISTINCT title/abstract reviewer decisions a record must
@@ -864,7 +874,11 @@ export async function listRecords(req, res) {
     // Pull all decisions (for reviewer indicators + quorum) and this user's open-state.
     const records = await prisma.screenRecord.findMany({
       where,
-      orderBy: { createdAt: 'asc' },
+      // 100.md §§13/15 — the id tiebreak the FAST path already had (recordListQuery.js)
+      // was missing here, so a bulk import (thousands of rows sharing one createdAt)
+      // could hand back a DIFFERENT order on every request. Resume Screening reports a
+      // position in this order, and "article 412" has to mean the same article twice.
+      orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
       include: {
         decisions: true,
         openStates: { where: { userId: me } },
@@ -2380,6 +2394,136 @@ export async function getStats(req, res) {
     });
   } catch (err) {
     console.error('[screening] getStats:', err.message);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+}
+
+/**
+ * GET /projects/:pid/resume?stage=title_abstract&limit=50 — 100.md §§12-15.
+ * "Where did I stop?", answered per USER + PROJECT + STAGE.
+ *
+ * The position is DERIVED from the caller's own ScreenDecision rows (unique per
+ * record+reviewer+stage, with `updatedAt`), never from a stored pointer or from
+ * localStorage — see src/research-engine/screening/resumeState.js for why that makes
+ * every 100.md §15 edge case (deleted / deduplicated / filtered / two reviewers /
+ * multiple sessions) fall out correctly.
+ *
+ * Response:
+ *   { stage, status, recordId, wrapped, position, page, limit,
+ *     pending, decided, stageTotal, listTotal, lastDecidedAt, message }
+ *   `position`/`page` are indices into the DEFAULT records list (every record of the
+ *   project, `createdAt ASC, id ASC`), so the client can jump straight to the page
+ *   that contains the article instead of paging through thousands of rows.
+ */
+export async function getResumePoint(req, res) {
+  try {
+    const access = await getProjectAccess(req.params.pid, req.user);
+    if (!access) return res.status(404).json({ error: 'Project not found' });
+    const p = access.project;
+    const me = req.user.id;
+    const stage = normalizeResumeStage(req.query.stage);
+    const limit = Math.min(200, Math.max(10, parseInt(req.query.limit || '50', 10)));
+
+    // The pool a reviewer can still act on at this stage: at the stage, not a resolved
+    // duplicate, and without a decision of THEIRS that is anything but 'undecided'.
+    const pendingWhere = {
+      projectId: p.id,
+      currentStage: stage,
+      isDuplicate: false,
+      decisions: { none: { reviewerId: me, stage, decision: { not: 'undecided' } } },
+    };
+    const ORDER = [{ createdAt: 'asc' }, { id: 'asc' }];
+
+    const [stageTotal, pending, decided, lastDecision, listTotal] = await Promise.all([
+      prisma.screenRecord.count({ where: { projectId: p.id, currentStage: stage, isDuplicate: false } }),
+      prisma.screenRecord.count({ where: pendingWhere }),
+      prisma.screenDecision.count({ where: { projectId: p.id, reviewerId: me, stage, decision: { not: 'undecided' } } }),
+      prisma.screenDecision.findFirst({
+        where: { projectId: p.id, reviewerId: me, stage, decision: { not: 'undecided' } },
+        orderBy: { updatedAt: 'desc' },
+        select: { recordId: true, updatedAt: true },
+      }),
+      prisma.screenRecord.count({ where: { projectId: p.id } }),
+    ]);
+
+    // Anchor row (may be gone if the article was hard-deleted — the decision cascades
+    // with it, so this is belt-and-braces rather than a real case).
+    let decisionAnchor = null;
+    if (lastDecision) {
+      const rec = await prisma.screenRecord.findFirst({
+        where: { id: lastDecision.recordId, projectId: p.id },
+        select: { id: true, createdAt: true },
+      });
+      if (rec) decisionAnchor = { recordId: rec.id, id: rec.id, createdAt: rec.createdAt, decidedAt: lastDecision.updatedAt };
+    }
+
+    const cursor = afterCursor(decisionAnchor);
+    const [nextRow, firstRow, openRow] = await Promise.all([
+      cursor
+        ? prisma.screenRecord.findFirst({ where: { AND: [pendingWhere, cursor] }, orderBy: ORDER, select: { id: true } })
+        : Promise.resolve(null),
+      prisma.screenRecord.findFirst({ where: pendingWhere, orderBy: ORDER, select: { id: true } }),
+      // Most recently OPENED article that STILL needs this reviewer's decision — the
+      // "I was reading this and never decided" case (100.md §13, least friction).
+      decisionAnchor
+        ? Promise.resolve(null)
+        : prisma.screenRecordOpenState.findFirst({
+          where: { projectId: p.id, userId: me, record: pendingWhere },
+          orderBy: { openedAt: 'desc' },
+          select: { recordId: true },
+        }),
+    ]);
+
+    const target = pickResumeTarget({
+      decisionAnchor,
+      openAnchor: openRow ? { recordId: openRow.recordId } : null,
+      nextAfterAnchor: nextRow ? nextRow.id : null,
+      firstPending: firstRow ? firstRow.id : null,
+      pendingCount: pending,
+      stageTotal,
+    });
+
+    // 1-based position in the DEFAULT list order (all records, createdAt ASC, id ASC).
+    let position = null;
+    if (target.recordId) {
+      const rec = await prisma.screenRecord.findFirst({
+        where: { id: target.recordId, projectId: p.id },
+        select: { id: true, createdAt: true },
+      });
+      if (rec) {
+        const before = await prisma.screenRecord.count({
+          where: {
+            projectId: p.id,
+            OR: [
+              { createdAt: { lt: rec.createdAt } },
+              { AND: [{ createdAt: rec.createdAt }, { id: { lt: rec.id } }] },
+            ],
+          },
+        });
+        position = before + 1;
+      }
+    }
+
+    res.json({
+      stage,
+      status: target.status,
+      recordId: target.recordId,
+      wrapped: target.wrapped,
+      position,
+      page: position ? resumePage(position, limit) : 1,
+      limit,
+      pending,
+      decided,
+      stageTotal,
+      listTotal,
+      lastDecidedAt: decisionAnchor ? decisionAnchor.decidedAt : null,
+      message: resumeMessage({
+        status: target.status, position, pending, wrapped: target.wrapped,
+        stageLabel: STAGE_LABELS[stage] || 'this stage',
+      }),
+    });
+  } catch (err) {
+    console.error('[screening] getResumePoint:', err.message);
     res.status(500).json({ error: 'Internal server error' });
   }
 }

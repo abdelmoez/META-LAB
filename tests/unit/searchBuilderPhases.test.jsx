@@ -71,7 +71,7 @@ describe('DbStrategyPanel — the per-database strategy workspace panel (P6)', (
       warnings: [{ code: 'W1', message: 'Subject headings were searched as topic text.' }],
       notes: ['Paste into the Advanced Search.'],
       unsupported: [{ feature: 'explosion', detail: 'No thesaurus in Web of Science.' }],
-      vocab: { system: 'mesh', mapped: 3, unmapped: 1, approximate: true },
+      vocab: { system: 'mesh', mapped: 3, unmapped: 1, fallback: 1, approximate: false },
       syntaxLevel: 'native', filtersApplied: false,
     };
     const html = renderToStaticMarkup(
@@ -80,10 +80,25 @@ describe('DbStrategyPanel — the per-database strategy workspace panel (P6)', (
     expect(html).toContain('Subject headings were searched as topic text.');
     expect(html).toContain('not supported: explosion');
     expect(html).toContain('No thesaurus in Web of Science.');
-    // 97.md Phase 13 terminology sweep — the status line says "Controlled
-    // vocabulary" generically (the compiler names the actual system in brackets).
-    expect(html).toContain('Controlled vocabulary (mesh): 3 mapped, 1 unmapped (approximate)');
+    // 100.md §3 — the status line reports what each subject term BECAME, not a
+    // mapped/unmapped tally against a thesaurus the database may not even use.
+    expect(html).toContain('Subject terms: 3 searched as mesh subject headings · 1 searched as free text (no verified mesh equivalent)');
     expect(html).toContain('Paste into the Advanced Search.');
+  });
+
+  it('names the two honest fallback reasons apart (100.md §3)', () => {
+    const line = (vocab) => renderToStaticMarkup(h(DbStrategyPanel, {
+      res: { dbId: 'x', label: 'X', query: 'q', warnings: [], notes: [], unsupported: [], vocab, syntaxLevel: 'native', filtersApplied: false },
+      cap: capabilitiesFor('wos'), setOverride: null, hitState: null,
+    }));
+    // A database with its own (unreachable) thesaurus vs one with none at all.
+    expect(line({ system: 'emtree', mapped: 0, unmapped: 1, fallback: 1, approximate: false }))
+      .toContain('1 searched as free text (no verified emtree equivalent)');
+    expect(line({ system: 'none', mapped: 0, unmapped: 1, fallback: 1, approximate: false }))
+      .toContain('1 searched as free text (no subject headings in this database)');
+    // Nothing to say when the strategy has no subject terms.
+    expect(line({ system: 'mesh', mapped: 0, unmapped: 0, fallback: 0, approximate: false }))
+      .not.toContain('Subject terms:');
   });
 
   it('an overridden result shows ✎ EDITED + the not-synced note + Revert (never silent)', () => {

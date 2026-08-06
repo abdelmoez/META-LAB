@@ -12,11 +12,12 @@ import { pubmedDateClause, pubmedLangClause, pubmedPubTypeClause } from './pubme
 
 export const pmc = {
   id: 'pmc',
-  renderControlled(term, vocab, warnings) {
-    const heading = (term.vocab && term.vocab.mesh) || term.text;
-    if (term.vocab && term.vocab.mesh) vocab.mapped++; else vocab.unmapped++;
-    if (term.noExplode) warnings.push({ code: 'VOCAB_APPROXIMATE', message: `PMC searches MeSH via [MeSH Terms], which explodes by default; the no-explosion request for "${heading}" is not honored.` });
-    return `"${S(heading)}"[MeSH Terms]`;
+  /* 100.md §4 — PMC indexes MEDLINE's own MeSH descriptors, so the mapping is the
+     identity. `[MeSH Terms]` always explodes and PMC exposes no NoExp form, which the
+     capability table declares (explosion:false, explosionDefault:'explode') — the
+     shared layer raises the mismatch warning when the user asked for no explosion. */
+  renderHeading(plan) {
+    return `"${S(plan.heading)}"[MeSH Terms]`;
   },
   renderFree(term) {
     const { token, field } = ncbiToken(term);

@@ -3,23 +3,21 @@
  *
  * Field groups: TITLE-ABS-KEY() (title + abstract + keywords, the default),
  * TITLE() / ABS() / ALL(). Truncation '*', single-char wildcard '?', W/n proximity.
- * Scopus has no MeSH/Emtree thesaurus, so subject headings map to INDEXTERMS() with an
- * approximate warning. Limits: PUBYEAR range + LANGUAGE(); publication-type limits do
- * not map cleanly to Scopus DOCTYPE, so they are warned rather than faked.
+ * Limits: PUBYEAR range + LANGUAGE(); publication-type limits do not map cleanly to
+ * Scopus DOCTYPE, so they are warned rather than faked.
+ *
+ * 100.md §3 — Scopus indexes no medical subject-heading thesaurus (capabilities
+ * declares controlledVocab:false), so there is no `renderHeading` hook and controlled
+ * terms fall through to TITLE-ABS-KEY free text — which already covers Scopus's own
+ * author/index keywords. The old `INDEXTERMS("<MeSH heading>")` clause searched a field
+ * populated by publisher keywords, not by MeSH, so it matched almost nothing.
  */
-import { S, fieldBody, langName, uniq } from '../shared.js';
+import { fieldBody, langName, uniq } from '../shared.js';
 
 const FIELD_FN = { ti: 'TITLE', ab: 'ABS', all: 'ALL', tiab: 'TITLE-ABS-KEY' };
 
 export const scopus = {
   id: 'scopus',
-  renderControlled(term, vocab, warnings) {
-    const heading = (term.vocab && term.vocab.mesh) || term.text;
-    vocab.mapped++;
-    vocab.approximate = true;
-    warnings.push({ code: 'VOCAB_APPROXIMATE', message: `Scopus has no MeSH/Emtree thesaurus; "${heading}" was mapped to INDEXTERMS(), which is approximate.` });
-    return `INDEXTERMS("${S(heading).replace(/"/g, '')}")`;
-  },
   renderFree(term, warnings) {
     const body = fieldBody(term, { quoteChar: '"', wildcard: '*', warnings });
     return `${FIELD_FN[term.field] || FIELD_FN.tiab}(${body})`;

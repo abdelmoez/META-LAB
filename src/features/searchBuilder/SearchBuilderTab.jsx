@@ -70,7 +70,9 @@ import TermChipRow from "./components/TermChipRow.jsx";
 import TermEditorPopover from "./components/TermEditorPopover.jsx";
 import AddTermBox from "./components/AddTermBox.jsx";
 import SuggestionsDisclosure from "./components/SuggestionsDisclosure.jsx";
-import StrategyPreviewPanel from "./components/StrategyPreviewPanel.jsx";
+// 100.md §§6-11 — the read-only plain-language reading of the live strategy; it
+// replaces StrategyPreviewPanel (retired) and the always-on database previews.
+import SearchMeaningPanel from "./components/SearchMeaningPanel.jsx";
 import SaveStatusIndicator from "./components/SaveStatusIndicator.jsx";
 import UndoSnackbar from "./components/UndoSnackbar.jsx";
 import { Disclosure } from "../pecanSearch/components/parts.jsx"; // native-<details> pattern
@@ -165,6 +167,12 @@ export function embeddedShowsStep(phase,n){
   if(phase==="build") return n===3||n===4;
   return null;
 }
+
+/* 100.md §11 — the one line under the "Exact database queries" disclosure. It names
+   the two places a per-database query can actually be EDITED, so the read-only copy on
+   the building screen never looks like a dead end. Mode-agnostic on purpose: the
+   Database Strategies stage exists in manual mode, the run surface in automated. */
+const TECHNICAL_HINT = "Read-only here. To edit one database's query, open Database Strategies (manual search) or the Automated Search run surface — an edited query stops syncing with your concepts until you revert it.";
 
 /* 73.md P6 — one .txt with every selected database's compiled strategy (label +
    syntax level + query + warnings). Pure + exported for tests. */
@@ -394,9 +402,21 @@ export function DbStrategyPanel({res,cap,setOverride,hitState}){
     setEditing(false);
   };
   const revert=()=>{ if(setOverride) setOverride(null); setEditing(false); };
-  const vocabLine=res.vocab&&res.vocab.system!=="none"&&(res.vocab.mapped||res.vocab.unmapped)
-    ?`Controlled vocabulary (${res.vocab.system}): ${res.vocab.mapped} mapped${res.vocab.unmapped?`, ${res.vocab.unmapped} unmapped`:""}${res.vocab.approximate?" (approximate)":""}`
-    :null;
+  /* 100.md §3 — the vocabulary line now reports the TRANSLATION, not a mapped/unmapped
+     tally against a thesaurus we may not even reach. Three honest cases:
+       · this database indexes your vocabulary → "N searched as <system> subject headings"
+       · it does not                           → "N searched as free text (no verified
+                                                  <system> equivalent)" / "(no subject
+                                                  headings in this database)"
+     `approximate` is no longer ever set, so it is not spoken about. */
+  const vocabLine=(()=>{
+    const v=res.vocab;
+    if(!v||!(v.mapped||v.fallback)) return null;
+    const parts=[];
+    if(v.mapped) parts.push(`${v.mapped} searched as ${v.system} subject heading${v.mapped===1?"":"s"}`);
+    if(v.fallback) parts.push(`${v.fallback} searched as free text (${v.system==="none"?"no subject headings in this database":`no verified ${v.system} equivalent`})`);
+    return `Subject terms: ${parts.join(" · ")}`;
+  })();
   const guidance=[...new Set([...(res.notes||[]),...((cap&&cap.notes)||[])])];
   return(
     <div data-testid={`sb-db-strategy-${dbId}`} style={{background:C.card,border:`1px solid ${C.brd}`,borderRadius:10,padding:"12px 14px",marginBottom:10}}>
@@ -2026,7 +2046,8 @@ export default function SearchBuilderTab({projectId,question:questionProp,pico,a
 
   /* ── SB3: keyword select/deselect (Tab 1) + database selection (Tab 3) ───── */
   const effectiveDbs=useMemo(()=>selectedDbs.length?selectedDbs:defaultSelectedDatabases(),[selectedDbs]);
-  // QA L28 — ONE memoized compileAll shared by the terms-phase Database previews
+  // QA L28 — ONE memoized compileAll shared by the terms-phase meaning panel's
+  // "Exact database queries" disclosure (100.md §11; it replaced the Database previews)
   // and the build-phase strategy workspace. The builder stays mounted (hidden) on
   // every workspace stage, so an unmemoized call re-compiled all concepts × all
   // selected databases on EVERY parent re-render (e.g. per question-editor commit);
@@ -3355,7 +3376,10 @@ export default function SearchBuilderTab({projectId,question:questionProp,pico,a
                             const idx=conceptIndexById[c.id];
                             const next=concepts[idx+1];
                             if(!next) return <span>This is the last concept — nothing is combined after it.</span>;
-                            return <span>Combined with <strong>{next.label}</strong> using <strong style={{color:(c.op||"AND")==="OR"?C.yel:C.acc}}>{c.op||"AND"}</strong> — toggle it in the strategy preview below, where both concepts are visible.</span>;
+                            /* 100.md §1 — the strategy preview that used to host this
+                               toggle is retired; the live control is the AND/OR chip
+                               between the two cards on the board. */
+                            return <span>Combined with <strong>{next.label}</strong> using <strong style={{color:(c.op||"AND")==="OR"?C.yel:C.acc}}>{c.op||"AND"}</strong> — switch it with the <strong>{c.op||"AND"}</strong> chip between the two concept cards.</span>;
                           })()}
                         </div>
                         <div style={{fontSize:10.5,color:C.muted,fontFamily:MONO,wordBreak:"break-word"}}>
@@ -3415,41 +3439,32 @@ export default function SearchBuilderTab({projectId,question:questionProp,pico,a
               )}
             </div>
 
+            {/* ─── 100.md §§1-2/6-11 — ONE panel replaces TWO ───────────────────
+                RETIRED here:
+                 · "Your search so far" (StrategyPreviewPanel). Every capability it
+                   carried already lives somewhere better: the PubMed count chip +
+                   retry is the sticky PubMedPulse header (SearchWorkspace.jsx), the
+                   between-concept AND/OR toggle is `sb-and-connector` ON the board
+                   (where both operands are visible, and where it correctly renders
+                   inert next to a concept that does not compile), click-to-select and
+                   the "editing" state are the board cards themselves, and the raw
+                   PubMed string is in the disclosure below. It was a second, weaker
+                   copy of the board — 100.md §1: do not keep UI just because it exists.
+                 · "Database previews" (sb-db-previews) — 16 always-expanded compiled
+                   syntax panels between the board and the limits. 100.md §2: the
+                   search-building screen is for concepts, terms, vocabulary and
+                   MEANING; the technical strings live one click away here and, fully
+                   editable, on the Database Strategies stage / the run surface.
+                The compiler system itself is untouched — `compiledAll` still feeds
+                both surfaces from the same memo. */}
             <div style={{marginTop:12}}>
-              <StrategyPreviewPanel
+              <SearchMeaningPanel
                 concepts={concepts}
-                activeId={c?c.id:null}
-                beginner={beginner}
-                readOnly={readOnly}
-                hitState={hitState}
-                onRetryHits={refreshHitsNow}
-                onToggleOp={(cid)=>updateConcept(cid,{op:(concepts.find(x=>x.id===cid)?.op)==="OR"?"AND":"OR"})}
-                pubmedQuery={pubmedQuery}
-                onSelectConcept={(id)=>selectConcept(id,null,{scroll:true})} /* 99.md — expand + bring the card into view */
+                filters={filters}
+                compiled={liveTermCount>0?compiledAll:null}
+                technicalHint={TECHNICAL_HINT}
               />
             </div>
-
-            {/* 96.md D13.6 — per-database previews live IN the central workspace:
-                the same compiled DbStrategyPanel cards the Database Strategies stage
-                uses (syntax level, vocab mapped/unmapped, EDITED override badge with
-                edit/revert), always current via the memoized compileAll (QA L28). */}
-            {liveTermCount>0&&(()=>{
-              const compiled=compiledAll;
-              return(
-                <div data-testid="sb-db-previews" style={{marginTop:12}}>
-                  <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:8}}>
-                    <span style={{fontSize:11,fontWeight:700,color:C.muted,letterSpacing:.6,textTransform:"uppercase"}}>Database previews</span>
-                    <span style={{fontSize:10.5,color:C.dim,fontFamily:MONO}}>{compiled.length} database{compiled.length===1?"":"s"}</span>
-                    <Help text="The exact query each database will receive, compiled live from your concept groups. A MeSH term is translated to the database's own controlled vocabulary where one exists, otherwise to free text — the vocabulary line under each preview says which. Edit a query manually when you need to; edited queries stop syncing until you revert."/>
-                  </div>
-                  {compiled.map(res=>(
-                    <DbStrategyPanel key={res.dbId} res={res} cap={capabilitiesFor(res.dbId)}
-                      setOverride={readOnly?null:(val=>{ touchMeta(); /* QA M6 — a manual db-strategy override edit is a manual modification */ setOverrides(o=>{const n={...o}; if(val==null) delete n[res.dbId]; else n[res.dbId]=val; return n;}); })}
-                      hitState={res.dbId==="pubmed"?hitState:null}/>
-                  ))}
-                </div>
-              );
-            })()}
           </div>
         );
       })()}

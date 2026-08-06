@@ -32,6 +32,10 @@
  * the engine NEVER silently weakens a query.
  */
 import crypto from 'crypto';
+// 100.md §§3-4 — the ONE canonical-concept model, shared with the client compilers so
+// the manual preview and the automated run cannot drift on what a controlled term
+// means (the exact class of bug the field-coercion below exists to fix).
+import { toCanonicalConcept } from '../../../src/research-engine/searchBuilder/vocabulary/canonical.js';
 
 // KNOWN LIMITATION (documented, not silent): the canonical model represents
 // concept-level AND/OR exactly as the upstream Search Builder expresses it. It does
@@ -88,6 +92,20 @@ export function normalizeField(f) {
 
 /** A phrase = contains internal whitespace (must be quoted in most providers). */
 export function isPhrase(text) { return /\s/.test(str(text).trim()); }
+
+/**
+ * 100.md §3 — the text a provider WITHOUT this term's controlled vocabulary should
+ * search. For a free-text term that is simply the term. For a subject heading it is
+ * the concept's natural word order ("Type 2 Diabetes Mellitus"), NOT the user's
+ * shorthand and NOT the comma-inverted catalogue string — the concept the user picked
+ * is what they meant, and no abstract contains "Diabetes Mellitus, Type 2".
+ * Providers that DO index the vocabulary (PubMed, Europe PMC) use `t.heading` instead.
+ */
+export function searchableText(t) {
+  if (!t || typeof t !== 'object') return '';
+  if (t.type !== 'controlled') return str(t.text);
+  return str(t.freeTextHeading) || str(t.heading) || str(t.text);
+}
 
 /** 98.md §12 — Unicode hygiene applied at the ONE normalization choke point:
  *  NFC-normalize and fold curly quotes/apostrophes to their ASCII equivalents
@@ -151,11 +169,23 @@ export function normalizeCanonical(input = {}) {
       // vocabulary-ish field (mesh/kw) to FIELD.MESH.
       const nf = normalizeField(t.field);
       const field = (type === 'controlled' && nf !== FIELD.MESH && nf !== FIELD.KEYWORD) ? FIELD.MESH : nf;
+      const vocab = t.vocab && typeof t.vocab === 'object' ? t.vocab : null;
+      // 100.md §§3-4 — the SAME canonical concept the client compilers resolve, so
+      // the manual preview and the automated run agree on what a subject heading
+      // means. `heading` is the indexed descriptor (a MeSH-indexed provider searches
+      // exactly that); `freeTextHeading` is its natural word order, which is what a
+      // provider WITHOUT that thesaurus has to search — "Diabetes Mellitus, Type 2"
+      // appears in no abstract, so falling back to the raw inverted string used to
+      // lose nearly every hit. Both are pre-computed here, at the one normalization
+      // choke point every run path goes through.
+      const canonical = type === 'controlled' ? toCanonicalConcept({ text, type, vocab, noExplode: !!t.noExplode }) : null;
       terms.push({
         text,
         type,
         field,
-        vocab: t.vocab && typeof t.vocab === 'object' ? t.vocab : null,
+        vocab,
+        heading: canonical ? canonical.preferredLabel : '',
+        freeTextHeading: canonical ? (canonical.freeTextForms[0] || canonical.preferredLabel) : '',
         noExplode: !!t.noExplode,
         truncate: !!t.truncate,
         phrase: t.phrase != null ? !!t.phrase : isPhrase(text),

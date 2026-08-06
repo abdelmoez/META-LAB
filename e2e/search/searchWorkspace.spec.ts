@@ -217,12 +217,13 @@ test.describe('98.md — the staged Search Workspace (concept board)', () => {
     await expect(sp.activeConcept.getByLabel(/Concept name/)).toHaveValue('metformin');
     await expect(sp.termChip('dimethylbiguanide')).toBeVisible();
 
-    // A second concept from another phrase; the preview shows both, AND-connected,
-    // and the board joins the two cards with an AND connector (98.md §9).
+    // A second concept from another phrase; the plain-language reading names both and
+    // the board joins the two cards with an AND connector (98.md §9 / 100.md §§6-10).
     await sp.phraseToken(/^mortality$/).click();
-    await expect(sp.strategyPreview).toContainText('metformin');
-    await expect(sp.strategyPreview).toContainText('mortality');
-    await expect(sp.strategyPreview.getByTestId('sb-preview-op').first()).toContainText('AND');
+    await expect(sp.searchMeaning).toContainText('metformin');
+    await expect(sp.searchMeaning).toContainText('mortality');
+    await expect(sp.meaningSummary).toContainText('Find articles about');
+    await expect(sp.meaningJoins.first()).toContainText('the article must ALSO be about:');
     await expect(sp.andConnectors).toHaveCount(1);
 
     // 97.md Phase 7 — no "Search Quality Check" card anywhere on the stage.
@@ -409,7 +410,9 @@ test.describe('98.md — the staged Search Workspace (concept board)', () => {
 
     // Clicking anywhere OUTSIDE the board collapses the working card into the
     // balanced all-compact overview — no active card anywhere on the page.
-    await page.getByTestId('sb-strategy-preview').getByText('Your search so far').click();
+    // 100.md §1 — the outside-click surface below the board is now the read-only
+    // plain-language panel (the retired "Your search so far" preview is gone).
+    await page.getByTestId('sb-search-meaning').getByText('What this search is looking for').click();
     await expect(sp.activeConcept).toHaveCount(0);
     await expect(sp.compactCards).toHaveCount(2);
 
@@ -437,10 +440,13 @@ test.describe('98.md — the staged Search Workspace (concept board)', () => {
     await page.keyboard.press('Enter');
     await expect(sp.activeConcept.getByLabel(/Concept name/)).toHaveValue('heart failure');
 
-    // The strategy preview's concept rows expand their card from below the board.
-    await page.getByTestId('sb-strategy-preview').getByText('Your search so far').click();
+    // 100.md §§1/8 — the panel below the board is a DESCRIPTION now: clicking it
+    // collapses the board (it is outside), and it offers no way to select a concept.
+    // Expanding a specific card is the board's own job (card click / chevron / Enter).
+    await page.getByTestId('sb-search-meaning').getByText('What this search is looking for').click();
     await expect(sp.activeConcept).toHaveCount(0);
-    await page.getByTestId('sb-preview-row').filter({ hasText: 'adults' }).click();
+    await expect(sp.searchMeaning.locator('button')).toHaveCount(0);
+    await sp.conceptCard('adults').getByTestId('sb-card-toggle').click();
     await expect(sp.activeConcept.getByLabel(/Concept name/)).toHaveValue('adults');
 
     // The chevron on the working card collapses it again (round trip).
@@ -471,7 +477,9 @@ test.describe('98.md — the staged Search Workspace (concept board)', () => {
     await seedGroup(sp, tmpProject.id, 'stroke');
     await sp.addConceptGroup('aspirin');
     await activateCard(sp, 'stroke');
-    await page.getByTestId('sb-strategy-preview').getByText('Your search so far').click();
+    // 100.md §1 — the outside-click surface below the board is now the read-only
+    // plain-language panel (the retired "Your search so far" preview is gone).
+    await page.getByTestId('sb-search-meaning').getByText('What this search is looking for').click();
     await expect(sp.activeConcept).toHaveCount(0);
     await sp.conceptCard('aspirin').getByTestId('sb-card-toggle').click();
     await expect(sp.activeConcept.getByLabel(/Concept name/)).toHaveValue('aspirin');
@@ -672,14 +680,38 @@ test.describe('98.md — the staged Search Workspace (concept board)', () => {
     await expect(sp.termChip('emphysema')).toBeVisible();
   });
 
-  test('the terms stage hosts the per-database previews + estimates + versions', async ({ page, tmpProject }) => {
+  test('100.md §§2/11 — the terms stage shows MEANING, with the database strings one click away', async ({ page, tmpProject }) => {
     const sp = new SearchPage(page);
     await seedGroup(sp, tmpProject.id, 'asthma');
-    await expect(sp.dbPreviews).toBeVisible();
-    await expect(sp.dbPreviews.getByTestId('sb-db-strategy-pubmed')).toBeVisible();
+
+    // §2 — the always-expanded per-database preview cards are GONE from the
+    // search-building screen; they live on the Database Strategies stage.
+    await expect(sp.body.getByTestId('sb-db-previews')).toHaveCount(0);
+    await expect(sp.body.getByTestId('sb-db-strategy-pubmed')).toHaveCount(0);
+
+    // §§6/9 — the plain-language reading is there instead, and it is live.
+    await expect(sp.searchMeaning).toBeVisible();
+    await expect(sp.meaningSummary).toContainText('Find articles about asthma');
+
+    // §11 — the exact queries are reachable, but closed by default (no clutter).
+    const disclosure = sp.searchMeaning.locator('details');
+    expect(await disclosure.evaluate((el: HTMLDetailsElement) => el.open)).toBe(false);
+    await sp.searchMeaning.getByText(/Exact database queries/).click();
+    await expect(sp.dbQuery('pubmed')).toBeVisible();
+    await expect(sp.dbQuery('pubmed')).toContainText('asthma[tiab]');
+
     await sp.estimatesCard.scrollIntoViewIfNeeded();
     await expect(sp.estimatesCard).toBeVisible();
     await expect(stageSurface(sp).getByText(/Versions/)).toBeVisible();
+  });
+
+  test('100.md §11 — the Database Strategies stage still owns the editable per-database syntax', async ({ page, tmpProject }) => {
+    const sp = new SearchPage(page);
+    await seedGroup(sp, tmpProject.id, 'asthma');
+    await rail(sp).getByRole('button', { name: /Database Strategies/ }).click();
+    await expect(stageSurface(sp)).toHaveAttribute('data-stage', 'strategy');
+    await expect(sp.body.getByTestId('sb-db-strategy-pubmed')).toBeVisible();
+    await expect(sp.body.getByTestId('sb-db-strategy-pubmed')).toContainText('asthma[tiab]');
   });
 
   test('98.md §5 — Beginner Mode (default OFF) gates the instructional copy engine-wide', async ({ page, tmpProject }) => {

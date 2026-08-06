@@ -3,23 +3,21 @@
  *
  * Field groups: TS=(...) (Topic: title, abstract, author + keywords-plus), TI=(...)
  * (title), AB=(...) (abstract). Truncation '*', single-character wildcard '$',
- * NEAR/n proximity. Web of Science has no subject-heading thesaurus, so a subject
- * heading is searched as Topic text with an approximate warning. Limits: PY=(range)
- * and LA=(language); publication-type limits do not map to WoS DOCTYPE and are warned.
+ * NEAR/n proximity. Limits: PY=(range) and LA=(language); publication-type limits do
+ * not map to WoS DOCTYPE and are warned.
+ *
+ * 100.md §3 — Web of Science indexes no subject-heading thesaurus
+ * (capabilities declares controlledVocab:false), so there is no `renderHeading` hook:
+ * controlled terms fall through the shared vocabulary layer to Topic (TS) free text,
+ * now using the concept's NATURAL word order ("type 2 diabetes mellitus") instead of
+ * the inverted MeSH label ("Diabetes Mellitus, Type 2"), which no paper writes.
  */
-import { S, fieldBody, langName, year, uniq } from '../shared.js';
+import { fieldBody, langName, year, uniq } from '../shared.js';
 
 const FIELD_FN = { ti: 'TI', ab: 'AB', all: 'ALL', tiab: 'TS' };
 
 export const wos = {
   id: 'wos',
-  renderControlled(term, vocab, warnings) {
-    const heading = (term.vocab && term.vocab.mesh) || term.text;
-    vocab.unmapped++;
-    vocab.approximate = true;
-    warnings.push({ code: 'VOCAB_APPROXIMATE', message: `Web of Science has no controlled-vocabulary thesaurus; the MeSH term "${heading}" was searched as Topic (TS) text, which is approximate.` });
-    return `TS=("${S(heading).replace(/"/g, '')}")`;
-  },
   renderFree(term, warnings) {
     const body = fieldBody(term, { quoteChar: '"', wildcard: '*', warnings });
     return `${FIELD_FN[term.field] || FIELD_FN.tiab}=(${body})`;

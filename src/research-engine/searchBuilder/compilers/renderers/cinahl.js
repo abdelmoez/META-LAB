@@ -1,11 +1,17 @@
 /**
  * renderers/cinahl.js — CINAHL (EBSCOhost) compiler.
  *
- * CINAHL Headings: (MH "Heading+") explodes, (MH "Heading") does not. Field codes:
- * TI / AB (and a TI…OR…AB group for title-or-abstract), TX for all text. Truncation
- * '*', wildcard '#', N/n proximity. The CINAHL Headings thesaurus differs from MeSH,
- * so a subject heading is reused as an approximate CINAHL Heading candidate (warned).
- * Limits: PY range, LA language, PT publication type.
+ * Field codes: TI / AB (and a TI…OR…AB group for title-or-abstract), TX for all text.
+ * Truncation '*', wildcard '#', N/n proximity. Limits: PY range, LA language, PT
+ * publication type.
+ *
+ * 100.md §3 — NO `renderHeading` hook, deliberately. CINAHL Headings are an EBSCO
+ * thesaurus; although many overlap with MeSH, EBSCO publishes no MeSH crosswalk and
+ * the nursing/allied-health headings diverge. The old compiler pasted the MeSH string
+ * straight into `(MH "…+")`, which silently returns zero for every heading CINAHL
+ * spells differently. Controlled terms now fall through the shared layer to a CINAHL
+ * free-text phrase with an explicit "no verified CINAHL Heading equivalent" warning;
+ * the real heading can be pasted through this database's manual override.
  */
 import { S, fieldBody, langName, year, uniq } from '../shared.js';
 
@@ -39,13 +45,6 @@ export function ebscoFilters(filters) {
 
 export const cinahl = {
   id: 'cinahl',
-  renderControlled(term, vocab, warnings) {
-    const heading = (term.vocab && term.vocab.mesh) || term.text;
-    vocab.mapped++;
-    vocab.approximate = true;
-    warnings.push({ code: 'VOCAB_APPROXIMATE', message: `"${heading}" was reused as a CINAHL Heading candidate; the CINAHL Headings thesaurus differs from MeSH, so confirm it in CINAHL.` });
-    return `(MH "${S(heading).replace(/"/g, '')}${term.noExplode ? '' : '+'}")`;
-  },
   renderFree: ebscoFree,
   buildFilters(filters) { return ebscoFilters(filters); },
 };

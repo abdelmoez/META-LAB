@@ -10,13 +10,9 @@ import { fieldBody } from '../shared.js';
 
 export const ictrp = {
   id: 'ictrp',
-  renderControlled(term, vocab, warnings, unsupported) {
-    const heading = (term.vocab && term.vocab.mesh) || term.text;
-    vocab.unmapped++;
-    vocab.approximate = true;
-    unsupported.push({ feature: 'controlled-vocabulary', detail: `WHO ICTRP has no controlled-vocabulary field; the MeSH term "${heading}" was searched as a plain phrase.` });
-    return fieldBody({ text: heading, type: 'freetext', phrase: true }, { quoteChar: '"', wildcard: null, warnings });
-  },
+  /* 100.md §3 — no controlled-vocabulary field (capabilities: controlledVocab:false);
+     the shared vocabulary layer records the unsupported feature and renders the
+     concept as a plain phrase through renderFree. */
   renderFree(term, warnings, unsupported) {
     if (term.field && term.field !== 'tiab' && term.field !== 'all') {
       unsupported.push({ feature: 'field-tags', detail: `WHO ICTRP cannot restrict "${term.text}" to the ${term.field} field; it was searched across all fields.` });

@@ -224,6 +224,11 @@ r.delete('/projects/:pid/reasons/:rid2', S.deleteReason);
 // Stats
 r.get('/projects/:pid/stats',            S.getStats);
 
+// 100.md §§12-15 — Resume Screening. Per user + project + screening stage; derived
+// from the caller's own decision history, so two reviewers never overwrite each other
+// and the backend stays the source of truth (never localStorage).
+r.get('/projects/:pid/resume',           S.getResumePoint);
+
 // META·LAB integration — PRISMA summary for a linked META·LAB project (Part 12)
 r.get('/metalab/:mlpid/summary',         S.getMetaLabSummary);
 

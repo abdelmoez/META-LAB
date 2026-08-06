@@ -34,10 +34,11 @@ export function pubmedPubTypeClause(filters) {
 
 export const pubmed = {
   id: 'pubmed',
-  renderControlled(term, vocab) {
-    const heading = (term.vocab && term.vocab.mesh) || term.text;
-    if (term.vocab && term.vocab.mesh) vocab.mapped++; else vocab.unmapped++;
-    return `"${S(heading)}"[Mesh${term.noExplode ? ':NoExp' : ''}]`;
+  /* 100.md §4 — PubMed IS the MeSH database, so the vocabulary layer resolves the
+     canonical concept to the descriptor itself (an EXACT identity mapping, not a
+     guess) and this hook only spells it in PubMed's grammar. */
+  renderHeading(plan) {
+    return `"${S(plan.heading)}"[Mesh${plan.explode ? '' : ':NoExp'}]`;
   },
   renderFree(term) {
     const { token, field } = ncbiToken(term);

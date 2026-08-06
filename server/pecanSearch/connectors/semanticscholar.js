@@ -30,7 +30,7 @@ import { buildUrl, contentHashId, clampPageSize } from './base.js';
 import { makeThrottle } from '../throttle.js';
 import { normalizeRecord, NORMALIZATION_VERSION } from '../normalize.js';
 import {
-  FIELD, normalizeCanonical, validateCanonical, makeTranslated,
+  FIELD, normalizeCanonical, validateCanonical, makeTranslated, searchableText,
 } from '../query/ast.js';
 import { toS2PublicationType } from '../query/vocab.js';
 import { PecanError } from '../errors.js';
@@ -66,14 +66,16 @@ function renderTerm(t, warnings) {
   } else if (t.field === FIELD.TITLE || t.field === FIELD.ABSTRACT) {
     warnings.push(`Semantic Scholar bulk search cannot restrict "${t.text}" to ${t.field} alone; it was matched across title+abstract.`);
   }
+  // 100.md §3 — no MeSH index here, so the CONCEPT is searched in natural word order
+  // (searchableText) rather than the user's shorthand or the inverted catalogue string.
+  const searchText = searchableText(t);
   if (t.type === 'controlled' && t.field === FIELD.MESH) {
-    const heading = (t.vocab && (t.vocab.mesh || t.vocab.heading)) || t.text;
-    warnings.push(`Controlled MeSH term "${heading}" was searched as a free-text keyword (Semantic Scholar has no MeSH index).`);
+    warnings.push(`Controlled MeSH term "${(t.vocab && (t.vocab.mesh || t.vocab.heading)) || t.text}" was searched as the free-text keyword "${searchText}" (Semantic Scholar has no MeSH index).`);
   }
-  let body = sanitizeTermText(t.text);
+  let body = sanitizeTermText(searchText);
   if (!body) return '';
   // No silent weakening (§2.2): disclose when reserved characters were removed.
-  const origText = String(t.text || '').trim();
+  const origText = String(searchText || '').trim();
   if (body !== origText && !isPhrase(body)) warnings.push(`Term "${origText}" contained characters reserved by Semantic Scholar (parentheses, pipe, quote) that were removed; it was searched as "${body}".`);
   if (isPhrase(body)) {
     if (t.truncate) warnings.push(`Wildcard truncation on the phrase "${t.text}" is not supported by Semantic Scholar and was dropped.`);

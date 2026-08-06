@@ -14,13 +14,8 @@ const MAX_LEN = 256;
 export const gscholar = {
   id: 'gscholar',
   conceptJoiner(op) { return op === 'OR' ? ' OR ' : ' '; },
-  renderControlled(term, vocab, warnings) {
-    const heading = (term.vocab && term.vocab.mesh) || term.text;
-    vocab.unmapped++;
-    vocab.approximate = true;
-    warnings.push({ code: 'VOCAB_APPROXIMATE', message: `Google Scholar has no controlled vocabulary; the MeSH term "${heading}" was searched as a plain phrase.` });
-    return fieldBody({ text: heading, type: 'freetext', phrase: true }, { quoteChar: '"', wildcard: null, warnings });
-  },
+  /* 100.md §3 — no subject headings at all (capabilities: controlledVocab:false), so
+     controlled terms fall through the shared vocabulary layer to a plain phrase. */
   renderFree(term, warnings, unsupported) {
     if (term.field && term.field !== 'tiab' && term.field !== 'all') {
       unsupported.push({ feature: 'field-tags', detail: `Google Scholar cannot restrict "${term.text}" to the ${term.field} field; use the intitle: operator manually if needed.` });

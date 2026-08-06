@@ -97,6 +97,23 @@ export class ScreeningPage {
   /** The empty state shown when a search/filter matches nothing. */
   get noMatchEmptyState(): Locator { return this.main.getByText('No records match the current filter.'); }
 
+  /* ── Resume Screening (100.md §§12-15) ─────────────────────────────────────── */
+
+  /** The bar at the top of the records panel; `data-status` carries the outcome. */
+  get resumeBar(): Locator { return this.main.getByTestId('screening-resume-bar'); }
+  /** "Continue where you left off" / "Start screening" / "Back to your open article". */
+  get resumeButton(): Locator { return this.main.getByTestId('screening-resume-button'); }
+  /** The §15 "you have completed screening for this stage" state. */
+  get resumeComplete(): Locator { return this.main.getByTestId('screening-resume-complete'); }
+  /** The one-line explanation of where resume landed you (and why). */
+  get resumeNote(): Locator { return this.main.getByTestId('screening-resume-note'); }
+  /** Every record row, in the server's canonical order (createdAt ASC, id ASC). */
+  get rows(): Locator { return this.main.locator('[data-testid="screening-record-row"]'); }
+  /** The currently selected record row (data-selected="true"). */
+  get selectedRow(): Locator { return this.main.locator('[data-testid="screening-record-row"][data-selected="true"]'); }
+  /** A record row by its record id. */
+  rowById(recordId: string): Locator { return this.main.locator(`[data-record-id="${recordId}"]`); }
+
   /** The selected record's detail title (rendered as the middle-column heading). */
   detailHeading(title: string | RegExp): Locator {
     return this.main.getByRole('heading', { name: title });

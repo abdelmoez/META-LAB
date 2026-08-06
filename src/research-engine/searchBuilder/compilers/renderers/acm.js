@@ -10,14 +10,9 @@ import { fieldBody } from '../shared.js';
 
 export const acm = {
   id: 'acm',
-  renderControlled(term, vocab, warnings, unsupported, notes) {
-    const heading = (term.vocab && term.vocab.mesh) || term.text;
-    vocab.unmapped++;
-    vocab.approximate = true;
-    warnings.push({ code: 'VOCAB_APPROXIMATE', message: `ACM DL has no controlled-vocabulary thesaurus; the MeSH term "${heading}" was searched as AllField full text.` });
-    const body = fieldBody({ text: heading, type: 'freetext', phrase: true }, { quoteChar: '"', wildcard: null, warnings });
-    return `AllField:(${body})`;
-  },
+  /* 100.md §3 — no subject-heading thesaurus (capabilities: controlledVocab:false);
+     the shared vocabulary layer records it and renders the concept through renderFree
+     (Title OR Abstract) rather than an AllField full-text sweep. */
   renderFree(term, warnings) {
     const body = fieldBody(term, { quoteChar: '"', wildcard: '*', warnings });
     if (term.field === 'ti') return `Title:(${body})`;

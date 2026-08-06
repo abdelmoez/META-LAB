@@ -34,7 +34,7 @@ import TermChipRow, { EXACT_DUP_TOOLTIP } from '../../src/features/searchBuilder
 import TermEditorPopover from '../../src/features/searchBuilder/components/TermEditorPopover.jsx';
 import AddTermBox from '../../src/features/searchBuilder/components/AddTermBox.jsx';
 import SuggestionsDisclosure from '../../src/features/searchBuilder/components/SuggestionsDisclosure.jsx';
-import StrategyPreviewPanel from '../../src/features/searchBuilder/components/StrategyPreviewPanel.jsx';
+import SearchMeaningPanel from '../../src/features/searchBuilder/components/SearchMeaningPanel.jsx';
 import MeshDetailsPopover from '../../src/features/searchBuilder/components/MeshDetailsPopover.jsx';
 import { renderTerm, RegenerateDialog } from '../../src/features/searchBuilder/SearchBuilderTab.jsx';
 import { CB_SERIES } from '../../src/frontend/theme/tokens.js';
@@ -707,43 +707,75 @@ describe('RegenerateDialog — the explicit regeneration confirmation', () => {
   });
 });
 
-/* ── StrategyPreviewPanel ─────────────────────────────────────────────────── */
-describe('StrategyPreviewPanel — the honest human-readable preview', () => {
+/* ── SearchMeaningPanel (100.md §§6-11) ───────────────────────────────────────
+   Replaces the retired StrategyPreviewPanel ("Your search so far"). Everything the
+   old panel uniquely owned moved to a surface that already existed — the live PubMed
+   count + retry to PubMedPulse, the between-concept AND/OR toggle to `sb-and-connector`
+   ON the board, click-to-select and the "editing" state to the board cards themselves
+   — so what is left to pin here is the plain-language reading and its READ-ONLY-ness. */
+describe('SearchMeaningPanel — the plain-language reading of the live strategy', () => {
   const concepts = [{ ...P, op: 'OR' }, I, { id: 'cO', label: 'Outcomes', picoField: 'O', field: 'Outcomes', op: 'AND', terms: [] }];
-  const base = { concepts, activeId: 'cP', hitState: null, onToggleOp: () => {}, pubmedQuery: 'x[tiab] AND y[tiab]' };
-  it('renders one row per non-empty concept with the searched terms OR-ed + the pinned testid', () => {
-    const html = r(h(StrategyPreviewPanel, { ...base, beginner: true }));
-    expect(html).toContain('data-testid="sb-strategy-preview"');
-    expect((html.match(/data-testid="sb-preview-row"/g) || []).length).toBe(2);
-    expect(html).toContain('Diabetes Mellitus, Type 2 OR metformin');
+  const base = { concepts, filters: {} };
+
+  it('renders the pinned testid, a one-sentence summary, and one block per live concept', () => {
+    const html = r(h(SearchMeaningPanel, base));
+    expect(html).toContain('data-testid="sb-search-meaning"');
+    expect(html).toContain('What this search is looking for');
+    expect((html.match(/data-testid="sm-group"/g) || []).length).toBe(2);
+    expect(html).toContain('data-testid="sm-summary"');
   });
-  it('96.md D13.4 — the op chip is a toggle BUTTON in the main flow (not expert-gated)', () => {
-    for (const beginner of [true, false]) {
-      const html = r(h(StrategyPreviewPanel, { ...base, beginner }));
-      expect(html).toContain('data-testid="sb-preview-op"');
-      expect(html).toContain('aria-label="Joined with OR — click to switch to AND"');
+
+  it('explains a subject heading without any database syntax (100.md §6)', () => {
+    const html = r(h(SearchMeaningPanel, base));
+    expect(html).toContain('filed under the topic');
+    expect(html).toContain('Type 2 Diabetes Mellitus');
+    // No Boolean/field/vocabulary syntax leaks into the beginner layer.
+    for (const syntax of ['[Mesh]', '[tiab]', 'TITLE-ABS-KEY', '/exp', '(MH ']) {
+      expect(html).not.toContain(syntax);
     }
   });
-  it('highlights the ACTIVE concept row with an editing tag', () => {
-    const html = r(h(StrategyPreviewPanel, { ...base, beginner: true }));
-    expect(html).toContain('data-testid="sb-preview-editing"');
+
+  it('names the between-concept operator in words, as a description (100.md §10)', () => {
+    const html = r(h(SearchMeaningPanel, base));
+    expect(html).toContain('data-testid="sm-join"');
+    expect(html).toContain('data-op="OR"');
+    expect(html).toContain('the article can INSTEAD be about:');
+    expect(html).toContain('The article can match any one of these:');
   });
-  it('raw PubMed syntax hides behind a native-details disclosure', () => {
-    const html = r(h(StrategyPreviewPanel, { ...base, beginner: true }));
-    expect(html).toContain('Show database syntax');
-    expect(html).toContain('data-testid="sb-preview-syntax"');
+
+  it('is READ-ONLY — it renders no control that could edit the strategy (100.md §8)', () => {
+    const html = r(h(SearchMeaningPanel, base));
+    expect(html).not.toContain('<button');
+    expect(html).not.toContain('<input');
+  });
+
+  it('names concepts that are not in the search yet', () => {
+    const html = r(h(SearchMeaningPanel, base));
+    expect(html).toContain('Not part of the search yet (no terms): Outcomes.');
+  });
+
+  it('explains the scope limits in words', () => {
+    const html = r(h(SearchMeaningPanel, { ...base, filters: { dateFrom: '2010', dateTo: '2025', languages: ['en'], pubTypes: ['Randomized Controlled Trial'] } }));
+    expect(html).toContain('Published between 2010 and 2025.');
+    expect(html).toContain('Written in English.');
+    expect(html).toContain('Only Randomized Controlled Trial articles.');
+  });
+
+  it('invites a first term instead of rendering an empty shell', () => {
+    const html = r(h(SearchMeaningPanel, { concepts: [], filters: {} }));
+    expect(html).toContain('data-testid="sm-empty"');
+    expect(html).toContain('plain English');
+  });
+
+  it('keeps the exact database queries reachable behind a closed disclosure (100.md §11)', () => {
+    const compiled = [{ dbId: 'pubmed', label: 'PubMed / MEDLINE', query: 'x[tiab]', vocab: { fallback: 0 } }];
+    const html = r(h(SearchMeaningPanel, { ...base, compiled, technicalHint: 'Read-only here.' }));
     expect(html).toContain('<details');
-  });
-  it('empty concepts are named as not-in-the-search (never silently dropped)', () => {
-    const html = r(h(StrategyPreviewPanel, { ...base, beginner: true }));
-    expect(html).toContain('Not in the search yet (no terms): Outcomes');
-  });
-  it('a failed live count gets an inline Retry; an updated one shows the count as live', () => {
-    const failed = r(h(StrategyPreviewPanel, { ...base, beginner: true, hitState: { status: 'failed' }, onRetryHits: () => {} }));
-    expect(failed).toContain('estimate unavailable');
-    expect(failed).toContain('Retry');
-    const ok = r(h(StrategyPreviewPanel, { ...base, beginner: true, hitState: { status: 'updated', hitCount: 1234 } }));
-    expect(ok).toContain('≈ 1,234 PubMed records');
+    expect(html).toContain('Exact database queries (1)');
+    expect(html).toContain('data-testid="sm-db-query-pubmed"');
+    expect(html).toContain('x[tiab]');
+    // Closed by default — the technical layer never clutters the building screen.
+    expect(html).not.toContain('<details open');
   });
 });
 
@@ -896,19 +928,20 @@ describe('QA M8 — TermChipRow read-only: inert edit, no remove', () => {
   });
 });
 
-describe('QA L5/M8 — StrategyPreviewPanel: rows are real buttons; read-only op chip', () => {
+describe('100.md §8 — SearchMeaningPanel behaves identically for editors and viewers', () => {
   const concepts2 = [
     { id: 'a', label: 'HF', op: 'AND', terms: [{ id: 'p1', text: 'heart failure', type: 'freetext' }] },
     { id: 'b', label: 'Rx', op: 'AND', terms: [{ id: 'p2', text: 'metformin', type: 'freetext' }] },
   ];
-  it('L5: each concept row is a <button> (keyboard reachable), not a div onClick', () => {
-    const html = r(h(StrategyPreviewPanel, { concepts: concepts2, activeId: 'a', beginner: true, onSelectConcept: () => {}, onToggleOp: () => {} }));
-    expect(html).toMatch(/<button[^>]*data-testid="sb-preview-row"/);
-  });
-  it('M8: read-only disables the AND/OR toggle with an access explanation', () => {
-    const html = r(h(StrategyPreviewPanel, { concepts: concepts2, activeId: 'a', beginner: true, readOnly: true, onSelectConcept: () => {}, onToggleOp: () => {} }));
-    expect(html).toMatch(/<button[^>]*data-testid="sb-preview-op"[^>]*disabled/);
-    expect(html).toContain('Read-only access');
+  it('there is no readOnly branch to get wrong — the panel never mutates anything', () => {
+    // The retired StrategyPreviewPanel needed a read-only mode because it hosted the
+    // AND/OR toggle. This one is a description, so an editor and a viewer see exactly
+    // the same markup; the only mutating control (the board's AND/OR connector) keeps
+    // its own read-only handling.
+    const html = r(h(SearchMeaningPanel, { concepts: concepts2, filters: {} }));
+    expect(html).toContain('the article must ALSO be about:');
+    expect(html).not.toContain('<button');
+    expect(html).not.toContain('onclick');
   });
 });
 

@@ -34,7 +34,7 @@ import { buildUrl, contentHashId, clampPageSize } from './base.js';
 import { makeThrottle } from '../throttle.js';
 import { normalizeRecord, NORMALIZATION_VERSION } from '../normalize.js';
 import {
-  FIELD, normalizeCanonical, validateCanonical, makeTranslated,
+  FIELD, normalizeCanonical, validateCanonical, makeTranslated, searchableText,
 } from '../query/ast.js';
 import { PecanError } from '../errors.js';
 
@@ -120,11 +120,14 @@ function translateOpenAlex(canonicalInput, { override } = {}) {
     let conceptHadTruncate = false;
 
     for (const t of concept.terms) {
-      const clean = sanitizeSearchTerm(t.text);
+      // 100.md §3 — OpenAlex has no MeSH index, so a subject heading is searched as
+      // the CONCEPT in natural word order (searchableText), not the inverted string.
+      const searchText = searchableText(t);
+      const clean = sanitizeSearchTerm(searchText);
       if (!clean) continue;
       supported.push(`${t.field}:${t.text}`);
       // No silent weakening (§2.2): disclose when reserved characters were removed.
-      const origText = String(t.text || '').trim();
+      const origText = String(searchText || '').trim();
       if (clean !== origText) warnings.push(`Term "${origText}" contained characters reserved by OpenAlex (comma, pipe, quote) that were removed; it was searched as "${clean}".`);
 
       // Per-field precision is lost: OpenAlex search filter spans title+abstract.

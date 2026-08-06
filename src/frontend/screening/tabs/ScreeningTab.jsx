@@ -54,6 +54,11 @@ function fmtDecisionDate(iso) {
 
 const LIMIT = 50;
 
+// 100.md §14 — this workbench IS the Title & Abstract stage; Final Review lives in
+// SecondReviewTab. Resume progress is kept per user + project + STAGE, so the stage id
+// is explicit rather than implied.
+const SCREENING_STAGE = 'title_abstract';
+
 // Filter options for the left-column selector. `value` is sent as params.filter.
 // Per-member "new/viewed" wording (Task 7) so reviewers track their own progress.
 const FILTERS = [
@@ -278,8 +283,11 @@ export default function ScreeningTab({ pid, project, access, refreshProject, use
   }, [queueMode, aiBand]);
 
   // ── Load a page of records (reset = page 1 / append = next page) ──────────
-  const loadRecords = useCallback(async ({ reset = false, p, s, f } = {}) => {
-    const pageNum = reset ? 1 : (p ?? page);
+  const loadRecords = useCallback(async ({ reset = false, p, s, f, select } = {}) => {
+    // 100.md §13 — a reset normally lands on page 1, but Resume Screening needs to jump
+    // straight to the page that holds the article the reviewer stopped at (paging there
+    // one request at a time would be dozens of round-trips on a real review).
+    const pageNum = reset ? (p ?? 1) : (p ?? page);
     const searchVal = s !== undefined ? s : searchRef.current;
     const filterVal = f !== undefined ? f : filterRef.current;
     reset ? setLoading(true) : setLoadingMore(true);
@@ -300,8 +308,12 @@ export default function ScreeningTab({ pid, project, access, refreshProject, use
       setPages(data.pages || 1);
       setPage(pageNum);
       if (reset) {
-        // Keep selection if still present, else pick the first row.
-        setSelectedId(prev => (recs.some(r => r.id === prev) ? prev : (recs[0]?.id || null)));
+        // 100.md §13 — an explicit `select` (the resume target) wins; otherwise keep the
+        // current selection if it survived the reload, else fall back to the first row.
+        setSelectedId(prev => {
+          if (select && recs.some(r => r.id === select)) return select;
+          return recs.some(r => r.id === prev) ? prev : (recs[0]?.id || null);
+        });
       }
     } catch (e) {
       setListError(e.message || 'Failed to load records');
@@ -350,10 +362,16 @@ export default function ScreeningTab({ pid, project, access, refreshProject, use
   // a record). The server emits `decision.saved` to project members on both; refetch
   // page 1 with the current filters so a resolved/advanced record leaves this list
   // (or updates its quorum/disputed flags) without a manual refresh.
+  // 100.md §14 — a teammate's decision can change what is left for ME to screen
+  // (promotion to full text, conflict resolution), so the resume point is recomputed
+  // alongside the list. Held in a ref because refreshResume is declared further down.
+  const refreshResumeRef = useRef(() => {});
+
   useRealtime({
     'decision.saved': (ev) => {
       if (!ev || ev.projectId === pid || ev.projectId === undefined) {
         loadRecords({ reset: true, s: searchRef.current, f: filterRef.current });
+        refreshResumeRef.current();
       }
     },
     // se2.md §6 — a background rescore finished: refresh scores/badges + flag that
@@ -426,6 +444,64 @@ export default function ScreeningTab({ pid, project, access, refreshProject, use
     if (next) selectRecord(next.id);
   }
 
+  /* ── 100.md §§12-15 — Resume Screening ─────────────────────────────────────
+     The reviewer's stopping point lives on the SERVER, derived from their OWN
+     ScreenDecision rows (unique per record + reviewer + stage). Nothing is cached in
+     localStorage, so a second browser, a re-login, and a teammate screening the same
+     project all behave correctly by construction — and a deleted or deduplicated
+     article simply stops being a candidate instead of stranding a saved pointer.
+     Refreshed on mount and after every decision (ours or a teammate's). */
+  const [resume, setResume] = useState(null);
+  const [resuming, setResuming] = useState(false);
+  const [resumeNote, setResumeNote] = useState('');
+  const [scrollToSelected, setScrollToSelected] = useState(false);
+
+  const refreshResume = useCallback(() => {
+    if (!canScreen) { setResume(null); return; }
+    screeningApi.getResumePoint(pid, { stage: SCREENING_STAGE, limit: LIMIT })
+      .then(r => setResume(r || null))
+      .catch(() => { /* non-fatal — the control just stays out of the way */ });
+  }, [pid, canScreen]);
+
+  useEffect(() => { refreshResumeRef.current = refreshResume; }, [refreshResume]);
+  useEffect(() => { setResume(null); setResumeNote(''); refreshResume(); }, [refreshResume]);
+
+  /* Jump to the resume target. Search / filters / keyword selection are cleared first:
+     100.md §15 — a saved article that the current filter excludes must never become
+     unreachable with no explanation, so we restore a view that definitely contains it
+     and say so. */
+  const doResume = useCallback(async () => {
+    if (resuming) return;
+    setResuming(true);
+    setResumeNote('');
+    try {
+      const r = await screeningApi.getResumePoint(pid, { stage: SCREENING_STAGE, limit: LIMIT });
+      setResume(r || null);
+      if (!r || !r.recordId) {
+        setResumeNote((r && r.message) || 'There is nothing left to screen here.');
+        return;
+      }
+      const narrowed = !!searchRef.current || filterRef.current !== 'all' || !!keywordsRef.current;
+      if (narrowed) {
+        searchRef.current = ''; filterRef.current = 'all'; keywordsRef.current = '';
+        setSearch(''); setFilter('all'); setSelectedIncl([]); setSelectedExcl([]);
+      }
+      if (!narrowed && recordsRef.current.some(x => x.id === r.recordId)) {
+        selectRecord(r.recordId);
+      } else {
+        await loadRecords({ reset: true, p: r.page || 1, s: '', f: 'all', select: r.recordId });
+        selectRecord(r.recordId);
+      }
+      setScrollToSelected(true);
+      setResumeNote(narrowed ? `${r.message} Your filters were cleared so it is visible.` : r.message);
+    } catch {
+      setResumeNote('Could not work out where you stopped — try again in a moment.');
+    } finally {
+      setResuming(false);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pid, resuming, loadRecords, selectRecord]);
+
   // ── Decision form state (mirrors the selected record's myDecision) ───────
   const [decision, setDecision]   = useState('');
   const [excReason, setExcReason] = useState('');
@@ -470,6 +546,10 @@ export default function ScreeningTab({ pid, project, access, refreshProject, use
         : r));
       setSaveMsg(resp?.promoted ? 'Saved · advanced to Final Review' : 'Saved');
       refreshRow(rid); // re-sync reviewer indicators / quorum / disputed
+      // 100.md §13 — the stopping point moved: recompute how much is left and where
+      // "continue" now points, so leaving the page and coming back is always accurate.
+      refreshResume();
+      setResumeNote('');
       // se2.md §6 — surface the "scores updating" indicator promptly after a
       // settled decision (the server has queued a debounced rescore).
       if (dec === 'include' || dec === 'exclude') ai.loadJobStatus?.();
@@ -479,7 +559,7 @@ export default function ScreeningTab({ pid, project, access, refreshProject, use
     } finally {
       setSaving(false);
     }
-  }, [pid, canScreen, excReason, notes, rating, chosenLabels, refreshRow]);
+  }, [pid, canScreen, excReason, notes, rating, chosenLabels, refreshRow, refreshResume]);
 
   // Click Include/Exclude/Maybe → auto-save immediately (toggle = undo).
   function onDecisionClick(val) {
@@ -539,6 +619,10 @@ export default function ScreeningTab({ pid, project, access, refreshProject, use
           shortcutPrefs={shortcutPrefs}
           onCollapse={() => setPanel('leftCollapsed', true)}
           ai={ai} queueMode={queueMode} onQueueMode={setQueueMode} aiBand={aiBand} onAiBand={setAiBand} onRefreshRankings={refreshRankings}
+          /* 100.md §§12-15 */
+          resume={resume} resuming={resuming} resumeNote={resumeNote} onResume={doResume}
+          canScreen={canScreen}
+          scrollToSelected={scrollToSelected} onScrolledToSelected={() => setScrollToSelected(false)}
         />
       )}
 
@@ -617,6 +701,8 @@ function LeftColumn({
   selectedId, onSelect, blindMode, hasMore, onLoadMore,
   shortcutPrefs, onCollapse,
   ai, queueMode, onQueueMode, aiBand, onAiBand, onRefreshRankings,
+  resume, resuming, resumeNote, onResume, canScreen,
+  scrollToSelected, onScrolledToSelected,
 }) {
   const k = shortcutPrefs?.keys ?? DEFAULT_SCREENING_SHORTCUTS.keys;
 
@@ -662,8 +748,26 @@ function LeftColumn({
     setRowH(prev => measuredRowHeight(rowsRef.current.offsetHeight, visibleRecords.length, prev));
   }, [windowed, visibleRecords.length, records.length, scrollTop]);
 
+  // 100.md §13 — after Resume Screening loads the right page, bring the resumed row
+  // into view. One-shot: the parent clears the flag so ordinary selection (arrow keys,
+  // clicking a row) never yanks the list around.
+  useEffect(() => {
+    if (!scrollToSelected || !selectedId) return;
+    const row = scrollRef.current && scrollRef.current.querySelector(`[data-record-id="${CSS.escape(selectedId)}"]`);
+    if (row && typeof row.scrollIntoView === 'function') {
+      try { row.scrollIntoView({ block: 'center', behavior: 'smooth' }); } catch { row.scrollIntoView(); }
+    }
+    if (onScrolledToSelected) onScrolledToSelected();
+  }, [scrollToSelected, selectedId, onScrolledToSelected]);
+
   return (
     <div style={{ width: 300, flexShrink: 0, borderRight: `1px solid ${C.brd}`, display: 'flex', flexDirection: 'column', background: C.surf, overflow: 'hidden', minHeight: 0 }}>
+      {/* 100.md §12 — Resume Screening: prominent (first thing in the panel, full
+          width, accent-tinted) but unobtrusive (one line, no icon noise, and it
+          disappears entirely once the stage is finished or there is nothing to
+          resume). §15 — the completed / empty states say so instead of doing nothing. */}
+      <ResumeBar resume={resume} resuming={resuming} note={resumeNote} onResume={onResume} canScreen={canScreen} />
+
       {/* Sticky search + filter header */}
       <div style={{ padding: '12px 14px', borderBottom: `1px solid ${C.brd}`, flexShrink: 0 }}>
         <input
@@ -749,6 +853,79 @@ function LeftColumn({
   );
 }
 
+/**
+ * ResumeBar — 100.md §§12/15. One line at the very top of the records panel.
+ *
+ * Wording comes from the SERVER (`resume.message`, produced by the shared pure
+ * `resumeMessage` helper) so the button, the confirmation line and any future surface
+ * can never drift apart. The bar renders nothing at all when there is nothing useful
+ * to say — a reviewer with an empty project or no screening permission sees no chrome.
+ */
+export function ResumeBar({ resume, resuming, note, onResume, canScreen }) {
+  if (!canScreen || !resume) return null;
+  const { status, pending, decided, position, stageTotal } = resume;
+  if (status === 'empty') return null;
+
+  const done = status === 'complete';
+  const tone = done ? C.grn : C.acc;
+  const label = status === 'start'
+    ? 'Start screening'
+    : status === 'reopen'
+      ? 'Back to your open article'
+      : 'Continue where you left off';
+  const detail = done
+    ? `All ${Number(stageTotal || 0).toLocaleString()} screened`
+    : `${Number(pending || 0).toLocaleString()} left${position ? ` · resumes at #${Number(position).toLocaleString()}` : ''}`;
+
+  return (
+    <div data-testid="screening-resume-bar" data-status={status}
+      style={{ padding: '10px 14px', borderBottom: `1px solid ${C.brd}`, background: C.surf, flexShrink: 0 }}>
+      {done ? (
+        <div data-testid="screening-resume-complete"
+          style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 11.5, color: C.grn, lineHeight: 1.5 }}>
+          <span aria-hidden="true">✓</span>
+          <span>You have completed screening for this stage.</span>
+        </div>
+      ) : (
+        /* Two lines, not one row: the records panel is 300px wide, so a label + stats
+           on the same line ellipsised the label away ("Contin… 3 done · 5 left"). The
+           action reads first; the numbers sit under it in the same mono voice as the
+           record counter below. */
+        <button
+          type="button"
+          data-testid="screening-resume-button"
+          onClick={onResume}
+          disabled={!!resuming}
+          aria-label={`${label} — ${detail}`}
+          title="Jump to the next article that needs your decision"
+          style={{
+            width: '100%', display: 'flex', flexDirection: 'column', alignItems: 'stretch', gap: 3,
+            background: C.accBg, border: `1px solid ${tone}55`, borderRadius: 8,
+            padding: '8px 11px', color: C.txt, fontFamily: FONT, fontSize: 12.5, fontWeight: 600,
+            cursor: resuming ? 'wait' : 'pointer', textAlign: 'left', opacity: resuming ? 0.65 : 1,
+          }}
+        >
+          <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+              {resuming ? 'Finding your place…' : label}
+            </span>
+            <span aria-hidden="true" style={{ color: tone, flexShrink: 0, fontSize: 13, lineHeight: 1 }}>→</span>
+          </span>
+          <span style={{ fontFamily: MONO, fontSize: 9.5, fontWeight: 400, color: C.muted, letterSpacing: '0.04em' }}>
+            {decided ? `${Number(decided).toLocaleString()} done · ` : ''}{detail}
+          </span>
+        </button>
+      )}
+      {note && (
+        <div data-testid="screening-resume-note" role="status" aria-live="polite"
+          style={{ marginTop: 6, fontSize: 10.5, color: C.muted, lineHeight: 1.5 }}>
+          {note}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function RecordRow({ record, selected, onClick, blindMode, scoreInfo }) {
   const [hover, setHover] = useState(false);
   const my = record.myDecision?.decision;
@@ -764,6 +941,12 @@ function RecordRow({ record, selected, onClick, blindMode, scoreInfo }) {
       onClick={onClick}
       onMouseEnter={() => setHover(true)}
       onMouseLeave={() => setHover(false)}
+      /* 100.md §13 — Resume Screening scrolls the resumed article into view, which
+         needs a stable way to find its row. Also the first addressable hook the
+         screening list has had for tests. */
+      data-testid="screening-record-row"
+      data-record-id={record.id}
+      data-selected={selected ? 'true' : 'false'}
       style={{
         padding: '10px 13px 10px 12px',
         borderBottom: `1px solid ${C.brd}`,

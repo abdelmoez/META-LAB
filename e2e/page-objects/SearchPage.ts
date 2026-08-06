@@ -40,7 +40,9 @@ export class SearchPage {
   }
 
   /** The workspace tool body — scopes all tab-content locators. */
-  private get body(): Locator { return this.page.locator('.stitch-tool-body'); }
+  /** The workspace body scroller. Public so a spec can assert a testid is ABSENT
+   *  (100.md §§1-2 retired two surfaces; "it is gone" needs a scope to be gone from). */
+  get body(): Locator { return this.page.locator('.stitch-tool-body'); }
 
   /* ── Navigation ──────────────────────────────────────────────────────────── */
 
@@ -184,8 +186,6 @@ export class SearchPage {
   /** The active group's management toolbar (reorder / merge / split / delete). */
   get groupActions(): Locator { return this.body.getByTestId('sb-group-actions'); }
   get splitPanel(): Locator { return this.body.getByTestId('sb-split-panel'); }
-  /** The compiled per-database preview cards inside the terms stage. */
-  get dbPreviews(): Locator { return this.body.getByTestId('sb-db-previews'); }
 
   /** Terms stage — the 98.md §9 horizontal concept board. */
   get conceptBoard(): Locator { return this.body.getByTestId('sb-concept-board'); }
@@ -219,7 +219,20 @@ export class SearchPage {
   suggestionRow(text: string): Locator {
     return this.body.getByTestId('sb-suggestion-row').filter({ hasText: text });
   }
-  get strategyPreview(): Locator { return this.body.getByTestId('sb-strategy-preview'); }
+  /** 100.md §§6-11 — the read-only plain-language reading of the live strategy. It
+   *  replaces the retired "Your search so far" panel (`sb-strategy-preview`) AND the
+   *  always-on per-database previews (`sb-db-previews`); the exact database strings
+   *  now hide inside its closed "Exact database queries" disclosure, and are fully
+   *  editable on the Database Strategies stage / the automated run surface. */
+  get searchMeaning(): Locator { return this.body.getByTestId('sb-search-meaning'); }
+  get meaningSummary(): Locator { return this.body.getByTestId('sm-summary'); }
+  get meaningGroups(): Locator { return this.body.getByTestId('sm-group'); }
+  get meaningJoins(): Locator { return this.body.getByTestId('sm-join'); }
+  /** The §11 technical disclosure inside the meaning panel (closed by default). */
+  get databaseQueriesDisclosure(): Locator {
+    return this.searchMeaning.getByRole('group').filter({ hasText: 'Exact database queries' });
+  }
+  dbQuery(dbId: string): Locator { return this.body.getByTestId(`sm-db-query-${dbId}`); }
   get saveStatus(): Locator { return this.body.getByTestId('sb-save-status').first(); }
   /** The undo snackbar is portaled-fixed at the page level (not body-scoped). */
   get undoSnackbar(): Locator { return this.page.getByTestId('sb-undo'); }

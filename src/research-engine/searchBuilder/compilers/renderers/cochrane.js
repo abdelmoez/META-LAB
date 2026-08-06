@@ -13,10 +13,10 @@ const FIELD_SUFFIX = { ti: ':ti', ab: ':ti,ab,kw', all: ':ti,ab,kw', tiab: ':ti,
 
 export const cochrane = {
   id: 'cochrane',
-  renderControlled(term, vocab) {
-    const heading = (term.vocab && term.vocab.mesh) || term.text;
-    if (term.vocab && term.vocab.mesh) vocab.mapped++; else vocab.unmapped++;
-    return `[mh ${term.noExplode ? '^' : ''}"${S(heading)}"]`;
+  /* 100.md §4 — CENTRAL indexes MeSH, so the vocabulary layer's identity mapping
+     applies and `^` is the no-explode marker. */
+  renderHeading(plan) {
+    return `[mh ${plan.explode ? '' : '^'}"${S(plan.heading)}"]`;
   },
   renderFree(term, warnings) {
     const body = fieldBody(term, { quoteChar: '"', wildcard: '*', warnings });

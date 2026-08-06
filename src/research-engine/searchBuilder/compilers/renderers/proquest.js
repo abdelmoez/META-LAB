@@ -3,23 +3,21 @@
  *
  * Field groups: TI,AB(...) (title + abstract, the default), TI(...) / AB(...),
  * NOFT(...) for anywhere-except-full-text. Truncation '*', wildcard '?', NEAR/n
- * proximity. ProQuest has no MeSH/Emtree thesaurus, so a subject heading maps to
- * MAINSUBJECT.EXACT() with an approximate warning. Date and language belong to the
- * ProQuest limiters below the search box, so they are surfaced as a note.
+ * proximity. Date and language belong to the ProQuest limiters below the search box,
+ * so they are surfaced as a note.
+ *
+ * 100.md §3 — ProQuest Dissertations & Theses carries no medical subject-heading
+ * thesaurus (capabilities: controlledVocab:false), so there is no `renderHeading`
+ * hook. `MAINSUBJECT.EXACT("<MeSH heading>")` demanded an EXACT match against
+ * ProQuest's own subject list and therefore returned nothing for most MeSH strings;
+ * controlled terms now fall through to TI,AB free text.
  */
-import { S, fieldBody } from '../shared.js';
+import { fieldBody } from '../shared.js';
 
 const FIELD_FN = { ti: 'TI', ab: 'AB', all: 'NOFT', tiab: 'TI,AB' };
 
 export const proquest = {
   id: 'proquest',
-  renderControlled(term, vocab, warnings) {
-    const heading = (term.vocab && term.vocab.mesh) || term.text;
-    vocab.mapped++;
-    vocab.approximate = true;
-    warnings.push({ code: 'VOCAB_APPROXIMATE', message: `ProQuest has no MeSH/Emtree thesaurus; "${heading}" was mapped to MAINSUBJECT.EXACT(), which is approximate.` });
-    return `MAINSUBJECT.EXACT("${S(heading).replace(/"/g, '')}")`;
-  },
   renderFree(term, warnings) {
     const body = fieldBody(term, { quoteChar: '"', wildcard: '*', warnings });
     return `${FIELD_FN[term.field] || FIELD_FN.tiab}(${body})`;

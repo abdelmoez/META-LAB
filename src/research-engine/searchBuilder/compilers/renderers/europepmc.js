@@ -11,13 +11,14 @@ import { S, fieldBody, langIso6392b, year, uniq } from '../shared.js';
 
 export const europepmc = {
   id: 'europepmc',
-  renderControlled(term, vocab, warnings) {
-    const heading = (term.vocab && term.vocab.mesh) || term.text;
-    vocab.mapped++;
-    vocab.approximate = true;
-    warnings.push({ code: 'VOCAB_APPROXIMATE', message: `"${heading}" was mapped to a best-effort MESH: query; Europe PMC has no MeSH explosion field, so coverage may differ from PubMed.` });
-    if (term.noExplode) warnings.push({ code: 'VOCAB_APPROXIMATE', message: `No-explosion was requested for "${heading}" but Europe PMC does not support explosion control; the heading was searched as-is.` });
-    return `MESH:"${S(heading).replace(/"/g, '')}"`;
+  /* 100.md §4 — Europe PMC carries MEDLINE's MeSH annotations, so the descriptor is
+     used as-is (identity mapping). `MESH:` matches the heading EXACTLY — there is no
+     explosion form — which the capability table declares as
+     explosion:false / explosionDefault:'exact'; the shared layer warns when the user
+     asked for narrower topics. */
+  renderHeading(plan, term, warnings, notes) {
+    notes.push('Europe PMC applies MeSH annotations imported from MEDLINE, so records that PubMed has not yet indexed will not match a MESH: clause.');
+    return `MESH:"${S(plan.heading).replace(/"/g, '')}"`;
   },
   renderFree(term, warnings) {
     const body = fieldBody(term, { quoteChar: '"', wildcard: '*', warnings });

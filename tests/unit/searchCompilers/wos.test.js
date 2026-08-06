@@ -1,5 +1,8 @@
 /**
- * wos.test.js — Web of Science compiler golden + topic-text approximation.
+ * wos.test.js — Web of Science compiler golden.
+ * 100.md §3 — no subject-heading thesaurus, so controlled terms ride as Topic (TS)
+ * free text and the missing feature is recorded as `unsupported`, not smuggled through
+ * as an "approximate" heading.
  */
 import { describe, it, expect } from 'vitest';
 import { compileStrategy } from '../../../src/research-engine/searchBuilder/compilers/index.js';
@@ -15,9 +18,9 @@ describe('wos compiler', () => {
     expect(r.filtersApplied).toBe(true);
   });
 
-  it('searches controlled headings as Topic text (approximate, no thesaurus)', () => {
+  it('searches controlled headings as Topic text and records the missing thesaurus', () => {
     const r = compileStrategy(FIXTURE, 'wos');
-    expect(r.vocab).toEqual({ system: 'none', mapped: 0, unmapped: 1, approximate: true });
-    expect(r.warnings.map((w) => w.code)).toContain('VOCAB_APPROXIMATE');
+    expect(r.vocab).toEqual({ system: 'none', mapped: 0, unmapped: 1, fallback: 1, approximate: false });
+    expect(r.unsupported.map((u) => u.feature)).toContain('controlled-vocabulary');
   });
 });

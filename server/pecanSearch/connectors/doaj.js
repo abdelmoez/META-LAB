@@ -34,7 +34,7 @@ import { buildUrl, contentHashId, clampPageSize } from './base.js';
 import { makeThrottle } from '../throttle.js';
 import { normalizeRecord, NORMALIZATION_VERSION } from '../normalize.js';
 import {
-  FIELD, normalizeCanonical, validateCanonical, makeTranslated,
+  FIELD, normalizeCanonical, validateCanonical, makeTranslated, searchableText,
 } from '../query/ast.js';
 import { toIso6391 } from '../query/vocab.js';
 import { PecanError } from '../errors.js';
@@ -77,7 +77,10 @@ function escapeEsPhrase(text) {
 
 /** Render one canonical term into a DOAJ query_string clause: field:"phrase" or field:token. */
 function renderTerm(t, warnings) {
-  const raw = String(t.text || '').trim();
+  // 100.md §3 — DOAJ indexes no controlled vocabulary, so a subject heading is
+  // searched as the CONCEPT in natural word order rather than the inverted catalogue
+  // string (which appears in no article) or the user's shorthand.
+  const raw = String(searchableText(t) || '').trim();
   if (!raw) return '';
 
   if (t.truncate) {
@@ -85,7 +88,7 @@ function renderTerm(t, warnings) {
     warnings.push(`Truncation on "${t.text}" is not supported by DOAJ (wildcards are disabled) and was dropped.`);
   }
   if (t.type === 'controlled' && t.field === FIELD.MESH) {
-    warnings.push(`Controlled MeSH term "${t.text}" has no DOAJ equivalent; searched as a keyword instead.`);
+    warnings.push(`Controlled MeSH term "${t.text}" has no DOAJ equivalent; it was searched as the keyword "${raw}" instead.`);
   }
 
   const path = FIELD_PATH[t.field];

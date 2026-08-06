@@ -10,14 +10,10 @@ import { fieldBody } from '../shared.js';
 
 export const ieee = {
   id: 'ieee',
-  renderControlled(term, vocab, warnings, unsupported) {
-    const heading = (term.vocab && term.vocab.mesh) || term.text;
-    vocab.unmapped++;
-    vocab.approximate = true;
-    unsupported.push({ feature: 'controlled-vocabulary', detail: `IEEE Xplore has no controlled-vocabulary field; the MeSH term "${heading}" was searched as "All Metadata" full text.` });
-    const body = fieldBody({ text: heading, type: 'freetext', phrase: true }, { quoteChar: '"', wildcard: null, warnings });
-    return `"All Metadata":${body}`;
-  },
+  /* 100.md §3 — no subject-heading thesaurus (capabilities: controlledVocab:false);
+     the shared vocabulary layer records it and renders the concept through renderFree
+     (Document Title OR Abstract), which is a truer analogue of a topical heading than
+     the old "All Metadata" full-text sweep. */
   renderFree(term, warnings) {
     const body = fieldBody(term, { quoteChar: '"', wildcard: '*', warnings });
     if (term.field === 'ti') return `"Document Title":${body}`;

@@ -65,8 +65,8 @@ test.describe('96.md/98.md — responsive Select & Build Key Terms workspace', (
       await sp.addTermInput.scrollIntoViewIfNeeded();
       await expect(sp.addTermInput).toBeVisible();
       await expect(sp.addTermButton).toBeVisible();
-      await sp.strategyPreview.scrollIntoViewIfNeeded();
-      await expect(sp.strategyPreview).toBeVisible();
+      await sp.searchMeaning.scrollIntoViewIfNeeded();
+      await expect(sp.searchMeaning).toBeVisible();
 
       // The page body never scrolls horizontally (85.md device validation).
       await expectNoHorizontalOverflow(page, `terms @ ${bp.label}`);

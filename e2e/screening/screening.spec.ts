@@ -113,6 +113,94 @@ test.describe('Screening — record decisions', () => {
   });
 });
 
+test.describe('Screening — Resume Screening (100.md §§12-15)', () => {
+  test('resumes at the next undecided article after leaving and coming back', async ({ page, screeningProject }) => {
+    const sift = new ScreeningPage(page);
+    const pid = screeningProject.project.id;
+    await sift.openWorkbench(pid);
+
+    // Nothing screened yet → the bar offers a START, not a resume.
+    await expect(sift.resumeBar).toHaveAttribute('data-status', /start|reopen/);
+    await expect(sift.resumeButton).toBeVisible();
+
+    // Screen the first two rows IN LIST ORDER. (Deliberately by position, not by
+    // title: the canonical order is `createdAt ASC, id ASC`, which a bulk import does
+    // not guarantee matches the file order — and resume is defined against the
+    // canonical order, so the test must be too.)
+    const rowIdAt = async (i: number) => sift.rows.nth(i).getAttribute('data-record-id');
+    const [id0, id1, id2] = await Promise.all([rowIdAt(0), rowIdAt(1), rowIdAt(2)]);
+    for (const id of [id0, id1]) {
+      await sift.rowById(id!).click();
+      await expect(sift.selectedRow).toHaveAttribute('data-record-id', id!);
+      await sift.includeButton.click();
+      await expect(sift.undoButton).toBeEnabled();
+    }
+    // The bar now reports real progress against the server-derived pool.
+    await expect(sift.resumeBar).toHaveAttribute('data-status', 'resume');
+    await expect(sift.resumeButton).toContainText('Continue where you left off');
+    await expect(sift.resumeButton).toContainText('2 done');
+    await expect(sift.resumeButton).toContainText('6 left');
+
+    // Leave the engine entirely, then come back — nothing is kept in the tab.
+    await sift.goto(pid, 'export');
+    await expect(sift.exportHeading).toBeVisible();
+    await sift.openWorkbench(pid);
+
+    // One click lands on the NEXT article needing a decision — the third row — not
+    // the last one screened, and says where it put you (100.md §13).
+    await sift.resumeButton.click();
+    await expect(sift.selectedRow).toHaveAttribute('data-record-id', id2!);
+    await expect(sift.resumeNote).toContainText('Continuing from where you stopped (article 3)');
+  });
+
+  test('a filtered-away resume target is still reachable, and the filters say so (§15)', async ({ page, screeningProject }) => {
+    const sift = new ScreeningPage(page);
+    const pid = screeningProject.project.id;
+    await sift.openWorkbench(pid);
+
+    // Narrow the list so the resume target is not in view.
+    await sift.searchInput.fill('E2E Study 7');
+    await expect(sift.recordCounter).toContainText('1 / 1 RECORD');
+
+    await sift.resumeButton.click();
+    // The saved article is NEVER unreachable-with-no-explanation: filters are
+    // cleared, the whole list returns, and the note explains what happened.
+    await expect(sift.resumeNote).toContainText('filters were cleared');
+    await expect(sift.searchInput).toHaveValue('');
+    await expect(sift.recordCounter).toContainText(`/ ${screeningProject.recordCount} RECORD`);
+    await expect(sift.selectedRow).toBeVisible();
+  });
+
+  test('resume progress is per USER — a second reviewer starts from their own place (§14)', async ({ page, screeningProject, normalContext }) => {
+    const pid = screeningProject.project.id;
+    const sift = new ScreeningPage(page);
+    await sift.openWorkbench(pid);
+
+    // Reviewer A (the admin) screens two records.
+    for (const t of [/E2E Study 1 on/, /E2E Study 2 on/]) {
+      await sift.recordRow(t).click();
+      await sift.includeButton.click();
+      await expect(sift.undoButton).toBeEnabled();
+    }
+    await expect(sift.resumeButton).toContainText('2 done');
+
+    // Reviewer B joins the same screening project — and has screened nothing, so
+    // A's position must not be visible to (or overwritten by) them.
+    const b = await api.me(normalContext.request);
+    expect(b?.email, 'the seeded normal user must be resolvable').toBeTruthy();
+    await api.addProjectMember(page.request, screeningProject.siftId, { email: b!.email, preset: 'reviewer' });
+
+    const siftB = new ScreeningPage(normalContext.page);
+    await siftB.openWorkbench(pid);
+    await expect(siftB.resumeBar).toHaveAttribute('data-status', /start|reopen/);
+    await expect(siftB.resumeButton).not.toContainText('done');
+
+    // A's own position is untouched by B's arrival.
+    await page.reload();
+    await expect(sift.resumeButton).toContainText('2 done');
+  });
+});
+
 test.describe('Screening — search & filter', () => {
   test('searching and status-filtering narrow the record list', async ({ page, screeningProject }) => {
     const sift = new ScreeningPage(page);

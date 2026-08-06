@@ -1,5 +1,7 @@
 /**
  * cochrane.test.js — Cochrane CENTRAL compiler golden + non-embeddable-limit warnings.
+ * 100.md §4 — CENTRAL indexes MeSH, so the mesh→mesh identity mapping applies and the
+ * heading syntax is unchanged from the pre-100 pin.
  */
 import { describe, it, expect } from 'vitest';
 import { compileStrategy } from '../../../src/research-engine/searchBuilder/compilers/index.js';
@@ -13,7 +15,7 @@ describe('cochrane compiler', () => {
     );
     expect(r.syntaxLevel).toBe('native');
     expect(r.filtersApplied).toBe(false);
-    expect(r.vocab).toEqual({ system: 'mesh', mapped: 1, unmapped: 0, approximate: false });
+    expect(r.vocab).toEqual({ system: 'mesh', mapped: 1, unmapped: 0, fallback: 0, approximate: false });
     // date + language + pubtype each warned as not embeddable, plus a summary note.
     expect(r.warnings.filter((w) => w.code === 'FILTER_NOT_EMBEDDABLE')).toHaveLength(3);
     expect(r.notes.some((n) => /Cochrane Library filters/.test(n))).toBe(true);

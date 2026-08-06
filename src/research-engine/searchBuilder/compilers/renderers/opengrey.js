@@ -10,13 +10,8 @@ import { fieldBody } from '../shared.js';
 
 export const opengrey = {
   id: 'opengrey',
-  renderControlled(term, vocab, warnings) {
-    const heading = (term.vocab && term.vocab.mesh) || term.text;
-    vocab.unmapped++;
-    vocab.approximate = true;
-    warnings.push({ code: 'VOCAB_APPROXIMATE', message: `Grey-literature search has no controlled vocabulary; the MeSH term "${heading}" was searched as a plain phrase.` });
-    return fieldBody({ text: heading, type: 'freetext', phrase: true }, { quoteChar: '"', wildcard: null, warnings });
-  },
+  /* 100.md §3 — no controlled vocabulary (capabilities: controlledVocab:false), so
+     controlled terms fall through the shared layer to a plain quoted phrase. */
   renderFree(term, warnings, unsupported) {
     if (term.field && term.field !== 'tiab' && term.field !== 'all') {
       unsupported.push({ feature: 'field-tags', detail: `Grey-literature search cannot restrict "${term.text}" to the ${term.field} field; it was searched across all fields.` });

@@ -1,15 +1,18 @@
 /**
  * renderers/embase.js — Embase.com quick-search compiler.
  *
- * Emtree subject headings: 'heart failure'/exp (explode) or 'heart failure'/de.
  * Free text: single-quoted phrases with field suffixes :ti / :ab / :ti,ab (default) /
  * :ab,ti,kw (all-fields). Truncation with '*' (4-char minimum stem). Limits:
- * [yyyy-yyyy]/py for publication years and [english]/lim for language. When an
- * Emtree term is absent the heading falls back to lowercased free text with an
- * explicit approximate warning (it is never silently mapped). 96.md (QA M7): even
- * a PRESENT emtree value is a MeSH-derived heuristic (no real Emtree source
- * exists), so mapped headings are flagged approximate + warned too — honest,
- * never silently "native".
+ * [yyyy-yyyy]/py for publication years and [english]/lim for language.
+ *
+ * 100.md §3 — NO `renderHeading` hook, deliberately. Embase indexes Emtree, which is
+ * Elsevier-proprietary: no authoritative MeSH↔Emtree crosswalk is published, so Pecan
+ * cannot confidently name the Emtree equivalent of a MeSH descriptor. The old compiler
+ * emitted `'<lower-cased, de-inverted MeSH heading>'/exp` — a heading that frequently
+ * does not exist in Emtree, i.e. exactly the invented syntax 100.md forbids. Controlled
+ * terms now fall through the shared layer to a properly-quoted Embase free-text phrase
+ * with an explicit "no verified Emtree equivalent" warning. A searcher who owns the
+ * real Emtree term can still paste it through this database's manual override.
  */
 import { S, fieldBody, langNameLower, year, uniq } from '../shared.js';
 
@@ -17,28 +20,6 @@ const FIELD_SUFFIX = { ti: ':ti', ab: ':ab', all: ':ab,ti,kw', tiab: ':ti,ab' };
 
 export const embase = {
   id: 'embase',
-  renderControlled(term, vocab, warnings) {
-    const emtree = term.vocab && term.vocab.emtree;
-    if (emtree) {
-      // 96.md §3C/§3F (QA M7) — EVERY emtree value in the vocab payload is a
-      // heuristic: NLM publishes no Emtree data (Emtree is Elsevier-proprietary),
-      // so nlmClient.emtreeFallback derives it from the MeSH heading (both the
-      // 'live' and offline 'core' sources). Presenting it as fully "mapped" native
-      // vocabulary would pretend a MeSH term is natively supported — flag it
-      // approximate and tell the user to verify, exactly like cinahl/scopus do for
-      // their carried-over headings. The QUERY STRING itself is unchanged.
-      vocab.mapped++;
-      vocab.approximate = true;
-      warnings.push({ code: 'VOCAB_APPROXIMATE', message: `Emtree heading '${S(emtree)}' was derived from the MeSH heading heuristically — verify it in the Emtree thesaurus before running.` });
-      return `'${S(emtree)}'/${term.noExplode ? 'de' : 'exp'}`;
-    }
-    // No Emtree mapping → fall back to the lowercased text as a quoted phrase, warned.
-    vocab.unmapped++;
-    vocab.approximate = true;
-    warnings.push({ code: 'VOCAB_FALLBACK', message: `No Emtree mapping for "${term.text}"; it was searched as lowercased free text, which may differ from an exploded Emtree heading.` });
-    const body = fieldBody({ ...term, text: S(term.text).toLowerCase(), type: 'freetext', truncate: false, phrase: true }, { quoteChar: "'", wildcard: null, warnings });
-    return `${body}${FIELD_SUFFIX.tiab}`;
-  },
   renderFree(term, warnings) {
     const body = fieldBody(term, { quoteChar: "'", wildcard: '*', minStem: 4, warnings });
     return `${body}${FIELD_SUFFIX[term.field] || FIELD_SUFFIX.tiab}`;
