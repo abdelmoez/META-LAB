@@ -36,6 +36,21 @@ function toNum(v) {
  * @returns normalized counts with `provenance` + `warnings`.
  */
 export function computePrismaCounts(project, opts = {}) {
+  // ── 103.md §10/§15 — the record-derived flow WINS ────────────────────────
+  //
+  // When the caller supplies the canonical flow (derivePrismaFlow over the
+  // project's actual records), every count comes from records and this function
+  // becomes a thin adapter. That is what makes the manuscript, the diagram, the
+  // export and project statistics structurally incapable of disagreeing (§15),
+  // and it is why the user-typed tiers below can no longer outrank real data:
+  // 103.md's core principle is that PRISMA must never depend on a number the user
+  // typed when PecanRev already knows it.
+  //
+  // The legacy precedence chain is preserved BELOW for projects that have no
+  // record-level data yet (a manuscript-only project, or one predating this
+  // round), so nothing regresses — but it is now the fallback, not the default.
+  if (opts.flow) return adaptFlow(opts.flow, opts);
+
   const p = (project && project.prisma) || {};
   const ov = (opts && opts.overrides) || {};
   const sc = (opts && opts.screening) || {};
@@ -193,6 +208,64 @@ export function computePrismaCounts(project, opts = {}) {
   const hasAny = Object.values(counts).some((v) => typeof v === 'number' && Number.isFinite(v));
 
   return { counts, provenance, warnings, hasAny, overrideNote: (opts.overrides && opts.overrides.note) || '' };
+}
+
+/**
+ * 103.md §10 — adapt the canonical record-derived flow to this module's legacy
+ * output shape, so every existing consumer (the counts table, the SVG, the
+ * Methods/Results narrative, the fact tokens) keeps working while now reading
+ * numbers that came from records.
+ *
+ * Provenance for every key is 'records': the count is the size of a set the caller
+ * can inspect (§12). There is no 'override'/'manual' tier here on purpose — a
+ * number the project can derive must not be typeable.
+ * Pure.
+ */
+function adaptFlow(flow, opts = {}) {
+  const c = (flow && flow.counts) || {};
+  const rec = (flow && flow.reconciliation) || null;
+  const provenance = {};
+  const counts = {
+    dbs: c.identifiedDb ?? null,
+    // The other-methods arm is PRISMA 2020's own split; registers are already
+    // folded into the database arm, so `reg` stays null rather than double-count.
+    reg: null,
+    other: c.identifiedOther ?? null,
+    identified: c.identified ?? null,
+    dedupe: c.duplicatesRemoved ?? null,
+    duplicatesRemoved: c.duplicatesRemoved ?? null,
+    dedupePerformed: (c.duplicatesRemoved ?? 0) > 0 ? true : null,
+    dedupeMethod: null,
+    dedupeLastRunAt: null,
+    screened: c.screened ?? null,
+    excludedScreen: c.excludedScreen ?? null,
+    // NEW in 103.md — the retrieval stage the old model could not represent.
+    sought: c.sought ?? null,
+    notRetrieved: c.notRetrieved ?? null,
+    reportsAssessed: c.reportsAssessed ?? null,
+    reportsExcluded: c.reportsExcluded ?? null,
+    excludedReasons: (flow.exclusionReasons || []).map((r) => ({ reason: r.label, n: r.n })),
+    included: c.included ?? null,
+    includedReports: c.includedReports ?? null,
+    includedQual: c.included ?? null,
+    includedQuant: c.includedQuant ?? null,
+  };
+  for (const k of Object.keys(counts)) provenance[k] = counts[k] == null ? 'missing' : 'records';
+
+  // §13 — reconciliation issues surface as warnings on the existing channel, so
+  // every current consumer shows them without changing.
+  const warnings = rec
+    ? rec.issues.filter((i) => i.severity !== 'info').map((i) => i.message)
+    : [];
+
+  return {
+    counts,
+    provenance,
+    warnings,
+    hasAny: Object.values(counts).some((v) => typeof v === 'number' && Number.isFinite(v)),
+    overrideNote: (opts.overrides && opts.overrides.note) || '',
+    flow,
+  };
 }
 
 /**
