@@ -45,6 +45,7 @@ import { computeSectionMeta } from './sources.js';
 // 101.md §1/§2 — shared, deterministic formatting for the search facts so the
 // Methods paragraph, the Abstract and the fact tokens all render them identically.
 import { formatFactDate, joinList, factToken } from './factTokens.js';
+import { deriveSearchMethodology } from '../search/searchMethodology.js';
 
 const clean = (s) => String(s == null ? '' : s).trim();
 const PH = (label) => `[${label}]`;
@@ -248,15 +249,21 @@ export function searchFacts(project, opts = {}) {
       tokenized: true,
     };
   }
+  // 104.md — the ONE canonical methodology derivation. This used to re-implement
+  // the database/register split inline, alongside a second copy in
+  // buildFactContext; a change to either could make the Abstract and the Methods
+  // disagree about what was searched.
   const prov = opts.searchProvenance || null;
   if (prov && Array.isArray(prov.reportable)) {
-    const dbs = prov.reportable.filter((d) => d.kind !== 'register').map((d) => d.label);
-    const regs = prov.reportable.filter((d) => d.kind === 'register').map((d) => d.label);
+    const m = opts.searchMethodology || deriveSearchMethodology(prov);
     return {
-      databases: joinList(dbs),
-      registers: joinList(regs),
-      date: prov.latestValidSearchAt ? formatFactDate(prov.latestValidSearchAt) : '',
-      count: dbs.length,
+      databases: m.databasesPhrase,
+      registers: m.registersPhrase,
+      date: m.latestSearchAt ? formatFactDate(m.latestSearchAt) : '',
+      firstDate: m.firstSearchAt ? formatFactDate(m.firstSearchAt) : '',
+      count: m.databaseCount,
+      updateCount: m.updateCount,
+      workflow: m.workflow,
       legacy: false,
     };
   }

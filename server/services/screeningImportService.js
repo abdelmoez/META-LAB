@@ -355,6 +355,11 @@ async function dedupeAndInsertRecordsSerialized(projectId, records, opts = {}) {
     // 96.md D9/D10 — provenance context (pecan pipeline passes run/provider; file
     // imports default to batch-only attribution).
     searchRunId = '', provider = '', metaLabProjectId = '', origin = '',
+    // 104.md — the database this manual import came from, when the importer knows
+    // it (the file itself rarely says). Recorded on the batch AND used as the
+    // per-record attribution fallback, so a hand-run Embase search can be reported
+    // by the manuscript instead of being silently unattributable.
+    sourceDatabase = '', searchedAt = null,
   } = opts;
   const provenanceOrigin = origin || ORIGIN_BY_SOURCE[source] || 'file';
 
@@ -450,7 +455,18 @@ async function dedupeAndInsertRecordsSerialized(projectId, records, opts = {}) {
         pmid:     String(r.pmid || '').slice(0, 50),
         abstract: String(r.abstract || '').slice(0, 5000),
         keywords: Array.isArray(r.keywords) ? r.keywords.join('; ') : String(r.keywords || ''),
-        sourceDb: String(r.sourceDb || r.source || format).slice(0, 100),
+        // 104.md — a record's database attribution is what the FILE said, or what
+        // the importer explicitly declared it to be. It is NEVER the file format.
+        //
+        // This used to fall back to `format`, so every RIS file with no per-record
+        // source stamped `sourceDb: 'ris'` on its records. Those strings flow
+        // straight into the search-provenance layer and the PRISMA source rows, so
+        // a manuscript could end up reporting that the team "searched Ris" — exactly
+        // the "internal values should not accidentally appear in a manuscript"
+        // failure the prompt names. An empty sourceDb is honest and already handled
+        // everywhere downstream: provenance drops unattributed records rather than
+        // inventing a database, and PRISMA labels them "Unspecified source".
+        sourceDb: String(r.sourceDb || r.source || sourceDatabase || '').slice(0, 100),
         rawData:  JSON.stringify(r).slice(0, 2000),
       })),
     });

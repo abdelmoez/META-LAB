@@ -40,6 +40,10 @@ export function emptyProvenance() {
   return {
     databases: [],
     reportable: [],
+    // 104.md — the per-event search history. Must be present here too: this shape
+    // is what every degraded path returns, and a consumer that reads `history`
+    // would otherwise crash on exactly the projects with the least data.
+    history: [],
     latestValidSearchAt: '',
     latestValidSource: null,
     counts: { configured: 0, searched: 0, failed: 0, invalidated: 0, zeroResult: 0 },
@@ -122,25 +126,58 @@ async function loadBatchDatabases(prisma, screenProjectId, batchIds) {
 /** Manual/file/API import batches, each with its own sourceDb breakdown. */
 async function loadImports(prisma, screenProjectId) {
   if (!screenProjectId || !modelReady(prisma, 'screenImportBatch')) return [];
-  const batches = await prisma.screenImportBatch.findMany({
-    where: { projectId: screenProjectId },
-    select: {
-      id: true, source: true, filename: true, createdAt: true,
-      recordCount: true, searchRunId: true, fileHash: true,
-    },
-    orderBy: { createdAt: 'asc' },
-  });
-  const manual = (Array.isArray(batches) ? batches : []).filter(isManualImportBatch);
+  // 104.md — the manual-search fields are additive and may not exist yet on a
+  // database that has not been pushed. `selectWithOptional` degrades to the legacy
+  // column set instead of throwing, so an un-migrated deployment keeps working
+  // exactly as before (the same `has()` model-probe convention used elsewhere here).
+  const base = {
+    id: true, source: true, filename: true, createdAt: true,
+    recordCount: true, searchRunId: true, fileHash: true,
+  };
+  const extended = {
+    ...base, sourceDatabase: true, searchedAt: true, contributesToReview: true,
+  };
+  let batches;
+  try {
+    batches = await prisma.screenImportBatch.findMany({
+      where: { projectId: screenProjectId }, select: extended, orderBy: { createdAt: 'asc' },
+    });
+  } catch {
+    batches = await prisma.screenImportBatch.findMany({
+      where: { projectId: screenProjectId }, select: base, orderBy: { createdAt: 'asc' },
+    });
+  }
+  const manual = (Array.isArray(batches) ? batches : [])
+    .filter(isManualImportBatch)
+    // 104.md — "Do not blindly use every historical query ever executed." A batch a
+    // researcher has marked as not part of the review's final search methodology
+    // (an accidental or test import) keeps its audit row and its records, but stops
+    // contributing a database or a date to anything the manuscript states. Missing
+    // column ⇒ undefined ⇒ contributes, so legacy rows are unaffected.
+    .filter((b) => b.contributesToReview !== false);
   if (!manual.length) return [];
   const byBatch = await loadBatchDatabases(prisma, screenProjectId, manual.map((b) => b.id));
-  return manual.map((b) => ({
-    id: b.id,
-    source: b.source || 'file',
-    filename: b.filename || '',
-    createdAt: b.createdAt,
-    recordCount: b.recordCount || 0,
-    databases: byBatch.get(b.id) || [],
-  }));
+  return manual.map((b) => {
+    // An explicitly declared database is a stronger claim than parser-stamped
+    // per-record text, so it wins — and it rescues the common case where a RIS file
+    // carries no per-record source at all and the search would otherwise be
+    // unattributable.
+    const declared = String(b.sourceDatabase || '').trim();
+    const observed = byBatch.get(b.id) || [];
+    const databases = declared
+      ? [{ name: declared, count: observed.reduce((n, d) => n + d.count, 0) || (b.recordCount || 0) }]
+      : observed;
+    return {
+      id: b.id,
+      source: b.source || 'file',
+      filename: b.filename || '',
+      // The date the search was RUN, not the day the file happened to be uploaded.
+      createdAt: b.searchedAt || b.createdAt,
+      uploadedAt: b.createdAt,
+      recordCount: b.recordCount || 0,
+      databases,
+    };
+  });
 }
 
 /** Resolve the ScreenProject that this META·LAB project's records land in. */

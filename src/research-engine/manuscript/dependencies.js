@@ -109,8 +109,28 @@ export function computeDependencyState(project, opts = {}) {
       tfStart: pico.tfStart, tfEnd: pico.tfEnd,
     },
     'pico.registration': { prosperoId: pico.prosperoId },
-    'search.databases': search.dbs || {},
-    'search.date': search.date,
+    // 104.md — fingerprint the EXECUTION record, not the checkbox blob.
+    //
+    // This was a real break in the live-sync chain: the manuscript states the
+    // databases and the search date from `searchProvenance`, but these two
+    // fingerprints were computed from `project.search.dbs` / `.date` — the settings
+    // page. So running a brand-new Scopus search changed what the manuscript SAYS
+    // while leaving the fingerprints identical, and the Methods/Abstract sections
+    // were never flagged as out of date. Running a search now moves the fingerprint,
+    // which is what "no button should need to be clicked" requires.
+    //
+    // The legacy blob stays in the input so a project with no provenance yet keeps
+    // its previous invalidation behaviour rather than losing it.
+    'search.databases': {
+      provenance: (opts.searchProvenance && Array.isArray(opts.searchProvenance.reportable))
+        ? opts.searchProvenance.reportable.map((d) => `${d.key}:${d.state}`).sort()
+        : null,
+      configured: search.dbs || {},
+    },
+    'search.date': {
+      latest: (opts.searchProvenance && opts.searchProvenance.latestValidSearchAt) || '',
+      configured: search.date,
+    },
     'search.strategy': { string: search.string, searchMethodsText: clean(opts.searchMethodsText) },
     'prisma.counts': computePrismaCounts(p, opts).counts,
     'screening.workflow': {

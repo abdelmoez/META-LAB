@@ -17,6 +17,7 @@ import { runMeta as defaultRunMeta } from '../statistics/meta-analysis.js';
 import { getOutcomePairs, filterStudiesForOutcome } from '../import-export/journalSubmission.js';
 import { fmtES, fmtNum } from '../format/precision.js';
 import { resolveAnalysis } from './analysisDescribe.js';
+import { deriveSearchMethodology } from '../search/searchMethodology.js';
 
 const clean = (s) => String(s == null ? '' : s).trim();
 const num = (x) => (x === '' || x == null || isNaN(+x) ? null : +x);
@@ -337,20 +338,50 @@ function deriveOverall(rob, domainDefs) {
 export function buildSearchStrategyTable(project, opts = {}) {
   const search = (project && project.search) || {};
   const dbs = search.dbs || {};
-  const enabled = Object.keys(dbs).filter((k) => dbs[k]);
   const perSource = opts.perSource || {};
 
-  const rows = enabled.map((db) => {
-    const ps = perSource[db] || {};
-    return {
-      database: db,
-      date: clean(ps.date || ps.searchedAt || search.date),
-      string: clean(ps.string || ps.query || search.string),
-      records: (() => { const n = num(ps.records); return n == null ? '' : String(n); })(),
-      filters: clean(ps.filters || ''),
-      notes: clean(ps.notes || search.notes),
-    };
-  });
+  // 104.md — when execution provenance exists, the PRISMA-S table is built from the
+  // SAME canonical methodology the Methods sentence uses. Before this it was built
+  // from the `search.dbs` CHECKBOXES, so a manuscript could state in prose that it
+  // searched three databases while its own appendix table listed four (or listed a
+  // database that had only ever been ticked, never run — a 101.md §17 fabrication
+  // reaching the reader through the back door).
+  //
+  // Without provenance the legacy checkbox path is kept verbatim, so projects that
+  // predate the search engine keep the table they had.
+  const methodology = opts.searchMethodology
+    || (opts.searchProvenance ? deriveSearchMethodology(opts.searchProvenance) : null);
+  const live = !!(methodology && methodology.perDatabase && methodology.perDatabase.length);
+
+  const rows = live
+    ? methodology.perDatabase.map((d) => {
+      // Per-source detail may be keyed by the canonical key or by the raw label.
+      const ps = perSource[d.key] || perSource[d.label] || {};
+      return {
+        database: d.label,
+        // The recorded execution date wins over anything typed on a settings page.
+        date: clean(ps.date || ps.searchedAt || d.searchedAt || search.date),
+        string: clean(ps.string || ps.query || search.string),
+        records: (() => {
+          const n = num(ps.records);
+          if (n != null) return String(n);
+          return d.recordCount > 0 ? String(d.recordCount) : '';
+        })(),
+        filters: clean(ps.filters || ''),
+        notes: clean(ps.notes || search.notes),
+      };
+    })
+    : Object.keys(dbs).filter((k) => dbs[k]).map((db) => {
+      const ps = perSource[db] || {};
+      return {
+        database: db,
+        date: clean(ps.date || ps.searchedAt || search.date),
+        string: clean(ps.string || ps.query || search.string),
+        records: (() => { const n = num(ps.records); return n == null ? '' : String(n); })(),
+        filters: clean(ps.filters || ''),
+        notes: clean(ps.notes || search.notes),
+      };
+    });
 
   const candidates = [
     { key: 'database', label: 'Database' },
@@ -362,8 +393,11 @@ export function buildSearchStrategyTable(project, opts = {}) {
   ];
   const columns = candidates.filter((c) => c.key === 'database' || rows.some((r) => clean(r[c.key])));
   const warnings = [];
-  if (!rows.length) warnings.push('No databases selected in the Search tab.');
-  else if (!clean(search.date)) warnings.push('Search date not entered (required for PRISMA-S).');
+  if (!rows.length) {
+    warnings.push(live ? 'No database search has been recorded.' : 'No databases selected in the Search tab.');
+  } else if (!rows.some((r) => clean(r.date))) {
+    warnings.push('Search date not entered (required for PRISMA-S).');
+  }
 
   return {
     id: 'search_strategy_table',
@@ -373,7 +407,9 @@ export function buildSearchStrategyTable(project, opts = {}) {
     note: 'Databases searched and (where recorded) the strategy and record counts. Complete missing fields for PRISMA-S compliance.',
     warnings,
     available: rows.length > 0,
-    generatedFrom: 'search',
+    // 104.md — declares which truth this table was built from, so an exported
+    // appendix can be traced back to execution records rather than a checkbox list.
+    generatedFrom: live ? 'searchProvenance' : 'search',
   };
 }
 

@@ -806,6 +806,24 @@ model ScreenImportBatch {
   searchRunId    String        @default("") // PecanSearchRun id ("" = file/api import)
   updatedCount   Int           @default(0) // existing records whose blank metadata this import filled
   source         String        @default("file") // file | pecan-search | api
+  // 104.md — manual searches as first-class search EVENTS.
+  //
+  // An automated run records which database it hit and exactly when. A manual one
+  // recorded neither: provenance had to guess the database from parser-stamped
+  // per-record text and use the UPLOAD time as the search date. Those are different
+  // facts — someone can search Embase on the 3rd and upload the file on the 11th,
+  // and the manuscript would then report the wrong "last searched" date.
+  //
+  // `contributesToReview` is the concept 104.md asks for: "searches that are
+  // actually part of the review's final search methodology". A test or accidental
+  // import is flagged false — the batch and its audit trail stay, the search stops
+  // being reported. (The automated side already has this via
+  // PecanSearchRun.rolledBackAt.) Additive + defaulted ⇒ `prisma db push` stays
+  // safe and every existing batch keeps counting, as it should.
+  sourceDatabase      String    @default("") // canonical database key, when the importer knows it
+  searchedAt          DateTime? // when the search was actually RUN (null ⇒ fall back to createdAt)
+  contributesToReview Boolean   @default(true)
+  exclusionNote       String    @default("") // why it was excluded, for the audit trail
   // ── import fingerprinting (prompt6 Task 19; nullable so legacy rows migrate clean) ──
   fileHash       String? // sha256 of line-ending-normalized content
   fileSize       Int?

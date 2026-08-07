@@ -33,6 +33,7 @@
 
 // 101.md §27 — the tools actually used, derived from the assessment rows.
 import { deriveRobUsage } from '../../research-engine/rob/usage.js';
+import { deriveSearchMethodology } from '../../research-engine/search/searchMethodology.js';
 
 const num = (v) => {
   if (v === '' || v == null) return null;
@@ -257,6 +258,24 @@ export function mapPecanPerSource(run) {
 }
 
 /**
+ * 104.md — the non-database ways studies were identified, read off the PRISMA
+ * flow's other-methods arm (citation searching, hand searching, a colleague's
+ * suggestion). These are search METHODS, not databases, so they never join the
+ * "We searched …" clause; they exist so a Methods section can report them where
+ * PRISMA item 6 asks for "other sources".
+ */
+export function otherMethodsFromFlow(flow) {
+  const rows = (flow && flow.sources && Array.isArray(flow.sources.other)) ? flow.sources.other : [];
+  const out = [];
+  for (const r of rows) {
+    const label = String((r && r.label) || '').trim();
+    if (!label || /^other methods$/i.test(label)) continue;
+    if (!out.includes(label)) out.push(label);
+  }
+  return out;
+}
+
+/**
  * Compose the generateDraft/tables opts from (project, gradeByOutcome, sources).
  * PURE so the exact genOpts contract is unit-testable without React:
  *   - always: runMeta, prec, analysis:{model:'random'[, tau2Method]} — the
@@ -293,6 +312,17 @@ export function composeGenOpts({ project, runMeta, gradeByOutcome, sources } = {
   // 103.md §15 — one source of truth: the chart and the manuscript cannot disagree
   // because they read the same derivation.
   if (src.prismaFlow) out.flow = src.prismaFlow;
+  // 104.md — derive the canonical Search Methodology ONCE per generation and pass
+  // it down, so the Abstract, the Methods narration, the PRISMA-S strategy table
+  // and every search fact token read the identical object. `otherMethods` comes
+  // from the PRISMA flow's other-methods arm, because the evidence for citation or
+  // hand searching lives in record origins, not in search runs.
+  if (src.searchProvenance) {
+    out.otherSearchMethods = otherMethodsFromFlow(src.prismaFlow);
+    out.searchMethodology = deriveSearchMethodology(src.searchProvenance, {
+      otherMethods: out.otherSearchMethods,
+    });
+  }
   if (src.screeningWorkflow) {
     // methodsText + sources.js read the FLAT reviewers/blind keys.
     if (src.screeningWorkflow.reviewers != null) out.reviewers = src.screeningWorkflow.reviewers;

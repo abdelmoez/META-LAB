@@ -71,6 +71,9 @@ r.delete('/projects/:pid/import-batches/:batchId',  IB.deleteImportBatch);
 // 96.md D12 — run-grouped chronological import timeline (members read; canReset flag).
 // Paginated: ?limit= (default 50, max 200) & ?offset=.
 r.get('/projects/:pid/import-history',              IB.getImportHistory);
+// 104.md — record which database a manual search hit, when it was run, and
+// whether it is part of the review's final search methodology.
+r.patch('/projects/:pid/import-batches/:batchId/search', IB.updateImportBatchSearch);
 // 96.md 5D — article-level provenance (sources + field changes) for one record.
 r.get('/projects/:pid/records/:rid/provenance',     IB.getRecordProvenance);
 // 96.md Phase 6 — scoped "delete imported records" reset (owner/admin; typed confirm;

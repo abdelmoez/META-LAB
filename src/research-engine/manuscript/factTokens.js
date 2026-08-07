@@ -38,6 +38,7 @@
 import { DEPENDENCY_KEYS } from './dependencies.js';
 import { computePrismaCounts } from './prismaCounts.js';
 import { resolveAnalysis, describeSynthesisModel } from './analysisDescribe.js';
+import { deriveSearchMethodology } from '../search/searchMethodology.js';
 
 /** `[[fact:search.date]]` — keys are dot-separated identifiers only. */
 export const FACT_TOKEN_RE = /\[\[fact:([a-zA-Z][a-zA-Z0-9]*(?:\.[a-zA-Z][a-zA-Z0-9]*)*)\]\]/g;
@@ -163,7 +164,7 @@ export const FACTS = Object.freeze({
     engine: 'search',
     depKey: 'search.date',
     hint: 'Execute a search — the date is taken from the search record, not typed in.',
-    resolve: (c) => (c.search.latestValidSearchAt ? formatFactDate(c.search.latestValidSearchAt) : null),
+    resolve: (c) => (c.search.latestSearchAt ? formatFactDate(c.search.latestSearchAt) : null),
   },
   'search.dateRange': {
     label: 'Search coverage period',
@@ -171,9 +172,45 @@ export const FACTS = Object.freeze({
     depKey: 'search.date',
     hint: 'Execute a search — the date is taken from the search record, not typed in.',
     resolve: (c) => {
-      const d = c.search.latestValidSearchAt ? formatFactDate(c.search.latestValidSearchAt) : '';
+      const d = c.search.latestSearchAt ? formatFactDate(c.search.latestSearchAt) : '';
       return d ? `from inception to ${d}` : null;
     },
+  },
+  /* 104.md — the richer search metadata the Manuscript Editor should have
+     STRUCTURED access to. Deliberately available as tokens rather than injected
+     everywhere: the abstract stays concise, and a Methods or supplementary section
+     can name the update history where it is methodologically relevant. */
+  'search.firstDate': {
+    label: 'Date of the first search',
+    engine: 'search',
+    depKey: 'search.date',
+    hint: 'Execute a search — the date is taken from the search record, not typed in.',
+    resolve: (c) => (c.search.firstSearchAt ? formatFactDate(c.search.firstSearchAt) : null),
+  },
+  'search.updateCount': {
+    label: 'Number of search updates',
+    engine: 'search',
+    depKey: 'search.date',
+    hint: 'Re-run the search to record an update (Living Review searches count).',
+    // 0 updates is a real, reportable answer — an unrepeated search — so this
+    // resolves whenever ANY search exists, unlike counts where 0 means "unknown".
+    resolve: (c) => (c.search.latestSearchAt ? String(c.search.updateCount) : null),
+  },
+  'search.sources': {
+    label: 'All information sources searched',
+    engine: 'search',
+    depKey: 'search.databases',
+    hint: 'Run or import at least one database search.',
+    // Databases AND registers together — for sections that report "information
+    // sources" as PRISMA item 6 does, rather than splitting the two clauses.
+    resolve: (c) => (c.search.all.length ? joinList(c.search.all) : null),
+  },
+  'search.otherMethods': {
+    label: 'Other methods used to identify studies',
+    engine: 'search',
+    depKey: 'search.databases',
+    hint: 'Record citation searching or hand searching in the Search engine.',
+    resolve: (c) => (c.search.otherMethods.length ? joinList(c.search.otherMethods) : null),
   },
 
   /* ── PRISMA flow (§3 downstream propagation) ───────────────────────────── */
@@ -357,13 +394,15 @@ export function buildFactContext(project, opts = {}) {
   const analysisCfg = resolveAnalysis(p, opts);
 
   // ── search: execution provenance ONLY (never project.search.dbs) ──────────
-  const sp = opts.searchProvenance || null;
-  const reportable = (sp && Array.isArray(sp.reportable)) ? sp.reportable : [];
-  const search = {
-    databases: reportable.filter((d) => d.kind !== 'register').map((d) => d.label),
-    registers: reportable.filter((d) => d.kind === 'register').map((d) => d.label),
-    latestValidSearchAt: (sp && sp.latestValidSearchAt) || '',
-  };
+  // 104.md — the database/register split and the date rules now come from the ONE
+  // canonical Search Methodology derivation, so the Abstract, the Methods narration
+  // and the PRISMA-S strategy table cannot word the same fact differently. The
+  // caller may pass a pre-derived methodology (the hook derives it once per render);
+  // otherwise it is derived here from the same provenance input.
+  const search = opts.searchMethodology
+    || deriveSearchMethodology(opts.searchProvenance || null, {
+      otherMethods: opts.otherSearchMethods || [],
+    });
 
   // ── analysis ──────────────────────────────────────────────────────────────
   // describeSynthesisModel returns the canonical DESCRIPTOR object (short / label /

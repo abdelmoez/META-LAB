@@ -411,3 +411,101 @@ export async function deleteImportBatch(req, res) {
     res.status(500).json({ error: 'Internal server error' });
   }
 }
+
+/**
+ * 104.md Part 2 — record (or correct) a manual search's provenance.
+ *
+ * PATCH /api/screening/projects/:pid/import-batches/:batchId/search
+ * body: { sourceDatabase?, searchedAt?, contributesToReview?, exclusionNote? }
+ *
+ * An automated run knows which database it hit and exactly when. A manual import
+ * knew neither — provenance had to guess the database from parser-stamped record
+ * text and treat the UPLOAD time as the search date. This endpoint lets a
+ * researcher state the two facts the file cannot: which database this was, and
+ * when the search was actually run.
+ *
+ * It also carries the "is this part of the review's final search methodology?"
+ * decision. Setting `contributesToReview: false` on an accidental or test import
+ * stops it contributing a database or a date to anything the manuscript states,
+ * while the batch, its records and its audit trail all stay exactly where they
+ * are — "preserve audit logs, but generate the manuscript from the correct
+ * active/final research state".
+ */
+export async function updateImportBatchSearch(req, res) {
+  try {
+    const access = await getProjectAccess(req.params.pid, req.user);
+    if (!access) return res.status(404).json({ error: 'Project not found' });
+    // Changing what the manuscript reports about the search methodology is an
+    // editorial act, so it needs write access — the same bar as importing.
+    if (access.readOnly) {
+      return res.status(403).json({ error: 'You do not have permission to change this project’s search record.' });
+    }
+
+    const batch = await prisma.screenImportBatch.findFirst({
+      where: { id: req.params.batchId, projectId: req.params.pid },
+    });
+    if (!batch) return res.status(404).json({ error: 'Import batch not found' });
+
+    const body = req.body || {};
+    const data = {};
+
+    if (body.sourceDatabase !== undefined) {
+      data.sourceDatabase = String(body.sourceDatabase || '').trim().slice(0, 100);
+    }
+    if (body.searchedAt !== undefined) {
+      if (body.searchedAt === null || body.searchedAt === '') {
+        data.searchedAt = null; // clears back to "use the upload date"
+      } else {
+        const d = new Date(body.searchedAt);
+        if (Number.isNaN(d.getTime())) {
+          return res.status(400).json({ error: 'searchedAt is not a valid date.' });
+        }
+        // A search cannot have been run after the records were uploaded, and a
+        // future date would silently become the manuscript's "last searched" date.
+        if (d.getTime() > Date.now()) {
+          return res.status(400).json({ error: 'A search date cannot be in the future.' });
+        }
+        data.searchedAt = d;
+      }
+    }
+    if (body.contributesToReview !== undefined) {
+      data.contributesToReview = !!body.contributesToReview;
+    }
+    if (body.exclusionNote !== undefined) {
+      data.exclusionNote = String(body.exclusionNote || '').trim().slice(0, 500);
+    }
+    if (!Object.keys(data).length) return res.status(400).json({ error: 'Nothing to update.' });
+
+    const updated = await prisma.screenImportBatch.update({ where: { id: batch.id }, data });
+
+    await writeAudit(req.params.pid, req.user, 'IMPORT_BATCH_SEARCH_UPDATED', {
+      entityType: 'ScreenImportBatch', entityId: batch.id,
+      details: {
+        filename: batch.filename,
+        before: {
+          sourceDatabase: batch.sourceDatabase || '',
+          searchedAt: batch.searchedAt || null,
+          contributesToReview: batch.contributesToReview !== false,
+        },
+        after: {
+          sourceDatabase: updated.sourceDatabase || '',
+          searchedAt: updated.searchedAt || null,
+          contributesToReview: updated.contributesToReview !== false,
+        },
+      },
+    });
+
+    res.json({
+      batch: {
+        id: updated.id,
+        sourceDatabase: updated.sourceDatabase || '',
+        searchedAt: updated.searchedAt || null,
+        contributesToReview: updated.contributesToReview !== false,
+        exclusionNote: updated.exclusionNote || '',
+      },
+    });
+  } catch (e) {
+    console.error('updateImportBatchSearch', e);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+}

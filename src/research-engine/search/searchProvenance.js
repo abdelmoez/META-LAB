@@ -281,6 +281,8 @@ export function deriveSearchProvenance(input = {}) {
 
   /** key → accumulating record */
   const byKey = new Map();
+  /** 104.md — every reportable search EVENT, in the order observed. */
+  const events = [];
 
   const touch = (rawName) => {
     const key = canonicalDbKey(rawName);
@@ -321,12 +323,26 @@ export function deriveSearchProvenance(input = {}) {
       if (!rec.runIds.includes(run.id) && run.id) rec.runIds.push(run.id);
       if (isReportable(state)) {
         rec.method = rec.method === 'manual' ? 'mixed' : (rec.method || 'automated');
-        rec.lastSearchedAt = laterIso(
-          rec.lastSearchedAt,
-          isoOf((src && src.completedAt) || (run && run.completedAt) || null),
-        );
+        const at = isoOf((src && src.completedAt) || (run && run.completedAt) || null);
+        rec.lastSearchedAt = laterIso(rec.lastSearchedAt, at);
         const imported = Number(src && src.importedCount);
         if (Number.isFinite(imported) && imported > 0) rec.recordCount += imported;
+        // 104.md — keep the individual search EVENT, not only the per-database
+        // rollup. A Living Review that re-runs PubMed every quarter collapses to a
+        // single database record whose lastSearchedAt is the newest date, so the
+        // rollup alone cannot answer "how many times was this search updated?".
+        if (at) {
+          events.push({
+            at,
+            database: rec.key,
+            label: rec.label,
+            method: 'automated',
+            origin: String((run && run.origin) || 'automated'),
+            runId: (run && run.id) || '',
+            batchId: '',
+            recordCount: Number.isFinite(imported) && imported > 0 ? imported : 0,
+          });
+        }
       }
     }
   }
@@ -348,6 +364,18 @@ export function deriveSearchProvenance(input = {}) {
       rec.lastSearchedAt = laterIso(rec.lastSearchedAt, at);
       const n = Number(d && d.count);
       if (Number.isFinite(n) && n > 0) rec.recordCount += n;
+      if (at) {
+        events.push({
+          at,
+          database: rec.key,
+          label: rec.label,
+          method: 'manual',
+          origin: 'manual',
+          runId: '',
+          batchId: (batch && batch.id) || '',
+          recordCount: Number.isFinite(n) && n > 0 ? n : 0,
+        });
+      }
     }
   }
 
@@ -376,9 +404,15 @@ export function deriveSearchProvenance(input = {}) {
     }
   }
 
+  // Chronological, stable: the audit trail a Living Review needs, and the only
+  // input from which "number of search updates" can honestly be counted.
+  const history = events.slice().sort((a, b) => (a.at < b.at ? -1 : a.at > b.at ? 1
+    : (a.database < b.database ? -1 : a.database > b.database ? 1 : 0)));
+
   return {
     databases,
     reportable,
+    history,
     latestValidSearchAt,
     latestValidSource,
     counts: {

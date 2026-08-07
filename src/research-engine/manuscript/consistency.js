@@ -15,6 +15,7 @@ import { getOutcomePairs, filterStudiesForOutcome } from '../import-export/journ
 import { resolveAnalysis } from './analysisDescribe.js';
 import { TAU2_LABELS } from '../statistics/tau2.js';
 import { SECTION_TYPES } from './model.js';
+import { checkPrismaConsistency } from '../search/searchMethodology.js';
 
 const clean = (s) => String(s == null ? '' : s).trim();
 
@@ -144,6 +145,28 @@ export function checkConsistency(project, draft, opts = {}) {
       id: 'methods-empty', severity: 'warn', section: 'methods',
       message: 'Results reports a pooled analysis but the Methods section is empty — generate or write Methods before submission.',
     });
+  }
+
+  // (g) 104.md — the search methodology and PRISMA must describe the same review.
+  //
+  // "If PRISMA says records were identified from PubMed, Embase and Scopus but the
+  // manuscript says 'We searched PubMed and Embase', that is a data-integrity
+  // problem." Both sides now derive from the same provenance architecture, so a
+  // mismatch means something genuinely needs a human: usually records imported
+  // without database attribution, or a search marked as not contributing while its
+  // records are still in the flow.
+  if (opts.searchMethodology && opts.flow) {
+    const cross = checkPrismaConsistency(opts.searchMethodology, opts.flow);
+    for (const issue of (cross.issues || [])) {
+      out.push({
+        id: issue.id,
+        // An unreported source is a reporting error a reader would catch; a named
+        // database with no records is worth checking but can be legitimate.
+        severity: issue.severity === 'error' ? 'warn' : 'info',
+        section: 'methods',
+        message: issue.message,
+      });
+    }
   }
 
   return out;
