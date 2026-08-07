@@ -51,6 +51,8 @@ import {
   resolveFacts, findFactTokens, renderFacts,
   reconcileFacts, groupChanges, overrideFact, clearFactOverride,
   factDiscrepancies, markChangeReverted,
+  // 102.md — manual-input placeholder detection, counts, grouping and navigation.
+  collectPlaceholders, placeholderCounts, groupPlaceholders, stepPlaceholder,
 } from '../../research-engine/manuscript/index.js';
 import { generateDraft } from '../../research-engine/manuscript/draft.js';
 import { gradeCertaintyEnabled, sofCertaintyMap } from '../../frontend/workspace/gradeApi.js';
@@ -673,6 +675,9 @@ export function useManuscript(project, upd) {
     if (!activeDraft) return;
     const s = activeDraft.sections && activeDraft.sections[id];
     if (s && s.locked) return; // locked sections are read-only (UI-enforced)
+    // 102.md §6 — record what was just typed so the placeholder count drops the
+    // moment a field is filled, instead of waiting out the autosave debounce.
+    setLiveSections((prev) => ({ ...(prev || {}), [id]: content }));
     queueEdit(activeDraft.id, 'section', id, content);
   }, [activeDraft, queueEdit]);
 
@@ -862,6 +867,69 @@ export function useManuscript(project, upd) {
     return () => clearTimeout(t);
   }, [sourcesSettled, resolvedFacts, usedFactKeys]);
 
+  /* ══════════ 102.md — manual-input placeholders ══════════
+   *
+   * §58 wants the counter to update "immediately without requiring refresh". The
+   * stored draft only catches up after the 600 ms autosave debounce plus the
+   * project round trip, so the text the researcher is typing RIGHT NOW is held
+   * here and overlaid on top of the draft when placeholders are counted.
+   *
+   * Re-rendering on every keystroke is safe precisely because the editor is
+   * uncontrolled: RichSectionEditor renders its HTML once per mount key and React
+   * sees an identical string afterwards, so a parent re-render never touches the
+   * live DOM or the caret.
+   */
+  const [liveSections, setLiveSections] = useState(null);
+
+  // Once the stored draft catches up with what was typed, drop the overlay so the
+  // two can never drift apart.
+  useEffect(() => {
+    if (!liveSections || !activeDraft) return;
+    const secs = activeDraft.sections || {};
+    const stillAhead = Object.keys(liveSections).some(
+      (id) => (secs[id] && secs[id].content) !== liveSections[id],
+    );
+    if (!stillAhead) setLiveSections(null);
+  }, [activeDraft, liveSections]);
+
+  /** The draft as the researcher currently sees it, pending edits included. */
+  const liveDraft = useMemo(() => {
+    if (!activeDraft) return null;
+    if (!liveSections) return activeDraft;
+    const sections = { ...activeDraft.sections };
+    for (const id of Object.keys(liveSections)) {
+      sections[id] = { ...(sections[id] || {}), content: liveSections[id] };
+    }
+    return { ...activeDraft, sections };
+  }, [activeDraft, liveSections]);
+
+  /** Every unresolved placeholder, in manuscript order (§1, §2). */
+  const placeholders = useMemo(() => collectPlaceholders(liveDraft), [liveDraft]);
+  const placeholderStats = useMemo(() => placeholderCounts(placeholders), [placeholders]);
+  const placeholderGroups = useMemo(() => groupPlaceholders(placeholders), [placeholders]);
+
+  // §2 — the field the researcher is currently on. Held as a LABEL+section rather
+  // than an index so it survives edits elsewhere in the manuscript that would
+  // otherwise silently renumber it.
+  const [currentPlaceholderId, setCurrentPlaceholderId] = useState(null);
+
+  // §6 — when a placeholder is resolved (or the manuscript regenerates) the marker
+  // must not point at a field that no longer exists.
+  useEffect(() => {
+    if (!currentPlaceholderId) return;
+    if (!placeholders.some((p) => p.id === currentPlaceholderId)) setCurrentPlaceholderId(null);
+  }, [placeholders, currentPlaceholderId]);
+
+  /**
+   * The next/previous MANUAL field, wrapping around. 'pending' fields are skipped
+   * on purpose: stepping a researcher into a field they must not type in (because
+   * the project supplies it) would be a dead end — the panel lists those instead.
+   */
+  const nextPlaceholder = useCallback(
+    (direction = 1) => stepPlaceholder(placeholders, currentPlaceholderId, direction, 'manual'),
+    [placeholders, currentPlaceholderId],
+  );
+
   const updateDraft = useCallback((nextDraft) => {
     flushPending();
     const list = readManuscripts(projectRef.current);
@@ -977,6 +1045,10 @@ export function useManuscript(project, upd) {
     resolvedFacts, usedFactKeys, renderSection, factOverrides, discrepancies,
     changeGroups, revertFact, keepCurrentFact,
     showChanges, setShowChanges,
+    // 102.md §1/§2/§5 — the manual-field surface: what is unresolved, how many,
+    // where each one lives, and which the researcher is currently on.
+    placeholders, placeholderStats, placeholderGroups,
+    currentPlaceholderId, setCurrentPlaceholderId, nextPlaceholder,
     outdated, consistency, setSectionLocked,
     // 84.md — live manuscript sync surface for the Updates panel + freshness pills.
     freshDepState, contradictions, missingInfo, freshness, outdatedCount,

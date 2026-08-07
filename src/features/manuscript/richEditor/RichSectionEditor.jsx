@@ -29,7 +29,7 @@ import { C, btnS, inp } from '../../../frontend/workspace/ui/styles.js';
 import { alpha } from '../../../frontend/theme/tokens.js';
 import {
   mdToHtml, htmlToMd, citeChipHtml, factChipText, factOf,
-  CITE_CHIP_CLASS, ASSET_CHIP_CLASS, FACT_CHIP_CLASS,
+  CITE_CHIP_CLASS, ASSET_CHIP_CLASS, FACT_CHIP_CLASS, INPUT_CHIP_CLASS,
 } from './mdDom.js';
 import { SHOW_CHANGES_CSS, indexFactChanges, factChipTitle } from '../showChanges.js';
 
@@ -68,6 +68,30 @@ export const RICH_EDITOR_CSS = `
 .ms-page-body .${FACT_CHIP_CLASS}{background:none;border:0;border-radius:0;padding:0;margin:0;
   color:inherit;font:inherit;letter-spacing:inherit;text-decoration:none;box-shadow:none;
   display:inline;white-space:normal;cursor:inherit;}
+
+/* 102.md §4 — an unresolved manual field must be "noticeable enough that users
+   understand they require manual input, but not visually distracting". So: the
+   prose font is kept (this is draft manuscript text, not a widget), and the only
+   decoration is a soft tint plus a dotted underline. The dotted underline is what
+   carries the meaning when colour is unavailable — printouts, high-contrast mode,
+   and colour-blind readers all still see "this is unfinished". */
+.ms-page-body .${INPUT_CHIP_CLASS}{font:inherit;color:#8a5a00;background:rgba(214,158,46,0.10);
+  border-bottom:1px dotted rgba(138,90,0,0.75);border-radius:2px;padding:0 2px;
+  cursor:pointer;white-space:normal;}
+.ms-page-body .${INPUT_CHIP_CLASS}:hover{background:rgba(214,158,46,0.18);}
+/* The current navigation target, so "next field" has somewhere visible to land. */
+.ms-page-body .${INPUT_CHIP_CLASS}[data-input-current="true"]{background:rgba(214,158,46,0.28);
+  box-shadow:0 0 0 2px rgba(214,158,46,0.45);}
+.ms-page-body .${INPUT_CHIP_CLASS}:focus-visible{outline:2px solid #8a5a00;outline-offset:1px;}
+/* A field the PROJECT will fill (101.md §17: typing here would fabricate
+   methodology). Cool tint + a dashed rule so it reads as "waiting", not "yours to
+   write", and the two kinds stay distinguishable without relying on hue alone. */
+.ms-page-body .${INPUT_CHIP_CLASS}[data-input-kind="pending"]{color:#1f5673;
+  background:rgba(43,122,163,0.10);border-bottom:1px dashed rgba(31,86,115,0.75);}
+.ms-page-body .${INPUT_CHIP_CLASS}[data-input-kind="pending"]:hover{background:rgba(43,122,163,0.18);}
+@media (prefers-reduced-motion: reduce){
+  .ms-page-body .${INPUT_CHIP_CLASS}{transition:none;}
+}
 ${SHOW_CHANGES_CSS}`;
 
 /** Set-or-remove an attribute, writing only when it actually differs (a no-op write
@@ -97,6 +121,9 @@ export const RichSectionEditor = forwardRef(function RichSectionEditor({
   // 101.md §6 — pure visualization switch. It only sets an attribute; the DOM's
   // text content is byte-identical in both modes.
   showChanges = false,
+  // 102.md §3 — notified with the placeholder's label when the researcher clicks
+  // one, so the workspace can keep its "current field" marker in step.
+  onPlaceholderFocus = null,
 }, ref) {
   const rootRef = useRef(null);
   const savedRange = useRef(null);
@@ -173,8 +200,50 @@ export const RichSectionEditor = forwardRef(function RichSectionEditor({
     });
   }, [facts, factOverrides, factChanges, showChanges]);
 
+  /* ══════════ 102.md §3 — click a placeholder, select ALL of it ══════════
+   *
+   * "Clicking anywhere inside `[Enter institution name]` should select the entire
+   * `[Enter institution name]`" so the researcher can type straight over it.
+   *
+   * The chip is an atomic contenteditable=false island, so a click lands next to
+   * it rather than inside it; selecting the node explicitly is what turns it into
+   * the form-field behaviour §85 asks for. Nothing here mutates the document, so
+   * undo/redo, autosave and the caret contract (§9) are untouched — this only
+   * moves the selection.
+   */
+  const selectPlaceholderNode = useCallback((node) => {
+    if (!node || typeof window === 'undefined' || !window.getSelection) return;
+    const sel = window.getSelection();
+    if (!sel) return;
+    const r = document.createRange();
+    r.selectNode(node);
+    sel.removeAllRanges();
+    sel.addRange(r);
+    savedRange.current = r.cloneRange();
+  }, []);
+
+  /** The placeholder chip a click/keypress landed on, or null. */
+  const placeholderFrom = (target) => {
+    if (!target || typeof target.closest !== 'function') return null;
+    const el = target.closest(`span.${INPUT_CHIP_CLASS}[data-input]`);
+    return el && rootRef.current && rootRef.current.contains(el) ? el : null;
+  };
+
+  const onPlaceholderMouseDown = (e) => {
+    const chip = placeholderFrom(e.target);
+    if (!chip) return;
+    // preventDefault stops the browser placing a collapsed caret beside the chip,
+    // which would immediately undo the selection we are about to make.
+    e.preventDefault();
+    selectPlaceholderNode(chip);
+    if (!readOnlyRef.current) rootRef.current && rootRef.current.focus();
+    onPlaceholderFocusRef.current && onPlaceholderFocusRef.current(chip.getAttribute('data-input') || '');
+  };
+
   const readOnlyRef = useRef(readOnly);
   useEffect(() => { readOnlyRef.current = readOnly; });
+  const onPlaceholderFocusRef = useRef(onPlaceholderFocus);
+  useEffect(() => { onPlaceholderFocusRef.current = onPlaceholderFocus; });
 
   const emit = useCallback(() => {
     if (readOnlyRef.current) return;
@@ -270,7 +339,34 @@ export const RichSectionEditor = forwardRef(function RichSectionEditor({
       const n = orderMapRef.current && orderMapRef.current.get(refId);
       insertHtml(`${citeChipHtml(refId, n)}&nbsp;`);
     },
-  }), [exec, insertHtml]);
+    /**
+     * 102.md §2/§27 — reveal the Nth placeholder in THIS section: scroll it into
+     * view, select the whole thing, and focus the editor so the researcher can type
+     * immediately. Returns false when this section has no such placeholder, which
+     * is how the workspace knows to move on to the next section.
+     */
+    focusPlaceholder: (ordinal = 0) => {
+      const el = rootRef.current;
+      if (!el || typeof el.querySelectorAll !== 'function') return false;
+      const chips = el.querySelectorAll(`span.${INPUT_CHIP_CLASS}[data-input]`);
+      const chip = chips[ordinal];
+      if (!chip) return false;
+      if (typeof chip.scrollIntoView === 'function') {
+        // 'nearest' avoids yanking the page when the field is already visible;
+        // reduced-motion users get an instant jump from the CSS side.
+        chip.scrollIntoView({ block: 'center', inline: 'nearest' });
+      }
+      el.focus();
+      selectPlaceholderNode(chip);
+      return true;
+    },
+    /** How many placeholder chips this section currently renders. */
+    placeholderCount: () => {
+      const el = rootRef.current;
+      if (!el || typeof el.querySelectorAll !== 'function') return 0;
+      return el.querySelectorAll(`span.${INPUT_CHIP_CLASS}[data-input]`).length;
+    },
+  }), [exec, insertHtml, selectPlaceholderNode]);
   apiRef.current = api;
   useImperativeHandle(ref, () => api, [api]);
 
@@ -342,6 +438,9 @@ export const RichSectionEditor = forwardRef(function RichSectionEditor({
       onKeyDown={readOnly ? undefined : onKeyDown}
       onKeyUp={rememberSelection}
       onMouseUp={rememberSelection}
+      /* 102.md §3 — click anywhere in a placeholder and the WHOLE field (both
+         brackets included) is selected, ready to be typed over. */
+      onMouseDown={readOnly ? undefined : onPlaceholderMouseDown}
       onFocus={rememberSelection}
       onPaste={onPaste}
       dangerouslySetInnerHTML={{ __html: html0.current }}

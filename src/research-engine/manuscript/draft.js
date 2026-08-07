@@ -272,6 +272,26 @@ export function searchFacts(project, opts = {}) {
 }
 
 /**
+ * 102.md §8 — the eligibility + registration clause. Both are PROJECT data, so the
+ * generator states what it has and asks only for what is genuinely missing; when
+ * the project holds both, no manual field is created at all.
+ *
+ * With `factTokens` on, the registration id is emitted as a live token so a
+ * PROSPERO number added later fills itself in (101.md §4).
+ */
+function eligibilityRegistrationClause(project, opts = {}) {
+  const pico = (project && project.pico) || {};
+  const hasEligibility = !!(clean(pico.incl) || clean(pico.excl) || clean(pico.studyDesign));
+  const hasRegistration = !!clean(pico.prosperoId);
+  const reg = opts.factTokens ? factToken('protocol.registration') : clean(pico.prosperoId);
+
+  if (hasEligibility && hasRegistration) return `Eligibility followed the pre-specified criteria; registered as ${reg}.`;
+  if (hasEligibility) return `Eligibility followed the pre-specified criteria. ${PH('State the protocol registration, or that the review was not registered')}`;
+  if (hasRegistration) return `Registered as ${reg}. ${PH('State the eligibility criteria')}`;
+  return PH('State eligibility and registration');
+}
+
+/**
  * 101.md §17 — the extraction-workflow clause for the Abstract. Emits a reviewer
  * count ONLY when the project's screening/extraction workflow actually records one;
  * otherwise it emits nothing at all and lets the synthesis sentence stand alone.
@@ -378,7 +398,10 @@ export function generateAbstract(project, opts = {}) {
   if (fmt === 'lancet') {
     out.push('**Background.** ' + (clean(pico.question) ? `${clean(pico.question)} ${PH('Add 1–2 sentences of rationale')}` : PH('State the rationale and the knowledge gap')));
     out.push('');
-    out.push(`**Methods.** We searched ${dbText}${dateText}. ${modelText} ${PH('State eligibility and registration')}`);
+    // 102.md §8 — never ask for something the project already holds. Eligibility
+    // and the registration id are project data, so the placeholder narrows to
+    // whichever of the two is genuinely missing, and disappears when both are set.
+    out.push(`**Methods.** We searched ${dbText}${dateText}. ${modelText} ${eligibilityRegistrationClause(project, opts)}`.trimEnd());
     out.push('');
     out.push('**Findings.** ' + resultText);
     out.push('');

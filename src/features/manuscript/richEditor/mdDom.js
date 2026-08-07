@@ -35,11 +35,16 @@
 import { CITATION_TOKEN_RE } from '../../../research-engine/manuscript/citations.js';
 import { ASSET_TOKEN_RE } from '../../../research-engine/manuscript/refTokens.js';
 import { FACT_TOKEN_RE, factPlaceholder } from '../../../research-engine/manuscript/factTokens.js';
+// 102.md — one classifier for the whole feature: the editor decorates exactly the
+// spans the pure detector counts, so the badge can never disagree with the page.
+import { classifyPlaceholder } from '../../../research-engine/manuscript/placeholders.js';
 import { indexFactChanges, factChipTitle } from '../showChanges.js';
 
 export const CITE_CHIP_CLASS = 'ms-cite';
 export const ASSET_CHIP_CLASS = 'ms-asset';
 export const FACT_CHIP_CLASS = 'ms-fact';
+/** 102.md — a manual-input placeholder, e.g. `[State the review objective]`. */
+export const INPUT_CHIP_CLASS = 'ms-input';
 
 /** The `[[fact:key]]` key grammar, mirrored for the reverse (HTML → md) direction. */
 const FACT_KEY_RE = /^[a-zA-Z][a-zA-Z0-9]*(?:\.[a-zA-Z][a-zA-Z0-9]*)*$/;
@@ -99,6 +104,55 @@ export function factChipHtml(key, text, meta = {}) {
     + ` contenteditable="false">${escapeHtml(text)}</span>`;
 }
 
+/**
+ * 102.md §3/§4 — the atomic, non-editable manual-input chip.
+ *
+ * Atomic on purpose: §32 wants a click anywhere inside to select the ENTIRE
+ * placeholder including both brackets, so the researcher can type straight over it.
+ * An atomic node gives exactly that, and it is the same mechanism the cite/asset/
+ * fact chips already use, so undo, copy/paste and autosave (§9) behave identically.
+ *
+ * The label keeps its brackets in the visible text. They are the signal a reader
+ * already understands from a draft manuscript, and keeping them means the markdown,
+ * the export and the clipboard all agree.
+ */
+export function inputChipHtml(label, kind) {
+  const k = kind === 'pending' ? 'pending' : 'manual';
+  const title = k === 'pending'
+    ? 'Awaiting project data — complete this step in the project, not by typing'
+    : 'Manual input required';
+  return `<span class="${INPUT_CHIP_CLASS}" data-input="${escapeAttr(label)}"`
+    + ` data-input-kind="${k}" title="${escapeAttr(title)}" role="button" tabindex="0"`
+    + ` aria-label="${escapeAttr(`${title}: ${label}`)}"`
+    + ` contenteditable="false">[${escapeHtml(label)}]</span>`;
+}
+
+/**
+ * Wrap every recognised manual-input placeholder. Operates on ALREADY-ESCAPED text,
+ * so the label is unescaped before classification (the classifier reasons about
+ * words, not entities) and re-escaped on the way out.
+ */
+function replaceInputPlaceholders(escText) {
+  const s = String(escText);
+  let out = '';
+  let last = 0;
+  const re = /\[([^[\]]+)\]/g;
+  let m;
+  while ((m = re.exec(s)) !== null) {
+    const start = m.index;
+    const end = start + m[0].length;
+    // Skip `[[token]]` grammars and markdown link text — same guards the pure
+    // detector applies, kept in lockstep with placeholders.js.
+    if (s.charAt(start - 1) === '[' || s.charAt(end) === ']' || s.charAt(end) === '(') continue;
+    const label = unescapeEntities(m[1]).trim();
+    const kind = classifyPlaceholder(label);
+    if (!kind) continue;
+    out += s.slice(last, start) + inputChipHtml(label, kind);
+    last = end;
+  }
+  return last === 0 ? s : out + s.slice(last);
+}
+
 /** Look a number up in a Map OR plain-object numbering map (resolveNumbering.byId). */
 function assetNumberOf(assetNumbers, id) {
   if (!assetNumbers) return null;
@@ -136,6 +190,11 @@ export function factChipText(key, facts, overrides) {
     never be re-parsed as a link; code before links/emphasis (verbatim spans). */
 function inlineHtml(escText, orderMap, assetNumbers, factOpts) {
   let t = escText;
+  // 102.md — placeholders run FIRST, while the text is still literal markdown.
+  // After the chip passes below, the HTML contains chip labels like "[1]" and
+  // "Table 2"; scanning for brackets then would claim a citation chip's own marker
+  // as a manual field. The classifier's deny rules stay the second line of defence.
+  t = replaceInputPlaceholders(t);
   t = t.replace(new RegExp(CITATION_TOKEN_RE.source, 'g'), (_m, idEsc) => {
     const id = unescapeEntities(idEsc);
     const n = orderMap && typeof orderMap.get === 'function' ? orderMap.get(id) : null;
@@ -328,6 +387,14 @@ function inlineOf(nodes, opts = {}) {
     if (DROP_TAGS.has(tag)) continue;
     if (tag === 'br') { out += opts.oneLine ? ' ' : '\n'; continue; }
     if (VOID_TAGS.has(tag)) continue;
+    // 102.md — a manual-input chip round-trips to its literal bracketed text, so
+    // the markdown, the export and the clipboard all carry the same draft prose.
+    // A corrupt/foreign data-input span falls through to its text content below,
+    // which is the same string anyway.
+    if (n.attrs && n.attrs['data-input'] != null) {
+      const label = String(n.attrs['data-input']).replace(/[[\]]/g, '').trim();
+      if (label) { out += `[${label}]`; continue; }
+    }
     if (n.attrs && n.attrs['data-cite']) { out += `[[cite:${String(n.attrs['data-cite']).replace(/[\]\s]/g, '')}]]`; continue; }
     if (n.attrs && n.attrs['data-asset'] != null) {
       // Asset chip → its stable token. Only a grammar-valid id round-trips; a
@@ -536,5 +603,5 @@ export function extractOutline(md) {
 export default {
   escapeHtml, mdToHtml, htmlToMd, citeChipHtml, assetChipHtml, factChipHtml,
   factChipText, factOf, parsePipeTable, extractOutline, stripInlineMd,
-  CITE_CHIP_CLASS, ASSET_CHIP_CLASS, FACT_CHIP_CLASS,
+  CITE_CHIP_CLASS, ASSET_CHIP_CLASS, FACT_CHIP_CLASS, INPUT_CHIP_CLASS,
 };

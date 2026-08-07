@@ -22,6 +22,8 @@ import {
 import { RichSectionEditor, RichToolbar, RICH_EDITOR_CSS } from './richEditor/RichSectionEditor.jsx';
 // 101.md §34 — the optional "recent manuscript updates" panel paired with Show Changes.
 import { ChangeTrackingPanel } from './ChangeTrackingPanel.jsx';
+// 102.md §2/§5 — the manual-field counter, prev/next controls and section list.
+import { ManualFieldsPanel } from './ManualFieldsPanel.jsx';
 import { AbstractEditor } from './richEditor/AbstractEditor.jsx';
 import { extractOutline, mdToHtml } from './richEditor/mdDom.js';
 // 67.md — Word (.docx) export is a Plus-plan feature (server-enforced). This is
@@ -950,6 +952,74 @@ export function EditorPanel({ m, exporters, sectionRequest }) {
   // flush any pending debounced edit before changing section so resync reads fresh content
   const switchTo = (id) => { if (m.flush) m.flush(); activeApi.current = null; setSel(id); };
 
+  /* ══════════ 102.md §2 — navigation across the WHOLE manuscript ══════════
+   *
+   * The editor shows one section at a time, so "next field" often means: switch
+   * section, wait for that editor to mount, then reveal the field inside it.
+   * `pendingRevealRef` carries the target across the remount; the effect below
+   * fires once the new editor's imperative handle exists.
+   *
+   * Placeholders are addressed by their ORDINAL within a section rather than by a
+   * DOM id, because the chips are re-rendered from markdown on every mount and any
+   * id we stamped would not survive.
+   */
+  const pendingRevealRef = useRef(null);
+
+  const revealInCurrentSection = (p) => {
+    const api = mainApi.current;
+    if (!api || typeof api.focusPlaceholder !== 'function') return false;
+    return api.focusPlaceholder(p.ordinal);
+  };
+
+  const goToPlaceholder = (p) => {
+    if (!p) return;
+    m.setCurrentPlaceholderId && m.setCurrentPlaceholderId(p.id);
+    // A statement field lives in the Statements editor, not a section page; send
+    // the researcher there rather than failing silently.
+    if (p.group === 'statement') { pendingRevealRef.current = null; setSel('statements'); return; }
+    if (p.sectionId === sel) { revealInCurrentSection(p); return; }
+    pendingRevealRef.current = p;
+    switchTo(p.sectionId);
+  };
+
+  useEffect(() => {
+    const p = pendingRevealRef.current;
+    if (!p || p.sectionId !== sel) return undefined;
+    // The editor remounts when the section changes, so its imperative handle is
+    // not attached yet on this tick. Retry across a few frames rather than
+    // assuming a single timeout is enough on a slow render.
+    let tries = 0;
+    let timer = null;
+    const attempt = () => {
+      if (pendingRevealRef.current !== p) return;
+      if (revealInCurrentSection(p)) { pendingRevealRef.current = null; return; }
+      tries += 1;
+      if (tries < 10) timer = setTimeout(attempt, 24);
+      else pendingRevealRef.current = null; // give up quietly; never loop forever
+    };
+    timer = setTimeout(attempt, 0);
+    return () => { if (timer) clearTimeout(timer); };
+  }, [sel]);
+
+  const stepToPlaceholder = (direction) => {
+    const p = m.nextPlaceholder && m.nextPlaceholder(direction);
+    if (p) goToPlaceholder(p);
+  };
+
+  /* §26 — keyboard shortcuts. Ctrl/Cmd+Enter is the next field, with Shift for the
+     previous one. Both are chosen because neither is bound by the editor (which
+     only intercepts B/I) nor by the browser inside a contentEditable, so normal
+     typing, undo and selection (§9) are untouched. */
+  useEffect(() => {
+    const onKey = (e) => {
+      if (!(e.ctrlKey || e.metaKey) || e.key !== 'Enter') return;
+      e.preventDefault();
+      stepToPlaceholder(e.shiftKey ? -1 : 1);
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  });
+
   // 73.md Part 9 — the Overview grid / Consistency card can request a section
   // ({ id, at }); honour every request (`at` changes even for the same id).
   useEffect(() => {
@@ -1184,6 +1254,20 @@ export function EditorPanel({ m, exporters, sectionRequest }) {
           </div>
         )}
 
+        {/* 102.md §5 — always in view while anything is outstanding, so manual
+            completion is "almost impossible to overlook" (§81). */}
+        {(m.placeholderStats && (m.placeholderStats.manual || m.placeholderStats.pending)) ? (
+          <div style={{ marginBottom: 8 }}>
+            <ManualFieldsPanel
+              stats={m.placeholderStats}
+              groups={m.placeholderGroups}
+              currentId={m.currentPlaceholderId}
+              onPrev={() => stepToPlaceholder(-1)}
+              onNext={() => stepToPlaceholder(1)}
+              onGo={goToPlaceholder}
+            />
+          </div>
+        ) : null}
         {!isTitle && <RichToolbar getApi={getApi} citeRefs={citeRefs} refLabel={refLabel} disabled={locked} />}
 
         <div style={{ display: 'flex', justifyContent: 'center' }}>
@@ -1228,6 +1312,15 @@ export function EditorPanel({ m, exporters, sectionRequest }) {
                 factOverrides={m.factOverrides}
                 factChanges={(m.activeDraft && m.activeDraft.factLog) || null}
                 showChanges={m.showChanges}
+                // 102.md §3 — keep the panel's "current field" marker in step when
+                // the researcher reaches a placeholder by clicking rather than by
+                // pressing Next.
+                onPlaceholderFocus={(label) => {
+                  const hit = (m.placeholders || []).find(
+                    (x) => x.sectionId === sel && x.label === label,
+                  );
+                  if (hit) m.setCurrentPlaceholderId && m.setCurrentPlaceholderId(hit.id);
+                }}
                 onChange={onType} onActivate={setActive} readOnly={locked}
                 ariaLabel={(SECTION_TYPES.find((s) => s.id === sel) || {}).label || 'Section'}
                 placeholder="Write this section here, or generate it from your project data. Use the toolbar for headings, lists and citations." />

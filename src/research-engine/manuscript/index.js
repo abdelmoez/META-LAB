@@ -38,3 +38,7 @@ export * from './exportValidation.js';
 // provenance/revert history layered over it.
 export * from './factTokens.js';
 export * from './factProvenance.js';
+// 102.md — manual-input placeholders: precise detection (default-deny, so the
+// square brackets of scientific notation are never claimed), counts, grouping and
+// prev/next navigation.
+export * from './placeholders.js';
