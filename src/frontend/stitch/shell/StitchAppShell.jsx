@@ -26,6 +26,8 @@ import { S } from '../theme/stitchTokens.js';
 import { StitchToastProvider } from '../primitives/overlay.jsx';
 import { StitchDrawer } from '../primitives/overlay.jsx';
 import { StitchPrimaryRail, StitchTopHeader } from './shellParts.jsx';
+import { useFocusSurface, FocusSurface } from '../../focus/FocusModeContext.jsx';
+import { FocusToggle } from '../../focus/FocusControls.jsx';
 
 const RESPONSIVE_CSS = `
 @media (max-width: 1023px) {
@@ -44,12 +46,40 @@ const RESPONSIVE_CSS = `
 }
 `;
 
+/**
+ * The floor: a focused page that supplies no navigation of its own still gets a
+ * way out and a sense of place. Never rendered by the project workspace (which
+ * passes a real FocusNavBar) — this exists so opting a page into Focus Mode can
+ * never strand a user.
+ */
+function DefaultFocusBar({ breadcrumb }) {
+  return (
+    <div data-testid="focus-nav-bar" style={{
+      display: 'flex', alignItems: 'center', gap: 10, height: 40, flexShrink: 0, padding: '0 14px',
+      borderBottom: `1px solid ${S.outlineVariant}`, background: S.surface, position: 'sticky', top: 0, zIndex: 30,
+    }}>
+      <FocusToggle size="sm" />
+      <div style={{ minWidth: 0, flex: 1, display: 'flex', alignItems: 'center', gap: 8, fontSize: 12.5, color: S.textSecondary, fontWeight: 600, overflow: 'hidden', whiteSpace: 'nowrap' }}>
+        {breadcrumb}
+      </div>
+    </div>
+  );
+}
+
 export default function StitchAppShell({
   activeKey, contextRail, contextRailMobile, breadcrumb, children, maxWidth = 1320, contentPad = true,
   renderPrimaryRail, topPresence = null, coordinatedNav = false, pinned = false, chatContext = null,
   docTitle = null, headerProgress = null,
+  // 104.md Part 1 — Focus Mode. Opt-in per page: `focusable` declares that this
+  // surface has chrome worth hiding AND a way to navigate without it. The
+  // dashboard/profile do NOT opt in — stripping their nav would strand the user
+  // with no route out. `focusBar` is the minimal navigation the page supplies in
+  // place of the hidden chrome; without one, the shell renders a safe default.
+  focusable = false, focusBar = null,
 }) {
   const [navOpen, setNavOpen] = useState(false);
+  const { focus } = useFocusSurface(focusable);
+  const focused = focusable && focus;
 
   // 65.md NAV-2 — per-route tab titles. Pages that know more (project workspace)
   // pass `docTitle`; otherwise a string breadcrumb ("Dashboard · Projects") is a
@@ -72,12 +102,17 @@ export default function StitchAppShell({
   const mobileContext = contextRailMobile !== undefined ? contextRailMobile : contextRail;
 
   return (
+    <FocusSurface enabled={focusable}>
     <StitchToastProvider>
       <StitchStyle />
       <style>{RESPONSIVE_CSS}</style>
-      <div className="stitch-scope" data-testid="stitch-app-shell" style={{ display: 'flex', height: '100vh', width: '100%', overflow: 'hidden', background: S.surface, fontFamily: S.font, color: S.textPrimary }}>
-        {/* Desktop rails */}
-        {coordinatedNav ? (
+      <div className="stitch-scope" data-testid="stitch-app-shell" data-focused={focused ? 'true' : undefined} style={{ display: 'flex', height: '100vh', width: '100%', overflow: 'hidden', background: S.surface, fontFamily: S.font, color: S.textPrimary }}>
+        {/* Desktop rails — removed entirely in Focus Mode. `display:none` would be
+            cheaper, but the rails run live subscriptions (presence, screening
+            summary polling); unmounting them is the honest reading of "remove all
+            unnecessary interface chrome". The body is a SIBLING, so its subtree is
+            untouched either way and nothing in the workspace remounts. */}
+        {focused ? null : coordinatedNav ? (
           // 56.md §2 — the rail + white submenu are ONE coordinated region; the
           // shell CSS (`.stitch-wsnav*`) keeps the submenu attached at left:
           // var(--prail-w) so it moves WITH the rail (never covered/clipped).
@@ -93,23 +128,38 @@ export default function StitchAppShell({
         )}
 
         {/* Mobile off-canvas nav (primary + context STACKED vertically) */}
-        <StitchDrawer open={navOpen} onClose={() => setNavOpen(false)} side="left" width={288} label="Navigation">
-          <div style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0 }}>
-            <div style={{ flexShrink: 0, background: '#5d509c' }}>{rail('mobile')}</div>
-            {mobileContext ? <div style={{ flex: 1, minHeight: 0, display: 'flex' }}>{mobileContext}</div> : null}
-          </div>
-        </StitchDrawer>
+        {focused ? null : (
+          <StitchDrawer open={navOpen} onClose={() => setNavOpen(false)} side="left" width={288} label="Navigation">
+            <div style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0 }}>
+              <div style={{ flexShrink: 0, background: '#5d509c' }}>{rail('mobile')}</div>
+              {mobileContext ? <div style={{ flex: 1, minHeight: 0, display: 'flex' }}>{mobileContext}</div> : null}
+            </div>
+          </StitchDrawer>
+        )}
 
         {/* Main column */}
         <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', height: '100%' }}>
-          <StitchTopHeader onOpenNav={() => setNavOpen(true)} breadcrumb={breadcrumb} topPresence={topPresence} chatContext={chatContext} headerProgress={headerProgress} />
+          {focused
+            ? (focusBar || <DefaultFocusBar breadcrumb={breadcrumb} />)
+            : <StitchTopHeader onOpenNav={() => setNavOpen(true)} breadcrumb={breadcrumb} topPresence={topPresence} chatContext={chatContext} headerProgress={headerProgress} />}
           <main className="stitch-scope" data-testid="stitch-main-content" style={{ flex: 1, minWidth: 0, overflowY: 'auto', overflowX: 'hidden' }}>
-            <div style={{ maxWidth, margin: '0 auto', padding: contentPad ? '24px' : 0, width: '100%' }}>
+            {/* Focus Mode reclaims BOTH axes: the rail's width is gone, so the
+                content max-width is lifted (pages that need a reading column —
+                the manuscript editor, the protocol — already cap themselves) and
+                the padding tightens. This is the "avoid large empty margins left
+                behind by removed navigation" rule. */}
+            <div style={{
+              maxWidth: focused ? 100000 : maxWidth,
+              margin: '0 auto',
+              padding: contentPad ? (focused ? '16px 20px 28px' : '24px') : 0,
+              width: '100%',
+            }}>
               {children}
             </div>
           </main>
         </div>
       </div>
     </StitchToastProvider>
+    </FocusSurface>
   );
 }

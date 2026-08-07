@@ -28,6 +28,7 @@ import { StitchAvatar, StitchBadge, StitchIconButton } from '../primitives/core.
 import { StitchTooltip } from '../primitives/overlay.jsx';
 import { GLOBAL_NAV, globalHref, activeGlobalKey } from '../nav/navConfig.js';
 import { useAppVersion, useAppEnvironment } from './useAppVersion.js';
+import { FocusToggle } from '../../focus/FocusControls.jsx';
 import { useInvitations } from './useInvitations.js';
 
 // Staff = can reach the Ops Console (AdminRoute allows admin + mod).
@@ -341,6 +342,9 @@ export function StitchTopHeader({ onOpenNav, breadcrumb, topPresence = null, cha
           <StitchChatLauncher projectId={chatContext.projectId} projectName={chatContext.projectName || ''} />
         ) : null}
         <NotificationsBell />
+        {/* 104.md — Focus Mode lives in the SAME slot on every page that supports
+            it (it renders nothing where it doesn't), which is what makes it findable. */}
+        <FocusToggle />
         <StitchIconButton icon={theme === 'night' ? 'sun' : 'moon'} label={theme === 'night' ? 'Light theme' : 'Dark theme'} onClick={toggleTheme} />
         <StitchAccountMenu />
       </div>

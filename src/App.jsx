@@ -4,6 +4,7 @@ import { AuthProvider, useAuth } from './frontend/context/AuthContext.jsx';
 import { useGlobalPresence } from './frontend/hooks/useGlobalPresence.js';
 import { ThemeProvider } from './frontend/theme/ThemeContext.jsx';
 import { DesignModeProvider } from './frontend/design/DesignModeContext.jsx';
+import { FocusModeProvider } from './frontend/focus/FocusModeContext.jsx';
 import DesignRoute from './frontend/design/DesignRoute.jsx';
 import ForceLegacyDesign from './frontend/design/ForceLegacyDesign.jsx';
 import ProtectedRoute from './frontend/components/ProtectedRoute.jsx';
@@ -178,6 +179,10 @@ export default function App() {
     <ThemeProvider>
     <AuthProvider>
     <DesignModeProvider>
+    {/* 104.md — Focus Mode is application state, above the router, so activating it
+        and clicking Next keeps it active through the whole workflow instead of
+        resetting on every navigation. */}
+    <FocusModeProvider>
       <GlobalPresence />
       {/* 65.md — the in-app design switch is gone: Stitch is the product UI for
           everyone. Admins control the theme from Ops › Appearance + ?ui= only. */}
@@ -265,6 +270,7 @@ export default function App() {
         <Route path="*"         element={<NotFound />} />
       </Routes>
       </Suspense>
+    </FocusModeProvider>
     </DesignModeProvider>
     </AuthProvider>
     </ThemeProvider>

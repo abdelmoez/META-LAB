@@ -43,6 +43,9 @@ import { useProjectProgress } from '../hooks/useProjectProgress.js';
 import { useSidebarPin } from '../shell/useSidebarPin.js';
 import { useScreeningSummary, screenNeedsAttention } from '../shell/useScreeningSummary.js';
 import { totalMembersOf } from '../shell/presence.js';
+import { useFocusMode } from '../../focus/FocusModeContext.jsx';
+import { FocusNavBar, FOCUS_BAR_H } from '../../focus/FocusControls.jsx';
+import { buildWorkflowSequence, sequenceIndex, sequenceNeighbours } from '../nav/workflowSequence.js';
 import {
   activeProjectStage, projectStageHref, categoryForStage, categoryShowsSubmenu, activeSubmenuKey,
   readSearchStageParam, searchStageHref,
@@ -100,6 +103,10 @@ const SCOPE = new Set([
 const STAGE_LABEL = TABS.reduce((m, t) => { m[t.id] = t.label; return m; }, {});
 // Workflow order (the legacy stepper order) → used for the next-step action.
 const WORKFLOW_IDS = TABS.filter((t) => t.phase).map((t) => t.id);
+
+// Stages gated by the "Analysis" member permission (78.md #2). Module scope so the
+// render-time gate below and the Focus Mode Previous/Next gate share ONE definition.
+const ANALYSIS_STAGES = new Set(['analysis', 'forest', 'sensitivity', 'subgroup', 'nma']);
 
 function nextStageId(stage) {
   if (stage === 'methods') return null; // reference page — not part of the workflow
@@ -186,6 +193,28 @@ function DeepToolPage({ stage }) {
   const goStage = (id) => navigate(projectStageHref(id, ctx));
   const nextId = nextStageId(stage);
 
+  // ── 104.md Part 1 — Focus Mode ────────────────────────────────────────────
+  // The Previous/Next pair is built from the SAME nav model the purple rail and
+  // white submenu render (buildWorkflowSequence flattens PROJECT_CATEGORIES ×
+  // submenuForCategory), so focused navigation and normal navigation cannot drift.
+  // `isBlocked` re-states the ONE permission gate this page enforces at render
+  // (the Analysis capability, below) — without it, Next would happily walk a member
+  // into a page that immediately refuses them.
+  const { focus: focusMode } = useFocusMode();
+  const analysisBlocked = !!(perms && perms.isOwner === false && perms.canRunAnalysis === false);
+  const sequence = useMemo(
+    () => buildWorkflowSequence(ctx, {
+      isBlocked: (stageId) => analysisBlocked && ANALYSIS_STAGES.has(stageId),
+    }),
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- ctx is recreated each render; its parts are the real deps
+    [projectId, spId, analysisBlocked],
+  );
+  const seqIndex = useMemo(() => sequenceIndex(sequence, search), [sequence, search]);
+  const { prev: prevStep, next: nextStep } = useMemo(
+    () => sequenceNeighbours(sequence, seqIndex), [sequence, seqIndex],
+  );
+  const goStep = (item) => { if (item && item.href) navigate(item.href); };
+
   // Full-bleed stages: screening (study list + detail) always; RoB only while a
   // per-study assessment is open (PDF + assessment split). These fill the viewport.
   // 78.md #6 — 'search' is full-bleed too: the staged SearchWorkspace pins the stage
@@ -226,6 +255,19 @@ function DeepToolPage({ stage }) {
     coordinatedNav: true, pinned,
     topPresence, maxWidth: fullbleed ? 100000 : 1560, contentPad: !fullbleed,
     chatContext, headerProgress,
+    // Every workspace stage supports Focus Mode — the shell hides the rails and the
+    // utility header, and this page replaces them with the slim workflow bar.
+    focusable: true,
+    focusBar: (
+      <FocusNavBar
+        current={seqIndex >= 0 ? sequence[seqIndex] : null}
+        prev={prevStep}
+        next={nextStep}
+        onGo={goStep}
+        stageLabel={STAGE_LABEL[stage] || ''}
+        projectName={project ? (project.name || '') : ''}
+      />
+    ),
   };
 
   const breadcrumb = (
@@ -269,7 +311,11 @@ function DeepToolPage({ stage }) {
   }
 
   // ── the page header content (native Stitch chrome around the proven editor) ──
-  const headerRow = (
+  // 104.md — in Focus Mode this whole row goes: the stage title, the role badge and
+  // the autosave chip are exactly the "page metadata" the prompt names. The stage
+  // name survives (compactly) in the focus bar so the user still knows where they
+  // are; autosave keeps RUNNING, it just stops advertising itself.
+  const headerRow = focusMode ? null : (
     <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 16, flexWrap: 'wrap' }}>
       <div style={{ minWidth: 0 }}>
         <h1 style={{ fontSize: fullbleed ? 18 : 24, fontWeight: 700, letterSpacing: '-0.02em', color: S.textPrimary, margin: 0 }}>{STAGE_LABEL[stage]}</h1>
@@ -363,8 +409,7 @@ function DeepToolPage({ stage }) {
   // explanation instead of the meta-analysis engine + its plots. Analysis is client-side
   // computation over studies the member can already view, so this UI gate is the correct
   // enforcement point — no data is exposed that canView members can't already see.
-  const ANALYSIS_STAGES = new Set(['analysis', 'forest', 'sensitivity', 'subgroup', 'nma']);
-  if (ANALYSIS_STAGES.has(stage) && perms && perms.isOwner === false && perms.canRunAnalysis === false) {
+  if (ANALYSIS_STAGES.has(stage) && analysisBlocked) {
     // 91.md — reuse the shared access-state card + capability resolver (single source
     // of message + a real next action) instead of a bespoke inline panel. Same trigger
     // (member without the Analysis grant); leaders/owners keep full analysis.
@@ -384,12 +429,19 @@ function DeepToolPage({ stage }) {
 
   // The body wrapper keeps the SAME DOM position whether full-bleed or carded, so
   // toggling RoB's full-bleed state never remounts the engine (no state churn).
+  // The one number the full-bleed height depends on: whatever bar sits above the
+  // body. 57px is the utility header; in Focus Mode it is the slimmer focus bar.
+  // Deriving it (rather than hard-coding 57 twice) is what stops the engine from
+  // overflowing the viewport the moment Focus Mode changes the chrome height.
+  const topChromeH = focusMode ? FOCUS_BAR_H : 57;
   const wrapperStyle = fullbleed
-    ? { height: 'calc(100vh - 57px)', display: 'flex', flexDirection: 'column', overflow: 'hidden' }
+    ? { height: `calc(100vh - ${topChromeH}px)`, display: 'flex', flexDirection: 'column', overflow: 'hidden' }
     : undefined;
-  const headerWrapStyle = fullbleed
-    ? { padding: '10px 20px', borderBottom: `1px solid ${salpha(S.outlineVariant, 0.45)}`, flexShrink: 0 }
-    : { marginBottom: 20 };
+  const headerWrapStyle = focusMode
+    ? undefined
+    : fullbleed
+      ? { padding: '10px 20px', borderBottom: `1px solid ${salpha(S.outlineVariant, 0.45)}`, flexShrink: 0 }
+      : { marginBottom: 20 };
   const bodyWrapStyle = (fullbleed && stage === 'search')
     // 78.md #6 (recs) — the search body is itself the ONE bounded primary scroller, so
     // EVERY search child scrolls: the staged SearchWorkspace (searchEngine ON), AND the
@@ -406,6 +458,9 @@ function DeepToolPage({ stage }) {
     <StitchAppShell {...shellProps} breadcrumb={breadcrumb}
       docTitle={[STAGE_LABEL[stage] || 'Workspace', project.name]}>
       <div style={wrapperStyle}>
+        {/* The wrapper div stays in the tree unconditionally — dropping it in Focus
+            Mode would change the body's DOM position and remount the engine, losing
+            exactly the state 104.md insists must survive the transition. */}
         <div style={headerWrapStyle}>{headerRow}</div>
         {/* `stitch-tool-body` is a stable test/scoping hook for the workspace tool body
             (no CSS keys on it). It is applied in BOTH layouts: full-bleed stages (search,

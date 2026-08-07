@@ -212,6 +212,25 @@ const ICON_PATHS = {
       <path d="M10.5 6 4.5 12l6 6" />
     </>
   ),
+  /* 104.md — Focus Mode. The universally-recognised full-screen pair: four corner
+     brackets pointing outward to enter, inward to leave. Drawn as corners (not
+     diagonal arrows) so they stay legible at 16px, where arrowheads turn to mush. */
+  expand: (
+    <>
+      <path d="M9 4H4v5" />
+      <path d="M15 4h5v5" />
+      <path d="M15 20h5v-5" />
+      <path d="M9 20H4v-5" />
+    </>
+  ),
+  collapse: (
+    <>
+      <path d="M4 9h5V4" />
+      <path d="M20 9h-5V4" />
+      <path d="M20 15h-5v5" />
+      <path d="M4 15h5v5" />
+    </>
+  ),
   /* ── status ──────────────────────────────────────────────────────── */
   alert: (
     <>

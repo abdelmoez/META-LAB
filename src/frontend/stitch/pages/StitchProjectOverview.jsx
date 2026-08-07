@@ -28,6 +28,7 @@ import {
 } from '../../workspace/projectHelpers.js';
 import { statusOf, STATUS_META, relTime, ROLE_LABEL } from '../../pages/projectLanding.helpers.js';
 import StitchAppShell from '../shell/StitchAppShell.jsx';
+import { useFocusMode } from '../../focus/FocusModeContext.jsx';
 import StitchProjectRail from '../shell/StitchProjectRail.jsx';
 import StitchProjectPresence from '../shell/StitchProjectPresence.jsx';
 import { useProjectProgress } from '../hooks/useProjectProgress.js';
@@ -226,6 +227,7 @@ export default function StitchProjectOverview() {
 
   /* ── shell wiring: project rail (coordinated, pinnable) ── */
   const { pinned, togglePin } = useSidebarPin();
+  const { focus: focusMode } = useFocusMode();
   const renderPrimaryRail = (variant) => (
     <StitchProjectRail
       projectId={projectId}
@@ -248,7 +250,14 @@ export default function StitchProjectOverview() {
   // 75.md WS-F — the thin header underline reads the SAME canonical pct as the page
   // body; null while loading so the bar only appears once the project resolves.
   const headerProgress = project ? { pct: progress.pct, label: headerProgressLabel(progress) } : null;
-  const shellProps = { activeKey: 'dashboard', renderPrimaryRail, contextRail: null, coordinatedNav: true, pinned, topPresence, chatContext, headerProgress };
+  // 104.md — the project Overview is a project page with the same chrome, so it
+  // supports Focus Mode too. It supplies no Previous/Next of its own: Overview is
+  // the START of the sequence and the shell's default focus bar (exit + breadcrumb)
+  // is the honest minimum. The workflow proper begins one click away.
+  const shellProps = {
+    activeKey: 'dashboard', renderPrimaryRail, contextRail: null, coordinatedNav: true,
+    pinned, topPresence, chatContext, headerProgress, focusable: true,
+  };
 
   /* ── loading / error ── */
   if (loading) {
@@ -289,21 +298,23 @@ export default function StitchProjectOverview() {
 
   return (
     <StitchAppShell {...shellProps} breadcrumb={breadcrumb}>
-      {/* A. Compact header */}
-      <StitchPageHeader
-        eyebrow="Project"
-        icon="folder"
-        title={project.name || 'Untitled project'}
-        subtitle={pico.question
-          ? pico.question
-          : `Updated ${relTime(project.updatedAt || project.modified)} · ${overallPct}% through the review`}
-        actions={<>
-          {perms?.canExport ? (exportLocked
-            ? <StitchButton variant="ghost" size="sm" icon="lock" disabled title="Exporting projects isn’t included in your current plan">Export</StitchButton>
-            : <StitchButton variant="ghost" size="sm" icon="download" loading={exporting} onClick={onExport}>Export</StitchButton>) : null}
-          <StitchButton icon="sliders" variant="neutral" size="sm" onClick={() => goStage('control')}>Project Control</StitchButton>
-        </>}
-      />
+      {/* A. Compact header — page metadata, so Focus Mode drops it (104.md). */}
+      {focusMode ? null : (
+        <StitchPageHeader
+          eyebrow="Project"
+          icon="folder"
+          title={project.name || 'Untitled project'}
+          subtitle={pico.question
+            ? pico.question
+            : `Updated ${relTime(project.updatedAt || project.modified)} · ${overallPct}% through the review`}
+          actions={<>
+            {perms?.canExport ? (exportLocked
+              ? <StitchButton variant="ghost" size="sm" icon="lock" disabled title="Exporting projects isn’t included in your current plan">Export</StitchButton>
+              : <StitchButton variant="ghost" size="sm" icon="download" loading={exporting} onClick={onExport}>Export</StitchButton>) : null}
+            <StitchButton icon="sliders" variant="neutral" size="sm" onClick={() => goStage('control')}>Project Control</StitchButton>
+          </>}
+        />
+      )}
 
       <div style={{ display: 'flex', gap: 8, marginTop: 12, flexWrap: 'wrap', alignItems: 'center' }}>
         <StitchBadge tone={lifecycle === 'done' ? 'success' : lifecycle === 'archived' ? 'neutral' : 'brand'} dot>{sm.label || lifecycle}</StitchBadge>

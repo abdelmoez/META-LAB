@@ -130,11 +130,32 @@ export function StitchDrawer({ open, onClose, side = 'left', width = 300, title,
 }
 
 /* ─── Tooltip ─────────────────────────────────────────────────────────────── */
-export function StitchTooltip({ label, children, placement = 'top' }) {
+
+/* 104.md — the tooltip must "appear smoothly" and "feel like a native part of the
+   application rather than a browser-default tooltip". A short rise + fade using the
+   same easing curve as the rest of the Stitch chrome; stripped entirely under
+   prefers-reduced-motion (the label appears instantly, which is still correct). */
+const TOOLTIP_CSS = `
+@keyframes stitch-tip-in { from { opacity: 0; transform: var(--tip-t) scale(0.96); } to { opacity: 1; transform: var(--tip-t) scale(1); } }
+.stitch-tip { animation: stitch-tip-in 0.13s cubic-bezier(0.4, 0, 0.2, 1) both; }
+@media (prefers-reduced-motion: reduce) { .stitch-tip { animation: none !important; } }
+`;
+
+/**
+ * @param {string} label  the primary line
+ * @param {string} [hint] an optional dimmer second line — used for keyboard
+ *                        shortcuts, which is how 104.md asks for the Focus Mode
+ *                        shortcut to be discoverable.
+ * @param {number} [delay] ms before revealing on hover (keyboard focus is instant —
+ *                        a keyboard user has already committed to the control).
+ */
+export function StitchTooltip({ label, hint = null, children, placement = 'top', delay = 220 }) {
   const [show, setShow] = useState(false);
   const [coords, setCoords] = useState(null);
   const ref = useRef(null);
-  const reveal = () => {
+  const timer = useRef(null);
+
+  const place = useCallback(() => {
     const el = ref.current;
     if (!el) return;
     const r = el.getBoundingClientRect();
@@ -146,22 +167,53 @@ export function StitchTooltip({ label, children, placement = 'top' }) {
     };
     setCoords(map[placement] || map.top);
     setShow(true);
-  };
+  }, [placement]);
+
+  const clear = useCallback(() => {
+    if (timer.current) { clearTimeout(timer.current); timer.current = null; }
+  }, []);
+  const hide = useCallback(() => { clear(); setShow(false); }, [clear]);
+
+  // A delay on hover stops the tooltip flashing at anyone merely crossing the
+  // control on the way somewhere else.
+  const onEnter = useCallback(() => {
+    clear();
+    if (!delay) { place(); return; }
+    timer.current = setTimeout(() => { timer.current = null; place(); }, delay);
+  }, [clear, delay, place]);
+
+  useEffect(() => clear, [clear]);
+
   return (
     <span
       ref={ref}
-      onMouseEnter={reveal} onMouseLeave={() => setShow(false)}
-      onFocus={reveal} onBlur={() => setShow(false)}
+      onMouseEnter={onEnter} onMouseLeave={hide}
+      onFocus={place} onBlur={hide}
       style={{ display: 'inline-flex' }}
     >
       {children}
       {show && coords && typeof document !== 'undefined' ? createPortal(
-        <span role="tooltip" style={{
-          position: 'fixed', left: coords.left, top: coords.top, transform: `translate(${coords.tx}, ${coords.ty})`,
-          background: S.inverse, color: S.onInverse, fontSize: 12, fontWeight: 600, fontFamily: S.font,
-          padding: '6px 10px', borderRadius: 8, boxShadow: S.shadow2, zIndex: 2147483600, pointerEvents: 'none',
-          whiteSpace: 'nowrap', maxWidth: 280,
-        }}>{label}</span>,
+        <span
+          role="tooltip"
+          className="stitch-tip"
+          style={{
+            position: 'fixed', left: coords.left, top: coords.top,
+            '--tip-t': `translate(${coords.tx}, ${coords.ty})`,
+            transform: `translate(${coords.tx}, ${coords.ty})`,
+            background: S.inverse, color: S.onInverse, fontSize: 12, fontWeight: 600, fontFamily: S.font,
+            padding: hint ? '7px 11px' : '6px 10px', borderRadius: 8, boxShadow: S.shadow2,
+            zIndex: 2147483600, pointerEvents: 'none', whiteSpace: 'nowrap', maxWidth: 280,
+            display: 'block', textAlign: 'center', lineHeight: 1.35,
+          }}
+        >
+          <style>{TOOLTIP_CSS}</style>
+          {label}
+          {hint ? (
+            <span style={{ display: 'block', opacity: 0.62, fontWeight: 600, fontSize: 11, marginTop: 2, fontFamily: S.mono }}>
+              {hint}
+            </span>
+          ) : null}
+        </span>,
         document.body,
       ) : null}
     </span>
