@@ -18,7 +18,7 @@ import { confirmDraft as confirmDraftPure, parkRecord as parkRecordPure, unparkT
 import { reconcileDrafts, identityOf } from '../../../research-engine/extraction/draftReconcile.js';
 import { attachProvenanceMany } from '../../../research-engine/extraction/engine/articleProvenance.js';
 import { deriveEffectSizeFromRaw } from '../../../research-engine/extraction/deriveEffectSize.js';
-import { buildArticleSummary } from '../../../research-engine/extraction/engine/articleList.js';
+import { buildArticleSummary, articleListStats } from '../../../research-engine/extraction/engine/articleList.js';
 import { mkStudy } from '../../../research-engine/project-model/defaults.js';
 import { addOutcome, duplicateOutcome, renameOutcome, setOutcomeRole, archiveOutcome, groupForStudy, activeOutcomes } from '../../../research-engine/extraction/outcomeGroups.js';
 import {
@@ -50,6 +50,13 @@ export default function PecanExtractionEngine({ project, updateProject, activeId
   const protocol = useMemo(() => protocolOutcomes(project), [project.prospero, project.pico]); // eslint-disable-line react-hooks/exhaustive-deps
   const outcomes = protocol.outcomes;
   const drafts = project.extractionDrafts || [];
+  // 106.md — the review's patient-level variable definitions. Declared here (not with
+  // the case mutations below) because the article-list summaries need them for a case
+  // row's progress denominator.
+  const caseVariables = useMemo(
+    () => normalizeCaseVariables(project.caseVariables),
+    [project.caseVariables],
+  );
   const parked = project.extractionParked || [];
 
   const [openId, setOpenId] = useState(() => readArticleParam());
@@ -78,13 +85,21 @@ export default function PecanExtractionEngine({ project, updateProject, activeId
 
   // Client-side summaries always available (instant, from the live blob); the server
   // list only adds PDF-availability + authoritative stats. Merge PDF flags in when present.
-  const clientArticles = useMemo(() => studies.map((s) => buildArticleSummary(s, {})), [studies]);
+  const clientArticles = useMemo(
+    () => studies.map((s) => buildArticleSummary(s, {}, caseVariables)),
+    [studies, caseVariables],
+  );
   const articles = useMemo(() => {
     if (!serverArticles || !serverArticles.articles) return clientArticles;
     const pdfById = new Map(serverArticles.articles.map((a) => [a.id, a.pdfAvailable]));
     return clientArticles.map((a) => ({ ...a, pdfAvailable: pdfById.get(a.id) || false }));
   }, [clientArticles, serverArticles]);
-  const stats = serverArticles ? serverArticles.stats : null;
+  // 106.md — the header stats are derived from the LIVE blob, not from the server list.
+  // `refreshList` only runs on mount and after complete/reopen, so server stats would
+  // still say "1 article" after the reviewer added six cases, and the publication/case
+  // header and the Export-cases button (both gated on `hasCaseSeries`) would not appear
+  // until a reload. The server contributes nothing to these counts anyway.
+  const stats = useMemo(() => articleListStats(articles), [articles]);
 
   /* ── Blob writers (values + provenance + drafts) ── */
   // 106.md §Shared article-level information — every study write goes through
@@ -271,17 +286,23 @@ export default function PecanExtractionEngine({ project, updateProject, activeId
      navigation never reads a side effect out of the updater (StrictMode-safe), and
      every mutation RECOMPUTES from `p.studies` inside the functional update so a
      write that landed between render and click is never clobbered. */
-  const caseVariables = useMemo(
-    () => normalizeCaseVariables(project.caseVariables),
-    [project.caseVariables],
-  );
   const setCaseVariables = useCallback((next) => updateProject(activeId, (p) => ({
     ...p, caseVariables: normalizeCaseVariables(next),
   })), [updateProject, activeId]);
 
   const onEnableCaseSeries = useCallback((studyId) => {
+    // The updater is a React setState function: StrictMode invokes it TWICE in dev and
+    // only the last result is kept. Calling Math.random() inside it would therefore mint
+    // a different publicationId per invocation. Seed OUTSIDE and count INSIDE, so every
+    // invocation produces byte-identical ids (the 82.md pre-generated-id contract, which
+    // enableCaseSeries supports by taking an injectable idFn).
+    const seed = newRowId();
+    // The banner must state what actually happened, so compute the conversion from the
+    // rows this render sees (the updater recomputes it independently and authoritatively).
+    const preview = enableCaseSeries(studies, studyId, { idFn: () => seed });
     updateProject(activeId, (p) => {
-      const r = enableCaseSeries(p.studies || [], studyId, { idFn: newRowId, at: new Date().toISOString() });
+      let n = 0;
+      const r = enableCaseSeries(p.studies || [], studyId, { idFn: () => `${seed}${n++}`, at: new Date().toISOString() });
       if (r.error || !r.studies) return p;
       // Seed the review's patient-level fields the first time anyone turns the mode on,
       // so the case form is immediately usable instead of empty. Never overwrites a
@@ -289,8 +310,13 @@ export default function PecanExtractionEngine({ project, updateProject, activeId
       const vars = normalizeCaseVariables(p.caseVariables);
       return { ...p, studies: r.studies, caseVariables: vars.length ? vars : defaultCaseVariables() };
     });
-    setBanner('Case Series Mode is on. This article is now Case 1 — use “+ Add case” for each further patient.');
-  }, [updateProject, activeId]);
+    const converted = (preview && preview.converted) || 1;
+    setBanner(converted > 1
+      // Existing rows of this paper (e.g. separate outcome rows) had to join the same
+      // publication — say so rather than letting the reviewer discover N unexpected cases.
+      ? `Case Series Mode is on. This article already had ${converted} extraction rows, so they became Case 1–${converted} — rename or delete any that are not separate patients, then use “+ Add case”.`
+      : 'Case Series Mode is on. This article is now Case 1 — use “+ Add case” for each further patient.');
+  }, [updateProject, activeId, studies]);
 
   const onDisableCaseSeries = useCallback((publicationId) => {
     // eslint-disable-next-line no-alert

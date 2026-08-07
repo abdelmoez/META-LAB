@@ -39,7 +39,7 @@ import { DEPENDENCY_KEYS } from './dependencies.js';
 import { computePrismaCounts } from './prismaCounts.js';
 import { resolveAnalysis, describeSynthesisModel } from './analysisDescribe.js';
 import { deriveSearchMethodology } from '../search/searchMethodology.js';
-import { caseSeriesCounts } from '../extraction/caseSeries.js';
+import { caseSeriesCounts, countPublications } from '../extraction/caseSeries.js';
 
 /** `[[fact:search.date]]` — keys are dot-separated identifiers only. */
 export const FACT_TOKEN_RE = /\[\[fact:([a-zA-Z][a-zA-Z0-9]*(?:\.[a-zA-Z][a-zA-Z0-9]*)*)\]\]/g;
@@ -481,7 +481,15 @@ export function buildFactContext(project, opts = {}) {
     // `cases` is the separate patient-level figure (0 for an ordinary review).
     studies: {
       total: caseCounts.publications,
-      withEffect: studies.filter((s) => s && Number.isFinite(Number(s.es))).length,
+      // 106.md — "Studies contributing to the synthesis" is a STUDY count too: eight
+      // pooled cases of one article are one contributing study. `analysis.k` remains
+      // the row/observation count, which is the correct denominator for a pooled
+      // estimate — the two facts are deliberately different numbers.
+      // Number('') is 0, so filter on a NON-EMPTY numeric es (an unextracted row used
+      // to count as contributing).
+      withEffect: countPublications(studies.filter(
+        (s) => s && s.es !== '' && s.es != null && Number.isFinite(Number(s.es)),
+      )),
       cases: caseCounts.cases,
       caseSeriesArticles: caseCounts.caseSeriesArticles,
       rows: caseCounts.rows,

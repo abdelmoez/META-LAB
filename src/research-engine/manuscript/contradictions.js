@@ -15,6 +15,7 @@ import { computePrismaCounts } from './prismaCounts.js';
 import { getOutcomePairs, filterStudiesForOutcome } from '../import-export/journalSubmission.js';
 import { resolveAnalysis } from './analysisDescribe.js';
 import { primaryAnalysis } from './draft.js';
+import { countPublications } from '../extraction/caseSeries.js';
 
 const clean = (s) => String(s == null ? '' : s).trim();
 
@@ -100,7 +101,11 @@ export function detectContradictions(project, draft, opts = {}) {
 
   // (c) included-count — stated count of included studies ≠ project count.
   const pc = computePrismaCounts(p, opts);
-  const includedCount = pc.counts.included != null ? pc.counts.included : studies.length;
+  // 106.md — the fallback must be PUBLICATIONS. `studies.length` counts extraction
+  // rows, so a case series of eight patients made this check assert that the
+  // manuscript's honest "1 study was included" contradicted the project — a
+  // CRITICAL-severity false alarm on a correctly-configured review.
+  const includedCount = pc.counts.included != null ? pc.counts.included : countPublications(studies);
   const countRe = /(\d+)\s+(?:studies|trials|RCTs)\s+(?:were|was)\s+included/i;
   for (const [id, txt] of [['results', resultsTxt], ['abstract', abstractTxt]]) {
     if (!clean(txt)) continue;

@@ -312,7 +312,14 @@ export function publicationSourceFor(studies = [], studyId) {
     ? target : firstDoc;
   return {
     key,
-    anchorId: (members[0] && members[0].id) || target.id,
+    // 106.md — for a CASE SERIES the anchor is the immutable publication id, not an
+    // array position. `members[0].id` churns whenever the FIRST case is deleted or
+    // reordered, and usePdfSource keys its whole resolve on this value — so a stable
+    // row id was still enough to unmount the viewer (losing scroll position, and any
+    // session-local upload) on a delete that had nothing to do with the PDF.
+    anchorId: casePublicationIdOf(target)
+      ? `pub:${casePublicationIdOf(target)}`
+      : ((members[0] && members[0].id) || target.id),
     screeningProjectId: screenCarrier ? screenCarrier.screeningProjectId : null,
     screeningRecordId: screenCarrier ? screenCarrier.screeningRecordId : null,
     docStudyId: docCarrier ? docCarrier.id : null,

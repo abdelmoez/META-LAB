@@ -10,7 +10,8 @@ import { describe, it, expect } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { mkStudy } from '../../src/research-engine/project-model/defaults.js';
 import {
-  enableCaseSeries, addCase, caseVarKey, defaultCaseVariables, caseSeriesCounts,
+  enableCaseSeries, addCase, removeCase, caseVarKey, defaultCaseVariables,
+  caseSeriesCounts, caseSummary,
 } from '../../src/research-engine/extraction/caseSeries.js';
 import { computePrismaCounts } from '../../src/research-engine/manuscript/prismaCounts.js';
 import { buildFactContext, resolveFacts, FACTS } from '../../src/research-engine/manuscript/factTokens.js';
@@ -236,6 +237,21 @@ describe('the PDF is resolved from the PUBLICATION, so switching cases cannot re
     expect(publicationId).toBeTruthy();
   });
 
+  it('the anchor survives DELETING the first case — the viewer is not unmounted', () => {
+    const { studies, publicationId } = review(3);
+    const cases = studies.filter((s) => s.extractionMeta && s.extractionMeta.caseSeries);
+    const before = publicationSourceFor(studies, cases[1].id).anchorId;
+    const after = removeCase(studies, cases[0].id, {});
+    expect(after.error).toBeUndefined();
+    expect(publicationSourceFor(after.studies, cases[1].id).anchorId).toBe(before);
+    expect(before).toBe(`pub:${publicationId}`);
+  });
+
+  it('an ordinary paper keeps the legacy row-id anchor', () => {
+    const studies = [row({ id: 's1', doi: '10.1/x' }), row({ id: 's2', doi: '10.1/x' })];
+    expect(publicationSourceFor(studies, 's2').anchorId).toBe('s1');
+  });
+
   it('cases inherit the screening link so the shared PDF resolves from any case', () => {
     seq = 0;
     const base = [row({ id: 's1', doi: '10.1/x', screeningProjectId: 'sp1', screeningRecordId: 'rec9' })];
@@ -271,6 +287,23 @@ describe('article-list stats report publications and cases separately', () => {
     const s = buildArticleSummary(studies[0], {});
     expect(s.caseSeries).toMatchObject({ caseNumber: 1, name: 'Case 1' });
     expect(buildArticleSummary(row({ id: 'z' }), {}).caseSeries).toBeNull();
+  });
+
+  it('a case row\'s list progress uses the PATIENT denominator, matching the chip', () => {
+    const { studies } = review(1);
+    const vars = defaultCaseVariables();
+    const bare = buildArticleSummary(studies[0], {});
+    const withVars = buildArticleSummary(studies[0], {}, vars);
+    expect(withVars.totalFields).toBe(bare.totalFields + vars.length);
+    expect(withVars.progressPct).toBeLessThan(bare.progressPct);
+    // and it agrees with what the navigator chip shows
+    expect(withVars.progressPct).toBe(caseSummary(studies[0], vars).pct);
+  });
+
+  it('an ordinary study ignores caseVariables entirely', () => {
+    const st = row({ id: 'a', doi: '10.1/a', esType: 'GENERIC', es: '1', lo: '0', hi: '2' });
+    expect(buildArticleSummary(st, {}, defaultCaseVariables()).totalFields)
+      .toBe(buildArticleSummary(st, {}).totalFields);
   });
 });
 

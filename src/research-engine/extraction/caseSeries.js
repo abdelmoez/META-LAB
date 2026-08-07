@@ -54,6 +54,7 @@
 
 import { citationKey, isStrongCitationKey, CITATION_FIELDS, PUBLICATION_LINK_FIELDS } from './outcomeGroups.js';
 import { progressOf, articleStatusOf } from './engine/articleStatus.js';
+import { mkValueProvenance } from './engine/articleProvenance.js';
 
 const DEFAULT_ID = () => Math.random().toString(36).slice(2, 10);
 const s = (v) => (v == null ? '' : String(v).trim());
@@ -360,6 +361,28 @@ function patchRow(studies, studyId, mutate) {
   return { studies: next, found };
 }
 
+/**
+ * downgradeProvenance(map) — strip the PDF COORDINATES from every entry while keeping
+ * the entry itself (method 'manual', excerpt and history preserved). Used when a value
+ * crosses a patient boundary: the value is still auditable, but it no longer claims to
+ * have been read at a location that belongs to a different case. Pure; returns a new
+ * map (or undefined when there was nothing to downgrade, so the key stays absent).
+ */
+function downgradeProvenance(map) {
+  if (!map || typeof map !== 'object') return undefined;
+  const keys = Object.keys(map);
+  if (!keys.length) return undefined;
+  const out = {};
+  for (const field of keys) {
+    const prior = map[field] || {};
+    const entry = { field, method: 'manual', page: null, bbox: null };
+    if (prior.excerpt != null) entry.excerpt = prior.excerpt;
+    if (Array.isArray(prior.history) && prior.history.length) entry.history = prior.history.slice(-10);
+    out[field] = entry;
+  }
+  return out;
+}
+
 /** Write the caseSeries namespace onto a (cloned) row. */
 function stampCase(row, patch) {
   const meta = { ...(row.extractionMeta || {}) };
@@ -372,22 +395,29 @@ function stampCase(row, patch) {
  * Series Mode ON for the publication the given row belongs to.
  *
  * The row the reviewer is looking at BECOMES Case 1 — nothing is copied, nothing is
- * lost, and any values already extracted stay exactly where they are. Every sibling
- * row of the same CITATION group (e.g. outcome rows added under 82.md) joins the same
- * publication so the article stays one article, and each becomes its own case in array
- * order. Idempotent: re-enabling an already-enabled publication is a no-op.
+ * lost, and any values already extracted stay exactly where they are.
+ *
+ * Every sibling row of the same CITATION group (e.g. outcome rows added under 82.md)
+ * joins the same publication and becomes its own case, in array order. That is
+ * deliberate: all rows of one paper MUST share the publication id, or the article
+ * would split in two for counting and the cases would stop sharing its PDF. When it
+ * converts more than one row the caller is told (`converted`) so the reviewer can be
+ * shown what happened — a paper whose extra rows were OUTCOMES rather than patients is
+ * one rename or delete away from correct, and turning the mode off restores it exactly.
+ *
+ * Idempotent: re-enabling an already-enabled publication is a no-op.
  *
  * @param {object[]} studies
  * @param {string} studyId
  * @param {{ idFn?:function, at?:string }} [opts]
- * @returns {{ studies:object[], publicationId:string } | { error:string }}
+ * @returns {{ studies:object[], publicationId:string, converted:number } | { error:string }}
  */
 export function enableCaseSeries(studies = [], studyId, opts = {}) {
   const list = Array.isArray(studies) ? studies : [];
   const target = list.find((x) => x && x.id === studyId);
   if (!target) return { error: 'study not found' };
   const existing = publicationIdOf(target);
-  if (existing) return { studies: list.slice(), publicationId: existing };
+  if (existing) return { studies: list.slice(), publicationId: existing, converted: 0 };
 
   const idFn = opts.idFn || DEFAULT_ID;
   const publicationId = `pub_${idFn()}`;
@@ -397,8 +427,10 @@ export function enableCaseSeries(studies = [], studyId, opts = {}) {
   // (author|year with no title) never sweeps an unrelated study into the series.
   const key = citationKey(target);
   const strong = isStrongCitationKey(key);
+  // An ARCHIVED sibling is a row the reviewer already retired (82.md); resurrecting it
+  // as "Case 2" would invent a patient that was never reported.
   const isSibling = (x) => x && !publicationIdOf(x)
-    && (x.id === target.id || (strong && citationKey(x) === key));
+    && (x.id === target.id || (strong && citationKey(x) === key && !isArchived(x)));
 
   let n = 0;
   const next = list.map((st) => {
@@ -409,7 +441,7 @@ export function enableCaseSeries(studies = [], studyId, opts = {}) {
     if (at) clone.updatedAt = at;
     return clone;
   });
-  return { studies: next, publicationId };
+  return { studies: next, publicationId, converted: n };
 }
 
 /**
@@ -490,8 +522,16 @@ export function addCase(studies = [], publicationId, opts = {}) {
  * duplicateCase(studies, studyId, opts) — copy an existing case INCLUDING its extracted
  * values (106.md §Extraction interface "Duplicate a case structure when useful"), with
  * a fresh row id + case id + the next case number, inserted right after the source.
- * Completion/lock are cleared so the copy re-enters the workflow; the copy's per-value
- * provenance is preserved (it points at the same sentences until edited).
+ *
+ * The copy re-enters the workflow: completion, lock, and the ANALYSIS-SYNC stamps are
+ * cleared, so a brand-new case can never inherit "In analysis" from the patient it was
+ * copied from (its syncHash would still match, so nothing would ever flag it).
+ *
+ * Its per-value PROVENANCE is downgraded rather than copied: the page/bbox describe
+ * where CASE 1's age was read, and pointing Case 4's age at Case 1's table row is a
+ * false evidence claim — the single worst thing a provenance system can do. The
+ * entries are kept as `manual` (with their history) so the values are still auditable
+ * and are simply re-linked when the reviewer picks them from the PDF.
  * @returns {{ studies:object[], id:string, caseNumber:number } | { error:string }}
  */
 export function duplicateCase(studies = [], studyId, opts = {}) {
@@ -508,11 +548,11 @@ export function duplicateCase(studies = [], studyId, opts = {}) {
   const siblings = casesForPublication(list, info.publicationId);
   const nextNumber = siblings.reduce((m, st) => Math.max(m, (caseInfoOf(st) || {}).caseNumber || 0), 0) + 1;
   copy.extractionMeta = { ...(copy.extractionMeta || {}) };
-  delete copy.extractionMeta.completedAt;
-  delete copy.extractionMeta.completedBy;
-  delete copy.extractionMeta.completedByName;
-  delete copy.extractionMeta.locked;
-  delete copy.extractionMeta.archived;
+  for (const k of ['completedAt', 'completedBy', 'completedByName', 'locked', 'reopenedAt',
+    'reopenedBy', 'archived', 'syncHash', 'syncedAt', 'syncedBy']) {
+    delete copy.extractionMeta[k];
+  }
+  copy.extractionMeta.provenance = downgradeProvenance(copy.extractionMeta.provenance);
   stampCase(copy, {
     publicationId: info.publicationId,
     caseId: `case_${idFn()}`,
@@ -614,7 +654,14 @@ export function reorderCases(studies = [], publicationId, orderedIds = []) {
  *
  * Returns the ORIGINAL array untouched when the row is not part of a case series, so
  * callers can route every study write through this helper unconditionally.
- * @returns {{ studies:object[], propagated:string[] }}
+ *
+ * COMPLETED AND LOCKED SIBLINGS ARE INCLUDED, deliberately. An article-level field
+ * describes the PUBLICATION, not a patient's extraction: completion locks the case's
+ * clinical data, and letting a DOI correction skip the completed cases would leave one
+ * article exporting two different DOIs — a worse failure than touching a locked row.
+ * The workspace states this next to the form ("changing one here updates them all"),
+ * and `lockedTouched` is returned so a caller can surface it.
+ * @returns {{ studies:object[], propagated:string[], lockedTouched:string[] }}
  */
 export function propagateArticleFields(studies = [], sourceId, patch = {}, opts = {}) {
   const list = Array.isArray(studies) ? studies : [];
@@ -628,16 +675,19 @@ export function propagateArticleFields(studies = [], sourceId, patch = {}, opts 
   if (!pid || !propagated.length) {
     // No case series (or nothing shared) → a plain patch of the one row.
     const next = list.map((st) => (st && st.id === sourceId ? { ...st, ...patch, ...(at ? { updatedAt: at } : {}) } : st));
-    return { studies: next, propagated: [] };
+    return { studies: next, propagated: [], lockedTouched: [] };
   }
 
+  const lockedTouched = [];
   const next = list.map((st) => {
     if (!st) return st;
     if (st.id === sourceId) return { ...st, ...patch, ...(at ? { updatedAt: at } : {}) };
     if (publicationIdOf(st) !== pid) return st;
+    const m = st.extractionMeta || {};
+    if (m.locked || m.completedAt) lockedTouched.push(st.id);
     return { ...st, ...shared, ...(at ? { updatedAt: at } : {}) };
   });
-  return { studies: next, propagated };
+  return { studies: next, propagated, lockedTouched };
 }
 
 /* ════════════════════════ counting (106.md §Prevent double counting) ════════════════════════ */
@@ -864,12 +914,31 @@ export function buildCasesFromTable(studies = [], publicationId, table = {}, opt
     const p = patients[i] || {};
     const patch = {};
     const provByField = {};
+    const targetRow = row;
     for (const [varId, value] of Object.entries(p.values || {})) {
       const key = caseVarKey(varId);
       patch[key] = s(value);
       filled += 1;
       const prov = opts.provenance && opts.provenance[`${i}:${varId}`];
-      if (prov) provByField[key] = { ...prov, field: key };
+      const prior = (targetRow.extractionMeta && targetRow.extractionMeta.provenance
+        && targetRow.extractionMeta.provenance[key]) || null;
+      if (prov) {
+        // Normalize through the SAME writer every other provenance path uses, so an
+        // unvalidated bbox or an unknown method can never reach the blob from here.
+        provByField[key] = mkValueProvenance({ ...prov, field: key, at: prov.at || s(opts.at) || undefined });
+      } else if (prior && (prior.page || prior.bbox)) {
+        // Re-running the mapper OVERWRITES this value. Leaving the old page/bbox in
+        // place would point the new value at where the OLD one was read — the same
+        // false-evidence failure setField guards against on manual entry.
+        const history = Array.isArray(prior.history) ? prior.history.slice(-10) : [];
+        if (nonEmpty(targetRow[key]) && String(targetRow[key]) !== patch[key]) {
+          history.push({ value: String(targetRow[key]), method: prior.method || 'manual', at: s(opts.at) || undefined });
+        }
+        provByField[key] = mkValueProvenance({
+          field: key, method: 'manual', at: s(opts.at) || undefined,
+          history: history.length ? history : undefined,
+        });
+      }
     }
     working = working.map((st) => {
       if (!st || st.id !== row.id) return st;

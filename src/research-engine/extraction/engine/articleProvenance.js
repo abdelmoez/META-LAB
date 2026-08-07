@@ -19,6 +19,12 @@
 /** How a value was captured — mirrors records.PROVENANCE_METHODS (+ 'ocr'). */
 export const VALUE_PROVENANCE_METHODS = Object.freeze([
   'table', 'figure', 'click', 'manual', 'auto', 'ai', 'ocr',
+  // 106.md review — 'calculated' was already being STAMPED by the engine's
+  // complete-article effect-size backfill (PecanExtractionEngine) and by the Converter,
+  // but it was missing here, so mkValueProvenance silently rewrote it to 'manual' and
+  // an auto-derived effect size became indistinguishable from a hand-typed one in the
+  // audit trail. Whitelisting it makes the recorded method honest.
+  'calculated',
 ]);
 
 /**

@@ -22,6 +22,7 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import AppPdfViewer from '../../../frontend/components/AppPdfViewer.jsx';
+import { isExactRegion } from '../../../frontend/components/pdfRevealBox.js';
 import { C, btnS, inp, lbl, tagS } from '../../../frontend/workspace/ui/styles.js';
 import { alpha as themeAlpha } from '../../../frontend/theme/tokens.js';
 import { usePdfSource } from '../unified/usePdfSource.js';
@@ -37,7 +38,7 @@ import {
   harmonizeStudy, conversionStatusOf, CONVERSION_STATUS_LABELS, validateReported,
 } from '../../../research-engine/extraction/harmonize.js';
 import { publicationSourceFor, publicationFilesFor } from '../../../research-engine/extraction/outcomeGroups.js';
-import { isCaseRow, caseDisplayName, caseVarKey, isCaseVarKey, caseProgressOf } from '../../../research-engine/extraction/caseSeries.js';
+import { isCaseRow, caseDisplayName, caseVarKey, isCaseVarKey, caseVarIdFromKey, caseProgressOf, publicationIdOf } from '../../../research-engine/extraction/caseSeries.js';
 import { studyDocApi } from '../unified/studyDocApi.js';
 import ConverterPanel from './ConverterPanel.jsx';
 import CaseFieldsPanel from './CaseFieldsPanel.jsx';
@@ -76,7 +77,10 @@ function assignOptionsFor(study, caseVariables = []) {
   for (const f of fields) opts.push([f, FIELD_LABELS[f] || f]);
   if (isCaseRow(study)) {
     for (const v of caseVariables) {
-      if (v.type === 'select') continue;   // a picked PDF token is not a controlled term
+      // A picked PDF token is never a controlled term, so `select` variables are not
+      // offered. Everything else is: a NUMBER target takes the snapped number, and a
+      // text/date target takes the clicked text run verbatim (assignFromClick branches).
+      if (v.type === 'select') continue;
       opts.push([caseVarKey(v.id), `${caseDisplayName(study)} · ${v.label}${v.unit ? ` (${v.unit})` : ''}`]);
     }
   }
@@ -205,7 +209,12 @@ export default function ArticleWorkspace({
   }, [study]);
   // Depends on esType AND reportedFormat — a continuous format switch (mean_sd →
   // median_iqr) changes the assignable fields, so the pick dropdown must recompute.
-  const assignOptions = useMemo(() => assignOptionsFor(study || {}, caseVariables), [study && study.esType, study && study.reportedFormat, study && study.id, caseVariables]); // eslint-disable-line react-hooks/exhaustive-deps
+  // 106.md — `caseKey` is in the deps on purpose. Enabling Case Series Mode turns the
+  // row that is ALREADY OPEN into Case 1, so neither `study.id` nor the measure changes
+  // — without it the pick dropdown would keep the pre-case options until the reviewer
+  // navigated away and back, and the patient variables would look unpickable.
+  const caseKey = `${publicationIdOf(study || {})}|${caseDisplayName(study || {})}`;
+  const assignOptions = useMemo(() => assignOptionsFor(study || {}, caseVariables), [study && study.esType, study && study.reportedFormat, study && study.id, caseKey, caseVariables]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // 106.md — one label resolver for both built-in fields and the review's case
   // variables, so every status line, jump-to-source announcement and pick-target label
@@ -233,12 +242,20 @@ export default function ArticleWorkspace({
   useEffect(() => {
     setActiveField((cur) => {
       if (cur === 'smart') return usesEffectSlot(study || {}) || !esType ? 'smart' : defaultActiveField(study || {});
-      // 106.md — a case-variable target stays valid across a measure change; it is not
-      // part of assignableFieldsFor, so without this it would snap back on every switch.
-      if (isCaseVarKey(cur)) return cur;
+      // 106.md — a case-variable target survives a MEASURE change (it is not part of
+      // assignableFieldsFor, so it would otherwise snap back on every switch) but NOT
+      // the row ceasing to be a case, or the variable being deleted. Turning Case
+      // Series Mode off while "Next click fills → Age" was selected used to leave the
+      // target pointing at a field that is no longer rendered, so the next PDF click
+      // wrote a value nothing displayed.
+      if (isCaseVarKey(cur)) {
+        const stillValid = isCaseRow(study || {})
+          && caseVariables.some((v) => caseVarKey(v.id) === cur);
+        return stillValid ? cur : defaultActiveField(study || {});
+      }
       return assignableFieldsFor(study || {}).includes(cur) ? cur : defaultActiveField(study || {});
     });
-  }, [esType, reportedFormat]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [esType, reportedFormat, caseKey, caseVariables]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const patch = useCallback((p) => { if (onPatchStudy && study) onPatchStudy(study.id, p); }, [onPatchStudy, study]);
 
@@ -255,7 +272,12 @@ export default function ArticleWorkspace({
     // captured on a DIFFERENT file than the one now shown (replaced upload, other
     // attachment), fall back to a page-level indicator instead of a wrong exact box.
     const fileMismatch = !!(prov.bbox && prov.fileKey && effFileKey && prov.fileKey !== effFileKey);
-    const region = fileMismatch ? null : (prov.bbox || null);
+    // 106.md review — use the SAME predicate the viewer uses to decide whether it can
+    // draw a box (isExactRegion also requires x1>x0 and y1>y0). Testing `prov.bbox` for
+    // truthiness alone let a degenerate zero-area rect announce "showing the exact
+    // source" while the viewer silently fell back to a page marker, and suppressed the
+    // excerpt fallback that would have found the value.
+    const region = (!fileMismatch && isExactRegion(prov.bbox)) ? prov.bbox : null;
     revealNonce.current += 1;
     setReveal({
       page: prov.page || 1, region, nonce: revealNonce.current, label: labelFor(field),
@@ -352,6 +374,26 @@ export default function ArticleWorkspace({
   const assignFromClick = useCallback((payload) => {
     if (!study || !editable) return;
     const runStr = payload.str || '';
+
+    // 106.md — a TEXT/DATE case variable ("Presentation", "Symptoms", "Treatment") is
+    // filled with the clicked text run verbatim, not a snapped number: those fields are
+    // prose in the paper. Handled before tokenizing, because requiring a number here is
+    // exactly what made the target unfillable. NUMBER variables fall through to the
+    // normal numeric path below.
+    const clickedVar = isCaseVarKey(activeField)
+      ? caseVariables.find((v) => v.id === caseVarIdFromKey(activeField)) : null;
+    if (clickedVar && clickedVar.type !== 'number') {
+      const text = String(runStr).trim();
+      if (!text) { setStatus('That is an empty text run — click the words you want to capture.'); return; }
+      const { written: w, replaced: rp } = writeValues({ [activeField]: text },
+        { method: 'click', page: payload.page || null, bbox: payload.spanBox || null, fileKey: effFileKey || null, excerpt: runStr });
+      if (!w.length) { setStatus(`Already captured that text into ${labelFor(activeField)} — no change.`); return; }
+      setStatus(rp.length
+        ? `Replaced ${labelFor(activeField)} (was ${rp[0].from}) → ${text}. Previous value kept in history.`
+        : `Captured "${text.length > 60 ? `${text.slice(0, 60)}…` : text}" into ${labelFor(activeField)}.`);
+      return;
+    }
+
     const token = (payload.offset != null) ? snapToken(runStr, payload.offset) : onlyToken(runStr);
     if (!token) {
       const n = findNumberTokens(runStr).length;
@@ -452,7 +494,7 @@ export default function ArticleWorkspace({
       const next = nextAssignableField(after, target);
       if (next && next !== target) setActiveField(next);
     }
-  }, [study, activeField, editable, writeValues, effFileKey, labelFor]);
+  }, [study, activeField, editable, writeValues, effFileKey, labelFor, caseVariables]);
 
   /* ── Converter apply (77.md §4): route through the same write path + audit ── */
   const applyConversion = useCallback(({ patch: convPatch, conversion, targetLabel }) => {

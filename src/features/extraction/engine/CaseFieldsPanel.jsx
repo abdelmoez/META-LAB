@@ -16,7 +16,7 @@
  * collapsed by default so the common case — extract against the seeded fields — is one
  * scroll, not a configuration exercise.
  */
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { C, btnS, inp, lbl } from '../../../frontend/workspace/ui/styles.js';
 import { alpha as themeAlpha } from '../../../frontend/theme/tokens.js';
 import {
@@ -134,31 +134,61 @@ export default function CaseFieldsPanel({
             These variables apply to every case in this review. Changing a label is safe — values are stored against the field, not its name.
           </div>
           {caseVariables.map((v) => (
-            <div key={v.id} style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
-              <input value={v.label} onChange={(e) => patchVariable(v.id, { label: e.target.value })}
-                aria-label="Variable name" placeholder="Variable name" style={{ ...inp, fontSize: 12, width: 170 }} />
-              <select value={v.type} onChange={(e) => patchVariable(v.id, { type: e.target.value })}
-                aria-label="Variable type" style={{ ...inp, width: 'auto', fontSize: 11.5 }}>
-                {CASE_VARIABLE_TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
-              </select>
-              <select value={v.group} onChange={(e) => patchVariable(v.id, { group: e.target.value })}
-                aria-label="Variable group" style={{ ...inp, width: 'auto', fontSize: 11.5 }}>
-                {CASE_VARIABLE_GROUPS.map((g) => <option key={g} value={g}>{g}</option>)}
-              </select>
-              <input value={v.unit} onChange={(e) => patchVariable(v.id, { unit: e.target.value })}
-                aria-label="Unit" placeholder="unit" style={{ ...inp, fontSize: 12, width: 70 }} />
-              {v.type === 'select' && (
-                <input value={v.options.join(', ')} onChange={(e) => patchVariable(v.id, { options: e.target.value.split(',').map((o) => o.trim()) })}
-                  aria-label="Options, comma separated" placeholder="option A, option B" style={{ ...inp, fontSize: 12, flex: 1, minWidth: 140 }} />
-              )}
-              <button onClick={() => removeVariable(v.id)} style={{ ...btnS('ghost'), fontSize: 11, color: C.red }} title="Remove this variable">✕</button>
-            </div>
+            <VariableEditorRow key={v.id} variable={v} onPatch={patchVariable} onRemove={removeVariable} />
           ))}
           <div>
             <button onClick={addVariable} style={{ ...btnS('ghost'), fontSize: 11 }}>＋ Add variable</button>
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+/**
+ * One row of the variable editor.
+ *
+ * The free-text fields (name, unit, options) are held in LOCAL state and only committed
+ * on blur. Feeding them straight through `mkCaseVariable` on every keystroke made them
+ * unusable: `s()` trims, so "Age at onset" could never get past "Age" (the space was
+ * eaten on the way back down), and `options.filter(Boolean)` dropped the empty slot
+ * after a comma, so a second option could never be typed at all. Normalization still
+ * happens — just once the reviewer has finished typing, which is the only point at which
+ * trimming is the right answer.
+ */
+function VariableEditorRow({ variable: v, onPatch, onRemove }) {
+  const [label, setLabel] = useState(v.label);
+  const [unit, setUnit] = useState(v.unit);
+  const [options, setOptions] = useState(v.options.join(', '));
+
+  // Re-sync when the definition changes underneath (another writer, or an undo).
+  useEffect(() => { setLabel(v.label); }, [v.label]);
+  useEffect(() => { setUnit(v.unit); }, [v.unit]);
+  useEffect(() => { setOptions(v.options.join(', ')); }, [v.options]);
+
+  return (
+    <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
+      <input value={label} onChange={(e) => setLabel(e.target.value)}
+        onBlur={() => { if (label !== v.label) onPatch(v.id, { label }); }}
+        aria-label="Variable name" placeholder="Variable name" style={{ ...inp, fontSize: 12, width: 170 }} />
+      <select value={v.type} onChange={(e) => onPatch(v.id, { type: e.target.value })}
+        aria-label="Variable type" style={{ ...inp, width: 'auto', fontSize: 11.5 }}>
+        {CASE_VARIABLE_TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
+      </select>
+      <select value={v.group} onChange={(e) => onPatch(v.id, { group: e.target.value })}
+        aria-label="Variable group" style={{ ...inp, width: 'auto', fontSize: 11.5 }}>
+        {CASE_VARIABLE_GROUPS.map((g) => <option key={g} value={g}>{g}</option>)}
+      </select>
+      <input value={unit} onChange={(e) => setUnit(e.target.value)}
+        onBlur={() => { if (unit !== v.unit) onPatch(v.id, { unit }); }}
+        aria-label="Unit" placeholder="unit" style={{ ...inp, fontSize: 12, width: 70 }} />
+      {v.type === 'select' && (
+        <input value={options} onChange={(e) => setOptions(e.target.value)}
+          onBlur={() => onPatch(v.id, { options: options.split(',').map((o) => o.trim()) })}
+          aria-label="Options, comma separated" placeholder="option A, option B"
+          style={{ ...inp, fontSize: 12, flex: 1, minWidth: 140 }} />
+      )}
+      <button onClick={() => onRemove(v.id)} style={{ ...btnS('ghost'), fontSize: 11, color: C.red }} title="Remove this variable">✕</button>
     </div>
   );
 }

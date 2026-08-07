@@ -16,6 +16,7 @@ import { useEffect, useState, useMemo } from 'react';
 import { useParams, useLocation } from 'react-router-dom';
 import InteractiveForest from './InteractiveForest.jsx';
 import { fetchPublicSynthesis, publicUrls } from './publicSynthesisApi.js';
+import { caseSeriesCounts } from '../../research-engine/extraction/caseSeries.js';
 
 const ACCENT = '#6d28d9';
 const ACCENT_DK = '#4c1d95';
@@ -258,9 +259,16 @@ function IncludedStudiesTable({ studies }) {
     });
     return arr;
   }, [studies, asc]);
+  // 106.md — the table lists one row per extraction ROW, so for a case-series review
+  // `studies.length` is a patient count, not a study count. Publish both, labelled.
+  const counts = caseSeriesCounts(studies);
   return (
     <div className="ps-card" style={card}>
-      <h2 style={h2}>Included studies ({studies.length})</h2>
+      <h2 style={h2}>
+        {counts.cases > 0
+          ? `Included studies (${counts.publications} publications, ${counts.cases} individual cases)`
+          : `Included studies (${studies.length})`}
+      </h2>
       <div style={{ overflowX: 'auto' }}>
         <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
           <thead>

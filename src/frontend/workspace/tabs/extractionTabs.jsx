@@ -867,7 +867,7 @@ ${paperText.slice(0,15000)}`;
       if(c==="caseLabel") return info?caseDisplayName(s):"";
       return s[c]==null?"":s[c];
     };
-    const header=[...cols,...caseHeaders].join(",");
+    const header=[...cols,...caseHeaders.map(esc)].join(",");   // labels are user text — escape them
     const rows=studies.map(s=>[...cols.map(c=>esc(s[c])),...caseCols.map(c=>esc(caseCell(s,c)))].join(","));
     return [header,...rows].join("\n");
   };

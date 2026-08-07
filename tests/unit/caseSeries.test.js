@@ -79,6 +79,29 @@ describe('enableCaseSeries', () => {
     const again = enableCaseSeries(studies, studies[0].id, { idFn });
     expect(again.publicationId).toBe(pid);
     expect(again.studies).toHaveLength(studies.length);
+    expect(again.converted).toBe(0);
+  });
+
+  it('reports how many existing rows it converted, so the UI can say so', () => {
+    reset();
+    const one = enableCaseSeries([row({ id: 'a', doi: '10.1/x' })], 'a', { idFn });
+    expect(one.converted).toBe(1);
+    reset();
+    const three = enableCaseSeries([
+      row({ id: 'a', doi: '10.1/x', outcome: 'Mortality' }),
+      row({ id: 'b', doi: '10.1/x', outcome: 'Survival' }),
+      row({ id: 'c', doi: '10.1/x', outcome: 'QoL' }),
+    ], 'a', { idFn });
+    expect(three.converted).toBe(3);
+  });
+
+  it('is DETERMINISTIC for a given idFn — a re-invoked React updater cannot mint two series', () => {
+    const rows = [row({ id: 'a', doi: '10.1/x' }), row({ id: 'b', doi: '10.1/x' })];
+    const gen = () => { let n = 0; return () => `seed${n++}`; };
+    const first = enableCaseSeries(rows, 'a', { idFn: gen() });
+    const second = enableCaseSeries(rows, 'a', { idFn: gen() });
+    expect(second.publicationId).toBe(first.publicationId);
+    expect(JSON.stringify(second.studies)).toBe(JSON.stringify(first.studies));
   });
 
   it('sweeps the paper\'s existing outcome rows into the same publication', () => {
@@ -185,6 +208,38 @@ describe('addCase / duplicateCase', () => {
   it('duplicateCase refuses a non-case row', () => {
     const { studies } = series();
     expect(duplicateCase(studies, 's2', { idFn }).error).toBeTruthy();
+  });
+
+  it('a duplicate never inherits the source case\'s PDF COORDINATES', () => {
+    const { studies, pid } = series();
+    const first = casesForPublication(studies, pid)[0];
+    const sourced = studies.map((st) => (st.id === first.id
+      ? attachProvenance({ ...st, [caseVarKey('age')]: '61' }, caseVarKey('age'),
+        { method: 'click', page: 4, bbox: { x0: 1, y0: 2, x1: 3, y1: 4 }, excerpt: '61', fileKey: 'doc:smith.pdf' })
+      : st));
+    const r = duplicateCase(sourced, first.id, { idFn });
+    const copy = r.studies.find((st) => st.id === r.id);
+
+    expect(copy[caseVarKey('age')]).toBe('61');            // the VALUE is copied…
+    const p = readProvenance(copy, caseVarKey('age'));
+    expect(p).toBeTruthy();                                 // …and stays auditable…
+    expect(p.page).toBeNull();                              // …but claims no location
+    expect(p.bbox).toBeNull();
+    expect(p.method).toBe('manual');
+    // the source is untouched
+    expect(readProvenance(sourced.find((st) => st.id === first.id), caseVarKey('age')).page).toBe(4);
+  });
+
+  it('a duplicate does not inherit "In analysis" from the case it was copied from', () => {
+    const { studies, pid } = series();
+    const first = casesForPublication(studies, pid)[0];
+    const synced = studies.map((st) => (st.id === first.id
+      ? { ...st, extractionMeta: { ...st.extractionMeta, syncHash: 'abc', syncedAt: 'T', syncedBy: 'u1' } } : st));
+    const r = duplicateCase(synced, first.id, { idFn });
+    const meta = r.studies.find((st) => st.id === r.id).extractionMeta;
+    expect(meta.syncHash).toBeUndefined();
+    expect(meta.syncedAt).toBeUndefined();
+    expect(meta.syncedBy).toBeUndefined();
   });
 });
 
@@ -508,6 +563,37 @@ describe('buildCasesFromTable (106.md §Tables and structured case series)', () 
     expect(p.excerpt).toBe('61');
     // a cell with no provenance stays unlinked rather than borrowing another's
     expect(readProvenance(casesForPublication(r.studies, en.publicationId)[0], caseVarKey('age'))).toBeNull();
+  });
+
+  it('normalizes provenance through mkValueProvenance (a junk bbox never reaches the blob)', () => {
+    reset();
+    const en = enableCaseSeries([row({ id: 's1', doi: '10.1/x' })], 's1', { idFn });
+    const r = buildCasesFromTable(en.studies, en.publicationId, { patients: [{ values: { age: '42' } }] }, {
+      mkStudy, idFn,
+      provenance: { '0:age': { method: 'not-a-method', page: -3, bbox: { x0: 'nope' }, junkKey: 'x', excerpt: 'e' } },
+    });
+    const p = readProvenance(casesForPublication(r.studies, en.publicationId)[0], caseVarKey('age'));
+    expect(p.method).toBe('manual');      // unknown method coerced, not stored raw
+    expect(p.page).toBeNull();            // negative page dropped
+    expect(p.bbox).toBeNull();            // malformed rect dropped
+    expect(p.junkKey).toBeUndefined();    // unknown key discarded
+  });
+
+  it('re-running with a CORRECTED value invalidates the old cell coordinates', () => {
+    reset();
+    const en = enableCaseSeries([row({ id: 's1', doi: '10.1/x' })], 's1', { idFn });
+    const first = buildCasesFromTable(en.studies, en.publicationId, { patients: [{ values: { age: '42' } }] }, {
+      mkStudy, idFn, provenance: { '0:age': { method: 'table', page: 4, bbox: { x0: 1, y0: 2, x1: 3, y1: 4 } } },
+    });
+    // The reviewer re-runs the mapper after fixing the parse — no provenance this time.
+    const second = buildCasesFromTable(first.studies, en.publicationId, { patients: [{ values: { age: '43' } }] }, { mkStudy, idFn, at: 'T2' });
+    const only = casesForPublication(second.studies, en.publicationId);
+    expect(only).toHaveLength(1);                       // reused, not duplicated
+    expect(only[0][caseVarKey('age')]).toBe('43');
+    const p = readProvenance(only[0], caseVarKey('age'));
+    expect(p.page).toBeNull();                          // no longer points at the old cell
+    expect(p.bbox).toBeNull();
+    expect(p.history.map((h) => h.value)).toContain('42');   // the replaced value is kept
   });
 
   it('rejects an empty table or an unknown publication', () => {

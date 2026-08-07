@@ -18,6 +18,7 @@ import { getOutcomePairs, filterStudiesForOutcome } from '../import-export/journ
 import { fmtES, fmtNum } from '../format/precision.js';
 import { resolveAnalysis } from './analysisDescribe.js';
 import { deriveSearchMethodology } from '../search/searchMethodology.js';
+import { caseDisplayName, caseSeriesCounts } from '../extraction/caseSeries.js';
 
 const clean = (s) => String(s == null ? '' : s).trim();
 const num = (x) => (x === '' || x == null || isNaN(+x) ? null : +x);
@@ -70,7 +71,14 @@ export function buildStudyCharacteristicsTable(project, opts = {}) {
   const rob = opts.robByStudyId || {};
 
   const candidates = [
-    { key: 'study', label: 'Study', get: (s) => clean(s.author || (s.authors || '').split(/[,;]/)[0]) + (s.year ? ` ${clean(s.year)}` : '') || clean(s.title) },
+    // 106.md — a CASE row is labelled "Smith 2024 — Case 3". Without this a case series
+    // of eight patients renders as eight identical "Smith 2024" rows and the table reads
+    // as duplicated studies rather than as the individual patients it is.
+    { key: 'study', label: 'Study', get: (s) => {
+      const cite = clean(s.author || (s.authors || '').split(/[,;]/)[0]) + (s.year ? ` ${clean(s.year)}` : '') || clean(s.title);
+      const caseName = caseDisplayName(s);
+      return caseName ? `${cite} — ${caseName}` : cite;
+    } },
     { key: 'country', label: 'Country/region', get: (s) => clean(s.country) },
     { key: 'design', label: 'Design', get: (s) => clean(s.design) },
     { key: 'population', label: 'Population', get: (s) => clean(s.populationDef || s.population) },
@@ -99,6 +107,12 @@ export function buildStudyCharacteristicsTable(project, opts = {}) {
   else {
     const missingDesign = rows.filter((r) => !clean(r.design)).length;
     if (missingDesign) warnings.push(`${missingDesign} stud${missingDesign === 1 ? 'y is' : 'ies are'} missing study design.`);
+    // 106.md — say plainly that the row count is not the study count, so a reader (and
+    // the reviewer proofing the table) is never left to infer it from the labels.
+    const cc = caseSeriesCounts(studies);
+    if (cc.cases > 0) {
+      warnings.push(`${rows.length} rows represent ${cc.publications} publication${cc.publications === 1 ? '' : 's'}, including ${cc.cases} individual case${cc.cases === 1 ? '' : 's'} from ${cc.caseSeriesArticles} case-series article${cc.caseSeriesArticles === 1 ? '' : 's'}.`);
+    }
   }
 
   return {
@@ -106,7 +120,9 @@ export function buildStudyCharacteristicsTable(project, opts = {}) {
     title: 'Characteristics of included studies',
     columns: columns.map((c) => ({ key: c.key, label: c.label })),
     rows,
-    note: 'Generated from included studies and extracted data. Empty cells indicate data not yet extracted.',
+    note: caseSeriesCounts(studies).cases > 0
+      ? 'Generated from included studies and extracted data; one row per extracted case for case-series articles. Empty cells indicate data not yet extracted.'
+      : 'Generated from included studies and extracted data. Empty cells indicate data not yet extracted.',
     warnings,
     available: rows.length > 0,
     generatedFrom: 'studies',

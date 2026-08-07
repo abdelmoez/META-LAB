@@ -12,6 +12,17 @@ import { auditReferences, referencesFromProject } from './citations.js';
 import { SECTION_IDS } from './model.js';
 import { describeSynthesisModel, resolveAnalysis } from './analysisDescribe.js';
 import { checkConsistency } from './consistency.js';
+import { countPublications, caseSeriesCounts } from '../extraction/caseSeries.js';
+
+/** 106.md — "N studies" for the readiness checklist: publications, with the case
+ *  breakdown appended when the review extracted individual patients. */
+function readinessStudiesDetail(studies) {
+  if (!studies.length) return 'No studies';
+  const pubs = countPublications(studies);
+  const cc = caseSeriesCounts(studies);
+  const base = `${pubs} stud${pubs === 1 ? 'y' : 'ies'}`;
+  return cc.cases > 0 ? `${base} · ${cc.cases} individual case${cc.cases === 1 ? '' : 's'}` : base;
+}
 
 const clean = (s) => String(s == null ? '' : s).trim();
 const nonEmpty = (sect, id) => !!(sect && sect[id] && clean(sect[id].content));
@@ -39,7 +50,9 @@ export function computeReadiness(project, draft, opts = {}) {
     { key: 'results', label: 'Results', complete: nonEmpty(sect, 'results') },
     { key: 'discussion', label: 'Discussion', complete: nonEmpty(sect, 'discussion') },
     { key: 'prisma', label: 'PRISMA counts', complete: prismaComplete, detail: prismaComplete ? '' : 'Identified/screened/included counts incomplete' },
-    { key: 'studies', label: 'Included studies', complete: studies.length > 0, detail: studies.length ? `${studies.length} studies` : 'No studies' },
+    // 106.md — "Included studies" is a PUBLICATION count; the row count is reported
+    // alongside it (never instead of it) when the review has extracted cases.
+    { key: 'studies', label: 'Included studies', complete: studies.length > 0, detail: readinessStudiesDetail(studies) },
     { key: 'analysis', label: 'Meta-analysis', complete: !!(primary && primary.result), detail: primary && primary.result ? `k=${primary.result.k}` : 'No pooled analysis yet' },
     { key: 'references', label: 'References', complete: refs.length > 0, detail: refs.length ? `${refs.length} references` : 'No references' },
     { key: 'reproducibility', label: 'Reproducibility package', complete: includedNumeric > 0 && prismaComplete },

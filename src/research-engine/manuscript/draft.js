@@ -567,9 +567,16 @@ export function generateResults(project, opts = {}) {
   // "12 studies" alone is genuinely ambiguous for a case-series review. Both numbers
   // are live counts (publications never inflate to cases), and the sentence is only
   // emitted when cases actually exist, so an ordinary review is byte-identical.
+  //
+  // With `factTokens` on (101.md §3/§4) the two numbers are emitted as LIVE TOKENS, so
+  // adding, deleting or correcting a case updates the sentence with nothing to click —
+  // which is precisely what 106.md §Manuscript Editor integration requires. Without the
+  // flag it degrades to frozen numerals, exactly like the PRISMA sentence above.
   const cs = caseSeriesCounts(studies);
   const caseSentence = cs.cases > 0
-    ? ` ${cs.publications} publication${cs.publications === 1 ? '' : 's'} contributed ${cs.cases} individual case${cs.cases === 1 ? '' : 's'}, of which ${cs.caseSeriesArticles} ${cs.caseSeriesArticles === 1 ? 'was a case series' : 'were case series'}; each case is reported as a separate observation.`
+    ? (opts.factTokens
+      ? ` ${factToken('studies.publicationsAndCases')} were included, of which ${factToken('studies.caseSeriesCount')} ${cs.caseSeriesArticles === 1 ? 'was a case series' : 'were case series'}; each case is reported as a separate observation.`
+      : ` ${cs.publications} publication${cs.publications === 1 ? '' : 's'} contributed ${cs.cases} individual case${cs.cases === 1 ? '' : 's'}, of which ${cs.caseSeriesArticles} ${cs.caseSeriesArticles === 1 ? 'was a case series' : 'were case series'}; each case is reported as a separate observation.`)
     : '';
   out.push(studies.length
     ? `Characteristics of the included studies are summarised in the study-characteristics table ${studyTableRef}.${caseSentence} ${PH('Briefly describe the range of designs, populations and settings')}.`

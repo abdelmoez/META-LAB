@@ -125,7 +125,12 @@ export function hasAnyValue(study = {}) {
     // 82.md reported-as-stated continuous fields (per arm)
     'medianExp', 'q1Exp', 'q3Exp', 'minExp', 'maxExp', 'seExp', 'ciLoExp', 'ciHiExp',
     'medianCtrl', 'q1Ctrl', 'q3Ctrl', 'minCtrl', 'maxCtrl', 'seCtrl', 'ciLoCtrl', 'ciHiCtrl'];
-  return VALS.some((k) => nonEmpty(study[k]));
+  if (VALS.some((k) => nonEmpty(study[k]))) return true;
+  // 106.md — patient-level CASE VARIABLE values are extracted data too. A case report
+  // often has no effect size at all (age, sex, presentation, outcome and nothing to
+  // pool), so without this a fully extracted case reads "Not started" in the article
+  // list forever. Detected by key shape (`cv_*`) because the review defines its own.
+  return Object.keys(study).some((k) => /^cv_.+/.test(k) && nonEmpty(study[k]));
 }
 
 /**

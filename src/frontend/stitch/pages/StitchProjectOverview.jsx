@@ -26,6 +26,7 @@ import {
   stepStatus, PHASES, phaseLabel, PHASE_ICON, readinessCheck, projectPerms, linkedSiftId,
   auditProject, TABS,
 } from '../../workspace/projectHelpers.js';
+import { caseSeriesCounts } from '../../../research-engine/extraction/caseSeries.js';
 import { statusOf, STATUS_META, relTime, ROLE_LABEL } from '../../pages/projectLanding.helpers.js';
 import StitchAppShell from '../shell/StitchAppShell.jsx';
 import { useFocusMode } from '../../focus/FocusModeContext.jsx';
@@ -186,6 +187,13 @@ export default function StitchProjectOverview() {
 
   const dataSummary = overview?.dataSummary || null;
   const studyCount = project ? (project._studyCount != null ? project._studyCount : (Array.isArray(project.studies) ? project.studies.length : 0)) : 0;
+  // 106.md — the raw row count sat next to "PRISMA included" and disagreed with it
+  // for any case-series review. Report the publication count as the study figure and
+  // keep the patient count as its own, separately-labelled number.
+  const caseCounts = useMemo(
+    () => caseSeriesCounts(Array.isArray(project && project.studies) ? project.studies : []),
+    [project && project.studies],
+  );
   const recordCount = (project && project._linkedMetaSift && project._linkedMetaSift.recordCount)
     || (dataSummary && dataSummary.totalArticles) || 0;
   const includedCount = dataSummary ? dataSummary.acceptedToExtraction : null;
@@ -436,7 +444,12 @@ export default function StitchProjectOverview() {
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 12 }}>
             <StitchMetricCard label={linkedId ? 'Citations / records' : 'Records'} value={recordCount} icon="fileText" onClick={linkedId ? () => goStage('screening') : undefined} />
             <StitchMetricCard label="Included" value={includedCount == null ? '—' : includedCount} icon="checkSquare" tone="success" />
-            <StitchMetricCard label="Studies extracted" value={studyCount} icon="table" tone="brand" onClick={() => goStage('extraction')} />
+            {/* 106.md — publications, not extraction rows, so this never contradicts
+                the PRISMA "included" figure beside it. The patient count gets its own card. */}
+            <StitchMetricCard label="Studies extracted" value={caseCounts.cases > 0 ? caseCounts.publications : studyCount} icon="table" tone="brand" onClick={() => goStage('extraction')} />
+            {caseCounts.cases > 0 && (
+              <StitchMetricCard label="Individual cases" value={caseCounts.cases} icon="table" tone="brand" onClick={() => goStage('extraction')} />
+            )}
             <StitchMetricCard label="Open conflicts" value={conflictsCount == null ? '—' : conflictsCount} icon="alertTriangle" tone={conflictsCount ? 'danger' : 'neutral'} onClick={linkedId ? () => goStage('screening') : undefined} />
           </div>
 

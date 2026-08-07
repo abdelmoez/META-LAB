@@ -22,7 +22,7 @@
  * Status is never communicated by colour alone: every chip carries a text percentage
  * or a ✓, and the active chip is marked with aria-selected.
  */
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { C, btnS, inp } from '../../../frontend/workspace/ui/styles.js';
 import { alpha as themeAlpha } from '../../../frontend/theme/tokens.js';
 import { caseGroupForStudy, caseSummary, caseInfoOf } from '../../../research-engine/extraction/caseSeries.js';
@@ -33,6 +33,11 @@ export default function CaseSeriesBar({
 }) {
   const [renaming, setRenaming] = useState(false);
   const [draft, setDraft] = useState('');
+
+  // The chips stay clickable while the rename box is open, so "wait, wrong case" is a
+  // natural correction — and without this the pending name would land on whichever case
+  // is open when Save is pressed, silently renaming the wrong patient.
+  useEffect(() => { setRenaming(false); setDraft(''); }, [openId]);
 
   const open = studies.find((s) => s && s.id === openId) || null;
   if (!open) return null;
@@ -131,7 +136,7 @@ export default function CaseSeriesBar({
               )}
               <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, cursor: 'pointer', fontSize: 11, color: C.muted, marginLeft: 4 }}
                 title="Turn Case Series Mode off. No case and no extracted value is deleted — the cases simply become ordinary study rows again.">
-                <input type="checkbox" checked readOnly={false}
+                <input type="checkbox" checked
                   onChange={() => onDisable && onDisable(group.publicationId)}
                   aria-label="This article contains multiple cases / case series" style={{ cursor: 'pointer' }} />
                 <span>Case series</span>

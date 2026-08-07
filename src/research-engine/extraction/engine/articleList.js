@@ -10,17 +10,22 @@
 
 import { articleStatusOf, progressOf, validationSummary, STATUS_META } from './articleStatus.js';
 import { syncStatusOf, SYNC_STATUS_META } from './syncState.js';
-import { caseInfoOf, caseDisplayName, caseSeriesCounts } from '../caseSeries.js';
+import { caseInfoOf, caseDisplayName, caseSeriesCounts, caseProgressOf } from '../caseSeries.js';
 
 /**
- * buildArticleSummary(study, extra) — the article-list row model for one study.
- * `extra` carries facts the pure layer can't know: { pdfAvailable, tablesDetected }.
+ * buildArticleSummary(study, extra, caseVariables) — the article-list row model for
+ * one study. `extra` carries facts the pure layer can't know: { pdfAvailable,
+ * tablesDetected }. 106.md — `caseVariables` (optional) extends a CASE row's progress
+ * denominator with the review's patient-level fields, so the list percentage agrees
+ * with the case chip and the workspace ring instead of reading 100% for a case whose
+ * age and sex are still blank.
  * @returns {object}
  */
-export function buildArticleSummary(study = {}, extra = {}) {
+export function buildArticleSummary(study = {}, extra = {}, caseVariables = []) {
   const meta = study.extractionMeta || {};
   const status = articleStatusOf(study);
-  const progress = progressOf(study);
+  const caseInfoForProgress = caseInfoOf(study);
+  const progress = caseInfoForProgress ? caseProgressOf(study, caseVariables) : progressOf(study);
   const { errors, warnings } = validationSummary(study);
   const sync = syncStatusOf(study);
   const title = study.title || study.author || '(untitled study)';
@@ -28,10 +33,13 @@ export function buildArticleSummary(study = {}, extra = {}) {
   // progress and PDF), but it carries the case identity so the list can show
   // "Smith 2024 — Case 3" and group the series together instead of looking like
   // eight duplicate articles.
-  const caseInfo = caseInfoOf(study);
+  const caseInfo = caseInfoForProgress;
   return {
     id: study.id,
     title,
+    // The RAW title (blank when the paper has none). `title` above is a display value
+    // that falls back to the author, so it must never be used for citation identity.
+    citationTitle: study.title || '',
     caseSeries: caseInfo
       ? { publicationId: caseInfo.publicationId, caseId: caseInfo.caseId, caseNumber: caseInfo.caseNumber, name: caseDisplayName(study) }
       : null,
@@ -162,7 +170,10 @@ export function articleListStats(summaries = []) {
  */
 function caseCountsForSummaries(summaries = []) {
   const rows = summaries.map((s) => ({
-    id: s.id, doi: s.doi, pmid: s.pmid, title: s.title, author: s.author, year: s.year,
+    // `citationTitle`, NOT `title`: the display title falls back to the author when a
+    // study has none, which would forge a STRONG `t:author|year|author` citation key and
+    // silently merge two genuinely different untitled papers into one publication.
+    id: s.id, doi: s.doi, pmid: s.pmid, title: s.citationTitle || '', author: s.author, year: s.year,
     extractionMeta: s.caseSeries
       ? { caseSeries: { publicationId: s.caseSeries.publicationId, caseId: s.caseSeries.caseId, caseNumber: s.caseSeries.caseNumber } }
       : undefined,

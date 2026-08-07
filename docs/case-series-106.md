@@ -99,16 +99,34 @@ an ambiguous row is honest; merging two different trials is not.
 
 ### Count paths that were wrong before and are now fixed
 
-- `prismaCounts.js` — the last-resort `included` and `includedQuant` counted extraction
-  ROWS. A multi-outcome trial already inflated the PRISMA box; a case series would have
-  made it acute.
-- `factTokens.js` — `studies.total` (rendered by `studies.included`) was `studies.length`.
-- `consistency.js` — the `included-vs-extracted` warning compared PRISMA's study count
-  with the row count, so a correctly-configured case series would have shipped a
-  permanent "reconcile the flow counts with extraction" warning.
+Each of these counted extraction ROWS and called the number "studies". A multi-outcome
+trial already inflated them; a case series would have made every one of them acute.
+
+- `prismaCounts.js` — the last-resort `included` and `includedQuant`.
+- `factTokens.js` — `studies.total` (rendered by `studies.included`), and `withEffect`
+  (rendered by `studies.inAnalysis`, "Studies contributing to the synthesis"). The
+  latter also counted rows whose `es` was an empty string, because `Number('') === 0`
+  is finite. `analysis.k` deliberately stays a ROW count — it is the denominator of a
+  pooled estimate, not a study count.
+- `consistency.js` — the `included-vs-extracted` warning, which would have shipped a
+  permanent "reconcile the flow counts with extraction" warning on every correctly
+  configured case series.
+- `contradictions.js` — the `includedCount` fallback, which drives a **critical**
+  severity contradiction: an honest manuscript saying "1 study was included" would have
+  been flagged as contradicting a project that had 8 case rows.
+- `readiness.js` — the "Included studies" checklist item.
+- `tables.js` — the study-characteristics table (Table 1) rendered eight identical
+  "Smith 2024" rows. Each case row is now labelled `Smith 2024 — Case 3`, and the table
+  states in its warnings and note how many rows represent how many publications.
+- `PublicSynthesisPage.jsx` — the published "Included studies (N)" heading.
+- `StitchProjectOverview.jsx` — the "Studies extracted" metric card, which sat directly
+  beside "Included" (a PRISMA figure) and disagreed with it. Individual cases now get
+  their own card.
 - `study-validator.js` — `findDuplicates` flags any two rows sharing author+year, so all
   eight cases of Smith 2024 would have carried a false "duplicate" badge. Cases of the
   **same** publication are now skipped; cases of different publications still compare.
+- `articleStatus.js` — `hasAnyValue` ignored `cv_*` values, so a fully extracted case
+  report with no poolable effect size read "Not started" at 0% forever.
 
 ## 4. Downstream wiring
 
@@ -121,7 +139,10 @@ an ambiguous row is honest; merging two different trials is not.
 
 `studies.included` keeps its meaning and is now genuinely publication-scoped, so the two
 can be used in one sentence without contradiction. The Results *Study characteristics*
-generator adds a case sentence only when cases exist; an ordinary review is byte-identical.
+generator adds a case sentence only when cases exist; an ordinary review is
+byte-identical. With `factTokens` on (the live-manuscript mode from 101.md) that
+sentence is emitted as **tokens, not numerals**, so adding, deleting or correcting a
+case updates the manuscript with nothing to click — 106.md's auto-update requirement.
 
 **Staleness.** `computeDependencyState`'s two projections are explicit allow-lists — a
 value absent from them changes on screen while every section still reports "Fully
@@ -179,39 +200,65 @@ support this cleanly; there is no UI for it yet (see §8).
 
 ## 7. Verification
 
-- `tests/unit/caseSeries.test.js` — 46 tests over the pure engine.
-- `tests/unit/caseSeriesDownstream.test.jsx` — 34 tests over PRISMA counts, fact tokens,
+- `tests/unit/caseSeries.test.js` — 52 tests over the pure engine.
+- `tests/unit/caseSeriesDownstream.test.jsx` — 38 tests over PRISMA counts, fact tokens,
   the consistency check, dependency fingerprints, the sync hash, duplicate detection,
   publication-stable PDF anchors, list stats, and the SSR shape of the new UI.
-- `npm run test:ci` (hermetic: `tests/unit` + `tests/screening/unit`): **6732 passing**,
-  no regressions. `tests/unit` alone went 6447 → 6481 (the 46 pure-engine tests were
-  already counted in the 6447 baseline run; the 34 downstream tests are the delta).
+
+An adversarial multi-agent review over six dimensions (correctness, counting, React
+state, data safety, provenance, spec coverage) produced ~30 candidate defects; each was
+independently refuted or confirmed by a second agent. The confirmed ones are fixed above
+and pinned by the new tests — most importantly the remaining row-counted "studies"
+surfaces (§3), `duplicateCase` copying another patient's PDF coordinates, the
+publication anchor churning on delete, the variable editor being untypable, and the
+rename box committing to whichever case was open when Save was pressed.
+- `npm run test:ci` (hermetic: `tests/unit` + `tests/screening/unit`): **6742 passing**,
+  no regressions (6652 before this change).
 
 ## 8. Known limitations
 
 1. **No UI for the table mapper.** `buildCasesFromTable` is tested and callable, but
    nothing in the workspace surfaces "map this table's columns to cases" yet. Reviewers
    extract each case by hand (or by click-to-pick per cell).
-2. **Click-to-pick fills case variables from NUMBERS only.** A picked PDF token is
-   parsed as a number, so `Age = 54` works but `Presentation = "acute chest pain"` must
-   be typed. `select` variables are excluded from the pick targets entirely.
+2. **`select` case variables cannot be filled by clicking the PDF.** A picked token is
+   never a controlled term, so they are excluded from the pick targets and must be
+   chosen from the dropdown. Number variables take the snapped number; text and date
+   variables take the clicked text run verbatim.
 3. **Cases are not reorderable from the UI.** `reorderCases()` exists and is tested; no
    drag handle is wired.
 4. **Statistical pooling treats cases as independent rows.** `runMeta`'s `k` counts
-   rows, so pooling eight cases reports `k = 8`. The Analysis tab now warns about the
-   clustering explicitly, but no clustered/multilevel estimator was added — that is a
+   rows, so pooling eight cases reports `k = 8`. That is the correct denominator for a
+   pooled estimate, and the Analysis tab now warns explicitly that they are clustered
+   observations — but no clustered/multilevel estimator was added. That is a
    statistics-engine change, not an extraction one.
-5. **No per-case audit-log granularity.** `ExtractionAuditLog` and the ProjectEvent
+5. **Patient-level variables do not reach Analysis or Reports.** `cv_*` values are
+   extracted, provenance-linked and exported, but nothing aggregates them (no
+   "median age across 47 cases", no case-level subgroup analysis). The case-level CSV is
+   the handoff for now.
+6. **No per-case audit-log granularity.** `ExtractionAuditLog` and the ProjectEvent
    ledger record blob-level study changes; a case edit is attributed to its row, not
    labelled "Case 3 of Smith 2024".
-6. **Removing a case variable hides its values rather than deleting them.** The `cv_*`
+7. **Removing a case variable hides its values rather than deleting them.** The `cv_*`
    values stay on the rows (deliberately — so a mis-click is recoverable) but stop being
-   shown and exported. There is no "restore" affordance.
-7. **`studies.included` semantics changed for multi-outcome projects too.** A trial
+   shown and exported. There is no "restore" affordance. Adding or removing a definition
+   also does not invalidate any manuscript fingerprint, because no manuscript fact is
+   derived from the definitions themselves.
+8. **The `boolean` case-variable type renders as free text**, and `required` is neither
+   settable in the editor nor enforced by the completion gate.
+9. **`studies.included` semantics changed for multi-outcome projects too.** A trial
    contributing three outcome rows now counts as one included study rather than three.
    This is the correct PRISMA reading (studies, not reports) and it fixes a pre-existing
    over-count, but it *is* a behaviour change for existing projects that relied on the
-   old number.
+   old number. Two genuinely independent studies reported in a single paper (same DOI)
+   likewise collapse to one publication, with no way to declare them separate.
+10. **Turning Case Series Mode OFF can raise the publication count.** While the mode is
+    on, all cases share one `publicationId`. Turning it off strips that, so rows of a
+    paper with only a weak citation (author + year, no DOI/PMID/title) each become their
+    own publication. Adding a DOI or title restores the collapse.
+11. **Enabling the mode on an article that already has several OUTCOME rows converts
+    them all into cases.** All rows of a paper must share the publication id or the
+    article splits in two for counting, so this is the only consistent state. The banner
+    says exactly how many rows were converted, and turning the mode off restores them.
 
 ## 9. Invariants (do not regress)
 
@@ -233,5 +280,20 @@ support this cleanly; there is no UI for it yet (see §8).
 7. **Disabling the mode never deletes data.** Only the namespace is stripped.
 8. **One navigator renders at a time.** The outcome navigator must not be shown for a
    case row — it groups by citation identity and would list every case as an outcome.
-9. **Every new mutation is pure and takes an injectable `idFn`.** The blob writer may
-   re-run the mutator on a CAS retry; generating ids inside it would duplicate rows.
+9. **Every new mutation is pure and takes an injectable `idFn`.** `updateProject` is a
+   React state updater, so StrictMode invokes it twice in dev and the blob writer may
+   re-run it on a CAS retry. Ids are seeded OUTSIDE the updater and counted inside, so
+   two invocations produce byte-identical output.
+10. **A value must never carry another case's coordinates.** `duplicateCase` downgrades
+    provenance to `manual` (keeping the entry and its history) rather than copying the
+    page/bbox, and `buildCasesFromTable` invalidates a stale entry when it overwrites a
+    value without fresh provenance. Claiming false evidence is the worst thing a
+    provenance system can do.
+11. **`anchorId` for a case series is the publication id, not a row id.** A row-id
+    anchor churns when the first case is deleted, and `usePdfSource` keys its whole
+    resolve on it — which unmounts the viewer (losing scroll position and any
+    session-local upload) on a delete that had nothing to do with the PDF.
+12. **Only the RAW title may feed citation identity.** The article-list summary's
+    `title` falls back to the author when a paper has none; using it would forge a
+    strong `t:author|year|author` key and merge two different untitled papers. That is
+    what `citationTitle` exists for.
