@@ -200,5 +200,27 @@ It reports; it never rewrites either side.
 4. **`checkPrismaConsistency` needs both a methodology and a flow.** With either
    absent it returns `checked: false` rather than guessing — correct, but it means
    projects without a linked screening workspace get no cross-check at all.
-5. **No backfill.** Existing import batches have `sourceDatabase: ''` and
-   `searchedAt: null`, so they behave exactly as before until edited.
+5. ~~No backfill.~~ **Resolved** —
+   `node server/scripts/backfill-search-provenance.js [--dry-run] [--project <id>]`.
+
+   It does two things. First it **repairs poisoned data**: the old
+   `sourceDb: … || format` fallback wrote file formats ('ris', 'csv', 'nbib') into
+   the database-name column, and those rows are still there and still able to make a
+   manuscript claim the team "searched Ris". They are cleared to `''`. MEDLINE is
+   left alone — it is a database as well as a format, and ambiguity is not grounds
+   for deleting data. An unrecognised label is also left alone, since destroying a
+   real attribution would be worse than the bug being fixed.
+
+   Second it **infers `sourceDatabase`** for a manual batch whose records all
+   canonicalize to one database. A batch spanning several is skipped: picking the
+   commonest would be a guess presented as a fact.
+
+   It deliberately does **not** set `searchedAt`. We do not know when a historical
+   search was run; `createdAt` is the upload day, and the entire point of the column
+   is that those differ. Writing one into the other would erase that distinction
+   invisibly and make the manuscript confidently wrong. Batches keep falling back to
+   `createdAt` until a human states the real date. It also does not touch
+   `contributesToReview` — retiring a search is a research judgement, not a migration.
+
+   Requires `prisma generate` after the schema push; it fails loudly if the column
+   is absent rather than half-running.
