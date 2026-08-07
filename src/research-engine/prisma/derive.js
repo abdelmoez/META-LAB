@@ -131,9 +131,15 @@ export function derivePrismaFlow(records, opts = {}) {
   const identifiedDb = db;
   const identifiedOther = other;
 
-  const sourceRows = (set) => breakdown(
+  // Database arm: name the database. Other-methods arm: name the METHOD — a record
+  // mined from a reference list is "Citation searching", and showing "PubMed" there
+  // would answer the wrong question (PRISMA asks how it was found, not where it
+  // ultimately lives).
+  const sourceRows = (set, arm) => breakdown(
     set,
-    (r) => clean(r.sourceDb) || (IDENTIFICATION_SOURCES[r._src] || {}).label || 'Unspecified source',
+    (r) => (arm === 'other'
+      ? ((IDENTIFICATION_SOURCES[r._src] || {}).label || 'Other methods')
+      : (clean(r.sourceDb) || (IDENTIFICATION_SOURCES[r._src] || {}).label || 'Unspecified source')),
     (key) => key,
   );
 
@@ -233,6 +239,13 @@ export function derivePrismaFlow(records, opts = {}) {
     [...excludedFtDb, ...excludedFtOther],
     (r) => clean(r.exclusionReason) || 'Reason not recorded',
   );
+  // Per-arm too: the two columns are independent flows, so the other-methods
+  // column must never display the database column's reasons (a wrong diagram, not
+  // a cosmetic slip).
+  const exclusionReasonsByArm = {
+    db: breakdown(excludedFtDb, (r) => clean(r.exclusionReason) || 'Reason not recorded'),
+    other: breakdown(excludedFtOther, (r) => clean(r.exclusionReason) || 'Reason not recorded'),
+  };
   const notRetrievedReasons = breakdown(
     [...notRetrievedDb, ...notRetrievedOther],
     (r) => clean(r.notRetrievedReason) || 'Reason not recorded',
@@ -276,9 +289,10 @@ export function derivePrismaFlow(records, opts = {}) {
 
   return {
     boxes,
-    sources: { db: sourceRows(identifiedDb), other: sourceRows(identifiedOther) },
+    sources: { db: sourceRows(identifiedDb, 'db'), other: sourceRows(identifiedOther, 'other') },
     removedBreakdown,
     exclusionReasons,
+    exclusionReasonsByArm,
     notRetrievedReasons,
     dispositions: dispositionBuckets,
     counts,

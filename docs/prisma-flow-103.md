@@ -117,7 +117,7 @@ cross-checked against Figure 1 of Page MJ et al. BMJ 2021;372:n71 — fetched, n
 
 ## 6. Testing
 
-`npm run test:ci` — **411 files, 6525 tests, all passing** (was 410 / 6487).
+`npm run test:ci` — **412 files, 6544 tests, all passing** (was 410 / 6487).
 
 `tests/unit/prisma/flow.test.js` (36) covers **all ten** §20 scenarios A–J plus the structural
 invariants. Highlights:
@@ -152,10 +152,28 @@ invariants. Highlights:
   `computePrismaCounts` now short-circuits to record-derived numbers in production and the
   user-typed tiers no longer win (§15).
 
+**Wired in the second follow-up (the diagram round):**
+- `src/research-engine/prisma/svg.js` — a **new PRISMA 2020 builder** driven by the
+  canonical flow. Two columns, the retrieval boxes, all three official removal
+  sub-lines, the shared terminal box, the stage rail, the official footnotes and
+  citation, and the updated-review variant. Every number is read out of `flow.boxes`;
+  there is no arithmetic in the file, so the drawing cannot disagree with the manuscript.
+- `src/features/prisma/PrismaFlowDiagram.jsx` — the §12 inspection layer. Clean diagram
+  by default; every box is a labelled hit-target, and clicking one opens a panel naming
+  the records behind it, plus the relevant breakdown (duplicate stage, exclusion reasons,
+  per-source identification). Hit-targets are positioned from the builder's own returned
+  geometry, so they cannot drift from the drawing.
+- `PrismaValidationBanner` surfaces the §13 reconciliation, with `role="alert"` on a
+  contradictory flow — never silent.
+- `figures.js` now draws the export with the SAME builder when a flow is available
+  (§16: "do not create a separate export calculation path"). The legacy single-column
+  builder remains only for projects with no record-level data.
+
 **NOT yet wired — deliberately listed rather than implied:**
-1. **The PRISMA SVG is unchanged** — still single-column, still missing the retrieval boxes.
-   The model now describes the correct diagram; `buildPrismaSVG` has not been rewritten to
-   draw it (§21), and export therefore still reflects the old layout (§16).
+1. **The old single-column builder still exists** — still single-column, still missing the retrieval boxes.
+   as the fallback for projects that have no record-level flow. It is no longer used when
+   a flow is present, but the screening tab's own PRISMA view still calls it directly and
+   has not been migrated to the new component.
 2. **No inspection UI** (§12). Every count already carries its record ids, so the data for
    click-to-inspect exists; the panel does not.
 3. **No PRISMA-specific events emitted** (§11). The taxonomy and ledger are in place from

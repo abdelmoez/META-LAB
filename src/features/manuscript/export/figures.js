@@ -7,6 +7,8 @@
  * imported lazily from the export path (never from the pure engine).
  */
 import { buildPubForestSVG, buildPrismaSVG, buildFunnelSVG } from '../../../frontend/workspace/charts/svgBuilders.js';
+// 103.md §16 — the PRISMA 2020 builder driven by the canonical flow.
+import { buildPrismaFlowSVG } from '../../../research-engine/prisma/svg.js';
 // buildTrafficLightSVG is a PURE exported string builder — importing it from the
 // RoB feature module is safe here (this whole module is a lazy browser chunk).
 import { buildTrafficLightSVG } from '../../../frontend/rob/RobTrafficLight.jsx';
@@ -33,9 +35,19 @@ export async function forestPng(result, opts = {}) {
  */
 export async function prismaPng(prismaResultOrShape, opts = {}) {
   const isResult = prismaResultOrShape && prismaResultOrShape.counts;
-  const shape = isResult ? countsToPrismaShape(prismaResultOrShape) : (prismaResultOrShape || {});
-  const resolved = isResult ? prismaResultOrShape.counts : undefined;
-  const built = buildPrismaSVG(shape, { title: opts.title || '', resolved });
+  // 103.md §16 — "Do not create a separate export calculation path." When the
+  // canonical record-derived flow is available it is drawn by the SAME builder the
+  // on-screen diagram uses, so the exported figure and the live one are the same
+  // drawing from the same numbers. The legacy single-column builder remains only
+  // for projects with no record-level data yet.
+  const flow = (isResult && prismaResultOrShape.flow) || opts.flow || null;
+  const built = flow
+    ? buildPrismaFlowSVG(flow, { title: opts.title || '', perSource: true })
+    : (() => {
+      const shape = isResult ? countsToPrismaShape(prismaResultOrShape) : (prismaResultOrShape || {});
+      const resolved = isResult ? prismaResultOrShape.counts : undefined;
+      return buildPrismaSVG(shape, { title: opts.title || '', resolved });
+    })();
   if (!built || !built.svg) return null;
   const targetWidthPx = opts.targetWidthPx || 900;
   const blob = await rasterizeSvg(built.svg, built.W, built.H, { targetWidthPx, background: '#ffffff' });

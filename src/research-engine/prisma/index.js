@@ -11,3 +11,4 @@ export * from './model.js';
 export * from './derive.js';
 export * from './reconcile.js';
 export * from './projection.js';
+export * from './svg.js';
