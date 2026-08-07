@@ -7,6 +7,8 @@ import { prisma } from '../db/client.js';
 import { getProjectAccess, ensureLeaderMember } from '../screening/access.js';
 import { mlAccessFromMember } from '../screening/metalabAccess.js';
 import { getEffectiveQuorum } from '../screening/settings.js';
+// 103.md §10 — the canonical, record-derived PRISMA flow.
+import { loadPrismaFlow } from '../screening/prismaFlowService.js';
 
 /** GET /projects/:pid/overview — summary metrics for the Overview tab. */
 export async function getOverview(req, res) {
@@ -179,5 +181,37 @@ export async function getAuditLog(req, res) {
   } catch (err) {
     console.error('[screening] getAuditLog:', err.message);
     res.status(500).json({ error: 'Internal server error' });
+  }
+}
+
+
+/**
+ * GET /projects/:pid/prisma — 103.md §10/§12. The canonical PRISMA flow, derived
+ * from the project's actual records.
+ *
+ * Every box carries the record ids behind it, so a client can answer "which records
+ * created this number?" (§12) without a second request, and the reconciliation
+ * report says whether the flow is internally consistent (§13).
+ */
+export async function getPrismaFlow(req, res) {
+  try {
+    const access = await getProjectAccess(req.params.pid, req.user);
+    if (!access) return res.status(404).json({ error: 'Project not found' });
+    await ensureLeaderMember(access.project);
+
+    const result = await loadPrismaFlow(access.project.id, {
+      previous: req.query.previousStudies
+        ? { studies: Number(req.query.previousStudies) || 0, reports: Number(req.query.previousReports) || 0 }
+        : null,
+    });
+    // No records yet is not an error — it is an empty flow, and the UI should say so
+    // rather than showing fabricated zeros.
+    if (!result) return res.json({ flow: null, reconciliation: null, empty: true });
+
+    const { flow, reconciliation } = result;
+    return res.json({ flow, reconciliation, empty: false });
+  } catch (err) {
+    console.error('[screening] getPrismaFlow error:', err.message);
+    return res.status(500).json({ error: 'Internal server error' });
   }
 }

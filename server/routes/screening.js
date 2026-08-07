@@ -101,6 +101,8 @@ r.post('/projects/:pid/transfer-owner',   M.transferOwner);
 // Overview dashboard + audit (Parts 10/5)
 r.get('/projects/:pid/overview',          OV.getOverview);
 r.get('/projects/:pid/audit',             OV.getAuditLog);
+// 103.md §10/§12 — record-derived PRISMA flow + its reconciliation report.
+r.get('/projects/:pid/prisma',            OV.getPrismaFlow);
 
 // Project chat (Part 6) — members only, polling via ?since
 r.get('/projects/:pid/chat',              CH.listMessages);

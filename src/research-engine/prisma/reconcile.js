@@ -89,7 +89,9 @@ export function reconcilePrismaFlow(flow) {
   );
 
   // Screening: screened − excluded = sought for retrieval + still awaiting a decision.
-  const awaiting = n(f.dispositions && f.dispositions.awaiting_screening && f.dispositions.awaiting_screening.n);
+  // DATABASE ARM only — an other-methods record is never screened as part of the
+  // pool, so it must not be subtracted from the screening identity.
+  const awaiting = n(c.awaitingScreening);
   identity(
     'screened_minus_excluded',
     'Records screened − records excluded − awaiting screening = reports sought for retrieval (databases)',

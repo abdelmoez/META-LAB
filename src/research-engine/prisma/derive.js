@@ -99,6 +99,22 @@ function breakdown(records, keyFn, labelFn) {
 export function derivePrismaFlow(records, opts = {}) {
   const rows = arr(records).filter((r) => r && r.id != null);
 
+  // 103.md §2/§3 — duplicates that were never INSERTED as records.
+  //
+  // PecanRev's import pipeline drops an import-time duplicate before it becomes a
+  // ScreenRecord (screeningImportService skips it and increments
+  // ScreenImportBatch.duplicateCount). A purely record-level count would therefore
+  // report neither the record nor its removal, and "records identified" would
+  // silently exclude records that really were retrieved — §2 is explicit that the
+  // duplicate count "must not disappear simply because deduplication happened
+  // before the Screening Engine".
+  //
+  // So the batch's own accounting is added back as a COUNT ONLY. These duplicates
+  // have no ids, so they can never be inspected record-by-record (§12) and are
+  // reported separately in the breakdown as such — honest about what is known
+  // rather than inventing placeholder records.
+  const phantom = Math.max(0, Number(opts.unrecordedDuplicates) || 0);
+
   // Decorate once — arm and disposition are each computed a single time per
   // record, so a project with 100k records costs one pass, not one per box (§19).
   const decorated = rows.map((r) => ({
@@ -130,6 +146,10 @@ export function derivePrismaFlow(records, opts = {}) {
   /* ── screening (database arm only) ───────────────────────────────────────── */
   const screened = db.filter((r) => !isRemovedBeforeScreening(r._disp));
   const excludedScreening = screened.filter((r) => r._disp === 'excluded_screening');
+  // Awaiting a title/abstract decision, DATABASE ARM ONLY. Other-methods records
+  // are never screened as a pool, so counting them here would make the screening
+  // identity unbalanced (they have no "records screened" box to come out of).
+  const awaitingScreeningDb = screened.filter((r) => r._disp === 'awaiting_screening');
 
   /* ── retrieval + eligibility (BOTH arms) ─────────────────────────────────── */
   const soughtOf = (set) => set.filter((r) => r.soughtRetrieval && !isRemovedBeforeScreening(r._disp));
@@ -156,9 +176,12 @@ export function derivePrismaFlow(records, opts = {}) {
   const quantKeys = new Set(quantitative.map((r) => clean(r.studyId) || `record:${r.id}`));
 
   const boxes = {
-    identified_db: bucket(identifiedDb),
+    // The phantom (never-inserted) import duplicates raise the COUNT of records
+    // identified and of records removed, but contribute no ids — they are counted,
+    // not inspectable, and both boxes move together so the flow still balances.
+    identified_db: { n: identifiedDb.length + phantom, ids: identifiedDb.map((r) => r.id) },
     identified_other: bucket(identifiedOther),
-    removed_before_screening: bucket(removed),
+    removed_before_screening: { n: removed.length + phantom, ids: removed.map((r) => r.id) },
     screened: bucket(screened),
     excluded_screening: bucket(excludedScreening),
     sought_db: bucket(soughtDb),
@@ -184,18 +207,24 @@ export function derivePrismaFlow(records, opts = {}) {
 
   /* ── §12 breakdowns ──────────────────────────────────────────────────────── */
   const removedBreakdown = {
-    duplicate: bucket(removedDuplicate),
+    duplicate: { n: removedDuplicate.length + phantom, ids: removedDuplicate.map((r) => r.id) },
+    // Duplicates discarded at import, before any record existed. Counted, never
+    // inspectable — there is nothing to inspect.
+    unrecorded: phantom,
     automation: bucket(removedAutomation),
     other: bucket(removedOther),
     // WHERE each duplicate was caught — the "Automated Search 510 / Screening 180 /
     // Manual 52" breakdown §12 asks for. These are slices of ONE set, so they can
     // never sum to more than the duplicates actually removed.
-    byStage: breakdown(removedDuplicate, (r) => clean(r.dedupStage) || 'unknown', (k) => ({
+    byStage: (phantom
+      ? [{ key: 'import_discarded', label: 'Discarded at import (not stored as records)', n: phantom, ids: [] }]
+      : []
+    ).concat(breakdown(removedDuplicate, (r) => clean(r.dedupStage) || 'unknown', (k) => ({
       search: 'Removed during automated search',
       import: 'Removed during import',
       screening: 'Removed in the Screening Engine',
       unknown: 'Stage not recorded',
-    }[k] || k)),
+    }[k] || k))),
     byMethod: breakdown(removedDuplicate, (r) => clean(r.dedupMethod) || 'unknown'),
     byReason: breakdown(removedOther, (r) => clean(r.removedReason) || 'Reason not recorded'),
   };
@@ -211,13 +240,15 @@ export function derivePrismaFlow(records, opts = {}) {
 
   /* ── flat scalars, for consumers that only want numbers ──────────────────── */
   const counts = {
-    identified: identifiedDb.length + identifiedOther.length,
-    identifiedDb: identifiedDb.length,
+    identified: identifiedDb.length + identifiedOther.length + phantom,
+    identifiedDb: identifiedDb.length + phantom,
     identifiedOther: identifiedOther.length,
-    duplicatesRemoved: removedDuplicate.length,
+    duplicatesRemoved: removedDuplicate.length + phantom,
     removedAutomation: removedAutomation.length,
     removedOther: removedOther.length,
-    removedBeforeScreening: removed.length,
+    removedBeforeScreening: removed.length + phantom,
+    unrecordedDuplicates: phantom,
+    awaitingScreening: awaitingScreeningDb.length,
     screened: screened.length,
     excludedScreen: excludedScreening.length,
     sought: soughtDb.length + soughtOther.length,

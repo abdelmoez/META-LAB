@@ -327,13 +327,44 @@ describe('projection — mapping PecanRev tables onto the model', () => {
   it('treats only NON-primary duplicate-group members as removed', () => {
     const p = buildRecordProjections({
       records: [
-        { id: 'a', isDuplicate: true, isPrimary: true, sourceDb: 'PubMed' },
-        { id: 'b', isDuplicate: true, isPrimary: false, sourceDb: 'PubMed' },
+        // importBatchId present: these came from a database import, so they belong
+        // to the database arm where PRISMA 2020 puts the removal box.
+        { id: 'a', isDuplicate: true, isPrimary: true, sourceDb: 'PubMed', importBatchId: 'b1' },
+        { id: 'b', isDuplicate: true, isPrimary: false, sourceDb: 'PubMed', importBatchId: 'b1' },
       ],
     });
     expect(p.find((x) => x.id === 'a').isDuplicate).toBe(false); // the kept record
     expect(p.find((x) => x.id === 'b').isDuplicate).toBe(true);
     expect(derivePrismaFlow(p).counts.duplicatesRemoved).toBe(1);
+  });
+
+  it('treats a record with no source row and no import batch as manually added (§5)', () => {
+    // screeningController.createRecord inserts directly — no ScreenRecordSource,
+    // no batch. That absence is the only signal that a human added it by hand.
+    const [manual] = buildRecordProjections({ records: [{ id: 'm', sourceDb: '' }] });
+    expect(manual.origin).toBe('manual');
+    expect(derivePrismaFlow([manual]).counts.identifiedOther).toBe(1);
+
+    const [imported] = buildRecordProjections({ records: [{ id: 'i', sourceDb: 'PubMed', importBatchId: 'b1' }] });
+    expect(imported.origin).toBe('file');
+    expect(derivePrismaFlow([imported]).counts.identifiedDb).toBe(1);
+  });
+
+  it('counts import-time duplicates that were never stored as records (§2)', () => {
+    // PecanRev drops an import duplicate BEFORE it becomes a ScreenRecord, so a
+    // purely record-level count would lose it and under-report records identified.
+    const f = derivePrismaFlow(
+      [rec({ origin: 'file' }), rec({ origin: 'file' })],
+      { unrecordedDuplicates: 25 },
+    );
+    expect(f.counts.identified).toBe(27);
+    expect(f.counts.duplicatesRemoved).toBe(25);
+    expect(f.counts.screened).toBe(2);
+    // Counted but NOT inspectable — there is no record to inspect, and the
+    // breakdown says so rather than pretending otherwise.
+    expect(f.removedBreakdown.duplicate.ids).toHaveLength(0);
+    expect(f.removedBreakdown.byStage[0].label).toMatch(/not stored as records/i);
+    expect(reconcilePrismaFlow(f).ok).toBe(true);
   });
 
   it('leaves an unresolved reviewer disagreement UNDECIDED', () => {

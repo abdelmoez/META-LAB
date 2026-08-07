@@ -51,6 +51,10 @@ export function emptyManuscriptSources() {
     // 101.md §27 — { tools:[{id,label,designLabel,scoring,count}], assessedCount, … }
     robUsage: null,
     perSource: null,
+    // 103.md §10/§15 — the canonical record-derived PRISMA flow. When present it
+    // OUTRANKS every legacy counter tier, so the manuscript reports numbers that
+    // came from records and a user-typed value can no longer win.
+    prismaFlow: null,
     // 101.md §1/§2 — deriveSearchProvenance output. null = "we do not know which
     // databases were searched", which is NOT the same as "none were" and must
     // never be rendered as a database list.
@@ -286,6 +290,9 @@ export function composeGenOpts({ project, runMeta, gradeByOutcome, sources } = {
   // silently substituted by a settings value.
   if (src.searchProvenance) out.searchProvenance = src.searchProvenance;
   if (src.robUsage) out.robUsage = src.robUsage;
+  // 103.md §15 — one source of truth: the chart and the manuscript cannot disagree
+  // because they read the same derivation.
+  if (src.prismaFlow) out.flow = src.prismaFlow;
   if (src.screeningWorkflow) {
     // methodsText + sources.js read the FLAT reviewers/blind keys.
     if (src.screeningWorkflow.reviewers != null) out.reviewers = src.screeningWorkflow.reviewers;
@@ -391,6 +398,17 @@ export async function fetchManuscriptSources({ projectId, screenProjectId, fetch
     } catch (e) {
       out.dataStatus.rob = (e && e.status === 404) ? 'off' : 'error';
     }
+  })());
+
+  // 2c) 103.md §10 — the record-derived PRISMA flow from the linked screening
+  //     project. Absent (no link, no records, feature off) leaves prismaFlow null
+  //     and the legacy counter path runs, so nothing regresses.
+  tasks.push((async () => {
+    if (!screenProjectId) return;
+    try {
+      const d = await j(`/api/screening/projects/${enc(screenProjectId)}/prisma`);
+      if (d && d.flow) out.prismaFlow = d.flow;
+    } catch { /* the flow is evidence, not enrichment — absent means "unknown" */ }
   })());
 
   // 3b) 101.md §1/§2 — SEARCH EXECUTION PROVENANCE. The authoritative answer to

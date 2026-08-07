@@ -117,7 +117,7 @@ cross-checked against Figure 1 of Page MJ et al. BMJ 2021;372:n71 — fetched, n
 
 ## 6. Testing
 
-`npm run test:ci` — **411 files, 6523 tests, all passing** (was 410 / 6487).
+`npm run test:ci` — **411 files, 6525 tests, all passing** (was 410 / 6487).
 
 `tests/unit/prisma/flow.test.js` (36) covers **all ten** §20 scenarios A–J plus the structural
 invariants. Highlights:
@@ -143,23 +143,28 @@ invariants. Highlights:
   fact tokens and the narrative all read records and the user-typed tiers cannot outrank real
   data (§15). Provenance for every key becomes `'records'`.
 
+**Wired in the follow-up round:**
+- `server/screening/prismaFlowService.js` loads the records and derives the flow — one
+  indexed query per table, only the columns the projection reads, then a single in-memory
+  pass (§19). Tables that may be absent on an older Prisma client are probed and skipped.
+- `GET /api/screening/projects/:pid/prisma` serves the flow **and** its reconciliation report.
+- The manuscript fetches it (`manuscriptData.js`) and passes it as `opts.flow`, so
+  `computePrismaCounts` now short-circuits to record-derived numbers in production and the
+  user-typed tiers no longer win (§15).
+
 **NOT yet wired — deliberately listed rather than implied:**
-1. **No server endpoint builds the projection yet.** `buildRecordProjections` is pure and
-   tested, but nothing fetches `ScreenRecord` + `ScreenRecordSource` + `FullTextCandidate` and
-   calls it. Until that lands, `opts.flow` is never supplied in production and the legacy
-   precedence chain still runs. **This is the single most important follow-up.**
-2. **The PRISMA SVG is unchanged** — still single-column, still missing the retrieval boxes.
+1. **The PRISMA SVG is unchanged** — still single-column, still missing the retrieval boxes.
    The model now describes the correct diagram; `buildPrismaSVG` has not been rewritten to
    draw it (§21), and export therefore still reflects the old layout (§16).
-3. **No inspection UI** (§12). Every count already carries its record ids, so the data for
+2. **No inspection UI** (§12). Every count already carries its record ids, so the data for
    click-to-inspect exists; the panel does not.
-4. **No PRISMA-specific events emitted** (§11). The taxonomy and ledger are in place from
+3. **No PRISMA-specific events emitted** (§11). The taxonomy and ledger are in place from
    101.md and screening already writes `ScreenAuditLog`, but the §11 event names are not
    emitted.
-5. **No migration/backfill run** (§18). The projection maps existing tables, so an existing
+4. **No migration/backfill run** (§18). The projection maps existing tables, so an existing
    project derives correctly the moment the endpoint exists — but nothing has been backfilled
    and no "unreconstructable" marking is persisted.
-6. **`studyId` has no writer.** The model supports report→study linking; no UI or column sets
+5. **`studyId` has no writer.** The model supports report→study linking; no UI or column sets
    it, so today every included record is its own study (the safe default).
 
 ---
@@ -175,6 +180,20 @@ invariants. Highlights:
 3. **Automation-tool removals need a writer.** `removed_automation` is modelled and tested,
    but no code path currently sets it; PecanRev's AI screening marks records rather than
    removing them pre-screening.
-4. **Reconciliation is structural, so it should always pass.** A failure means the derivation
+4. **Import-time duplicates are counted but not inspectable.** PecanRev discards an import
+   duplicate *before* it becomes a `ScreenRecord`, so the only trace is
+   `ScreenImportBatch.duplicateCount`. Those are added back to "records identified" and
+   "duplicates removed" as a COUNT with no ids — §2 is explicit that the duplicate count
+   must not disappear just because dedup happened early, but they can never be inspected
+   record-by-record, and the breakdown labels them "Discarded at import (not stored as
+   records)" rather than pretending otherwise.
+5. **Duplicates found in the other-methods arm are not shown in a removal box**, because
+   PRISMA 2020 gives that column no removal box. They are still excluded from the flow
+   correctly; they simply have nowhere official to be reported.
+6. **A title/abstract exclusion has no record-level column.** The mapping confirmed nothing
+   writes "excluded at T/A" onto `ScreenRecord` — the state lives only in `ScreenDecision`.
+   The projection therefore derives it from decisions, which is why `resolveDecisions` is
+   load-bearing rather than a convenience.
+7. **Reconciliation is structural, so it should always pass.** A failure means the derivation
    or the projection is wrong, not that a researcher typed inconsistent numbers. That is the
    intended reading, and it makes the checks a genuine self-audit rather than user nagging.

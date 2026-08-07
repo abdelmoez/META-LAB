@@ -82,9 +82,17 @@ export function buildRecordProjections(input = {}) {
 
     const studyId = clean(studyIds[id] || r.handoffStudyId || '');
 
+    // 103.md §5 — a manually added record creates NO ScreenRecordSource row and no
+    // import batch (screeningController.createRecord inserts the row directly). The
+    // ABSENCE of both is therefore the signal that a human added it by hand, which
+    // belongs in the other-methods arm. Defaulting it to 'file' would silently file
+    // a hand-added study under database searching.
+    const origin = clean(s.origin)
+      || (r.importBatchId ? 'file' : 'manual');
+
     return {
       id,
-      origin: clean(s.origin) || 'file',
+      origin,
       sourceDb: clean(r.sourceDb),
       runId: clean(s.runId),
       batchId: clean(s.batchId),
