@@ -34,6 +34,7 @@ import { openExportDialog } from "../exportDialogBridge.js";
 import { C, btnS, inp, lbl, th, tagS } from "../ui/styles.js";
 import { SectionHeader, InfoBox, HelpTip } from "../ui/primitives.jsx";
 import { mkStudy } from "../projectHelpers.js";
+import { isCaseRow, caseInfoOf, caseDisplayName, caseVarKey, normalizeCaseVariables } from "../../../research-engine/extraction/caseSeries.js";
 
 /* monolith-local utils (verbatim copies — projectHelpers.js does not export them) */
 const uid = () => Math.random().toString(36).slice(2, 10);
@@ -845,8 +846,29 @@ ${paperText.slice(0,15000)}`;
       "es","lo","hi","needsReview","extractedBy","extractedAt","conversions","notes"];
     const esc=v=>{let t;if(Array.isArray(v))t=v.join("; ");else if(v&&typeof v==="object")t=JSON.stringify(v);else t=String(v==null?"":v);
       t=t.replace(/"/g,'""');return /[",\n]/.test(t)?`"${t}"`:t;};
-    const header=cols.join(",");
-    const rows=studies.map(s=>cols.map(c=>esc(s[c])).join(","));
+    // 106.md §Export — when the review extracted individual patients, every row also
+    // carries its case identity and the review's patient-level variables, so this one
+    // file IS case-level. The parent-article columns (author/year/doi/pmid) are
+    // untouched, so a case can always be traced back to its publication. A review with
+    // no case series exports byte-identically to before.
+    const caseVars=normalizeCaseVariables(project.caseVariables);
+    const anyCases=studies.some(isCaseRow);
+    const caseCols=anyCases
+      ?["caseSeriesPublicationId","caseId","caseNumber","caseLabel",...caseVars.map(v=>caseVarKey(v.id))]
+      :[];
+    const caseHeaders=anyCases
+      ?["Publication ID","Case ID","Case number","Case",...caseVars.map(v=>v.unit?`${v.label} (${v.unit})`:v.label)]
+      :[];
+    const caseCell=(s,c)=>{
+      const info=caseInfoOf(s);
+      if(c==="caseSeriesPublicationId") return info?info.publicationId:"";
+      if(c==="caseId") return info?info.caseId:"";
+      if(c==="caseNumber") return info?info.caseNumber:"";
+      if(c==="caseLabel") return info?caseDisplayName(s):"";
+      return s[c]==null?"":s[c];
+    };
+    const header=[...cols,...caseHeaders].join(",");
+    const rows=studies.map(s=>[...cols.map(c=>esc(s[c])),...caseCols.map(c=>esc(caseCell(s,c)))].join(","));
     return [header,...rows].join("\n");
   };
   const openExtractionExport=()=>{

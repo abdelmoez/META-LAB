@@ -1,7 +1,11 @@
 /**
  * manuscript/prismaCounts.js — 64.md (P3). The ONE shared helper that normalizes
  * PRISMA 2020 flow counts for the manuscript (table + diagram + Methods/Results
- * draft all consume this — no duplicated arithmetic). Pure, dependency-free.
+ * draft all consume this — no duplicated arithmetic). Pure.
+ *
+ * 106.md — the one import below is deliberate: publication-vs-case collapsing has
+ * exactly ONE implementation (extraction/caseSeries.countPublications). Re-deriving it
+ * here is how the search-methodology split went wrong in 104.md.
  *
  * Precedence per field (highest first):
  *   1. MANUAL OVERRIDE  — manuscript draft `prismaOverrides` (clearly labelled in UI/export).
@@ -19,6 +23,8 @@
  *   reportsAssessed = screened − excludedScreen
  *   included   = reportsAssessed − reportsExcluded
  */
+
+import { countPublications } from '../extraction/caseSeries.js';
 
 function toNum(v) {
   if (v === '' || v == null) return null;
@@ -147,7 +153,13 @@ export function computePrismaCounts(project, opts = {}) {
   else if (reportsAssessed != null && reportsExcluded != null) { included = reportsAssessed - reportsExcluded; provenance.included = 'derived'; }
   else if (toNum(sc.included) != null) { included = toNum(sc.included); provenance.included = 'computed'; }
   else if (studies.length) {
-    const n = studies.filter((s) => s && s.es !== '' && s.es != null && !isNaN(+s.es)).length;
+    // 106.md §Prevent double counting — PRISMA's "included" box is PUBLICATIONS. This
+    // last-resort fallback used to count extraction ROWS, so a case series of eight
+    // patients (or a trial with three outcome rows) reported eight/three included
+    // studies. Collapse rows onto their publication first; the numeric-`es` filter is
+    // preserved so a study with no usable estimate still does not inflate the box.
+    const withEs = studies.filter((s) => s && s.es !== '' && s.es != null && !isNaN(+s.es));
+    const n = countPublications(withEs);
     if (n) { included = n; provenance.included = 'computed'; }
     else { provenance.included = 'missing'; }
   } else { provenance.included = 'missing'; }
@@ -160,7 +172,9 @@ export function computePrismaCounts(project, opts = {}) {
   let includedQuant = toNum(ov.includedQuant) ?? toNum(p.quant);
   provenance.includedQuant = toNum(ov.includedQuant) != null ? 'override' : (toNum(p.quant) != null ? 'manual' : 'missing');
   if (includedQuant == null) {
-    const numeric = studies.filter((s) => s && s.es !== '' && s.es != null && !isNaN(+s.es)).length;
+    // 106.md — same publication-scoping as `included` above: "studies in the
+    // quantitative synthesis" is a study count, never a case count.
+    const numeric = countPublications(studies.filter((s) => s && s.es !== '' && s.es != null && !isNaN(+s.es)));
     if (numeric) { includedQuant = numeric; provenance.includedQuant = 'computed'; }
   }
 

@@ -16,6 +16,7 @@ import { resolveAnalysis } from './analysisDescribe.js';
 import { TAU2_LABELS } from '../statistics/tau2.js';
 import { SECTION_TYPES } from './model.js';
 import { checkPrismaConsistency } from '../search/searchMethodology.js';
+import { countPublications, caseSeriesCounts } from '../extraction/caseSeries.js';
 
 const clean = (s) => String(s == null ? '' : s).trim();
 
@@ -90,14 +91,23 @@ export function checkConsistency(project, draft, opts = {}) {
   // comparison) — i.e. no override/manual/screening source supplied it.
   const pc = opts.prismaCounts
     || computePrismaCounts(project, { overrides: draft && draft.prismaOverrides, screening: opts.screening });
-  const totalExtracted = studies.length;
+  // 106.md — compare PUBLICATIONS with publications. Counting extraction ROWS here
+  // meant a correctly-configured case series (12 articles, 47 patient rows) shipped a
+  // permanent "reconcile the flow counts with extraction" warning to the user, and a
+  // multi-outcome trial did the same. The row count is still reported in the message
+  // when it differs, because that context is what makes the warning actionable.
+  const totalExtracted = countPublications(studies);
   const scIncluded = opts.screening && Number.isFinite(Number(opts.screening.included)) ? Number(opts.screening.included) : null;
   const selfDerived = pc.provenance.included === 'computed' && scIncluded == null;
   if (pc.counts.included != null && totalExtracted > 0
       && !selfDerived && pc.counts.included !== totalExtracted) {
+    const cs = caseSeriesCounts(studies);
+    const detail = cs.cases > 0
+      ? ` (${studies.length} extraction rows, including ${cs.cases} individual case${cs.cases === 1 ? '' : 's'})`
+      : '';
     out.push({
       id: 'included-vs-extracted', severity: 'warn', section: 'results',
-      message: `PRISMA reports ${pc.counts.included} included studies but ${totalExtracted} stud${totalExtracted === 1 ? 'y is' : 'ies are'} in extraction — reconcile the flow counts with extraction.`,
+      message: `PRISMA reports ${pc.counts.included} included studies but ${totalExtracted} stud${totalExtracted === 1 ? 'y is' : 'ies are'} in extraction${detail} — reconcile the flow counts with extraction.`,
     });
   }
 

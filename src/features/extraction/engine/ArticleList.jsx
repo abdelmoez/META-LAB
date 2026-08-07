@@ -45,6 +45,7 @@ const STAT_CHIPS = [
 export default function ArticleList({
   articles = [], stats = null, loading = false, error = '',
   onOpen, onRefresh, canEdit = false, lastArticleId = '',
+  onExportCases,   // 106.md — case-level CSV (one row per patient)
 }) {
   const [query, setQuery] = useState({ search: '', status: '', sort: 'recent', pdf: '', issues: '' });
   const [active, setActive] = useState(0);   // keyboard cursor
@@ -71,7 +72,13 @@ export default function ArticleList({
           <div style={{ fontSize: 17, fontWeight: 700, color: C.txt, letterSpacing: '-0.01em' }}>Articles for extraction</div>
           {stats ? (
             <div style={{ fontSize: 12, color: C.muted, marginTop: 4 }}>
-              {stats.total} article{stats.total === 1 ? '' : 's'} · {stats.complete} complete · {stats.inProgress} in progress
+              {/* 106.md §Prevent double counting — when the review contains case series,
+                  say PUBLICATIONS and CASES separately. `stats.total` is the number of
+                  extraction rows and stays the denominator of the progress figures. */}
+              {stats.hasCaseSeries
+                ? <>{stats.publications} publication{stats.publications === 1 ? '' : 's'} · {stats.cases} individual case{stats.cases === 1 ? '' : 's'} · {stats.total} row{stats.total === 1 ? '' : 's'}</>
+                : <>{stats.total} article{stats.total === 1 ? '' : 's'}</>}
+              {' · '}{stats.complete} complete · {stats.inProgress} in progress
               {stats.needsValidation ? ` · ${stats.needsValidation} need validation` : ''} · avg {stats.avgProgress}% extracted
             </div>
           ) : null}
@@ -81,6 +88,11 @@ export default function ArticleList({
             <button onClick={() => onOpen && onOpen(lastArticle.id)} style={btnS('primary')}>
               ↩ Continue: {(lastArticle.author || lastArticle.title || 'last article').slice(0, 28)}
             </button>
+          ) : null}
+          {/* 106.md §Export — offered only once the review actually has cases. */}
+          {onExportCases && stats && stats.hasCaseSeries ? (
+            <button onClick={onExportCases} data-testid="pex-export-cases" style={btnS('ghost')}
+              title="Download one row per individual case, with its publication, DOI and PubMed ID">⤓ Export cases (CSV)</button>
           ) : null}
           {onRefresh ? <button onClick={onRefresh} style={btnS('ghost')} title="Refresh the list">↻</button> : null}
         </div>
@@ -150,6 +162,15 @@ export default function ArticleList({
                 <span style={{ fontSize: 13.5, fontWeight: 600, color: C.txt, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '52ch' }}>
                   {a.author || a.title || '(untitled study)'}{a.year ? ` (${a.year})` : ''}
                 </span>
+                {/* 106.md — "Smith et al., 2024 — Case 3": a case row is visibly a
+                    patient of a shared article, not another duplicate-looking study. */}
+                {a.caseSeries ? (
+                  <span data-testid={`pex-list-case-${a.caseSeries.caseNumber}`}
+                    title="One patient of a case-series article"
+                    style={{ fontSize: 10.5, fontWeight: 700, letterSpacing: 0.3, padding: '2px 7px', borderRadius: 999, color: C.acc, background: themeAlpha(C.acc, '18'), border: `1px solid ${themeAlpha(C.acc, '44')}`, flexShrink: 0 }}>
+                    {a.caseSeries.name}
+                  </span>
+                ) : null}
               </div>
               <div style={{ fontSize: 11.5, color: C.muted, marginTop: 4, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                 {a.outcome ? `${a.outcome}` : <span style={{ color: C.dim }}>outcome not named</span>}

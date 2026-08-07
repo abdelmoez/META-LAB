@@ -10,6 +10,7 @@
 
 import { articleStatusOf, progressOf, validationSummary, STATUS_META } from './articleStatus.js';
 import { syncStatusOf, SYNC_STATUS_META } from './syncState.js';
+import { caseInfoOf, caseDisplayName, caseSeriesCounts } from '../caseSeries.js';
 
 /**
  * buildArticleSummary(study, extra) — the article-list row model for one study.
@@ -23,9 +24,17 @@ export function buildArticleSummary(study = {}, extra = {}) {
   const { errors, warnings } = validationSummary(study);
   const sync = syncStatusOf(study);
   const title = study.title || study.author || '(untitled study)';
+  // 106.md — a case row is still an article-list row (so it keeps its own status,
+  // progress and PDF), but it carries the case identity so the list can show
+  // "Smith 2024 — Case 3" and group the series together instead of looking like
+  // eight duplicate articles.
+  const caseInfo = caseInfoOf(study);
   return {
     id: study.id,
     title,
+    caseSeries: caseInfo
+      ? { publicationId: caseInfo.publicationId, caseId: caseInfo.caseId, caseNumber: caseInfo.caseNumber, name: caseDisplayName(study) }
+      : null,
     author: study.author || '',
     year: study.year || '',
     journal: study.journal || '',
@@ -117,8 +126,15 @@ export function filterSortArticles(summaries = [], query = {}) {
 
 /**
  * articleListStats(summaries) — headline counts for the list header (§6 progress).
+ *
+ * 106.md: `total` counts extraction ROWS (what the list actually renders, and what the
+ * progress bar is over). `publications` and `cases` are reported ALONGSIDE it and never
+ * replace it, so the header can honestly say "12 publications · 47 cases" without any
+ * downstream consumer mistaking a case count for a study count.
  * @returns {{ total:number, complete:number, inProgress:number, notStarted:number,
- *             needsValidation:number, readyForAnalysis:number, avgProgress:number }}
+ *             needsValidation:number, readyForAnalysis:number, avgProgress:number,
+ *             publications:number, cases:number, caseSeriesArticles:number,
+ *             hasCaseSeries:boolean }}
  */
 export function articleListStats(summaries = []) {
   const total = summaries.length;
@@ -134,5 +150,28 @@ export function articleListStats(summaries = []) {
   return {
     total, complete, inProgress, notStarted, needsValidation, readyForAnalysis,
     avgProgress: total ? Math.round(pctSum / total) : 0,
+    ...caseCountsForSummaries(summaries),
+  };
+}
+
+/**
+ * caseCountsForSummaries(summaries) — publication / case counts from list SUMMARIES.
+ * Summaries are not study rows, so this reconstructs the minimal shape caseSeriesCounts
+ * needs (the case namespace plus the citation identity) rather than duplicating its
+ * collapse rules. Pure.
+ */
+function caseCountsForSummaries(summaries = []) {
+  const rows = summaries.map((s) => ({
+    id: s.id, doi: s.doi, pmid: s.pmid, title: s.title, author: s.author, year: s.year,
+    extractionMeta: s.caseSeries
+      ? { caseSeries: { publicationId: s.caseSeries.publicationId, caseId: s.caseSeries.caseId, caseNumber: s.caseSeries.caseNumber } }
+      : undefined,
+  }));
+  const c = caseSeriesCounts(rows);
+  return {
+    publications: c.publications,
+    cases: c.cases,
+    caseSeriesArticles: c.caseSeriesArticles,
+    hasCaseSeries: c.hasCaseSeries,
   };
 }

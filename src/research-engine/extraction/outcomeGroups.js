@@ -46,11 +46,28 @@ const s = (v) => (v == null ? '' : String(v).trim());
 const norm = (v) => s(v).toLowerCase().replace(/\s+/g, ' ');
 
 /**
+ * 106.md — the case-series parent-article id, read INLINE rather than imported from
+ * caseSeries.js: that module imports THIS one (citationKey / CITATION_FIELDS), so the
+ * dependency has to point one way. A shared publicationId is the strongest possible
+ * proof that two rows are the same paper — the reviewer asserted it — so it outranks
+ * every citation heuristic below, and it is immutable, so correcting a DOI can never
+ * split a case series' PDF resolution.
+ */
+const casePublicationIdOf = (study) => {
+  const cs = study && study.extractionMeta && study.extractionMeta.caseSeries;
+  return (cs && typeof cs === 'object' && cs.publicationId && cs.caseId) ? String(cs.publicationId) : '';
+};
+
+/**
  * citationKey(study) — a STABLE identity for the paper a study row belongs to.
  * Prefers a DOI, then a PubMed id, then author|year|title. Two rows with the same
  * key are the same paper (different outcomes / time points).
  */
 export function citationKey(study = {}) {
+  // 106.md — an explicit case-series publication id IS the paper's identity. Deriving
+  // it from mutable citation text would let a DOI correction split a series in half.
+  const pub = casePublicationIdOf(study);
+  if (pub) return `pub:${pub}`;
   const doi = norm(study.doi);
   if (doi) return `doi:${doi}`;
   const pmid = norm(study.pmid);
@@ -261,7 +278,9 @@ export function restoreOutcome(studies = [], studyId) {
  * (groupStudiesByCitation) intentionally keeps the looser match.
  */
 export function isStrongCitationKey(key) {
-  return /^(doi:|pmid:|t:)/.test(String(key || ''));
+  // 106.md — `pub:` is the strongest of all: the reviewer explicitly declared these
+  // rows to be cases of ONE article, so they share its PDF unconditionally.
+  return /^(pub:|doi:|pmid:|t:)/.test(String(key || ''));
 }
 
 export function publicationSourceFor(studies = [], studyId) {

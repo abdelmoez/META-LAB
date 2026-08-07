@@ -70,6 +70,27 @@ export const SECTION_DEPENDENCIES = Object.freeze({
 const clean = (s) => String(s == null ? '' : s);
 
 /**
+ * 106.md — the case identity a roster fingerprint must see. Inlined (rather than
+ * imported from extraction/caseSeries.js) so this module keeps its "no engine
+ * imports" shape; only the four durable keys matter, and `label` is included because
+ * renaming a case changes the case-level export and the characteristics table.
+ */
+function caseSliceOf(study) {
+  const cs = study && study.extractionMeta && study.extractionMeta.caseSeries;
+  if (!cs || typeof cs !== 'object' || !cs.publicationId || !cs.caseId) return null;
+  return { p: String(cs.publicationId), c: String(cs.caseId), n: Number(cs.caseNumber) || 0, l: clean(cs.label) };
+}
+
+/** 106.md — patient-level case-variable values (`cv_*`), sorted so key order in the
+ *  blob can never churn the fingerprint. Empty object for an ordinary study. */
+function caseValuesOf(study) {
+  const out = {};
+  if (!study || typeof study !== 'object') return out;
+  for (const k of Object.keys(study).filter((x) => /^cv_.+/.test(x)).sort()) out[k] = clean(study[k]);
+  return out;
+}
+
+/**
  * Fingerprint every dependency key from the live project + generation opts.
  * @param {object} project Project.data blob
  * @param {object} [opts]  same opts bundle as generateDraft (searchMethodsText,
@@ -84,8 +105,15 @@ export function computeDependencyState(project, opts = {}) {
   const studies = Array.isArray(p.studies) ? p.studies : [];
   const analysis = resolveAnalysis(p, opts);
 
+  // 106.md — these two projections are explicit ALLOW-LISTS: anything absent from them
+  // can change on screen while every manuscript section still reports "Fully
+  // synchronized". Adding a case, deleting one, or renaming one changes what
+  // `studies.caseCount` / `studies.publicationsAndCases` render, so the case identity
+  // has to ride in the ROSTER slice; patient-level `cv_*` values feed the
+  // characteristics narrative, so they ride in the VALUES slice.
   const rosterSlice = studies.map((s) => ({
     id: s.id, outcome: s.outcome, timepoint: s.timepoint, esType: s.esType,
+    caseSeries: caseSliceOf(s),
   }));
   const valuesSlice = studies.map((s) => ({
     id: s.id, es: s.es, lo: s.lo, hi: s.hi,
@@ -93,6 +121,7 @@ export function computeDependencyState(project, opts = {}) {
     nExp: s.nExp, meanExp: s.meanExp, sdExp: s.sdExp,
     nCtrl: s.nCtrl, meanCtrl: s.meanCtrl, sdCtrl: s.sdCtrl,
     reportedFormat: s.reportedFormat,
+    caseValues: caseValuesOf(s),
   }));
   const conversionsSlice = studies.map((s) => ({
     id: s.id,

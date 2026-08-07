@@ -39,6 +39,7 @@ import { DEPENDENCY_KEYS } from './dependencies.js';
 import { computePrismaCounts } from './prismaCounts.js';
 import { resolveAnalysis, describeSynthesisModel } from './analysisDescribe.js';
 import { deriveSearchMethodology } from '../search/searchMethodology.js';
+import { caseSeriesCounts } from '../extraction/caseSeries.js';
 
 /** `[[fact:search.date]]` — keys are dot-separated identifiers only. */
 export const FACT_TOKEN_RE = /\[\[fact:([a-zA-Z][a-zA-Z0-9]*(?:\.[a-zA-Z][a-zA-Z0-9]*)*)\]\]/g;
@@ -280,6 +281,40 @@ export const FACTS = Object.freeze({
     resolve: (c) => (c.studies.withEffect > 0 ? String(c.studies.withEffect) : null),
   },
 
+  /* ── 106.md — publications vs individual cases ──────────────────────────────
+     `studies.included` above is the PUBLICATION count and must stay that way: a
+     case series of eight patients is one included study. These three facts are the
+     ONLY way a case count reaches the manuscript, so a reviewer can write
+     "Twelve publications comprising 47 individual cases were included" without any
+     PRISMA box or study count being touched. Each returns null (→ a visible
+     placeholder) rather than "0" when the review has no case series at all. */
+  'studies.caseCount': {
+    label: 'Number of individual cases',
+    engine: 'extraction',
+    depKey: 'studies.roster',
+    hint: 'Turn on Case Series Mode for an article and extract its individual patients.',
+    resolve: (c) => (c.studies.cases > 0 ? String(c.studies.cases) : null),
+  },
+  'studies.caseSeriesCount': {
+    label: 'Number of case-series articles',
+    engine: 'extraction',
+    depKey: 'studies.roster',
+    hint: 'Turn on Case Series Mode for an article that reports several patients.',
+    resolve: (c) => (c.studies.caseSeriesArticles > 0 ? String(c.studies.caseSeriesArticles) : null),
+  },
+  'studies.publicationsAndCases': {
+    label: 'Included publications and individual cases',
+    engine: 'extraction',
+    depKey: 'studies.roster',
+    hint: 'Turn on Case Series Mode for an article and extract its individual patients.',
+    resolve: (c) => {
+      if (!(c.studies.cases > 0) || !(c.studies.total > 0)) return null;
+      const pubs = `${numberWord(c.studies.total)} publication${c.studies.total === 1 ? '' : 's'}`;
+      const cases = `${c.studies.cases} individual case${c.studies.cases === 1 ? '' : 's'}`;
+      return `${pubs} comprising ${cases}`;
+    },
+  },
+
   /* ── Analysis (§15 "model changes from fixed-effect to random-effects") ── */
   'analysis.model': {
     label: 'Synthesis model',
@@ -389,6 +424,7 @@ export function buildFactContext(project, opts = {}) {
   const p = project || {};
   const pico = p.pico || {};
   const studies = Array.isArray(p.studies) ? p.studies : [];
+  const caseCounts = caseSeriesCounts(studies);   // 106.md — publications vs cases
   const pc = opts.prismaCounts || computePrismaCounts(p, opts);
   const counts = (pc && pc.counts) || {};
   const analysisCfg = resolveAnalysis(p, opts);
@@ -438,9 +474,17 @@ export function buildFactContext(project, opts = {}) {
       reportsExcluded: counts.reportsExcluded,
       included: counts.included,
     },
+    // 106.md §Prevent double counting — `total` is the number of PUBLICATIONS, not
+    // the number of extraction rows. Seven cases of one article, or three outcome
+    // rows of one trial, are ONE included study; `studies.included` renders this, so
+    // generating cases can never change what the manuscript reports as included.
+    // `cases` is the separate patient-level figure (0 for an ordinary review).
     studies: {
-      total: studies.length,
+      total: caseCounts.publications,
       withEffect: studies.filter((s) => s && Number.isFinite(Number(s.es))).length,
+      cases: caseCounts.cases,
+      caseSeriesArticles: caseCounts.caseSeriesArticles,
+      rows: caseCounts.rows,
     },
     analysis: a,
     rob: {

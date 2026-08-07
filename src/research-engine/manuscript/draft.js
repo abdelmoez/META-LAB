@@ -46,6 +46,7 @@ import { computeSectionMeta } from './sources.js';
 // Methods paragraph, the Abstract and the fact tokens all render them identically.
 import { formatFactDate, joinList, factToken } from './factTokens.js';
 import { deriveSearchMethodology } from '../search/searchMethodology.js';
+import { caseSeriesCounts } from '../extraction/caseSeries.js';
 
 const clean = (s) => String(s == null ? '' : s).trim();
 const PH = (label) => `[${label}]`;
@@ -561,8 +562,17 @@ export function generateResults(project, opts = {}) {
 
   out.push('## Study characteristics');
   const studyTableRef = assetRefs ? '([[table:study]])' : '(Table 1)';
+  // 106.md §Manuscript Editor integration — when the review extracted individual
+  // patients, state the publication and case totals in the SAME sentence, because
+  // "12 studies" alone is genuinely ambiguous for a case-series review. Both numbers
+  // are live counts (publications never inflate to cases), and the sentence is only
+  // emitted when cases actually exist, so an ordinary review is byte-identical.
+  const cs = caseSeriesCounts(studies);
+  const caseSentence = cs.cases > 0
+    ? ` ${cs.publications} publication${cs.publications === 1 ? '' : 's'} contributed ${cs.cases} individual case${cs.cases === 1 ? '' : 's'}, of which ${cs.caseSeriesArticles} ${cs.caseSeriesArticles === 1 ? 'was a case series' : 'were case series'}; each case is reported as a separate observation.`
+    : '';
   out.push(studies.length
-    ? `Characteristics of the included studies are summarised in the study-characteristics table ${studyTableRef}. ${PH('Briefly describe the range of designs, populations and settings')}.`
+    ? `Characteristics of the included studies are summarised in the study-characteristics table ${studyTableRef}.${caseSentence} ${PH('Briefly describe the range of designs, populations and settings')}.`
     : `${PH('No included studies with extracted data yet')}.`);
   out.push('');
 

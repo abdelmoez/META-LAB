@@ -36,6 +36,7 @@ import { BubblePlot, buildBubbleSVG } from "../BubblePlot.jsx";
 import { C, btnS, inp, th, tagS } from "../ui/styles.js";
 import { SectionHeader, InfoBox, HelpTip } from "../ui/primitives.jsx";
 import { interpretResult } from "../projectHelpers.js";
+import { isCaseRow, publicationIdOf } from "../../../research-engine/extraction/caseSeries.js";
 
 /* ════════════ TAB: ANALYSIS ════════════ */
 export function AnalysisTab({project,updateProject,onApplyPrecisionToAll}){
@@ -144,19 +145,31 @@ export function AnalysisTab({project,updateProject,onApplyPrecisionToAll}){
         </div>
       )}
       {(()=>{
-        // Same-cohort (unit-of-analysis) detection within the selected outcome
-        const seen={}, dups=[];
+        // Same-cohort (unit-of-analysis) detection within the selected outcome.
+        // 106.md — CASES of one publication are deliberately several rows sharing an
+        // author+year, and for a patient-level review pooling them IS the design. They
+        // are reported separately, and only as a clustering caveat: seven patients from
+        // one report are not seven independent studies, but nor are they a duplicate.
+        const seen={}, dups=[], caseSeriesPubs=new Set();
         filteredStudies.forEach(s=>{
+          if(isCaseRow(s)){ caseSeriesPubs.add(publicationIdOf(s)); return; }
           const key=((s.author||"").trim().toLowerCase()+"|"+(s.year||"")).replace(/\s+/g," ");
           if(!key||key==="|") return;
           seen[key]=(seen[key]||0)+1;
           if(seen[key]===2) dups.push((s.author||"?")+(s.year?" "+s.year:""));
         });
-        return dups.length?(
+        const nCases=filteredStudies.filter(isCaseRow).length;
+        if(!dups.length&&!nCases) return null;
+        return (
           <div style={{marginTop:10,background:"var(--t-yel-bg)",border:`1px solid ${themeAlpha(C.yel,'44')}`,borderLeft:`3px solid ${C.yel}`,borderRadius:6,padding:"9px 12px",fontSize:12,color:C.txt,lineHeight:1.6}}>
-            <strong style={{color:C.yel}}>⚠ Possible unit-of-analysis issue.</strong> {dups.join(", ")} appear{dups.length===1?"s":""} more than once for this outcome. If these are multiple arms or time-points from the <em>same cohort</em>, pooling them as independent studies double-counts participants. Combine arms, pick one time-point, or use a single estimate per cohort.
+            {dups.length?(<>
+              <strong style={{color:C.yel}}>⚠ Possible unit-of-analysis issue.</strong> {dups.join(", ")} appear{dups.length===1?"s":""} more than once for this outcome. If these are multiple arms or time-points from the <em>same cohort</em>, pooling them as independent studies double-counts participants. Combine arms, pick one time-point, or use a single estimate per cohort.
+            </>):null}
+            {nCases?(<div style={dups.length?{marginTop:6}:undefined}>
+              <strong style={{color:C.yel}}>⚠ Clustered observations.</strong> {nCases} of these {nCases===1?"is an individual case":"are individual cases"} from {caseSeriesPubs.size} case-series publication{caseSeriesPubs.size===1?"":"s"}. Cases from one report share a centre, protocol and reporting bias, so pooling them as fully independent observations understates uncertainty — report the publication and case counts separately, and prefer a clustered or multilevel model.
+            </div>):null}
           </div>
-        ):null;
+        );
       })()}
     </div>
 

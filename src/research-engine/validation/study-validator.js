@@ -314,6 +314,11 @@ export function findDuplicates(studies) {
   for (let i = 0; i < studies.length; i++) {
     for (let j = i + 1; j < studies.length; j++) {
       const a = studies[i], b = studies[j];
+      // 106.md — two CASES of the same publication are deliberately the same
+      // author+year: they are different patients, not a duplicated study. Flagging
+      // them would put a permanent false "duplicate" badge on every case series.
+      // Cases of DIFFERENT publications are still compared normally.
+      if (sameCaseSeries(a, b)) continue;
       const sameAY = a.author && b.author && a.year && b.year &&
         a.author.trim().toLowerCase() === b.author.trim().toLowerCase() &&
         String(a.year).trim() === String(b.year).trim();
@@ -322,4 +327,17 @@ export function findDuplicates(studies) {
     }
   }
   return dup;
+}
+
+/** True when both rows are cases of the SAME case-series publication (106.md). */
+function sameCaseSeries(a, b) {
+  const pa = casePublicationIdOf(a), pb = casePublicationIdOf(b);
+  return !!pa && pa === pb;
+}
+
+/** The immutable case-series parent-article id on a row, or '' (106.md). Inlined to
+ *  keep this validator dependency-free — it is imported by server, client and tests. */
+function casePublicationIdOf(study) {
+  const cs = study && study.extractionMeta && study.extractionMeta.caseSeries;
+  return (cs && typeof cs === 'object' && cs.publicationId && cs.caseId) ? String(cs.publicationId) : '';
 }

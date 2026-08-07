@@ -37,8 +37,10 @@ import {
   harmonizeStudy, conversionStatusOf, CONVERSION_STATUS_LABELS, validateReported,
 } from '../../../research-engine/extraction/harmonize.js';
 import { publicationSourceFor, publicationFilesFor } from '../../../research-engine/extraction/outcomeGroups.js';
+import { isCaseRow, caseDisplayName, caseVarKey, isCaseVarKey, caseProgressOf } from '../../../research-engine/extraction/caseSeries.js';
 import { studyDocApi } from '../unified/studyDocApi.js';
 import ConverterPanel from './ConverterPanel.jsx';
+import CaseFieldsPanel from './CaseFieldsPanel.jsx';
 
 const RATIO_MEASURES = ['OR', 'RR', 'HR', 'IRR'];
 const ES_TYPES = [['', '—'], ['OR', 'Odds ratio'], ['RR', 'Risk ratio'], ['HR', 'Hazard ratio'], ['IRR', 'Incidence-rate ratio'], ['SMD', 'Std. mean diff'], ['MD', 'Mean difference'], ['PROP', 'Proportion'], ['COR', 'Correlation'], ['DIAG', 'Diagnostic 2×2']];
@@ -64,11 +66,20 @@ const COACH_KEY = 'metalab.extraction.pickCoachDismissed';
 const onlyToken = (s) => { const toks = findNumberTokens(String(s || '')); return toks.length === 1 ? snapToken(String(s), toks[0].start) : null; };
 const tokenPrimary = (t) => (t == null ? null : t.value != null ? t.value : t.est != null ? t.est : t.a != null ? t.a : t.lo != null ? t.lo : null);
 
-/** The next-click target options for the current measure: Smart + its expected fields. */
-function assignOptionsFor(study) {
+/** The next-click target options for the current measure: Smart + its expected fields.
+ *  106.md — for a CASE row the review's patient-level variables are click-to-pick
+ *  targets too, so "Case 3 → Age = 54" can be captured straight off the table cell
+ *  with its page + bbox provenance instead of being retyped. */
+function assignOptionsFor(study, caseVariables = []) {
   const fields = assignableFieldsFor(study);
   const opts = [['smart', '✦ Smart (value + its 95% CI, or events + total)']];
   for (const f of fields) opts.push([f, FIELD_LABELS[f] || f]);
+  if (isCaseRow(study)) {
+    for (const v of caseVariables) {
+      if (v.type === 'select') continue;   // a picked PDF token is not a controlled term
+      opts.push([caseVarKey(v.id), `${caseDisplayName(study)} · ${v.label}${v.unit ? ` (${v.unit})` : ''}`]);
+    }
+  }
   return opts;
 }
 /** The sensible default pick target for a measure: Smart for effect-slot measures,
@@ -98,6 +109,8 @@ export default function ArticleWorkspace({
   onAddDrafts, onAddParked, drafts = [], parked = [],
   onConfirmDraft, onDismissDraft, onParkDraft, onUnparkRecord, onEditDraftField,
   onComplete, onReopen, completing = false,
+  // 106.md — patient-level variable definitions (project-wide) + their editor.
+  caseVariables = [], onSetCaseVariables,
 }) {
   const [method, setMethod] = useState('click');      // click (Pick from PDF) | manual
   const [activeField, setActiveField] = useState('smart');  // the field the next PDF click fills
@@ -177,7 +190,11 @@ export default function ArticleWorkspace({
     } finally { setFileBusy(false); }
   }, [activeExtra, projectId, studies, onPatchStudy]);
   const completion = useMemo(() => evaluateCompletion(study || {}), [study]);
-  const progress = useMemo(() => progressOf(study || {}), [study]);
+  // 106.md — a case's progress denominator includes the review's patient-level
+  // variables, so the toolbar ring agrees with the case chips in the navigator.
+  const progress = useMemo(() => (isCaseRow(study || {})
+    ? caseProgressOf(study || {}, caseVariables)
+    : progressOf(study || {})), [study, caseVariables]);
   // Show every EXPECTED field, plus any OTHER value field that already carries data, so a
   // value captured for this measure is never invisible (77.md §7 — e.g. a Smart capture of
   // RR + CI into es/lo/hi stays visible even though RR "expects" the 2×2 cells).
@@ -188,7 +205,16 @@ export default function ArticleWorkspace({
   }, [study]);
   // Depends on esType AND reportedFormat — a continuous format switch (mean_sd →
   // median_iqr) changes the assignable fields, so the pick dropdown must recompute.
-  const assignOptions = useMemo(() => assignOptionsFor(study || {}), [study && study.esType, study && study.reportedFormat]); // eslint-disable-line react-hooks/exhaustive-deps
+  const assignOptions = useMemo(() => assignOptionsFor(study || {}, caseVariables), [study && study.esType, study && study.reportedFormat, study && study.id, caseVariables]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // 106.md — one label resolver for both built-in fields and the review's case
+  // variables, so every status line, jump-to-source announcement and pick-target label
+  // says "Age (years)" rather than the raw storage key `cv_age`.
+  const labelFor = useMemo(() => {
+    const m = {};
+    for (const v of (caseVariables || [])) m[caseVarKey(v.id)] = v.unit ? `${v.label} (${v.unit})` : v.label;
+    return (f) => m[f] || FIELD_LABELS[f] || f;
+  }, [caseVariables]);
 
   const locked = !!(article && article.status === 'locked');
   const completed = !!(article && (article.status === 'complete' || article.status === 'locked'));
@@ -207,6 +233,9 @@ export default function ArticleWorkspace({
   useEffect(() => {
     setActiveField((cur) => {
       if (cur === 'smart') return usesEffectSlot(study || {}) || !esType ? 'smart' : defaultActiveField(study || {});
+      // 106.md — a case-variable target stays valid across a measure change; it is not
+      // part of assignableFieldsFor, so without this it would snap back on every switch.
+      if (isCaseVarKey(cur)) return cur;
       return assignableFieldsFor(study || {}).includes(cur) ? cur : defaultActiveField(study || {});
     });
   }, [esType, reportedFormat]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -229,7 +258,7 @@ export default function ArticleWorkspace({
     const region = fileMismatch ? null : (prov.bbox || null);
     revealNonce.current += 1;
     setReveal({
-      page: prov.page || 1, region, nonce: revealNonce.current, label: FIELD_LABELS[field] || field,
+      page: prov.page || 1, region, nonce: revealNonce.current, label: labelFor(field),
       // 83.md §3 "Sources Without Coordinates" — when no exact box can be shown, the
       // viewer may draw a clearly-labelled approximate box IF (and only if) the stored
       // excerpt matches exactly ONE text run on the page. Never a silent guess.
@@ -238,9 +267,9 @@ export default function ArticleWorkspace({
     setStatus(fileMismatch
       ? `This value was captured on a different file than the one shown — showing its page (${prov.page || 1}) without an exact box.`
       : region
-        ? `Showing the exact source of ${FIELD_LABELS[field] || field}${prov.page ? ` (p. ${prov.page})` : ''}. Click elsewhere or press Escape to dismiss.`
+        ? `Showing the exact source of ${labelFor(field)}${prov.page ? ` (p. ${prov.page})` : ''}. Click elsewhere or press Escape to dismiss.`
         : `This value's source was saved as page ${prov.page} only — showing the page (no exact location recorded).`);
-  }, [study, effFileKey]);
+  }, [study, effFileKey, labelFor]);
   const dismissReveal = useCallback(() => setReveal((r) => (r ? null : r)), []);
 
   // Dismiss the source highlight when the PDF itself changes (upload/replace/switch).
@@ -285,7 +314,11 @@ export default function ArticleWorkspace({
     const provFields = {};
     const p = {};
     for (const f of Object.keys(values)) {
-      if (!ALL_VALUE_KEYS.includes(f)) continue;
+      // 106.md — patient-level case variables (`cv_*`) are first-class extracted values:
+      // they take the SAME replace-with-history + per-value provenance path as an effect
+      // size. Without this they hit the bare `continue` below and click-to-pick would
+      // silently do nothing for "Case 3 → Age".
+      if (!ALL_VALUE_KEYS.includes(f) && !isCaseVarKey(f)) continue;
       const nextVal = String(values[f]);
       // Identical value → a true no-op: never churn autosave or shed history on a re-pick.
       if (nonEmpty(study[f]) && String(study[f]) === nextVal) continue;
@@ -394,15 +427,15 @@ export default function ArticleWorkspace({
       // announcement back-transforms to the clinical scale (never raw logs).
       const displayVal = (f, v) => (RATIO_MEASURES.includes(study.esType) && ['es', 'lo', 'hi'].includes(f) && Number.isFinite(Number(v)))
         ? Math.exp(Number(v)).toFixed(2) : v;
-      setStatus(`Already captured ${Object.entries(values).map(([f, v]) => `${displayVal(f, v)} into ${FIELD_LABELS[f] || f}`).join(', ')} — no change.`);
+      setStatus(`Already captured ${Object.entries(values).map(([f, v]) => `${displayVal(f, v)} into ${labelFor(f)}`).join(', ')} — no change.`);
       return;
     }
 
     // Human-readable confirmation (aria-live) — say what filled and what was replaced.
-    const names = written.map((f) => FIELD_LABELS[f] || f);
+    const names = written.map((f) => labelFor(f));
     if (replaced.length) {
       const r = replaced[0];
-      setStatus(`Replaced ${FIELD_LABELS[r.field] || r.field} (was ${r.from}) → ${r.to}. Previous value kept in history.`);
+      setStatus(`Replaced ${labelFor(r.field)} (was ${r.from}) → ${r.to}. Previous value kept in history.`);
     } else {
       setStatus(`Captured ${names.join(', ')} from the PDF.`);
     }
@@ -411,12 +444,15 @@ export default function ArticleWorkspace({
     // but ONLY when this capture FILLED a previously empty target. A REPLACEMENT keeps
     // the field active: auto-advancing after capture-wrong-then-click-correct sent the
     // correction into the NEXT field (98.md §16).
-    if (advance && !replaced.some((r) => r.field === target)) {
+    // 106.md — a case-variable target is NOT in assignableFieldsFor, so auto-advance
+    // would jump the reviewer out of the patient form and back into the 2×2 boxes
+    // mid-row. Keep the target where it is and let them choose the next variable.
+    if (advance && !isCaseVarKey(target) && !replaced.some((r) => r.field === target)) {
       const after = { ...study, ...values };
       const next = nextAssignableField(after, target);
       if (next && next !== target) setActiveField(next);
     }
-  }, [study, activeField, editable, writeValues, effFileKey]);
+  }, [study, activeField, editable, writeValues, effFileKey, labelFor]);
 
   /* ── Converter apply (77.md §4): route through the same write path + audit ── */
   const applyConversion = useCallback(({ patch: convPatch, conversion, targetLabel }) => {
@@ -439,9 +475,9 @@ export default function ArticleWorkspace({
     const { written, replaced } = writeValues(convPatch, { method: 'manual', excerpt: note }, extra);
     if (!written.length) { setStatus('Nothing applied.'); return; }
     setStatus(replaced.length
-      ? `Applied converted value; replaced ${FIELD_LABELS[replaced[0].field] || replaced[0].field} (kept in history).`
-      : `Applied converted value to ${written.map((f) => FIELD_LABELS[f] || f).join(', ')}.`);
-  }, [study, editable, writeValues]);
+      ? `Applied converted value; replaced ${labelFor(replaced[0].field)} (kept in history).`
+      : `Applied converted value to ${written.map((f) => labelFor(f)).join(', ')}.`);
+  }, [study, editable, writeValues, labelFor]);
 
   /* ── 82.md — reported→analysis harmonization (auto-convert median/IQR etc.) ── */
   const harmonization = useMemo(() => harmonizeStudy(study || {}), [study]);
@@ -478,8 +514,8 @@ export default function ArticleWorkspace({
       return;
     }
     const warn = plan.warnings.length ? ` ⚠ ${plan.warnings[0]}` : '';
-    setStatus(`Converted the reported values to ${written.map((f) => FIELD_LABELS[f] || f).join(', ')}. Original reported values are preserved.${warn}`);
-  }, [study, editable, writeValues, activeFormat]);
+    setStatus(`Converted the reported values to ${written.map((f) => labelFor(f)).join(', ')}. Original reported values are preserved.${warn}`);
+  }, [study, editable, writeValues, activeFormat, labelFor]);
 
   const interaction = useMemo(() => {
     if (!editable || !effUrl || method !== 'click') return null;
@@ -493,7 +529,7 @@ export default function ArticleWorkspace({
     // drop the stale page/bbox so jump-to-source can't point at the wrong place, and keep
     // the replaced value in history. Value + provenance land in ONE blob write (83.md §5).
     let provEntry = null;
-    if (ALL_VALUE_KEYS.includes(f)) {
+    if (ALL_VALUE_KEYS.includes(f) || isCaseVarKey(f)) {   // 106.md — case variables too
       const prior = readProvenance(study, f);
       const changed = String(study[f] || '') !== String(v);
       if (prior && (prior.page || prior.bbox || prior.method) && changed) {
@@ -512,7 +548,7 @@ export default function ArticleWorkspace({
 
   const activeLabel = activeField === 'smart'
     ? 'Smart (value + its 95% CI, or events + total)'
-    : (FIELD_LABELS[activeField] || activeField);
+    : labelFor(activeField);
 
   const saveBadge = saveStatus === 'saving' ? { t: 'Saving…', c: C.acc }
     : saveStatus === 'saved' ? { t: 'Saved', c: C.grn }
@@ -646,8 +682,18 @@ export default function ArticleWorkspace({
             {pdf.error && <div style={{ fontSize: 11.5, color: C.yel }}>{pdf.error}</div>}
           </div>
 
+          {/* 106.md — a case row makes it explicit WHICH patient is being edited and
+              that the identity fields above are shared with every other case, so the
+              reviewer never wonders whether correcting the year affects one case or all. */}
+          {isCaseRow(study) && (
+            <div data-testid="pex-case-context" style={{ border: `1px solid ${themeAlpha(C.acc, '44')}`, background: themeAlpha(C.acc, '0c'), borderRadius: 8, padding: '9px 12px', fontSize: 11.5, color: C.txt2, lineHeight: 1.5 }}>
+              Editing <strong style={{ color: C.acc }}>{caseDisplayName(study)}</strong> of {study.author || 'this article'}{study.year ? ` ${study.year}` : ''}.
+              {' '}Article-level fields (authors, year, journal, DOI, design, country) are shared with every case — changing one here updates them all.
+            </div>
+          )}
+
           {/* Structured form (§14 — identity + esType + value group) */}
-          <FormSection title="Study & outcome">
+          <FormSection title={isCaseRow(study) ? 'Article & outcome — shared by every case' : 'Study & outcome'}>
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
               {IDENTITY_FIELDS.map((f) => (
                 <Field key={f} field={f} value={study[f] || ''} onChange={(v) => setField(f, v)} readOnly={!editable}
@@ -715,6 +761,17 @@ export default function ArticleWorkspace({
                 placeholder="e.g. SD imputed from SE; median/IQR converted via Wan 2014; adjusted for age & sex…" style={{ ...inp, height: 48, resize: 'vertical', fontSize: 12 }} />
             </div>
           </FormSection>
+
+          {/* 106.md — patient-level data for THIS case (age, sex, presentation, …). Only
+              shown for a case row: an ordinary study has no individual patient. */}
+          {isCaseRow(study) && (
+            <CaseFieldsPanel
+              study={study} caseVariables={caseVariables} readOnly={readOnly} canEdit={editable}
+              onSetValue={setField} onSetVariables={onSetCaseVariables}
+              hasSource={(f) => hasSourceEvidence(study, f)} onJump={jumpToSource}
+              picking={method === 'click' && !readOnly} activeField={activeField}
+              onFocusField={(f) => { if (method === 'click') setActiveField(f); }} />
+          )}
 
           {/* Drafts to confirm (from assisted/auto paths; parked list replaced by the Converter). */}
           {drafts.length > 0 && (

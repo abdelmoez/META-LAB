@@ -53,6 +53,16 @@ export function computeSyncHash(study = {}) {
     const v = study[k];
     return `${k}=${v == null ? '' : String(v).trim()}`;
   });
+  // 106.md — patient-level CASE VARIABLE values (`cv_*`) are analysis inputs too: a
+  // case-report meta-analysis pools age/sex/outcome, not only es/lo/hi. Without this
+  // an edit to "Case 3 → Age" would leave the article showing "In analysis" while its
+  // data had changed. They are collected dynamically (the review defines its own
+  // variables) and SORTED so key order in the blob can never churn the hash.
+  const caseKeys = Object.keys(study).filter((k) => /^cv_.+/.test(k)).sort();
+  for (const k of caseKeys) {
+    const v = study[k];
+    parts.push(`${k}=${v == null ? '' : String(v).trim()}`);
+  }
   return djb2(parts.join('|'));
 }
 

@@ -21,9 +21,16 @@ import { deriveEffectSizeFromRaw } from '../../../research-engine/extraction/der
 import { buildArticleSummary } from '../../../research-engine/extraction/engine/articleList.js';
 import { mkStudy } from '../../../research-engine/project-model/defaults.js';
 import { addOutcome, duplicateOutcome, renameOutcome, setOutcomeRole, archiveOutcome, groupForStudy, activeOutcomes } from '../../../research-engine/extraction/outcomeGroups.js';
+import {
+  isCaseRow, enableCaseSeries, disableCaseSeries, addCase, duplicateCase, removeCase,
+  renameCase, propagateArticleFields, normalizeCaseVariables, defaultCaseVariables,
+  buildCaseExportRows,
+} from '../../../research-engine/extraction/caseSeries.js';
+import { downloadBlob } from '../../../frontend/components/exportCore.js';
 import ArticleList from './ArticleList.jsx';
 import ArticleWorkspace from './ArticleWorkspace.jsx';
 import OutcomeNavigator from './OutcomeNavigator.jsx';
+import CaseSeriesBar from './CaseSeriesBar.jsx';
 import * as api from './engineApi.js';
 
 /** Read/write the ?article= param without pulling react-router into this leaf. */
@@ -80,8 +87,15 @@ export default function PecanExtractionEngine({ project, updateProject, activeId
   const stats = serverArticles ? serverArticles.stats : null;
 
   /* ── Blob writers (values + provenance + drafts) ── */
+  // 106.md §Shared article-level information — every study write goes through
+  // propagateArticleFields: for an ordinary study it is a plain single-row patch
+  // (identical to the old behaviour), and for a CASE it additionally mirrors the
+  // article-level keys (authors, year, journal, DOI, design, country, the PDF link)
+  // onto every sibling case, so shared metadata is entered once and can never drift
+  // between the patients of one publication.
   const patchStudy = useCallback((id, patch) => updateProject(activeId, (p) => ({
-    ...p, studies: (p.studies || []).map((s) => (s.id === id ? { ...s, ...patch, updatedAt: new Date().toISOString() } : s)),
+    ...p,
+    studies: propagateArticleFields(p.studies || [], id, patch, { at: new Date().toISOString() }).studies,
   })), [updateProject, activeId]);
 
   const attachProvenance = useCallback((id, entriesByField) => updateProject(activeId, (p) => ({
@@ -90,14 +104,19 @@ export default function PecanExtractionEngine({ project, updateProject, activeId
 
   // 83.md §5 — value fields + their provenance land in ONE functional update, so an
   // autosave flush can never persist a captured value without its provenance/history.
-  const writeStudy = useCallback((id, patch, entriesByField) => updateProject(activeId, (p) => ({
-    ...p,
-    studies: (p.studies || []).map((s) => {
-      if (s.id !== id) return s;
-      const next = { ...s, ...patch, updatedAt: new Date().toISOString() };
-      return entriesByField ? attachProvenanceMany(next, entriesByField) : next;
-    }),
-  })), [updateProject, activeId]);
+  const writeStudy = useCallback((id, patch, entriesByField) => updateProject(activeId, (p) => {
+    // 106.md — article-level keys fan out to sibling cases FIRST (still one functional
+    // update), then this row's provenance is attached. Provenance stays strictly
+    // per-row: a source link belongs to the case whose value it justifies, never to
+    // its siblings, even when the underlying field was propagated.
+    const spread = propagateArticleFields(p.studies || [], id, patch, { at: new Date().toISOString() }).studies;
+    return {
+      ...p,
+      studies: entriesByField
+        ? spread.map((s) => (s && s.id === id ? attachProvenanceMany(s, entriesByField) : s))
+        : spread,
+    };
+  }), [updateProject, activeId]);
 
   const addDrafts = useCallback((recs) => { if (!recs || !recs.length) return; updateProject(activeId, (p) => ({ ...p, extractionDrafts: reconcileDrafts(p.extractionDrafts || [], recs, { dismissedIdentities: p.extractionDismissed || [] }).drafts })); }, [updateProject, activeId]);
   const addParked = useCallback((recs) => { if (!recs || !recs.length) return; updateProject(activeId, (p) => ({ ...p, extractionParked: reconcileDrafts(p.extractionParked || [], recs, { dismissedIdentities: p.extractionDismissed || [] }).drafts })); }, [updateProject, activeId]);
@@ -247,6 +266,96 @@ export default function PecanExtractionEngine({ project, updateProject, activeId
     else setOpenId(''); // no active sibling → back to the article list
   }, [applyPure, studies]);
 
+  /* ── 106.md — Case Series Mode (pure caseSeries engine over studies[]) ──
+     Mirrors the 82.md outcome mutations exactly: new ids are pre-generated so
+     navigation never reads a side effect out of the updater (StrictMode-safe), and
+     every mutation RECOMPUTES from `p.studies` inside the functional update so a
+     write that landed between render and click is never clobbered. */
+  const caseVariables = useMemo(
+    () => normalizeCaseVariables(project.caseVariables),
+    [project.caseVariables],
+  );
+  const setCaseVariables = useCallback((next) => updateProject(activeId, (p) => ({
+    ...p, caseVariables: normalizeCaseVariables(next),
+  })), [updateProject, activeId]);
+
+  const onEnableCaseSeries = useCallback((studyId) => {
+    updateProject(activeId, (p) => {
+      const r = enableCaseSeries(p.studies || [], studyId, { idFn: newRowId, at: new Date().toISOString() });
+      if (r.error || !r.studies) return p;
+      // Seed the review's patient-level fields the first time anyone turns the mode on,
+      // so the case form is immediately usable instead of empty. Never overwrites a
+      // review that already defined its own variables.
+      const vars = normalizeCaseVariables(p.caseVariables);
+      return { ...p, studies: r.studies, caseVariables: vars.length ? vars : defaultCaseVariables() };
+    });
+    setBanner('Case Series Mode is on. This article is now Case 1 — use “+ Add case” for each further patient.');
+  }, [updateProject, activeId]);
+
+  const onDisableCaseSeries = useCallback((publicationId) => {
+    // eslint-disable-next-line no-alert
+    if (!window.confirm('Turn Case Series Mode off for this article? The cases become ordinary study rows — no case and no extracted value is deleted.')) return;
+    updateProject(activeId, (p) => {
+      const r = disableCaseSeries(p.studies || [], publicationId, { at: new Date().toISOString() });
+      return (r.error || !r.studies) ? p : { ...p, studies: r.studies };
+    });
+    setBanner('Case Series Mode is off. Every case was kept as a study row.');
+  }, [updateProject, activeId]);
+
+  const onAddCase = useCallback((publicationId) => {
+    const id = newRowId();
+    updateProject(activeId, (p) => {
+      const r = addCase(p.studies || [], publicationId, { mkStudy, idFn: () => id, at: new Date().toISOString() });
+      return (r.error || !r.studies) ? p : { ...p, studies: r.studies };
+    });
+    setOpenId(id);
+  }, [updateProject, activeId]);
+
+  const onDuplicateCase = useCallback((studyId) => {
+    const id = newRowId();
+    updateProject(activeId, (p) => {
+      const r = duplicateCase(p.studies || [], studyId, { idFn: () => id, at: new Date().toISOString() });
+      return (r.error || !r.studies) ? p : { ...p, studies: r.studies };
+    });
+    setOpenId(id);
+  }, [updateProject, activeId]);
+
+  const onRemoveCase = useCallback((studyId) => {
+    // The id to open next is computed from the CURRENT render's rows; the updater
+    // recomputes the deletion itself, so a concurrent write cannot desync the two.
+    const preview = removeCase(studies, studyId, {});
+    updateProject(activeId, (p) => {
+      const r = removeCase(p.studies || [], studyId, { at: new Date().toISOString() });
+      return (r.error || !r.studies) ? p : { ...p, studies: r.studies };
+    });
+    if (!preview.error && preview.nextOpenId) setOpenId(preview.nextOpenId);
+  }, [updateProject, activeId, studies]);
+
+  const onRenameCase = useCallback((studyId, label) => updateProject(activeId, (p) => {
+    const r = renameCase(p.studies || [], studyId, label);
+    return (r.error || !r.studies) ? p : { ...p, studies: r.studies };
+  }), [updateProject, activeId]);
+
+  // 106.md §Export — ONE row per individual patient, every row still carrying its
+  // article identifiers (publication, DOI, PubMed ID, study row id) so a case-level
+  // file can always be traced back to its parent publication.
+  const exportCases = useCallback(() => {
+    const { columns, rows } = buildCaseExportRows(studies, caseVariables);
+    if (!rows.length) { setBanner('No individual cases to export yet — turn on Case Series Mode for an article first.'); return; }
+    const esc = (v) => {
+      const t = String(v == null ? '' : v).replace(/"/g, '""');
+      return /[",\n]/.test(t) ? `"${t}"` : t;
+    };
+    const csv = [
+      columns.map((c) => esc(c.label)).join(','),
+      ...rows.map((r) => columns.map((c) => esc(r[c.key])).join(',')),
+    ].join('\n');
+    const name = `${(project.name || 'extraction').replace(/[^a-z0-9]/gi, '_')}_cases.csv`;
+    // UTF-8 BOM so Excel opens it in the right encoding (same contract as the classic tab).
+    downloadBlob(new Blob(['﻿' + csv], { type: 'text/csv;charset=utf-8;' }), name);
+    setBanner(`Exported ${rows.length} case${rows.length === 1 ? '' : 's'} to ${name}.`);
+  }, [studies, caseVariables, project.name]);
+
   const orderedIds = useMemo(() => articles.map((a) => a.id), [articles]);
   const openIdx = orderedIds.indexOf(openId);
   const goPrev = () => { if (openIdx > 0) setOpenId(orderedIds[openIdx - 1]); };
@@ -264,15 +373,34 @@ export default function PecanExtractionEngine({ project, updateProject, activeId
     return (
       <div style={{ height: '100%', display: 'flex', flexDirection: 'column', minHeight: 0 }}>
         {banner && <div style={{ padding: '6px 12px', fontSize: 12, color: C.txt, background: C.card, borderBottom: `1px solid ${C.brd}` }}>{banner}</div>}
-        <OutcomeNavigator
-          studies={studies} openId={openId} canEdit={canEdit && !readOnly}
-          onOpen={(id) => setOpenId(id)} onAdd={onAddOutcome} onRename={onRenameOutcome}
-          onSetRole={onSetOutcomeRole} onDuplicate={onDuplicateOutcome} onArchive={onArchiveOutcome}
-        />
+        {/* 106.md — exactly ONE navigator renders. A case series navigates by PATIENT,
+            an ordinary article by OUTCOME; showing both bars at once was the confusing
+            part, and the outcome bar would otherwise list all eight cases as unnamed
+            outcomes (they share the paper's citation identity by design). */}
+        {isCaseRow(openStudy) ? (
+          <CaseSeriesBar
+            studies={studies} openId={openId} caseVariables={caseVariables} canEdit={canEdit && !readOnly}
+            onOpen={(id) => setOpenId(id)} onEnable={onEnableCaseSeries} onDisable={onDisableCaseSeries}
+            onAdd={onAddCase} onDuplicate={onDuplicateCase} onRemove={onRemoveCase} onRename={onRenameCase}
+          />
+        ) : (
+          <>
+            <OutcomeNavigator
+              studies={studies} openId={openId} canEdit={canEdit && !readOnly}
+              onOpen={(id) => setOpenId(id)} onAdd={onAddOutcome} onRename={onRenameOutcome}
+              onSetRole={onSetOutcomeRole} onDuplicate={onDuplicateOutcome} onArchive={onArchiveOutcome}
+            />
+            <CaseSeriesBar
+              studies={studies} openId={openId} caseVariables={caseVariables} canEdit={canEdit && !readOnly}
+              onEnable={onEnableCaseSeries}
+            />
+          </>
+        )}
         <div style={{ flex: 1, minHeight: 0 }}>
           <ArticleWorkspace
             projectId={activeId} study={openStudy} article={openArticleSummary} studies={studies}
             outcomes={outcomes} protocol={protocol} readOnly={readOnly} canEdit={canEdit} saveStatus={saveStatus}
+            caseVariables={caseVariables} onSetCaseVariables={setCaseVariables}
             onBack={() => setOpenId('')} onPrev={goPrev} onNext={goNext} hasPrev={openIdx > 0} hasNext={openIdx >= 0 && openIdx < orderedIds.length - 1}
             onPatchStudy={patchStudy} onAttachProvenance={attachProvenance} onWriteStudy={writeStudy}
             onAddDrafts={addDrafts} onAddParked={addParked} drafts={drafts} parked={parked}
@@ -292,7 +420,7 @@ export default function PecanExtractionEngine({ project, updateProject, activeId
       <ArticleList
         articles={articles} stats={stats} loading={loadingList && !serverArticles && !clientArticles.length}
         error={listErr} canEdit={canEdit} lastArticleId={(project.extractionEngine && project.extractionEngine.lastArticleId) || ''}
-        onOpen={(id) => setOpenId(id)} onRefresh={refreshList}
+        onOpen={(id) => setOpenId(id)} onRefresh={refreshList} onExportCases={exportCases}
       />
     </div>
   );
