@@ -216,3 +216,72 @@ invariants. Highlights:
 7. **Reconciliation is structural, so it should always pass.** A failure means the derivation
    or the projection is wrong, not that a researcher typed inconsistent numbers. That is the
    intended reading, and it makes the checks a genuine self-audit rather than user nagging.
+
+---
+
+## 105.md — the connector/layout system
+
+### The reported defect, and what actually caused it
+
+The arrow below **Reports assessed for eligibility** appeared to point at nothing.
+
+It was not an off-by-a-few-pixels problem. Every vertical connector was drawn from
+its ROW's bottom — `Math.max(mainBox.h, sideBox.h)` — rather than from its own
+source box. In any real project the right-hand box is the taller one (six full-text
+exclusion reasons is seven lines against the assessed box's one), so the arrow began
+far below the assessed box, floating beside the exclusions list, and read as an
+arrow starting from nowhere.
+
+Two other connectors had the same defect, and one was worse: a hard-coded `y - 24`
+that assumed a row height instead of measuring one.
+
+### The fix: connectors are relationships, not coordinates
+
+`svg.js` now records every box's geometry in a `geom` map as it is placed, and a
+connector is declared as a relationship between two box IDs:
+
+- `connectDown(fromId, toId)` — source's own bottom edge → destination's top edge.
+- `connectRight(fromId, toId)` — source's right edge → side box's left edge, at a y
+  inside **both** boxes so it leaves a real edge and arrives at a real edge.
+
+Connectors are collected and emitted after every box is placed, so a connector can
+reference a destination that does not exist yet when its source is drawn. That is
+what lets the eligibility→included arrow know how far down it must actually reach.
+
+### Elbow routing
+
+The shared terminal box is centred across both columns, so the database arm's
+column-centre is to its left. Sliding the line sideways to hit it would drag it
+straight through the exclusions box — trading an arrow that points at nothing for
+one that crosses a block of text.
+
+So when the destination is not below the source, `connectDown` emits an **elbow**:
+straight down out of the source, across the gap below every box already placed above
+the destination, then down into its top edge. The cross leg is positioned midway
+between the destination's top and the lowest box bottom above it, so it runs through
+the gap rather than over anything.
+
+### What this buys
+
+The layout now responds to the data instead of to assumptions about it:
+
+- more exclusion reasons → the row grows → the arrow lengthens to clear it;
+- fewer reasons → the diagram compacts, with the same gap and no leftover slack;
+- a branch that does not apply → its connector is never requested at all.
+
+### Tested geometrically
+
+`tests/unit/prisma/svgLayout.test.js` parses the emitted SVG and asserts, across
+five data shapes (both columns with deep reasons, database-only, no reasons
+recorded, the updated-review template, and an empty review):
+
+- every connector starts on one box's edge and ends on another's;
+- no connector is zero-length or points backwards;
+- no elbow leg passes through **any** box;
+- no two boxes overlap and none escapes the reported canvas;
+- both arms converge on the single terminal box, each from its own eligibility box;
+- the gap below the tallest box in a row is constant, so growth is content, not slack;
+- export and live view produce byte-identical geometry, and the interactive
+  hit-targets sit exactly on the drawn rectangles.
+
+Nothing in the suite previously looked at where a single line ended up.

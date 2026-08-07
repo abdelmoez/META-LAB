@@ -31,6 +31,9 @@ import { COLUMN_HEADERS, FOOTNOTES, SOURCE_CITATION } from './model.js';
 const esc = (s) => String(s == null ? '' : s)
   .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 
+/** Round to 2dp — keeps the emitted path data short and byte-stable. */
+const r = (v) => Math.round(v * 100) / 100;
+
 const INK = '#111';
 const GREY = '#555';
 const LINE = '#333';
@@ -103,7 +106,8 @@ export function buildPrismaFlowSVG(flow, opts = {}) {
   y += headerH + 18;
 
   /* ── box primitive ─────────────────────────────────────────────────────── */
-  const boxes = []; // geometry, returned for the interactive overlay
+  const boxes = [];              // geometry, returned for the interactive overlay
+  const geom = new Map();        // boxId → { x, y, w, h } — the layout's memory
   const drawBox = (boxId, x, yy, w, lines, style = {}) => {
     const h = Math.max(30, 12 + lines.length * 15);
     const fill = style.fill || '#ffffff';
@@ -115,12 +119,98 @@ export function buildPrismaFlowSVG(flow, opts = {}) {
         + ` font-weight="${style.bold && i === 0 ? '700' : '400'}" fill="${INK}">${esc(ln)}</text>`;
     });
     s += '</g>';
-    boxes.push({ id: boxId, x, y: yy, w, h });
+    const box = { id: boxId, x, y: yy, w, h };
+    boxes.push(box);
+    geom.set(boxId, box);
     return { svg: s, h };
   };
 
-  const vArrow = (x, y1, y2) => `<line x1="${x}" y1="${y1}" x2="${x}" y2="${y2}" stroke="${GREY}" stroke-width="1.3" marker-end="url(#ah)"/>`;
-  const hArrow = (x1, x2, yy) => `<line x1="${x1}" y1="${yy}" x2="${x2}" y2="${yy}" stroke="${GREY}" stroke-width="1.3" marker-end="url(#ah)"/>`;
+  /* ── 105.md: connectors are DERIVED FROM BOX GEOMETRY, never from row maths ──
+   *
+   * The old code drew each arrow from a row's BOTTOM — `Math.max(mainBox.h,
+   * sideBox.h)` — which is the bottom of whichever box in that row happens to be
+   * taller. In every real project the right-hand box is the taller one (six
+   * full-text exclusion reasons is seven lines against the assessed box's one), so
+   * the arrow out of "Reports assessed for eligibility" began far below that box,
+   * in empty space beside the exclusions list, and read as an arrow pointing from
+   * nowhere. Two more arrows had the same defect, and one was worse still: a
+   * hard-coded `y - 24` that assumed a row height rather than measuring one.
+   *
+   * A connector is now a RELATIONSHIP between two boxes. It reads both boxes'
+   * recorded geometry and works out where to start and stop, so it stays correct
+   * however tall either box grows. That is what makes the layout respond to the
+   * data instead of to assumptions about it:
+   *   - more exclusion reasons  → the eligibility row gets taller → the arrow to
+   *     the included box lengthens automatically to clear it;
+   *   - fewer reasons           → the diagram compacts, with no leftover gap;
+   *   - a branch disappears     → its connector is simply never requested.
+   *
+   * Connectors are collected and emitted AFTER every box, so a connector can
+   * reference a destination that does not exist yet when the source is drawn —
+   * which is what lets the arrow know how far down it must actually reach.
+   */
+  const links = [];
+  const line = (x1, y1, x2, y2) => `<line x1="${r(x1)}" y1="${r(y1)}" x2="${r(x2)}" y2="${r(y2)}"`
+    + ` stroke="${GREY}" stroke-width="1.3" marker-end="url(#ah)"/>`;
+
+  /**
+   * Down the flow: from the SOURCE box's own bottom edge to the DESTINATION box's
+   * top edge, always leaving from the source's own centre.
+   *
+   * Most steps sit directly under their predecessor, so the connector is a plain
+   * vertical line. The shared terminal box is the exception: it is centred across
+   * BOTH columns, so the database arm's column-centre is to its left. Sliding the
+   * line sideways to hit it would drag it straight through the full-text exclusions
+   * box — trading an arrow that points at nothing for one that crosses a box of
+   * text. So when the destination is not below the source, the connector takes an
+   * ELBOW: straight down out of the source, across the gap BELOW every box in the
+   * row it is leaving, then down into the destination's top edge. That is how the
+   * published PRISMA diagram routes it, and it keeps the rule that an arrow may
+   * never overlap a box or a label.
+   */
+  const connectDown = (fromId, toId) => {
+    links.push(() => {
+      const a = geom.get(fromId); const c = geom.get(toId);
+      if (!a || !c) return '';
+      const x = a.x + a.w / 2;
+      const y1 = a.y + a.h; const y2 = c.y;
+      // A destination that is not actually below the source would produce an
+      // upward or zero-length arrow. Drawing nothing is the honest outcome.
+      if (y2 <= y1 + 2) return '';
+      // Directly above the destination (with margin for the arrowhead) → straight.
+      if (x >= c.x + 10 && x <= c.x + c.w - 10) return line(x, y1, x, y2);
+      // Otherwise elbow. The cross leg sits midway between the destination's top
+      // and the bottom of the tallest box already placed above it, so it runs
+      // through the gap rather than over anything.
+      let above = y1;
+      for (const g of geom.values()) {
+        if (g === c) continue;
+        const gb = g.y + g.h;
+        if (gb <= y2 && gb > above) above = gb;
+      }
+      const my = (above + y2) / 2;
+      const tx = c.x + c.w / 2;
+      return `<polyline points="${r(x)},${r(y1)} ${r(x)},${r(my)} ${r(tx)},${r(my)} ${r(tx)},${r(y2)}"`
+        + ` fill="none" stroke="${GREY}" stroke-width="1.3" marker-end="url(#ah)"/>`;
+    });
+  };
+
+  /**
+   * Out of the flow: from the SOURCE box's right edge to the SIDE box's left edge,
+   * at a height that lies inside BOTH boxes — so it leaves a real edge and arrives
+   * at a real edge rather than floating past a short box's corner.
+   */
+  const connectRight = (fromId, toId) => {
+    links.push(() => {
+      const a = geom.get(fromId); const c = geom.get(toId);
+      if (!a || !c) return '';
+      const lo = Math.max(a.y, c.y) + 12;
+      const hi = Math.min(a.y + a.h, c.y + c.h) - 12;
+      const yy = hi >= lo ? (lo + hi) / 2 : Math.max(a.y, c.y) + 15;
+      if (c.x <= a.x + a.w + 2) return '';
+      return line(a.x + a.w, yy, c.x, yy);
+    });
+  };
 
   /* ── identification row ────────────────────────────────────────────────── */
   const dbSources = (o.perSource && f.sources && f.sources.db) ? f.sources.db.slice(0, 6) : [];
@@ -139,7 +229,7 @@ export function buildPrismaFlowSVG(flow, opts = {}) {
   const idDb = drawBox('identified_db', dbX, y, COL_W, idDbLines, { bold: true });
   const removed = drawBox('removed_before_screening', dbX + COL_W + GAP_X, y, SIDE_W, removedLines);
   svg += idDb.svg + removed.svg;
-  svg += hArrow(dbX + COL_W, dbX + COL_W + GAP_X, y + 15);
+  connectRight('identified_db', 'removed_before_screening');
 
   let otherBottom = y;
   if (hasOther) {
@@ -161,24 +251,24 @@ export function buildPrismaFlowSVG(flow, opts = {}) {
   const screened = drawBox('screened', dbX, y, COL_W, [`Records screened (n = ${n('screened')})`], { bold: true });
   const excl = drawBox('excluded_screening', dbX + COL_W + GAP_X, y, SIDE_W, [`Records excluded** (n = ${n('excluded_screening')})`]);
   svg += screened.svg + excl.svg;
-  svg += hArrow(dbX + COL_W, dbX + COL_W + GAP_X, y + 15);
-  svg += vArrow(dbX + COL_W / 2, idBottom, y);
+  connectRight('screened', 'excluded_screening');
+  connectDown('identified_db', 'screened');
   y += Math.max(screened.h, excl.h) + 24;
 
   /* ── retrieval row (BOTH arms) ─────────────────────────────────────────── */
   const soughtDb = drawBox('sought_db', dbX, y, COL_W, [`Reports sought for retrieval (n = ${n('sought_db')})`], { bold: true });
   const nrDb = drawBox('not_retrieved_db', dbX + COL_W + GAP_X, y, SIDE_W, [`Reports not retrieved (n = ${n('not_retrieved_db')})`]);
   svg += soughtDb.svg + nrDb.svg;
-  svg += hArrow(dbX + COL_W, dbX + COL_W + GAP_X, y + 15);
-  svg += vArrow(dbX + COL_W / 2, y - 24, y);
+  connectRight('sought_db', 'not_retrieved_db');
+  connectDown('screened', 'sought_db');
 
   let rowH = Math.max(soughtDb.h, nrDb.h);
   if (hasOther) {
     const soughtOther = drawBox('sought_other', otherX, y, COL_W, [`Reports sought for retrieval (n = ${n('sought_other')})`], { bold: true });
     const nrOther = drawBox('not_retrieved_other', otherX + COL_W + GAP_X, y, SIDE_W, [`Reports not retrieved (n = ${n('not_retrieved_other')})`]);
     svg += soughtOther.svg + nrOther.svg;
-    svg += hArrow(otherX + COL_W, otherX + COL_W + GAP_X, y + 15);
-    svg += vArrow(otherX + COL_W / 2, otherBottom, y);
+    connectRight('sought_other', 'not_retrieved_other');
+    connectDown('identified_other', 'sought_other');
     rowH = Math.max(rowH, soughtOther.h, nrOther.h);
   }
   const soughtBottom = y + rowH;
@@ -198,16 +288,16 @@ export function buildPrismaFlowSVG(flow, opts = {}) {
   const assessedDb = drawBox('assessed_db', dbX, y, COL_W, [`Reports assessed for eligibility (n = ${n('assessed_db')})`], { bold: true });
   const exDb = drawBox('excluded_full_text_db', dbX + COL_W + GAP_X, y, SIDE_W, exLines('Reports excluded', n('excluded_full_text_db'), 'db'));
   svg += assessedDb.svg + exDb.svg;
-  svg += hArrow(dbX + COL_W, dbX + COL_W + GAP_X, y + 15);
-  svg += vArrow(dbX + COL_W / 2, soughtBottom, y);
+  connectRight('assessed_db', 'excluded_full_text_db');
+  connectDown('sought_db', 'assessed_db');
 
   let rowH2 = Math.max(assessedDb.h, exDb.h);
   if (hasOther) {
     const assessedOther = drawBox('assessed_other', otherX, y, COL_W, [`Reports assessed for eligibility (n = ${n('assessed_other')})`], { bold: true });
     const exOther = drawBox('excluded_full_text_other', otherX + COL_W + GAP_X, y, SIDE_W, exLines('Reports excluded', n('excluded_full_text_other'), 'other'));
     svg += assessedOther.svg + exOther.svg;
-    svg += hArrow(otherX + COL_W, otherX + COL_W + GAP_X, y + 15);
-    svg += vArrow(otherX + COL_W / 2, soughtBottom, y);
+    connectRight('assessed_other', 'excluded_full_text_other');
+    connectDown('sought_other', 'assessed_other');
     rowH2 = Math.max(rowH2, assessedOther.h, exOther.h);
   }
   const assessedBottom = y + rowH2;
@@ -229,9 +319,19 @@ export function buildPrismaFlowSVG(flow, opts = {}) {
     bold: true, fill: '#f3f7f3', stroke: '#2e7d32',
   });
   svg += inc.svg;
-  svg += vArrow(dbX + COL_W / 2, assessedBottom, y);
-  if (hasOther) svg += vArrow(otherX + COL_W / 2, assessedBottom, y);
+  // 105.md — the arrow the user reported. It starts at the ELIGIBILITY box's own
+  // bottom and runs the full distance down to the included box, clearing the tall
+  // exclusion-reasons box beside it, because both endpoints are measured rather
+  // than assumed.
+  connectDown('assessed_db', 'included_studies');
+  if (hasOther) connectDown('assessed_other', 'included_studies');
   y += inc.h;
+
+  /* ── connectors ────────────────────────────────────────────────────────
+     Emitted now that every box has been placed, so each one could measure
+     both of its endpoints. They run in the gaps between boxes, so drawing
+     them last cannot obscure any text. */
+  for (const link of links) svg += link();
 
   /* ── left rail: the three official stage bands ─────────────────────────── */
   const bandTop = (o.title ? 44 : 14) + headerH + 18;
