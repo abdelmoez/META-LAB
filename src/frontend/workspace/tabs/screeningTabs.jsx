@@ -14,6 +14,13 @@ import { parseReferences, dedupeRecords } from "../../../research-engine/import-
 import { SVG_XML_HEADER, presetTag, buildPrismaSVG } from "../charts/svgBuilders.js";
 import { rasterizeSvg, downloadBlob, downloadText } from "../../components/exportCore.js";
 import { openExportDialog } from "../exportDialogBridge.js";
+// 103.md §10/§12/§16 — the canonical record-derived flow, the PRISMA 2020 diagram
+// and its inspection layer. This tab used to compute its own numbers by
+// subtraction and draw its own boxes; both are now read from the one derivation.
+import { usePrismaFlow } from "../../../features/prisma/usePrismaFlow.js";
+import { PrismaFlowDiagram } from "../../../features/prisma/PrismaFlowDiagram.jsx";
+import { buildPrismaFlowSVG } from "../../../research-engine/prisma/svg.js";
+import { linkedSiftId } from "../projectHelpers.js";
 
 /* uid — module-local util replicated verbatim from the monolith (only PRISMATab's
    addR uses it here). */
@@ -287,6 +294,12 @@ export function MetaSiftPrismaSync({project,updateProject,activeId,setTab}){
 
 export function PRISMATab({project,updNested,updateProject,activeId,setTab}){
   const{prisma}=project;
+  // 103.md §10 — when the linked screening workspace has records, EVERY number
+  // below comes from them. The manual fields stay only as the fallback for a
+  // project with no linked records, because the core principle is that PRISMA must
+  // never depend on a number the user typed when PecanRev already knows it.
+  const{flow,reconciliation,records,loading:flowLoading}=usePrismaFlow(linkedSiftId(project));
+  const live=!!flow;
   const ch=(k,v)=>updNested("prisma",k,v);
   const addR=()=>ch("reasons",[...prisma.reasons,{id:uid(),r:"",n:""}]);
   const updR=(id,k,v)=>ch("reasons",prisma.reasons.map(r=>r.id===id?{...r,[k]:v}:r));
@@ -302,6 +315,9 @@ export function PRISMATab({project,updNested,updateProject,activeId,setTab}){
   return(<div>
     <SectionHeader icon="flow" title="PRISMA Flow" desc="Title/abstract screening happens in the Screening stage (two independent reviewers, with duplicates & conflicts). As you screen, the PRISMA 2020 flow diagram below fills in automatically."/>
     {updateProject&&<MetaSiftPrismaSync project={project} updateProject={updateProject} activeId={activeId} setTab={setTab}/>}
+    {live&&<div style={{marginBottom:14,fontSize:11,color:C.muted,background:C.card,border:`1px solid ${C.brd}`,borderRadius:8,padding:"8px 12px"}}>
+      Every number below is derived from this project&rsquo;s actual records — click any box in the diagram to see exactly which records produced it. The fields on the left are kept only for projects without linked screening data.
+    </div>}
     <div style={{display:"grid",gridTemplateColumns:"320px 1fr",gap:20}}>
       <div style={{display:"flex",flexDirection:"column",gap:10}}>
         {[{title:"IDENTIFICATION",fields:[["dbs","Records from databases"],["reg","Records from registers"],["other","Records from other sources"],["dedupe","Duplicates removed"]]},
@@ -333,6 +349,12 @@ export function PRISMATab({project,updNested,updateProject,activeId,setTab}){
           </div>
         ))}
       </div>
+      {live?(
+        <div style={{background:C.card,border:`1px solid ${C.brd}`,borderRadius:8,padding:16,minWidth:0}}>
+          <div style={{fontSize:11,fontWeight:700,color:C.muted,letterSpacing:1,marginBottom:12}}>PRISMA 2020 FLOW — DERIVED FROM RECORDS</div>
+          <PrismaFlowDiagram flow={flow} reconciliation={reconciliation} records={records}/>
+        </div>
+      ):(
       <div style={{background:C.card,border:`1px solid ${C.brd}`,borderRadius:8,padding:20,display:"flex",flexDirection:"column",alignItems:"center"}}>
         <div style={{fontSize:11,fontWeight:700,color:C.muted,letterSpacing:1,marginBottom:16}}>LIVE FLOW DIAGRAM</div>
         <FlowBox label={`Identified (DB:${dbs} Reg:${reg} Other:${other})`} n={total||0}/>
@@ -358,18 +380,23 @@ export function PRISMATab({project,updNested,updateProject,activeId,setTab}){
           {prisma.qual&&<FlowBox label="Qualitative synthesis" n={prisma.qual} small color={C.purp}/>}
           {prisma.quant&&<FlowBox label="Meta-analysis" n={prisma.quant} small color={C.grn}/>}
         </div></>)}
-      </div>
+      </div>)}
     </div>
 
     {/* PUBLICATION-STYLE PRISMA FIGURE EXPORT */}
-    <PrismaFigureExport project={project} prisma={prisma}/>
+    <PrismaFigureExport project={project} prisma={prisma} flow={flow}/>
   </div>);
 }
 
 /* White-background PRISMA figure with preview + PNG/SVG export (via ExportDialog) */
-export function PrismaFigureExport({project,prisma}){
+export function PrismaFigureExport({project,prisma,flow}){
   const[show,setShow]=useState(false);
   const opts={title:project.name||""};
+  // 103.md §16 — no separate export calculation path. With a canonical flow the
+  // export is the SAME drawing the researcher just inspected.
+  const build=(extra={})=>(flow
+    ? buildPrismaFlowSVG(flow,{...opts,...extra,perSource:true})
+    : buildPrismaSVG(prisma,{...opts,...extra}));
   const safe=(project.name||"prisma").replace(/[^a-z0-9]/gi,"_");
   const openExport=()=>openExportDialog({
     id:"prisma-figure",
@@ -379,11 +406,11 @@ export function PrismaFigureExport({project,prisma}){
     defaults:{format:"png",presetId:"journal-1col"},
     run:async(choice)=>{
       if(choice.format==="svg"){
-        const built=buildPrismaSVG(prisma,opts);
+        const built=build();
         downloadText(SVG_XML_HEADER+built.svg,`${safe}_prisma.svg`,"image/svg+xml;charset=utf-8");
         return;
       }
-      const built=buildPrismaSVG(prisma,{...opts,noBg:!!choice.transparent});
+      const built=build({noBg:!!choice.transparent});
       const blob=await rasterizeSvg(built.svg,built.W,built.H,
         {targetWidthPx:choice.widthPx,transparent:choice.transparent,background:"#ffffff"});
       downloadBlob(blob,`${safe}_prisma${presetTag(choice)}.png`);
@@ -401,7 +428,7 @@ export function PrismaFigureExport({project,prisma}){
       <button onClick={openExport} style={btnS("success")}>⬇ Export figure…</button>
       <button onClick={()=>setShow(s=>!s)} style={{...btnS("ghost"),fontSize:12}}>{show?"▲ Hide preview":"👁 Preview"}</button>
     </div>
-    {show&&(()=>{const built=buildPrismaSVG(prisma,opts);return(
+    {show&&(()=>{const built=build();return(
       <div style={{marginTop:12,background:"#fff",borderRadius:6,padding:10,overflowX:"auto",border:`1px solid ${C.brd}`}}>
         <div style={{minWidth:built.W,maxWidth:"100%"}} dangerouslySetInnerHTML={{__html:built.svg}}/>
       </div>);})()}

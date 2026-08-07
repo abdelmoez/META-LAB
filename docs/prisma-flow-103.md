@@ -170,10 +170,11 @@ invariants. Highlights:
   builder remains only for projects with no record-level data.
 
 **NOT yet wired — deliberately listed rather than implied:**
-1. **The old single-column builder still exists** — still single-column, still missing the retrieval boxes.
-   as the fallback for projects that have no record-level flow. It is no longer used when
-   a flow is present, but the screening tab's own PRISMA view still calls it directly and
-   has not been migrated to the new component.
+1. ~~**The old single-column builder still exists**~~ *Resolved:* the screening tab now
+   renders `PrismaFlowDiagram` (inspectable, PRISMA 2020) whenever the linked workspace has
+   records, and its figure export routes through the same builder. The legacy builder remains — still single-column, still missing the retrieval boxes.
+   ONLY as the fallback for a project with no linked records, alongside the manual number
+   fields — which are likewise now fallback-only rather than the primary input.
 2. **No inspection UI** (§12). Every count already carries its record ids, so the data for
    click-to-inspect exists; the panel does not.
 3. **No PRISMA-specific events emitted** (§11). The taxonomy and ledger are in place from
