@@ -579,7 +579,12 @@ export function useManuscript(project, upd) {
         // depState hashes that read as phantom "changed" reasons (review fix 4).
         // 85.md B2 — assetRefs matches generate(): proposals carry the same
         // structured tokens accepting them would otherwise strip.
-        ...genOpts, prismaCounts, primary, assetRefs: true,
+        // 101.md §4/§5 — factTokens rides alongside assetRefs for the same reason:
+        // the app generates LIVE manuscripts, so methodology and counts arrive as
+        // [[fact:…]] tokens that re-resolve from project data on every render and
+        // never need a refresh action. The engine default stays FALSE so the pure
+        // generator's legacy output (and its golden tests) is byte-identical.
+        ...genOpts, prismaCounts, primary, assetRefs: true, factTokens: true,
         overrides: activeDraft.prismaOverrides,
         templateId: activeDraft.templateId, citationStyle: activeDraft.citationStyle,
       });
@@ -743,7 +748,12 @@ export function useManuscript(project, upd) {
       // structured [[table:…]]/[[figure:…]] tokens; regenerating a section of a
       // token-era draft keeps them. Engine default stays FALSE (legacy pins).
       const generated = generateDraft(project, {
-        ...genOpts, prismaCounts, primary, assetRefs: true,
+        // 101.md §4/§5 — factTokens rides alongside assetRefs for the same reason:
+        // the app generates LIVE manuscripts, so methodology and counts arrive as
+        // [[fact:…]] tokens that re-resolve from project data on every render and
+        // never need a refresh action. The engine default stays FALSE so the pure
+        // generator's legacy output (and its golden tests) is byte-identical.
+        ...genOpts, prismaCounts, primary, assetRefs: true, factTokens: true,
         templateId: active.templateId, citationStyle: active.citationStyle,
         overrides: active.prismaOverrides,
       });

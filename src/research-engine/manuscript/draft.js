@@ -44,7 +44,7 @@ import { describeSynthesisModel, resolveAnalysis } from './analysisDescribe.js';
 import { computeSectionMeta } from './sources.js';
 // 101.md §1/§2 — shared, deterministic formatting for the search facts so the
 // Methods paragraph, the Abstract and the fact tokens all render them identically.
-import { formatFactDate, joinList } from './factTokens.js';
+import { formatFactDate, joinList, factToken } from './factTokens.js';
 
 const clean = (s) => String(s == null ? '' : s).trim();
 const PH = (label) => `[${label}]`;
@@ -169,7 +169,18 @@ function methodsCtx(project, opts) {
     // Server-composed real search paragraph (overrides the generic sentence).
     searchMethodsText: clean(opts.searchMethodsText),
     registration: clean(pico.prosperoId),
-    prisma: {
+    // 101.md §3/§4 — with factTokens on, the PRISMA sentence carries live tokens,
+    // so a screening decision or a new import updates these numbers in place. A
+    // token is emitted only where the project ALREADY has the count: emitting one
+    // for an unknown count would replace an honest "we don't know" with a
+    // placeholder that reads like a pending value.
+    prisma: opts.factTokens ? {
+      identified: pc.counts.identified != null ? factToken('prisma.identified') : null,
+      deduped: (pc.counts.duplicatesRemoved != null || pc.counts.dedupe != null) ? factToken('prisma.duplicatesRemoved') : null,
+      screened: pc.counts.screened != null ? factToken('prisma.screened') : null,
+      excludedFullText: pc.counts.reportsExcluded != null ? factToken('prisma.reportsExcluded') : null,
+      included: pc.counts.included != null ? factToken('prisma.included') : null,
+    } : {
       identified: pc.counts.identified,
       deduped: pc.counts.duplicatesRemoved,
       screened: pc.counts.screened,
@@ -218,6 +229,25 @@ function methodsCtx(project, opts) {
  * Empty strings mean "the project cannot answer this" — never a fabricated value.
  */
 export function searchFacts(project, opts = {}) {
+  // 101.md §4/§5 — when the caller opts in, emit the LIVE TOKEN instead of the
+  // literal. The token is what makes the sentence stay correct forever: it
+  // re-resolves from the execution record on every render, so a later search
+  // updates this Methods paragraph without regenerating (or touching) it.
+  //
+  // Default OFF, mirroring the `assetRefs` precedent, so legacy generation output
+  // stays byte-identical for callers that have not migrated.
+  if (opts.factTokens) {
+    return {
+      databases: factToken('search.databases'),
+      registers: factToken('search.registers'),
+      date: factToken('search.date'),
+      dateRange: factToken('search.dateRange'),
+      count: (opts.searchProvenance && opts.searchProvenance.reportable)
+        ? opts.searchProvenance.reportable.length : 0,
+      legacy: false,
+      tokenized: true,
+    };
+  }
   const prov = opts.searchProvenance || null;
   if (prov && Array.isArray(prov.reportable)) {
     const dbs = prov.reportable.filter((d) => d.kind !== 'register').map((d) => d.label);
@@ -303,6 +333,9 @@ export function generateAbstract(project, opts = {}) {
   const sf = searchFacts(project, opts);
   const dbText = sf.databases || PH('No database search has been recorded');
   const dateText = sf.date ? ` (last searched ${sf.date})` : ` ${PH('No completed search on record')}`;
+  // 101.md §4 — the included-study count is the number a reader checks first, so it
+  // is the one that must never go stale. Token only when the count is known.
+  const incToken = opts.factTokens && inc != null ? factToken('prisma.included') : null;
   // Shared synthesis-model wording (analysisDescribe.js) — byte-identical for
   // fixed / DL-random; reflects the configured τ² estimator otherwise.
   const desc = describeSynthesisModel(resolveAnalysis(project, {
@@ -311,7 +344,9 @@ export function generateAbstract(project, opts = {}) {
   const modelText = primary && primary.result
     ? `Effect estimates were pooled using a ${desc.short} model; heterogeneity was assessed with I².`
     : PH('Describe the synthesis approach');
-  const incText = inc != null ? `${inc} studies were included` : PH('Number of included studies unavailable');
+  const incText = inc != null
+    ? `${incToken || inc} studies were included`
+    : PH('Number of included studies unavailable');
   const resultText = eff ? `${incText}. ${eff}` : `${incText}. ${PH('Add the main pooled result once an analysis is available')}`;
   const objective = clean(pico.question) ? `To systematically review and meta-analyse ${clean(pico.question)}` : PH('State the review objective (PICO)');
   const fmt = opts.abstractFormat || abstractFormatFor(opts.templateId);

@@ -12,6 +12,7 @@ import {
 } from '../../../src/research-engine/manuscript/index.js';
 import { deriveSearchProvenance } from '../../../src/research-engine/search/searchProvenance.js';
 import { deriveRobUsage, robToolsPhrase } from '../../../src/research-engine/rob/usage.js';
+import { generateMethods } from '../../../src/research-engine/manuscript/draft.js';
 import { buildMethodsMarkdown } from '../../../src/research-engine/docs/methodsText.js';
 
 const source = (provider, o = {}) => ({
@@ -203,5 +204,56 @@ describe('§16 — no partial states across the manuscript', () => {
     const included = out.match(/Results: (\d+)/)[1];
     const abstract = out.match(/Abstract: (\d+)/)[1];
     expect(included).toBe(abstract);
+  });
+});
+
+describe('§4/§42 — the generator emits LIVE tokens, not frozen text', () => {
+  it('generated Methods carries fact tokens when the caller opts in', () => {
+    const project = { name: 'T', pico: { question: 'Q' }, studies: [], search: {} };
+    const prov = deriveSearchProvenance({
+      runs: [{ id: 'r1', sources: [source('pubmed'), source('embase')] }],
+    });
+    const md = generateMethods(project, {
+      factTokens: true, searchProvenance: prov,
+      screening: { identified: 412, afterDedup: 300, screened: 300, included: 12 },
+    });
+    const keys = findFactTokens(md).map((t) => t.key);
+    expect(keys).toContain('search.databases');
+    expect(keys).toContain('search.date');
+    expect(keys).toContain('prisma.included');
+  });
+
+  it('the SAME stored markdown re-renders after a later search — no regeneration', () => {
+    const project = { name: 'T', pico: {}, studies: [], search: {} };
+    const july = deriveSearchProvenance({ runs: [{ id: 'r1', sources: [source('pubmed'), source('embase')] }] });
+    // Generated ONCE, in July, and never touched again.
+    const stored = generateMethods(project, { factTokens: true, searchProvenance: july });
+    const line = stored.split('\n').find((l) => /We searched/.test(l));
+
+    expect(renderFacts(line, resolveFacts(project, { searchProvenance: july })))
+      .toContain('Embase and PubMed');
+
+    const august = deriveSearchProvenance({
+      runs: [{ id: 'r1', sources: [source('pubmed'), source('embase')] }],
+      imports: [{ id: 'b1', createdAt: '2026-08-06T09:00:00.000Z', databases: [{ name: 'Scopus', count: 41 }] }],
+    });
+    const after = renderFacts(line, resolveFacts(project, { searchProvenance: august }));
+    expect(after).toContain('Scopus');
+    expect(after).toContain('August 6, 2026');
+  });
+
+  it('legacy generation (flag off) is unchanged and emits no tokens', () => {
+    const project = { name: 'T', pico: {}, studies: [], search: {} };
+    const prov = deriveSearchProvenance({ runs: [{ id: 'r1', sources: [source('pubmed')] }] });
+    const md = generateMethods(project, { searchProvenance: prov });
+    expect(findFactTokens(md)).toEqual([]);
+    expect(md).toContain('PubMed');
+  });
+
+  it('does not tokenize a count the project does not have (§17)', () => {
+    // An unknown PRISMA count must stay absent, not become a token that renders a
+    // placeholder reading like a pending value.
+    const md = generateMethods({ name: 'T', pico: {}, studies: [], search: {} }, { factTokens: true });
+    expect(findFactTokens(md).map((t) => t.key)).not.toContain('prisma.identified');
   });
 });

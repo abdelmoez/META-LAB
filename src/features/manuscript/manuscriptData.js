@@ -272,6 +272,10 @@ export function composeGenOpts({ project, runMeta, gradeByOutcome, sources } = {
     prec: project && project.analysisPrecision,
     analysis,
   };
+  // NOTE: `factTokens` is deliberately NOT set here. composeGenOpts is about which
+  // live SOURCES are available, and its byte-compat contract is that an absent
+  // source can never change the generation path. Emitting live tokens is a product
+  // decision, so it is applied at the generation call sites in useManuscript.
   if (gradeByOutcome) out.gradeByOutcome = gradeByOutcome;
   if (src.screening) out.screening = src.screening;
   if (src.searchMethodsText) out.searchMethodsText = src.searchMethodsText;

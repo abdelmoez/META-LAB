@@ -13,6 +13,9 @@
  * Every create / answer / override / finalise / delete writes a RobAuditLog row.
  */
 import { prisma } from '../db/client.js';
+// 101.md §28/§29 — RoB changes reach the manuscript through the ONE project event
+// ledger, not a second RoB-specific notification path.
+import { recordEvent } from '../provenance/recordEvent.js';
 import { getById as getOwnedProject, touchProjectActivity, mutateProjectBlob } from '../store.js';
 import { getRobMemberAccess } from '../screening/metalabAccess.js';
 import { featureAccess } from '../services/featureAccess.js';
@@ -241,6 +244,20 @@ async function guidedAppraisalEnabled(user = null) {
   return (await featureAccess('guidedRobAppraisal', user)).allowed;
 }
 
+/**
+ * 101.md §28/§30 — RoB audit action → project-event type. Only entries that are a
+ * genuine scientific change appear here; ROB_CREATE (an empty draft assessment) and
+ * ROB_EXPORT are deliberately absent, because neither changes what the manuscript
+ * can say. `RISK_OF_BIAS_JUDGMENT_CHANGED` declares `rob.judgments`, which the
+ * dependency graph maps to Results and Limitations.
+ */
+const ROB_EVENT_TYPES = Object.freeze({
+  ROB_ANSWER: 'RISK_OF_BIAS_JUDGMENT_CHANGED',
+  ROB_OVERRIDE: 'RISK_OF_BIAS_JUDGMENT_CHANGED',
+  ROB_FINALISE: 'RISK_OF_BIAS_JUDGMENT_CHANGED',
+  ROB_DELETE: 'RISK_OF_BIAS_JUDGMENT_CHANGED',
+});
+
 // ── Audit (best-effort; never throws into a handler) ──────────────────────────
 async function audit(projectId, assessmentId, actor, action, { entityType = null, entityId = null, details = {} } = {}) {
   try {
@@ -257,6 +274,36 @@ async function audit(projectId, assessmentId, actor, action, { entityType = null
       },
     });
   } catch { /* audit is best-effort */ }
+
+  // 101.md §28/§29 — a risk-of-bias change must reach the manuscript, and it must
+  // do so through the ONE project event ledger rather than a second RoB-specific
+  // notification path. This helper is the single funnel every RoB mutation already
+  // passes through, so emitting here covers create/answer/override/finalise/delete
+  // without instrumenting each handler separately.
+  //
+  // Materiality is NOT set here: classify.js derives significance, the affected
+  // manuscript sections and the recalc flags from the event type's declared
+  // dependencyKeys (`rob.judgments` → Results + Limitations). Actions that are not
+  // scientific changes — opening, exporting — map to no event at all (§30).
+  const eventType = ROB_EVENT_TYPES[action];
+  if (eventType) {
+    void recordEvent({
+      eventType,
+      entityType: 'rob_assessment',
+      entityId: assessmentId || null,
+      relatedStudy: details && details.studyId ? String(details.studyId) : null,
+      metadata: {
+        action,
+        instrumentId: (details && details.instrumentId) || undefined,
+        domainId: (details && details.domainId) || undefined,
+      },
+    }, {
+      projectId,
+      actorUserId: actor?.id || '',
+      actorName: actor?.name || actor?.email || '',
+    });
+  }
+
   // prompt50 WS5 — every RoB mutation is meaningful activity on the META·LAB
   // project (projectId IS the META·LAB project id here). Best-effort, never throws.
   if (action !== 'ROB_EXPORT') void touchProjectActivity(projectId);

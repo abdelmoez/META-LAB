@@ -354,7 +354,7 @@ outside the editor's view state. There is nothing to strip.
 
 ## 10. Testing
 
-`npm run test:ci` — **406 files, 6346 tests, all passing** (was 401 / 6246).
+`npm run test:ci` — **408 files, 6415 tests, all passing** (was 401 / 6246).
 
 New suites:
 
@@ -382,10 +382,13 @@ search never enters the manuscript*.
    different scopes — sync plan proposes whole-section regeneration, fact tokens patch
    spans — and the section-level flow is still the right tool for "regenerate Methods from
    scratch". Retiring it is a separate round; it is not wired to any automatic path.
-2. **Existing drafts contain no fact tokens.** A pre-101 manuscript is plain prose, so it
-   gets no live updates until its sections are regenerated. This is deliberate: §38
-   forbids fabricating provenance for text whose origin we do not know. Newly generated
-   sections carry tokens.
+2. **Existing (pre-101) drafts contain no fact tokens.** A manuscript written before this
+   round is plain prose, so it gets no live updates until its sections are regenerated.
+   This is deliberate — §38 forbids fabricating provenance for text whose origin we do not
+   know. **Newly generated sections do carry tokens** (`factTokens`, applied at the two
+   generation call sites next to the existing `assetRefs` flag), so from this version on
+   the Methods paragraph, the search date and the PRISMA counts re-resolve on every render.
+   The engine default stays `false` so the pure generator's legacy output is byte-identical.
 3. **DOCX native Track Changes is not implemented.** §36 permits deferring it and warns
    against risking normal export. The clean export path is guaranteed; a tracked export
    would need `w:ins`/`w:del` support in the OOXML writer.
@@ -403,7 +406,10 @@ search never enters the manuscript*.
 7. **The Comparability star-2 dependency is left independent.** The official form does not
    state whether "any additional factor" requires the primary factor first. The instrument
    is genuinely silent, so it is not hard-coded; a protocol switch is the right home.
-8. **Screening/extraction/analysis engines do not yet emit their own domain events.** The
-   blob-diff emitter (`recordBlobDiff`) already covers changes that live in `Project.data`
-   (analysis model, effect measure, study roster). Search now emits explicitly. RoB and
-   screening still write only their own audit logs.
+8. **Screening and extraction do not yet emit their own domain events.** The blob-diff
+   emitter (`recordBlobDiff`) already covers everything that lives in `Project.data`
+   (analysis model, effect measure, study roster, RoB tool). Search and **risk of bias**
+   now emit explicitly — the RoB emitter hangs off the single `audit()` funnel in
+   `robController.js`, so every answer / override / finalise / delete reaches the ledger
+   without instrumenting each handler, and `ROB_CREATE` / `ROB_EXPORT` deliberately map to
+   no event (§30). Screening still writes only `ScreenAuditLog`.
