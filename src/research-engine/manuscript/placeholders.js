@@ -320,6 +320,62 @@ export function placeholderTitle(kind) {
     : 'Manual input required';
 }
 
+/**
+ * Where a 'pending' field actually gets resolved.
+ *
+ * Telling a researcher a field is "awaiting project data" and stopping there leaves
+ * them with nowhere to go — and the likeliest next move is to type over it, which is
+ * the one thing that must not happen (101.md §17). So each pending shape names the
+ * engine that fills it and the step that does so.
+ *
+ * Ordered most-specific first; the first match wins.
+ */
+const PENDING_ROUTES = [
+  {
+    test: /\bsearch\b/i,
+    engine: 'search', engineLabel: 'Search Engine',
+    action: 'Run or import a database search — the databases and the date are read from the search record.',
+  },
+  {
+    test: /\brisk[- ]of[- ]bias\b|\bquality assessment\b/i,
+    engine: 'rob', engineLabel: 'Risk of Bias',
+    action: 'Complete a risk-of-bias assessment for at least one study.',
+  },
+  {
+    test: /\bincluded studies\b|\bextracted data\b|\bextraction\b/i,
+    engine: 'extraction', engineLabel: 'Extraction Engine',
+    action: 'Extract outcome data for the included studies.',
+  },
+  {
+    test: /\brecords identified\b|\bscreen/i,
+    engine: 'screening', engineLabel: 'Screening Engine',
+    action: 'Import records and screen them — PRISMA counts come from the screening data.',
+  },
+  {
+    test: /\banalys[ie]s\b|\bsynthesis\b|\bpooled\b/i,
+    engine: 'analysis', engineLabel: 'Analysis Engine',
+    action: 'Run the meta-analysis once at least two studies have effect estimates.',
+  },
+];
+
+/**
+ * resolutionHint(placeholder) → { engine, engineLabel, action } | null.
+ * `null` for a manual field: the researcher IS the resolution.
+ * Pure.
+ */
+export function resolutionHint(placeholder) {
+  const p = placeholder || {};
+  if (p.kind !== 'pending') return null;
+  const label = String(p.label || '');
+  for (const r of PENDING_ROUTES) {
+    if (r.test.test(label)) return { engine: r.engine, engineLabel: r.engineLabel, action: r.action };
+  }
+  return {
+    engine: '', engineLabel: 'Project data',
+    action: 'This fills in automatically once the corresponding project step is complete.',
+  };
+}
+
 export default {
   PLACEHOLDER_KINDS,
   GENERATED_PLACEHOLDERS,
@@ -330,4 +386,5 @@ export default {
   groupPlaceholders,
   stepPlaceholder,
   placeholderTitle,
+  resolutionHint,
 };

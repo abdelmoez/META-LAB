@@ -229,6 +229,22 @@ export const RichSectionEditor = forwardRef(function RichSectionEditor({
     return el && rootRef.current && rootRef.current.contains(el) ? el : null;
   };
 
+  /**
+   * Keyboard parity for §3. The chip carries role="button" and tabindex=0, so it is
+   * reachable by Tab; without this it would be focusable but inert, which is worse
+   * than not being focusable at all. Enter/Space selects the whole field so the very
+   * next keystroke replaces it — the same outcome a click gives.
+   */
+  const onPlaceholderKeyDown = (e) => {
+    if (e.key !== 'Enter' && e.key !== ' ' && e.key !== 'Spacebar') return false;
+    const chip = placeholderFrom(e.target);
+    if (!chip) return false;
+    e.preventDefault();
+    selectPlaceholderNode(chip);
+    onPlaceholderFocusRef.current && onPlaceholderFocusRef.current(chip.getAttribute('data-input') || '');
+    return true;
+  };
+
   const onPlaceholderMouseDown = (e) => {
     const chip = placeholderFrom(e.target);
     if (!chip) return;
@@ -395,6 +411,8 @@ export const RichSectionEditor = forwardRef(function RichSectionEditor({
    * engines do not map by default.
    */
   const onKeyDown = (e) => {
+    // 102.md §3 — Enter/Space on a focused placeholder selects the whole field.
+    if (onPlaceholderKeyDown(e)) return;
     if (!(e.ctrlKey || e.metaKey)) return;
     const k = String(e.key || '').toLowerCase();
     if (k === 'b') { e.preventDefault(); exec('bold'); }

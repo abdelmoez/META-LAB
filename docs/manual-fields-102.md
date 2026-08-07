@@ -167,7 +167,7 @@ so a new generator string can never silently leak as undetected prose.
 
 ## 8. Testing
 
-`npm run test:ci` — **410 files, 6481 tests, all passing** (was 408 / 6415).
+`npm run test:ci` — **410 files, 6487 tests, all passing** (was 408 / 6415).
 
 | File | Covers |
 | --- | --- |
@@ -182,6 +182,9 @@ so a new generator string can never silently leak as undetected prose.
    the whole field and typing replaces it. That is §3's explicit intent ("immediately type
    and replace… without manually highlighting it"), but it does mean a researcher who
    wants to keep the brackets and edit inside them must retype the whole span.
+   *Follow-up round:* the chip is now reachable by **Tab**, and **Enter/Space** selects it
+   for replacement — it previously carried `role="button"` and `tabindex=0` but had no
+   keyboard handler, which is worse than not being focusable at all.
 2. **Hand-typed brackets are classified by shape, not by declaration.** Someone who types
    `[check this later]` gets a manual field (imperative opener); someone who types
    `[my note to self]` does not. There is no UI to mark an arbitrary span as a manual
@@ -190,11 +193,16 @@ so a new generator string can never silently leak as undetected prose.
 3. **Statement fields navigate to the Statements page, not to the exact field.** The
    statements editor is a separate surface without the ordinal-addressing the section
    editor has; the list still names the field and the page.
-4. **The live-overlay count tracks section edits only.** Editing a *statement* updates the
-   count on the normal autosave cycle rather than per keystroke.
-5. **`pending` fields are informational.** Clicking one in the list selects it but does not
-   deep-link into the Search/Screening/Analysis engine that would resolve it. Routing a
-   placeholder to the engine that fills it is the natural follow-up.
+4. ~~**The live-overlay count tracks section edits only.**~~ *Resolved in the follow-up
+   round:* statements now get the same live overlay, so filling the funding line drops the
+   counter immediately rather than on the next autosave cycle.
+5. ~~**`pending` fields are informational.**~~ *Resolved in the follow-up round:*
+   `resolutionHint()` routes each pending shape to the engine that fills it, and the list
+   row reads e.g. *"Awaiting Search Engine — Run or import a database search…"*. It still
+   does not deep-link/navigate into that engine, which remains the next step. Naming the
+   destination matters more than it sounds: leaving a researcher with "awaiting project
+   data" and nowhere to go invites the one action that must not happen — typing over it
+   (101.md §17). A test asserts no pending hint ever contains the word "type".
 6. **No per-placeholder resolution history.** A resolved field simply stops being detected;
    there is no record that it was once outstanding. The 101.md `factLog` covers
    project-derived values, not authorial prose.

@@ -18,7 +18,10 @@
  */
 import { useState } from 'react';
 import { C, btnS } from '../../frontend/workspace/ui/styles.js';
-import { Icon } from '../../frontend/components/icons.jsx';
+// 102.md follow-up — a 'pending' field must say WHERE it gets resolved. Leaving a
+// researcher with "awaiting project data" and no destination invites the one action
+// that must not happen: typing over it (101.md §17).
+import { resolutionHint } from '../../research-engine/manuscript/placeholders.js';
 
 const KIND_TEXT = {
   manual: { label: 'Manual input required', hint: 'You write this.' },
@@ -27,6 +30,18 @@ const KIND_TEXT = {
     hint: 'Fills in automatically once the project step is done — do not type over it.',
   },
 };
+
+/**
+ * "Awaiting Search Engine — Run or import a database search…"
+ *
+ * Keeps the "awaiting" framing (so the row still reads as not-yours-to-write) AND
+ * names the destination, rather than trading one for the other.
+ */
+function resolveText(p) {
+  const h = resolutionHint(p);
+  if (!h) return KIND_TEXT.pending.label;
+  return h.engineLabel ? `Awaiting ${h.engineLabel} — ${h.action}` : `Awaiting project data — ${h.action}`;
+}
 
 function KindDot({ kind }) {
   const pending = kind === 'pending';
@@ -184,7 +199,9 @@ export function ManualFieldsList({ groups, currentId, onGo }) {
               <span style={{ minWidth: 0 }}>
                 {p.label}
                 <span style={{ display: 'block', fontSize: 10, color: C.muted }}>
-                  {KIND_TEXT[p.kind].label}
+                  {p.kind === 'pending'
+                    ? resolveText(p)
+                    : KIND_TEXT[p.kind].label}
                 </span>
               </span>
             </button>

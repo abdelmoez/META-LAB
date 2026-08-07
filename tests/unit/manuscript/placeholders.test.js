@@ -10,7 +10,7 @@ import { describe, it, expect } from 'vitest';
 import {
   classifyPlaceholder, findPlaceholders, collectPlaceholders,
   placeholderCounts, groupPlaceholders, stepPlaceholder, placeholderTitle,
-  GENERATED_PLACEHOLDERS,
+  GENERATED_PLACEHOLDERS, resolutionHint,
 } from '../../../src/research-engine/manuscript/index.js';
 import { generateMethods, generateAbstract } from '../../../src/research-engine/manuscript/draft.js';
 import { mdToHtml, htmlToMd } from '../../../src/features/manuscript/richEditor/mdDom.js';
@@ -244,5 +244,45 @@ describe('§8 — the generator only asks for what the project cannot supply', (
       const label = b.slice(1, -1);
       expect(classifyPlaceholder(label), `unclassified generator placeholder: ${b}`).not.toBe(null);
     }
+  });
+});
+
+describe('follow-up — a pending field says WHERE it gets resolved', () => {
+  const hintFor = (label) => resolutionHint({ kind: 'pending', label });
+
+  it('routes each pending shape to the engine that fills it', () => {
+    expect(hintFor('No completed search on record').engine).toBe('search');
+    expect(hintFor('No database search has been recorded').engine).toBe('search');
+    expect(hintFor('Risk-of-bias assessment incomplete').engine).toBe('rob');
+    expect(hintFor('No included studies with extracted data yet').engine).toBe('extraction');
+    expect(hintFor('Number of records identified unavailable').engine).toBe('screening');
+  });
+
+  it('always gives an actionable instruction, even for an unrecognised shape', () => {
+    const h = hintFor('Something unfamiliar is not yet available');
+    expect(h).toBeTruthy();
+    expect(h.action.length).toBeGreaterThan(10);
+  });
+
+  it('never tells the researcher to type into a pending field', () => {
+    for (const label of [
+      'No completed search on record', 'Risk-of-bias assessment incomplete',
+      'Number of records identified unavailable',
+    ]) {
+      expect(hintFor(label).action).not.toMatch(/\btype\b/i);
+    }
+  });
+
+  it('gives no route for a manual field — the researcher IS the resolution', () => {
+    expect(resolutionHint({ kind: 'manual', label: 'State the primary outcome' })).toBe(null);
+  });
+});
+
+describe('follow-up — statements are counted live too', () => {
+  it('detects and then releases a placeholder in a statement', () => {
+    const before = { sections: {}, statements: { funding: '[State the funding source, or “None.”]' } };
+    expect(placeholderCounts(collectPlaceholders(before)).manual).toBe(1);
+    const after = { sections: {}, statements: { funding: 'Funded by the NIHR.' } };
+    expect(placeholderCounts(collectPlaceholders(after)).manual).toBe(0);
   });
 });

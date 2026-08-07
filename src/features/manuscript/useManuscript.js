@@ -723,7 +723,12 @@ export function useManuscript(project, upd) {
   }, [mutateActive]);
 
   const setStatement = useCallback((id, val) => {
-    if (activeDraft) queueEdit(activeDraft.id, 'statement', id, val);
+    if (!activeDraft) return;
+    // 102.md §6 — statements carry placeholders too (the funding line is exactly
+    // the field that gets forgotten), so they get the same live overlay as sections
+    // and the counter drops as soon as one is filled.
+    setLiveStatements((prev) => ({ ...(prev || {}), [id]: val }));
+    queueEdit(activeDraft.id, 'statement', id, val);
   }, [activeDraft, queueEdit]);
 
   // Debounced meta edits (free-text/number fields: keywords, prismaOverrides).
@@ -880,6 +885,7 @@ export function useManuscript(project, upd) {
    * live DOM or the caret.
    */
   const [liveSections, setLiveSections] = useState(null);
+  const [liveStatements, setLiveStatements] = useState(null);
 
   // Once the stored draft catches up with what was typed, drop the overlay so the
   // two can never drift apart.
@@ -892,16 +898,28 @@ export function useManuscript(project, upd) {
     if (!stillAhead) setLiveSections(null);
   }, [activeDraft, liveSections]);
 
+  useEffect(() => {
+    if (!liveStatements || !activeDraft) return;
+    const st = activeDraft.statements || {};
+    const stillAhead = Object.keys(liveStatements).some((id) => st[id] !== liveStatements[id]);
+    if (!stillAhead) setLiveStatements(null);
+  }, [activeDraft, liveStatements]);
+
   /** The draft as the researcher currently sees it, pending edits included. */
   const liveDraft = useMemo(() => {
     if (!activeDraft) return null;
-    if (!liveSections) return activeDraft;
-    const sections = { ...activeDraft.sections };
-    for (const id of Object.keys(liveSections)) {
-      sections[id] = { ...(sections[id] || {}), content: liveSections[id] };
+    if (!liveSections && !liveStatements) return activeDraft;
+    const out = { ...activeDraft };
+    if (liveSections) {
+      const sections = { ...activeDraft.sections };
+      for (const id of Object.keys(liveSections)) {
+        sections[id] = { ...(sections[id] || {}), content: liveSections[id] };
+      }
+      out.sections = sections;
     }
-    return { ...activeDraft, sections };
-  }, [activeDraft, liveSections]);
+    if (liveStatements) out.statements = { ...activeDraft.statements, ...liveStatements };
+    return out;
+  }, [activeDraft, liveSections, liveStatements]);
 
   /** Every unresolved placeholder, in manuscript order (§1, §2). */
   const placeholders = useMemo(() => collectPlaceholders(liveDraft), [liveDraft]);

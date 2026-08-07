@@ -77,12 +77,20 @@ describe('§53 — the list says which section each field is in', () => {
   it('shows each outstanding field and what kind it is', () => {
     expect(html).toContain('Specify subgroup');
     expect(html).toContain('Manual input required');
-    expect(html).toContain('Awaiting project data');
+    expect(html).toMatch(/Awaiting /);
+  });
+
+  it('tells a pending field WHERE it gets resolved, not just that it is waiting', () => {
+    // Leaving a researcher with "awaiting project data" and no destination invites
+    // the one action that must not happen — typing over it (101.md §17).
+    expect(html).toContain('Awaiting Search Engine');
+    expect(html).toMatch(/Run or import a database search/i);
+    expect(html).not.toMatch(/Awaiting Search Engine[^<]*type/i);
   });
 
   it('distinguishes the two kinds without relying on colour alone', () => {
     // Each row carries a written kind label, and the marker differs in SHAPE.
-    expect(html).toContain('Awaiting project data');
+    expect(html).toMatch(/Awaiting /);
     expect(html).toContain('rotate(45deg)');
   });
 
