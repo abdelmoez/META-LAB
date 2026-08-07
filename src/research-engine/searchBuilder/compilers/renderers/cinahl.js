@@ -5,13 +5,16 @@
  * Truncation '*', wildcard '#', N/n proximity. Limits: PY range, LA language, PT
  * publication type.
  *
- * 100.md §3 — NO `renderHeading` hook, deliberately. CINAHL Headings are an EBSCO
- * thesaurus; although many overlap with MeSH, EBSCO publishes no MeSH crosswalk and
- * the nursing/allied-health headings diverge. The old compiler pasted the MeSH string
- * straight into `(MH "…+")`, which silently returns zero for every heading CINAHL
- * spells differently. Controlled terms now fall through the shared layer to a CINAHL
- * free-text phrase with an explicit "no verified CINAHL Heading equivalent" warning;
- * the real heading can be pasted through this database's manual override.
+ * 100.md §§3-4 — CINAHL Headings: (MH "Heading+") explodes, (MH "Heading") does not.
+ * The hook exists, but nothing reaches it TODAY: CINAHL Headings are an EBSCO thesaurus
+ * and although many overlap with MeSH, EBSCO publishes no crosswalk and the
+ * nursing/allied-health headings diverge — so the registry ships none and a MeSH concept
+ * compiles to CINAHL free text with an explicit "no verified CINAHL Heading equivalent"
+ * warning. The old compiler pasted the MeSH string straight into `(MH "…+")`, which
+ * silently returns zero for every heading CINAHL spells differently.
+ *
+ * Keeping the hook is what makes the documented extension path REAL: register a
+ * mesh→cinahl crosswalk and this renderer emits native syntax with no edit here.
  */
 import { S, fieldBody, langName, year, uniq } from '../shared.js';
 
@@ -45,6 +48,9 @@ export function ebscoFilters(filters) {
 
 export const cinahl = {
   id: 'cinahl',
+  renderHeading(plan) {
+    return `(MH "${S(plan.heading).replace(/"/g, '')}${plan.explode ? '+' : ''}")`;
+  },
   renderFree: ebscoFree,
   buildFilters(filters) { return ebscoFilters(filters); },
 };

@@ -38,8 +38,11 @@ describe('describeTerm — one plain sentence per term', () => {
   it('describes a subject heading by its MEANING and its cross-database behaviour', () => {
     const d = describeTerm(mesh('type 2 diabetes', 'Diabetes Mellitus, Type 2'));
     expect(d.kind).toBe(TERM_KIND.SUBJECT);
-    // The natural form, because that is what non-MeSH databases actually search.
-    expect(d.text).toBe('Type 2 Diabetes Mellitus');
+    // The TOPIC is the heading as indexed; the WORDS are the exact free-text form a
+    // database without that subject list receives. Both are named, because they differ.
+    expect(d.text).toBe('Diabetes Mellitus, Type 2');
+    expect(d.reading).toContain('filed under the topic “Diabetes Mellitus, Type 2”');
+    expect(d.reading).toContain('the words “Type 2 Diabetes Mellitus”');
     expect(d.reading).toContain('filed under the topic');
     expect(d.reading).toContain('where a database has no subject list');
     // No syntax anywhere.
@@ -130,11 +133,41 @@ describe('interpretStrategy', () => {
     expect(compileStrategy(s, 'pubmed').query).toBe('kept[tiab]');
   });
 
-  it('excludes the legacy time-frame group (it never compiles)', () => {
+  it('hides an EMPTY legacy time-frame group without inviting the user to fill it', () => {
     const s = { concepts: [grp('c1', 'C', [ft('x')]), { id: 't', label: 'Timeframe', picoField: 'T', op: 'AND', terms: [], note: '2010-2020' }], filters: {} };
     const m = interpretStrategy(s);
     expect(m.groups).toHaveLength(1);
     expect(m.skipped).toEqual([]);
+  });
+
+  it('but EXPLAINS a time-frame group that actually holds terms — it compiles like any other', () => {
+    // Regression: skipping it unconditionally shifted every following join, so an AND
+    // search was described as OR.
+    const s = {
+      concepts: [
+        grp('c1', 'Population', [ft('stroke')], 'OR'),
+        { id: 't', label: 'Time Frame', picoField: 'T', op: 'AND', terms: [ft('2015')] },
+        grp('c3', 'Outcomes', [ft('mortality')]),
+      ],
+      filters: {},
+    };
+    const m = interpretStrategy(s);
+    expect(m.groups.map((g) => [g.name, g.join])).toEqual([['Population', null], ['Time Frame', 'OR'], ['Outcomes', 'AND']]);
+    expect(m.summary).toBe('Find articles about Population, or about Time Frame, and also about Outcomes.');
+    // …and the compiler agrees.
+    expect(compileStrategy(s, 'pubmed').query).toBe('((stroke[tiab] OR 2015[tiab]) AND mortality[tiab])');
+  });
+
+  it('does not announce limits over a search that does not exist (matches filtersApplied)', () => {
+    const filters = { dateFrom: '2010', dateTo: '2025', languages: ['en'], pubTypes: ['Randomized Controlled Trial'] };
+    expect(interpretStrategy({ ...STRATEGY, filters }).limits.length).toBe(3);
+    // No live terms → the compilers refuse to apply the limits, so neither do we.
+    for (const concepts of [[], [grp('c1', 'C', [ft('x', { disabled: true })])]]) {
+      const m = interpretStrategy({ concepts, filters });
+      expect(m.isEmpty).toBe(true);
+      expect(m.limits).toEqual([]);
+      expect(compileStrategy({ concepts, filters }, 'pubmed').filtersApplied).toBe(false);
+    }
   });
 
   it('carries the limits and stays empty-safe', () => {
@@ -143,6 +176,54 @@ describe('interpretStrategy', () => {
     expect(empty).toMatchObject({ isEmpty: true, summary: '', groups: [], limits: [] });
     expect(interpretStrategy(null).isEmpty).toBe(true);
     expect(interpretStrategy({ concepts: 'junk' }).isEmpty).toBe(true);
+  });
+
+  it('reads `op` as STRICTLY as the compilers do', () => {
+    // A hand-edited / imported lowercase 'or' is AND everywhere else, so it must read
+    // AND here too — describing it as OR would be the opposite Boolean.
+    const s = { concepts: [grp('c1', 'A', [ft('alpha')], 'or'), grp('c2', 'B', [ft('beta')])], filters: {} };
+    expect(interpretStrategy(s).groups[1].join).toBe('AND');
+    expect(compileStrategy(s, 'pubmed').query).toBe('alpha[tiab] AND beta[tiab]');
+  });
+
+  it('folds the legacy field aliases normalize.js folds', () => {
+    expect(describeTerm(ft('alpha', { field: 'title' })).reading).toContain('in the title');
+    expect(describeTerm(ft('alpha', { field: 'Abstract' })).reading).toContain('in the abstract');
+    expect(describeTerm(ft('alpha', { field: 'nonsense' })).reading).toContain('in the title or abstract');
+    expect(compileStrategy({ concepts: [grp('c', 'C', [ft('alpha', { field: 'title' })])], filters: {} }, 'pubmed').query)
+      .toBe('alpha[ti]');
+  });
+
+  it('FUZZ — the described chain matches the compiled chain for every shape', () => {
+    // Exhaustive over 4 concepts x {live, empty, time-frame} x {AND, OR}: the operators
+    // the panel shows must be the operators PubMed actually receives.
+    const OPS = ['AND', 'OR'];
+    const KINDS = ['live', 'empty', 'timeframe-live', 'timeframe-empty'];
+    let checked = 0;
+    const rec = (concepts, depth) => {
+      if (depth === 3) {
+        const s = { concepts, filters: {} };
+        const model = interpretStrategy(s);
+        const query = compileStrategy(s, 'pubmed').query;
+        // Operators between surviving blocks, read straight off the compiled string.
+        const compiled = (query.match(/\b(AND|OR)\b/g) || []);
+        const described = model.groups.slice(1).map((g) => g.join);
+        expect(described, `shape ${JSON.stringify(concepts.map((c) => [c.picoField || '-', c.op, c.terms.length]))} -> ${query}`)
+          .toEqual(compiled);
+        checked++;
+        return;
+      }
+      for (const kind of KINDS) {
+        for (const op of OPS) {
+          const i = depth + 1;
+          const c = { id: `c${i}`, label: `C${i}`, op, terms: kind.endsWith('empty') ? [] : [ft(`t${i}`)] };
+          if (kind.startsWith('timeframe')) c.picoField = 'T';
+          rec([...concepts, c], depth + 1);
+        }
+      }
+    };
+    rec([], 0);
+    expect(checked).toBe(8 ** 3);
   });
 
   it('falls back to a positional name for an unnamed concept', () => {

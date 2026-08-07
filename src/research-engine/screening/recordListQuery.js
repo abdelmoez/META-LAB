@@ -41,6 +41,34 @@ export function fastListEligible(q = {}) {
 }
 
 /**
+ * pageWindow({ firstPage, page, pages, total, limit }) — 100.md §13. What the record
+ * list can still load, given that the loaded rows are a CONTIGUOUS run of pages
+ * `firstPage…page`.
+ *
+ * Before Resume Screening the run always started at page 1, so "how many are left"
+ * could be read off `records.length` vs `total`. Resume jumps straight to the page
+ * holding the article the reviewer stopped at, which makes that arithmetic wrong in
+ * both directions: it would promise more records ahead than exist, and it would leave
+ * the pages BEFORE the jump silently unreachable.
+ *
+ * Returns { hasEarlier, earlierCount, hasMore, remaining } — all non-negative.
+ * Pure; no DB.
+ */
+export function pageWindow({ firstPage = 1, page = 1, pages = 1, total = 0, limit = 50 } = {}) {
+  const lim = Number(limit) > 0 ? Math.floor(Number(limit)) : 50;
+  const first = Math.max(1, Math.floor(Number(firstPage) || 1));
+  const last = Math.max(first, Math.floor(Number(page) || 1));
+  const nPages = Math.max(1, Math.floor(Number(pages) || 1));
+  const nTotal = Math.max(0, Math.floor(Number(total) || 0));
+  return {
+    hasEarlier: first > 1,
+    earlierCount: Math.min(nTotal, (first - 1) * lim),
+    hasMore: last < nPages,
+    remaining: Math.max(0, nTotal - (last * lim)),
+  };
+}
+
+/**
  * buildFastListQuery — the Prisma where/orderBy for an eligible request.
  * Ordering matches the in-memory path (createdAt asc) with an id tiebreak so
  * skip/take pagination is stable across requests when createdAt ties (bulk imports

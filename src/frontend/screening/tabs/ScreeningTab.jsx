@@ -34,6 +34,9 @@ import EligibilityValidationPanel from '../eligibility/EligibilityValidationPane
 import { rankItems } from '../../../research-engine/screening/ai/ranking.js';
 import { parseScreeningShortcuts, DEFAULT_SCREENING_SHORTCUTS, keyLabel } from '../screeningShortcuts.js';
 import { shouldWindow, computeListWindow, measuredRowHeight, DEFAULT_ROW_HEIGHT } from '../lib/listWindow.js';
+// 100.md §13 — pure page-window arithmetic (what is still loadable before/after the
+// contiguous run of pages currently held), shared with the list-query module's tests.
+import { pageWindow } from '../../../research-engine/screening/recordListQuery.js';
 import { api } from '../../api-client/apiClient.js';
 import Tooltip from '../../components/Tooltip.jsx';
 
@@ -173,6 +176,10 @@ export default function ScreeningTab({ pid, project, access, refreshProject, use
   const [records, setRecords]       = useState([]);
   const [total, setTotal]           = useState(0);
   const [page, setPage]             = useState(1);
+  // 100.md §13 — the LOWEST loaded page. Normally 1; after Resume Screening jumps into
+  // the middle of a long list the loaded window starts there, and "earlier records" /
+  // "load more" / the remaining count all read from this pair.
+  const [firstPage, setFirstPage]   = useState(1);
   const [pages, setPages]           = useState(1);
   const [loading, setLoading]       = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
@@ -283,11 +290,21 @@ export default function ScreeningTab({ pid, project, access, refreshProject, use
   }, [queueMode, aiBand]);
 
   // ── Load a page of records (reset = page 1 / append = next page) ──────────
-  const loadRecords = useCallback(async ({ reset = false, p, s, f, select } = {}) => {
-    // 100.md §13 — a reset normally lands on page 1, but Resume Screening needs to jump
-    // straight to the page that holds the article the reviewer stopped at (paging there
-    // one request at a time would be dozens of round-trips on a real review).
-    const pageNum = reset ? (p ?? 1) : (p ?? page);
+  /**
+   * Load a window of the record list.
+   *   reset            replace the list (optionally starting at page `p`)
+   *   direction 'next' append the page after the last loaded one
+   *   direction 'prev' PREPEND the page before the first loaded one
+   *
+   * 100.md §13 — a reset normally lands on page 1, but Resume Screening jumps straight
+   * to the page holding the article the reviewer stopped at (paging there one request
+   * at a time would be dozens of round-trips on a real review). The loaded window is
+   * therefore a CONTIGUOUS run of pages `firstPage…page`, not always `1…page`, which is
+   * what `hasMore` / `hasEarlier` / the remaining count below are derived from.
+   */
+  const loadRecords = useCallback(async ({ reset = false, direction = 'next', p, s, f, select } = {}) => {
+    const pageNum = reset ? (p ?? 1) : (p ?? (direction === 'prev' ? firstPage - 1 : page + 1));
+    if (!reset && (pageNum < 1)) return false;
     const searchVal = s !== undefined ? s : searchRef.current;
     const filterVal = f !== undefined ? f : filterRef.current;
     reset ? setLoading(true) : setLoadingMore(true);
@@ -303,10 +320,13 @@ export default function ScreeningTab({ pid, project, access, refreshProject, use
       }
       const data = await screeningApi.listRecords(pid, params);
       const recs = data.records || [];
-      setRecords(prev => (reset ? recs : [...prev, ...recs]));
+      recordsRef.current = reset ? recs : (direction === 'prev' ? [...recs, ...recordsRef.current] : [...recordsRef.current, ...recs]);
+      setRecords(recordsRef.current);
       setTotal(data.total || 0);
       setPages(data.pages || 1);
-      setPage(pageNum);
+      if (reset) { setPage(pageNum); setFirstPage(pageNum); }
+      else if (direction === 'prev') setFirstPage(pageNum);
+      else setPage(pageNum);
       if (reset) {
         // 100.md §13 — an explicit `select` (the resume target) wins; otherwise keep the
         // current selection if it survived the reload, else fall back to the first row.
@@ -315,18 +335,28 @@ export default function ScreeningTab({ pid, project, access, refreshProject, use
           return recs.some(r => r.id === prev) ? prev : (recs[0]?.id || null);
         });
       }
+      return true;
     } catch (e) {
       setListError(e.message || 'Failed to load records');
+      // Report the failure so a caller (Resume Screening) does not announce success
+      // over a list that never loaded.
+      return false;
     } finally {
       reset ? setLoading(false) : setLoadingMore(false);
     }
-  }, [pid, page]);
+  }, [pid, page, firstPage]);
 
   // Refetch a single record's row after a decision so reviewer indicators /
   // quorum / disputed flags stay in sync without a full list reload.
+  // 100.md §13 — this used to always refetch page 1 (limit 200), so a record outside
+  // the first 200 silently never refreshed. Resume Screening makes that the NORMAL
+  // case (it lands you on page 9 of a real review), so refetch the page the record is
+  // actually on: the loaded window is the contiguous run firstPage…page.
   const refreshRow = useCallback(async (rid) => {
     try {
-      const params = { page: 1, limit: 200 };
+      const idx = recordsRef.current.findIndex(r => r.id === rid);
+      const targetPage = idx >= 0 ? firstPage + Math.floor(idx / LIMIT) : firstPage;
+      const params = { page: targetPage, limit: LIMIT };
       if (searchRef.current) params.search = searchRef.current;
       if (filterRef.current && filterRef.current !== 'all') params.filter = filterRef.current;
       if (keywordsRef.current) params.keywords = keywordsRef.current;
@@ -335,7 +365,7 @@ export default function ScreeningTab({ pid, project, access, refreshProject, use
       if (fresh) setRecords(prev => prev.map(r => (r.id === rid ? fresh : r)));
       setTotal(data.total ?? total);
     } catch { /* non-fatal */ }
-  }, [pid, total]);
+  }, [pid, total, firstPage]);
 
   // Initial / project-change load.
   useEffect(() => {
@@ -347,6 +377,9 @@ export default function ScreeningTab({ pid, project, access, refreshProject, use
     // set BEFORE loadRecords so the first page-1 load sends no stale aiQueue/aiBand.
     setQueueMode('default'); setAiBand('all');
     queueModeRef.current = 'default'; aiBandRef.current = 'all';
+    // 100.md §13 — the page window belongs to the OLD project; reset it synchronously so
+    // a realtime event arriving mid-switch cannot reload "page 9" of a fresh project.
+    setFirstPage(1); firstPageRef.current = 1;
     aiQueueMounted.current = false;
     loadRecords({ reset: true, s: '', f: 'all' });
     setSelectedIncl([]); setSelectedExcl([]); keywordsRef.current = '';
@@ -366,11 +399,20 @@ export default function ScreeningTab({ pid, project, access, refreshProject, use
   // (promotion to full text, conflict resolution), so the resume point is recomputed
   // alongside the list. Held in a ref because refreshResume is declared further down.
   const refreshResumeRef = useRef(() => {});
+  const firstPageRef = useRef(1);
+  useEffect(() => { firstPageRef.current = firstPage; }, [firstPage]);
 
   useRealtime({
     'decision.saved': (ev) => {
       if (!ev || ev.projectId === pid || ev.projectId === undefined) {
-        loadRecords({ reset: true, s: searchRef.current, f: filterRef.current });
+        // 100.md §§13-14 — refresh the window the reviewer is STANDING IN, not page 1.
+        // In a two-reviewer project a teammate decides constantly; snapping a reviewer
+        // who resumed at article 412 back to article 1 on every one of those events
+        // would undo the whole point of Resume Screening.
+        loadRecords({
+          reset: true, p: firstPageRef.current,
+          s: searchRef.current, f: filterRef.current, select: selectedIdRef.current,
+        });
         refreshResumeRef.current();
       }
     },
@@ -398,9 +440,13 @@ export default function ScreeningTab({ pid, project, access, refreshProject, use
 
   // Re-filter the list when the keyword selection changes (skip first mount).
   const kwFirst = useRef(true);
+  // 100.md §13 — set by doResume when it clears the chips programmatically, so this
+  // effect does not fire a competing page-1 load against the resume load.
+  const kwSuppressRef = useRef(false);
   useEffect(() => {
     keywordsRef.current = keywordsParam;
     if (kwFirst.current) { kwFirst.current = false; return; }
+    if (kwSuppressRef.current) { kwSuppressRef.current = false; return; }
     loadRecords({ reset: true });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [keywordsParam]);
@@ -424,7 +470,15 @@ export default function ScreeningTab({ pid, project, access, refreshProject, use
 
   function loadMore() {
     if (loadingMore) return;
-    loadRecords({ reset: false, p: page + 1 });
+    loadRecords({ reset: false, direction: 'next' });
+  }
+  // 100.md §13 — the mirror of "Load more". Without it, a resume jump into page 9 would
+  // make pages 1-8 unreachable without clearing the filters, which is exactly the
+  // "saved article becomes inaccessible with no explanation" trap §15 warns about —
+  // in reverse.
+  function loadEarlier() {
+    if (loadingMore || firstPage <= 1) return;
+    loadRecords({ reset: false, direction: 'prev' });
   }
 
   // ── Select a record → mark opened ────────────────────────────────────────
@@ -455,6 +509,9 @@ export default function ScreeningTab({ pid, project, access, refreshProject, use
   const [resuming, setResuming] = useState(false);
   const [resumeNote, setResumeNote] = useState('');
   const [scrollToSelected, setScrollToSelected] = useState(false);
+  // Stable identity: the LeftColumn scroll effect lists it as a dependency, so an
+  // inline arrow would re-run that effect on every render of the tab.
+  const clearScrollToSelected = useCallback(() => setScrollToSelected(false), []);
 
   const refreshResume = useCallback(() => {
     if (!canScreen) { setResume(null); return; }
@@ -481,15 +538,34 @@ export default function ScreeningTab({ pid, project, access, refreshProject, use
         setResumeNote((r && r.message) || 'There is nothing left to screen here.');
         return;
       }
-      const narrowed = !!searchRef.current || filterRef.current !== 'all' || !!keywordsRef.current;
+      const hadKeywords = !!keywordsRef.current;
+      const narrowed = !!searchRef.current || filterRef.current !== 'all' || hadKeywords;
       if (narrowed) {
+        // Clearing the keyword chips changes `keywordsParam`, whose effect issues its
+        // OWN `loadRecords({reset:true})` for page 1 — which would race the resume load
+        // below and (landing later) dump the reviewer back at article 1 while the note
+        // claimed they were resumed. Suppress exactly that one reload; the resume load
+        // already carries the cleared filters.
+        if (hadKeywords) kwSuppressRef.current = true;
         searchRef.current = ''; filterRef.current = 'all'; keywordsRef.current = '';
         setSearch(''); setFilter('all'); setSelectedIncl([]); setSelectedExcl([]);
       }
+      // A pending search keystroke would otherwise fire ~300ms later and re-filter the
+      // list right back off the resumed article.
+      clearTimeout(searchTimer.current);
+
       if (!narrowed && recordsRef.current.some(x => x.id === r.recordId)) {
         selectRecord(r.recordId);
       } else {
-        await loadRecords({ reset: true, p: r.page || 1, s: '', f: 'all', select: r.recordId });
+        const ok = await loadRecords({ reset: true, p: r.page || 1, s: '', f: 'all', select: r.recordId });
+        if (!ok) { setResumeNote('Could not load that part of the list — try again in a moment.'); return; }
+        // Only select what actually arrived: loadRecords' own fallback already picked a
+        // sane row if the target was not in the page (a concurrent delete, say), and
+        // pointing `selectedId` at a record that is not in the list blanks the reader.
+        if (!recordsRef.current.some(x => x.id === r.recordId)) {
+          setResumeNote(`${r.message} That article is no longer in the list, so the nearest one is open.`);
+          return;
+        }
         selectRecord(r.recordId);
       }
       setScrollToSelected(true);
@@ -615,14 +691,19 @@ export default function ScreeningTab({ pid, project, access, refreshProject, use
           filter={filter} onFilterChange={onFilterChange}
           selectedId={selectedId} onSelect={selectRecord}
           blindMode={blindMode}
-          hasMore={records.length < total} onLoadMore={loadMore}
+          /* 100.md §13 — derived from the PAGE WINDOW, not from records.length: after a
+             resume jump the loaded run starts at firstPage, so `records.length < total`
+             would promise 499 more when only 399 lie ahead — and would hide the pages
+             before the jump entirely. (pageWindow is pure + unit-tested.) */
+          {...pageWindow({ firstPage, page, pages, total, limit: LIMIT })}
+          onLoadMore={loadMore} onLoadEarlier={loadEarlier}
           shortcutPrefs={shortcutPrefs}
           onCollapse={() => setPanel('leftCollapsed', true)}
           ai={ai} queueMode={queueMode} onQueueMode={setQueueMode} aiBand={aiBand} onAiBand={setAiBand} onRefreshRankings={refreshRankings}
           /* 100.md §§12-15 */
           resume={resume} resuming={resuming} resumeNote={resumeNote} onResume={doResume}
           canScreen={canScreen}
-          scrollToSelected={scrollToSelected} onScrolledToSelected={() => setScrollToSelected(false)}
+          scrollToSelected={scrollToSelected} onScrolledToSelected={clearScrollToSelected}
         />
       )}
 
@@ -698,7 +779,8 @@ function CollapsedRail({ side, label, hint, onExpand }) {
 function LeftColumn({
   records, total, loading, loadingMore, listError, onRetry,
   search, onSearchChange, filter, onFilterChange,
-  selectedId, onSelect, blindMode, hasMore, onLoadMore,
+  selectedId, onSelect, blindMode,
+  hasMore, remaining, onLoadMore, hasEarlier, earlierCount, onLoadEarlier,
   shortcutPrefs, onCollapse,
   ai, queueMode, onQueueMode, aiBand, onAiBand, onRefreshRankings,
   resume, resuming, resumeNote, onResume, canScreen,
@@ -825,6 +907,15 @@ function LeftColumn({
           </div>
         ) : (
           <>
+            {/* 100.md §13 — the mirror of "Load more": after Resume Screening lands you
+                in the middle of a long list, the records BEFORE it must stay reachable. */}
+            {hasEarlier && (
+              <div data-testid="screening-load-earlier" style={{ background: C.surf, borderBottom: `1px solid ${C.brd}`, padding: '10px 14px', textAlign: 'center', flexShrink: 0 }}>
+                <Button variant="ghost" onClick={onLoadEarlier} disabled={loadingMore} full style={{ fontSize: 12, padding: '7px 14px' }}>
+                  {loadingMore ? 'Loading…' : `↑ Earlier records (${Number(earlierCount || 0).toLocaleString()})`}
+                </Button>
+              </div>
+            )}
             {windowed && <div aria-hidden="true" style={{ height: win.topPad, flexShrink: 0 }} />}
             <div ref={rowsRef} style={{ flexShrink: 0 }}>
               {visibleRecords.map(r => (
@@ -835,7 +926,7 @@ function LeftColumn({
             {hasMore && (
               <div style={{ position: 'sticky', bottom: 0, background: C.surf, borderTop: `1px solid ${C.brd}`, padding: '10px 14px', textAlign: 'center', flexShrink: 0 }}>
                 <Button variant="ghost" onClick={onLoadMore} disabled={loadingMore} full style={{ fontSize: 12, padding: '7px 14px' }}>
-                  {loadingMore ? 'Loading…' : `Load more (${total - records.length})`}
+                  {loadingMore ? 'Loading…' : `Load more (${Number(remaining || 0).toLocaleString()})`}
                 </Button>
               </div>
             )}

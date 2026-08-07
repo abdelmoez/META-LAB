@@ -171,6 +171,48 @@ test.describe('Screening — Resume Screening (100.md §§12-15)', () => {
     await expect(sift.selectedRow).toBeVisible();
   });
 
+  test('resuming past page 1 keeps the earlier records reachable and counts honestly (§13)', async ({ page, screeningProject }) => {
+    const pid = screeningProject.project.id;
+    const sift = screeningProject.siftId;
+
+    // Push the project past one page (LIMIT = 50) in a single import, then decide the
+    // first 60 so the resume target lands on page 2.
+    const extra = Array.from({ length: 92 }, (_, i) => ({
+      title: `Bulk QA article ${String(i + 1).padStart(3, '0')}`,
+      year: 2020, doi: `10.9999/bulkqa.${i + 1}`, abstract: `Abstract ${i + 1}`,
+    }));
+    await api.importScreeningRecords(page.request, sift, { content: api.makeRis(extra) });
+
+    const listed = await page.request.get(`/api/screening/projects/${sift}/records?page=1&limit=200`);
+    const ids: string[] = (await listed.json()).records.map((r: { id: string }) => r.id);
+    expect(ids.length).toBe(100); // 8 seeded + 92 bulk
+    for (const id of ids.slice(0, 60)) {
+      await page.request.post(`/api/screening/projects/${sift}/records/${id}/decision`, { data: { decision: 'exclude' } });
+    }
+
+    const sp = new ScreeningPage(page);
+    await sp.openWorkbench(pid);
+    await expect(sp.rows).toHaveCount(50);                                  // page 1
+    await expect(sp.main.getByRole('button', { name: /Load more \(50\)/ })).toBeVisible();
+    await expect(sp.main.getByTestId('screening-load-earlier')).toHaveCount(0);
+
+    await sp.resumeButton.click();
+    // Jumped to page 2: the last 50 rows, nothing further ahead, 50 behind — and the
+    // "Load more" count must not claim the 50 records the jump skipped past.
+    await expect(sp.resumeNote).toContainText('article 61');
+    await expect(sp.rows).toHaveCount(50);
+    await expect(sp.selectedRow).toHaveAttribute('data-record-id', ids[60]);
+    await expect(sp.main.getByRole('button', { name: /Load more/ })).toHaveCount(0);
+    await expect(sp.main.getByRole('button', { name: /Earlier records \(50\)/ })).toBeVisible();
+
+    // §15 in reverse — the skipped-over records are one click away, not stranded.
+    await sp.main.getByRole('button', { name: /Earlier records/ }).click();
+    await expect(sp.rows).toHaveCount(100);
+    await expect(sp.rows.first()).toHaveAttribute('data-record-id', ids[0]);
+    await expect(sp.selectedRow).toHaveAttribute('data-record-id', ids[60]);
+    await expect(sp.main.getByTestId('screening-load-earlier')).toHaveCount(0);
+  });
+
   test('resume progress is per USER — a second reviewer starts from their own place (§14)', async ({ page, screeningProject, normalContext }) => {
     const pid = screeningProject.project.id;
     const sift = new ScreeningPage(page);

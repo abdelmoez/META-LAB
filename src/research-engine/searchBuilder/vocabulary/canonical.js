@@ -54,12 +54,26 @@ const MAX_LABEL = 300;
 export function naturalOrderLabel(label) {
   const s = S(label).trim().slice(0, MAX_LABEL);
   if (!s) return '';
-  // Only a comma-separated inversion is de-inverted. Parenthetical qualifiers that
-  // MeSH appends for disambiguation ("Cranial Nerves (Anatomy)") are left alone.
+  // Parenthetical qualifiers MeSH appends for disambiguation ("Cranial Nerves
+  // (Anatomy)") are left alone; only a comma matters here.
   const parts = s.split(/\s*,\s+/).map((p) => p.trim()).filter(Boolean);
-  if (parts.length < 2) return s;
-  const [lead, ...rest] = parts;
-  return [...rest.reverse(), lead].join(' ');
+
+  // ── When NOT to de-invert ──────────────────────────────────────────────────
+  // A comma in a MeSH heading is not always an inversion. Reversing the segments of
+  // an ENUMERATION or a check-tag produces a phrase that exists nowhere:
+  //   "Health Knowledge, Attitudes, Practice" → "Practice Attitudes Health Knowledge"
+  //   "Infant, Newborn, Diseases"             → "Diseases Newborn Infant"
+  //   "Aged, 80 and over"                     → "80 and over Aged"
+  // Those clauses return zero in every database — the exact recall loss this layer
+  // exists to prevent, in the opposite direction. So de-invert ONLY the classic
+  // two-segment "significant term, modifier" form, and only when the trailing segment
+  // reads as a modifier: it starts with a letter (not a digit or a range) and carries
+  // no conjunction.
+  if (parts.length !== 2) return s;
+  const [lead, qualifier] = parts;
+  if (!/^[A-Za-z(]/.test(qualifier)) return s;
+  if (/\b(and|or)\b/i.test(qualifier)) return s;
+  return `${qualifier} ${lead}`;
 }
 
 /** Unique, order-preserving, case-insensitive. */
@@ -98,8 +112,15 @@ function uniqCI(list) {
  * expansion) can widen the fallback without touching a single renderer.
  */
 export function freeTextFormsFor({ preferredLabel, naturalLabel, rawText }) {
-  const forms = uniqCI([S(naturalLabel).trim(), S(preferredLabel).trim(), S(rawText).trim()]);
-  return forms.slice(0, 1);
+  const chosen = uniqCI([S(naturalLabel).trim(), S(preferredLabel).trim(), S(rawText).trim()])[0] || '';
+  if (!chosen) return [];
+  // A heading naturalOrderLabel declined to de-invert (an enumeration such as "Health
+  // Knowledge, Attitudes, Practice", or a check-tag such as "Aged, 80 and over") still
+  // carries its comma, and no paper contains that string as a phrase. Search its LEAD
+  // segment instead: by the cataloguing convention that IS the significant term, so the
+  // clause is broader than intended but never nonsense and never zero.
+  const form = chosen.includes(',') ? chosen.split(/\s*,\s*/)[0].trim() : chosen;
+  return form ? [form] : [];
 }
 
 /**

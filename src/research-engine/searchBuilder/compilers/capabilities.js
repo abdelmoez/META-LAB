@@ -6,14 +6,16 @@
  * Fields:
  *   vocabSystem   'mesh'|'emtree'|'cinahl'|'apa'|'decs'|'none' — the thesaurus this
  *                 database is INDEXED with (matches result.vocab.system)
- *   controlledVocab  100.md §3 — true only when Pecan can target that thesaurus with a
- *                 heading it can VERIFY. It is therefore false for Embase (Emtree),
- *                 CINAHL (CINAHL Headings) and PsycInfo (APA Thesaurus): those
- *                 vocabularies are proprietary, no authoritative MeSH crosswalk is
- *                 published, and inventing a heading is exactly what 100.md forbids.
- *                 `vocabSystem` still names the real thesaurus so the compiler can say
- *                 WHICH vocabulary it could not reach; those databases fall back to a
- *                 properly-formatted free-text phrase (see compilers/shared.js).
+ *   controlledVocab  the database has a subject-heading field this compiler can TARGET.
+ *                 It says nothing about whether a given concept will REACH it — that is
+ *                 the vocabulary registry's call (../vocabulary/mappings.js), which
+ *                 ships no cross-vocabulary crosswalk. So Embase/CINAHL/PsycInfo declare
+ *                 true (they do have Emtree / CINAHL Headings / APA descriptors and the
+ *                 renderers can spell them), yet a MeSH concept still compiles to a
+ *                 properly-formatted free-text phrase there, because no authoritative
+ *                 crosswalk exists and inventing a heading is what 100.md §3 forbids.
+ *                 Separating the two is what makes "register a crosswalk, change
+ *                 nothing else" true end to end.
  *   explosion        supports explode / no-explode CONTROL on subject headings
  *   explosionDefault when explosion is false: 'explode' | 'exact' — which way the
  *                 database's heading field behaves, so the mismatch is reported in the
@@ -45,11 +47,11 @@ export const CAPABILITIES = {
   },
   embase: {
     id: 'embase', label: 'Embase',
-    // 100.md §3 — Embase is indexed with Emtree, but Emtree is Elsevier-proprietary and
-    // no authoritative MeSH↔Emtree crosswalk exists, so Pecan cannot name the equivalent
-    // heading. Subject terms compile to verified Embase free text instead of an invented
-    // '…'/exp clause.
-    vocabSystem: 'emtree', controlledVocab: false, explosion: true, fieldTags: true,
+    // 100.md §§3-4 — Embase HAS a heading field (Emtree), so the compiler can target it;
+    // whether a given concept reaches it is the vocabulary registry's call, not a
+    // capability flag. No public MeSH↔Emtree crosswalk exists, so today a MeSH concept
+    // falls back to verified Embase free text instead of an invented '…'/exp clause.
+    vocabSystem: 'emtree', controlledVocab: true, explosion: true, fieldTags: true,
     phrase: 'single', truncation: '*', truncationMinStem: 4, wildcard: '?',
     proximity: { op: 'NEAR/n', syntax: "'a' NEAR/3 'b'" },
     booleans: ['AND', 'OR', 'NOT'], filters: { date: true, language: true, pubType: false },
@@ -134,10 +136,11 @@ export const CAPABILITIES = {
   },
   cinahl: {
     id: 'cinahl', label: 'CINAHL',
-    // 100.md §3 — CINAHL Headings are an EBSCO thesaurus with no published MeSH
-    // crosswalk; pasting a MeSH string into (MH "…") silently returns zero whenever the
-    // two vocabularies word a concept differently. Free text is the honest translation.
-    vocabSystem: 'cinahl', controlledVocab: false, explosion: true, fieldTags: true,
+    // 100.md §§3-4 — CINAHL HAS a heading field, so the compiler can target it; whether a
+    // concept reaches it is the registry's call. EBSCO publishes no MeSH crosswalk, so a
+    // MeSH concept falls back to free text rather than a (MH "…") clause that silently
+    // returns zero whenever the two vocabularies word a concept differently.
+    vocabSystem: 'cinahl', controlledVocab: true, explosion: true, fieldTags: true,
     phrase: 'double', truncation: '*', truncationMinStem: 0, wildcard: '#',
     proximity: { op: 'N/n', syntax: 'a N3 b (W/n for order)' },
     booleans: ['AND', 'OR', 'NOT'], filters: { date: true, language: true, pubType: true },
@@ -149,9 +152,11 @@ export const CAPABILITIES = {
   },
   psycinfo: {
     id: 'psycinfo', label: 'PsycINFO',
-    // 100.md §3 — the APA Thesaurus of Psychological Index Terms is proprietary and
-    // worded quite differently from MeSH; DE "<MeSH heading>" matched almost nothing.
-    vocabSystem: 'apa', controlledVocab: false, explosion: true, fieldTags: true,
+    // 100.md §§3-4 — PsycInfo HAS a descriptor field, so the compiler can target it;
+    // whether a concept reaches it is the registry's call. The APA Thesaurus is
+    // proprietary and worded quite differently from MeSH, so a MeSH concept falls back to
+    // free text rather than a DE "<MeSH heading>" clause that matched almost nothing.
+    vocabSystem: 'apa', controlledVocab: true, explosion: true, fieldTags: true,
     phrase: 'double', truncation: '*', truncationMinStem: 0, wildcard: '#',
     proximity: { op: 'N/n', syntax: 'a N3 b (W/n for order)' },
     booleans: ['AND', 'OR', 'NOT'], filters: { date: true, language: true, pubType: true },

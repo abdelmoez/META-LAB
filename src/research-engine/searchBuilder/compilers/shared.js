@@ -280,7 +280,13 @@ export function controlledClause(term, cap, hooks, sink) {
   const heading = concept.preferredLabel;
   const sourceName = systemLabel(concept.sourceSystem);
 
-  if (plan.status === 'native' && typeof hooks.renderHeading === 'function') {
+  // An adapter that resolved a heading but cannot SPELL it (a host-registered renderer
+  // with no renderHeading hook) is a different failure from "no equivalent exists" — say
+  // so, and still fall back through the concept's natural-language forms rather than the
+  // raw inverted catalogue string.
+  const cannotSpell = plan.status === 'native' && typeof hooks.renderHeading !== 'function';
+
+  if (plan.status === 'native' && !cannotSpell) {
     vocab.mapped++;
     if (plan.explosionUnsupported) {
       warnings.push({
@@ -296,14 +302,21 @@ export function controlledClause(term, cap, hooks, sink) {
   // ── free-text fallback ────────────────────────────────────────────────────
   vocab.unmapped++;
   vocab.fallback++;
-  const forms = plan.forms && plan.forms.length ? plan.forms : [heading].filter(Boolean);
+  // A native plan carries no `forms` (nothing needed translating), so fall back to the
+  // canonical concept's own free-text forms — never the raw inverted heading.
+  const forms = (plan.forms && plan.forms.length ? plan.forms : concept.freeTextForms).filter(Boolean);
   if (!forms.length) {
     warnings.push({ code: 'VOCAB_EMPTY', message: 'A subject-heading term carried no heading text and was skipped.' });
     return '';
   }
   const shown = forms.map((f) => `"${f}"`).join(' OR ');
 
-  if (plan.reason === FALLBACK_REASON.NO_VOCABULARY) {
+  if (cannotSpell) {
+    warnings.push({
+      code: 'VOCAB_NO_RENDERER',
+      message: `${label} indexes ${sourceName} and “${heading}” resolved to it, but this database's compiler has no subject-heading syntax to write it in; the concept was searched as free text (${shown}).`,
+    });
+  } else if (plan.reason === FALLBACK_REASON.NO_VOCABULARY) {
     unsupported.push({
       feature: 'controlled-vocabulary',
       detail: `${label} indexes no subject headings, so the ${sourceName} concept “${heading}” was searched as free text (${shown}) rather than as invented ${label} syntax.`,

@@ -88,22 +88,35 @@ export function listVocabularyMappings() {
   return [...MAPPINGS.values()].map(({ from, to, confidence, authority }) => ({ from, to, confidence, authority }));
 }
 
-/* ── the identity mapping ──────────────────────────────────────────────────────────
- * MeSH → MeSH. PubMed, PMC, Cochrane CENTRAL and Europe PMC all index MEDLINE's own
- * MeSH descriptors, so the "translation" is the descriptor itself. Declaring it here
- * rather than hardcoding it in four renderers is what keeps the canonical model from
- * being coupled to MeSH (100.md §4: "MeSH is only one vocabulary system") — a future
- * Emtree-indexed database registers `emtree → emtree` the same way. */
-registerVocabularyMapping({
-  from: 'mesh',
-  to: 'mesh',
-  confidence: CONFIDENCE.EXACT,
-  authority: 'NLM MeSH — this database indexes MeSH descriptors directly',
-  translate(concept) {
-    const heading = S(concept && concept.preferredLabel).trim();
-    return heading ? { heading, id: S(concept && concept.sourceId), explodable: true } : null;
-  },
-});
+/** Drop a registered mapping (test isolation / host override rollback). */
+export function removeVocabularyMapping(from, to) {
+  return MAPPINGS.delete(key(from, to));
+}
+/** Restore the shipped registry — no crosswalks, only the built-in identity rule. */
+export function resetVocabularyMappings() {
+  MAPPINGS.clear();
+}
+
+/* ── the identity rule ─────────────────────────────────────────────────────────────
+ * When a concept's OWN vocabulary is the one the target database indexes, there is
+ * nothing to translate — the descriptor IS the heading. PubMed, PMC, Cochrane CENTRAL
+ * and Europe PMC all index MEDLINE's MeSH, so a MeSH concept resolves natively there.
+ *
+ * This is a RULE rather than a registered mesh→mesh entry precisely so the model stays
+ * uncoupled from MeSH (100.md §4: "MeSH is only one vocabulary system"): a term sourced
+ * from Emtree resolves natively against an Emtree-indexed database on the same line,
+ * with no new registration. It also keeps `listVocabularyMappings()` an honest answer to
+ * "which cross-vocabulary crosswalks do we ship?" — today, none. */
+function identityMapping(system) {
+  return {
+    from: system, to: system, confidence: CONFIDENCE.EXACT,
+    authority: 'this database indexes that vocabulary directly — no translation needed',
+    translate: (concept) => {
+      const heading = S(concept && concept.preferredLabel).trim();
+      return heading ? { heading, id: S(concept && concept.sourceId), explodable: true } : null;
+    },
+  };
+}
 
 /**
  * translateConcept(concept, targetSystem) — the decision, as data.
@@ -136,7 +149,8 @@ export function translateConcept(concept, targetSystem) {
   if (!c || !S(c.preferredLabel).trim()) return fallback(FALLBACK_REASON.NO_SOURCE_HEADING);
   if (!target || target === 'none') return fallback(FALLBACK_REASON.NO_VOCABULARY);
 
-  const mapping = lookupVocabularyMapping(c.sourceSystem, target);
+  const source = S(c.sourceSystem).trim().toLowerCase();
+  const mapping = source === target ? identityMapping(target) : lookupVocabularyMapping(source, target);
   if (!mapping) return fallback(FALLBACK_REASON.NO_EQUIVALENT);
 
   let hit = null;

@@ -92,14 +92,23 @@ bespoke `renderControlled` entirely; 4 gained a two-line `renderHeading`.
 
 | Target | Mapping | Basis |
 |---|---|---|
-| PubMed / MEDLINE, PubMed Central, Cochrane CENTRAL, Europe PMC | `mesh → mesh`, confidence **exact** | These databases index MEDLINE's own MeSH descriptors. It is an identity, not a guess. |
-| Embase (Emtree), CINAHL (CINAHL Headings), PsycInfo (APA Thesaurus) | **none** | All three are proprietary and publish no MeSH crosswalk (the UMLS Metathesaurus, the only general crosswalk NLM publishes, does not carry them). 100.md §20: *do not invent mappings.* |
+| PubMed / MEDLINE, PubMed Central, Cochrane CENTRAL, Europe PMC | the built-in **identity rule**, confidence `exact` | These databases index MEDLINE's own MeSH descriptors, so there is nothing to translate. It is a RULE (`sourceSystem === targetSystem`), not a registered `mesh→mesh` entry — which keeps the model uncoupled from MeSH (an Emtree-sourced term resolves natively against Embase on the same line) and keeps `listVocabularyMappings()` an honest answer to "which crosswalks do we ship?": today, **none**. |
+| Embase (Emtree), CINAHL (CINAHL Headings), PsycInfo (APA Thesaurus) | **none** | All three are proprietary and publish no MeSH crosswalk (the UMLS Metathesaurus, the only general crosswalk NLM publishes, does not carry them). 100.md §20: *do not invent mappings.* Their renderers keep a `renderHeading` hook and their capabilities keep `controlledVocab: true` — the database *does* have a heading field; what is missing is the crosswalk, which is the registry's business, not a capability flag. |
 | Scopus, WoS, IEEE, ACM, ProQuest, Google Scholar, ClinicalTrials.gov, ICTRP, grey literature | **none** | No subject-heading thesaurus exists to map to. |
 
 The fallback is a **properly formatted free-text phrase in the target database's own
 grammar and field tags**, using the concept's **natural word order** —
 `"Diabetes Mellitus, Type 2"` → `Type 2 Diabetes Mellitus`, because no abstract contains
-the inverted catalogue form. Each fallback carries an explicit, actionable diagnostic:
+the inverted catalogue form.
+
+De-inversion is applied **conservatively**, because a comma in a MeSH heading is not
+always an inversion. Only the classic two-segment *significant term, modifier* form is
+reordered, and only when the trailing segment reads as a modifier (starts with a letter,
+carries no conjunction). Enumerations and MEDLINE check-tags are left alone and searched
+by their **lead segment** instead — otherwise
+`Health Knowledge, Attitudes, Practice` → `Practice Attitudes Health Knowledge` and
+`Aged, 80 and over` → `80 and over Aged` would be emitted as exact phrases that return
+zero in every database, which is the very recall loss this layer exists to prevent. Each fallback carries an explicit, actionable diagnostic:
 
 * database with its own (unreachable) thesaurus → `VOCAB_NO_EQUIVALENT` **warning**
   naming the vocabulary and the recovery path (look it up, paste it via the existing
@@ -108,7 +117,9 @@ the inverted catalogue form. Each fallback carries an explicit, actionable diagn
 * an exploded heading with real narrower data → a **note** stating exactly how many
   narrower topics a free-text phrase cannot reach.
 
-**Adding a vocabulary later is one registration** and zero renderer edits:
+**Adding a vocabulary later is one registration** and zero renderer edits — verified end
+to end by a test that registers a fixture crosswalk and asserts the compiled *Embase
+query string* changes (not merely that `translateConcept` returns a heading):
 
 ```js
 registerVocabularyMapping({
@@ -328,6 +339,21 @@ Manual §23 review, in the running app:
 5. **`server/pecanSearch` and `src/.../compilers` remain two query paths.** They now share
    the canonical-concept model, but not the renderers. Unifying them is a larger change
    than this round.
-6. Carried over from 98/99: `TermEditorPopover` is absolute-positioned (not portaled);
+6. **Round 2 (adversarial review).** Twelve independent reviewers over the diff surfaced
+   nine real defects, all fixed before this shipped: unconditional de-inversion mangling
+   enumeration headings; the capability flag short-circuiting the registry so a
+   registered crosswalk could not actually change Embase output; a same-vocabulary term
+   being told "no crosswalk maps Emtree to Emtree"; a native plan reaching a hookless
+   adapter and emitting the inverted heading with a false warning; a legacy time-frame
+   concept holding terms being compiled but hidden from the explanation (shifting the
+   whole AND/OR chain — now covered by a 512-shape fuzz test that compares the described
+   operators against the compiled ones); "Narrowed to" limits announced over an empty
+   strategy; `op` read case-insensitively where every compiler reads it strictly; legacy
+   field aliases not folded; and, on the screening side, a teammate's realtime decision
+   snapping a resumed reviewer back to page 1, a keyword-clear race that raced the resume
+   load, `hasMore` over-counting after a page jump (with the pages before the jump
+   unreachable — now an "↑ Earlier records" control plus a unit-tested `pageWindow`),
+   a stale search debounce, and Resume announcing success over a failed load.
+7. Carried over from 98/99: `TermEditorPopover` is absolute-positioned (not portaled);
    Beginner Mode is per-browser localStorage; within-group Boolean is fixed OR and NOT is
    unsupported.

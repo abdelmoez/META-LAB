@@ -30,11 +30,16 @@ export const TERM_KIND = Object.freeze({
   PHRASE: 'phrase', WORD: 'word', PREFIX: 'prefix', SUBJECT: 'subject',
 });
 
-/** Where a free-text term is looked for, in words. */
+/** Where a free-text term is looked for, in words.
+ *  The alias folding MUST match compilers/normalize.js FIELD_ALIAS: a legacy term
+ *  saved with field:'title' compiles to a TITLE-ONLY search, so describing it as
+ *  "title or abstract" would explain a different search than the one that runs. */
+const FIELD_ALIAS = { ti: 'ti', title: 'ti', ab: 'ab', abstract: 'ab', tiab: 'tiab', all: 'all' };
 function whereText(field) {
-  if (field === 'ti') return 'in the title';
-  if (field === 'ab') return 'in the abstract';
-  if (field === 'all') return 'anywhere in the record';
+  const f = FIELD_ALIAS[S(field).trim().toLowerCase()] || 'tiab';
+  if (f === 'ti') return 'in the title';
+  if (f === 'ab') return 'in the abstract';
+  if (f === 'all') return 'anywhere in the record';
   return 'in the title or abstract';
 }
 
@@ -50,17 +55,23 @@ export function describeTerm(term) {
 
   if (term.type === 'controlled') {
     const concept = toCanonicalConcept(term);
-    const name = concept.naturalLabel || concept.preferredLabel || raw;
+    // The TOPIC is the heading as it is actually indexed; the WORDS are the exact form a
+    // database without that subject list receives (vocabulary/canonical.js decides it,
+    // and declines to de-invert an enumeration such as "Health Knowledge, Attitudes,
+    // Practice"). Showing one string for both would misdescribe either the index or the
+    // query, so the sentence names both when they differ.
+    const topic = concept.preferredLabel || raw;
+    const words = concept.freeTextForms[0] || topic;
     const n = concept.narrower.length;
     const narrower = concept.explode && n ? `, plus the ${n} more specific topic${n === 1 ? '' : 's'} under it` : '';
     return {
       kind: TERM_KIND.SUBJECT,
-      text: name,
+      text: topic,
       where: '',
       // 100.md §3 — say what actually happens across databases, without naming any
       // syntax: the official heading where the database indexes this thesaurus, the
       // plain words everywhere else.
-      reading: `articles the database's own indexers filed under the topic “${name}”${narrower} — or simply the words “${name}” where a database has no subject list`,
+      reading: `articles the database's own indexers filed under the topic “${topic}”${narrower} — or simply the words “${words}” where a database has no subject list`,
     };
   }
 
@@ -145,22 +156,32 @@ export function interpretStrategy(strategy) {
   const live = [];
   const skipped = [];
   concepts.forEach((c, i) => {
-    // Legacy PICO time-frame groups carry a note, never search terms (96.md); they are
-    // not part of the query and must not be explained as if they were.
-    if (c && c.picoField === 'T') return;
     const terms = liveTermsOf(c).map(describeTerm).filter(Boolean);
-    if (terms.length) live.push({ concept: c, index: i, terms });
-    else skipped.push(conceptName(c, i));
+    // A legacy PICO time-frame group normally carries only a `note` (96.md) and is not
+    // part of the query — listing it as "no terms yet" would invite the user to fill in
+    // a retired group. But normalize.js does NOT special-case it: a T group that DOES
+    // hold live terms compiles like any other concept and owns an operator in the
+    // chain, so it must be explained like any other concept. Skipping it unconditionally
+    // shifted every following join and could describe an AND search as OR.
+    if (!terms.length) { if (!c || c.picoField !== 'T') skipped.push(conceptName(c, i)); return; }
+    live.push({ concept: c, index: i, terms });
   });
 
-  const limits = describeLimits(src.filters);
+  // 100.md §19 — the compilers refuse to apply limits to an empty strategy
+  // (runRenderer: `filterClauses.length && blockCount > 0`, and filtersApplied follows).
+  // Announcing "Narrowed to 2010-2025" over a search that does not exist would be the
+  // same misstatement in the plain-language layer.
+  const limits = live.length ? describeLimits(src.filters) : [];
 
   if (!live.length) {
     return { isEmpty: true, summary: '', groups: [], skipped, limits };
   }
 
   const groups = live.map((entry, i) => {
-    const op = i === 0 ? null : (S(live[i - 1].concept.op).toUpperCase() === 'OR' ? 'OR' : 'AND');
+    // STRICT equality, exactly like compilers/normalize.js (`c.op === 'OR' ? 'OR' : 'AND'`).
+    // Reading it case-insensitively would describe a hand-edited `op:'or'` as OR while
+    // every compiler ANDs it.
+    const op = i === 0 ? null : (live[i - 1].concept.op === 'OR' ? 'OR' : 'AND');
     return {
       id: S(entry.concept.id) || `c${entry.index + 1}`,
       name: conceptName(entry.concept, entry.index),

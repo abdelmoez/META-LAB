@@ -16,6 +16,7 @@ import {
   registerVocabularyMapping, lookupVocabularyMapping, listVocabularyMappings,
   CONFIDENCE, FALLBACK_REASON,
 } from '../../src/research-engine/searchBuilder/vocabulary/index.js';
+import { resetVocabularyMappings } from '../../src/research-engine/searchBuilder/vocabulary/mappings.js';
 import { compileStrategy, capabilitiesFor } from '../../src/research-engine/searchBuilder/compilers/index.js';
 
 const controlled = (text, vocab, extra = {}) => ({ text, type: 'controlled', field: 'tiab', vocab, ...extra });
@@ -29,6 +30,8 @@ describe('naturalOrderLabel — de-inverting catalogue headings (100.md §3)', (
     ['Heart Failure, Systolic', 'Systolic Heart Failure'],
     ['Arthritis, Rheumatoid', 'Rheumatoid Arthritis'],
     ['Kidney Failure, Chronic', 'Chronic Kidney Failure'],
+    ['Anti-Inflammatory Agents, Non-Steroidal', 'Non-Steroidal Anti-Inflammatory Agents'],
+    ['Receptors, Estrogen', 'Estrogen Receptors'],
     ['Breast Neoplasms', 'Breast Neoplasms'],
     ['Myocardial Infarction', 'Myocardial Infarction'],
     ['Hypertension', 'Hypertension'],
@@ -37,9 +40,29 @@ describe('naturalOrderLabel — de-inverting catalogue headings (100.md §3)', (
     expect(naturalOrderLabel(input)).toBe(expected);
   });
 
-  it('moves EVERY trailing comma segment in front, in reverse order', () => {
-    expect(naturalOrderLabel('Neoplasms, Glandular and Epithelial, Malignant'))
-      .toBe('Malignant Glandular and Epithelial Neoplasms');
+  it.each([
+    // A comma is not always an inversion. Reversing an ENUMERATION or a MEDLINE
+    // check-tag produces a phrase that exists in no paper and returns zero everywhere.
+    ['Health Knowledge, Attitudes, Practice'],
+    ['Infant, Newborn, Diseases'],
+    ['Neoplasms, Glandular and Epithelial, Malignant'],
+    ['Aged, 80 and over'],
+  ])('leaves %s alone rather than inventing a nonsense phrase', (input) => {
+    expect(naturalOrderLabel(input)).toBe(input);
+  });
+
+  it('still de-inverts a genuine two-segment modifier', () => {
+    expect(naturalOrderLabel('Adolescent, Hospitalized')).toBe('Hospitalized Adolescent');
+  });
+
+  it('a heading it declined to de-invert is searched by its LEAD segment, never verbatim', () => {
+    const c = toCanonicalConcept(controlled('kap', { mesh: 'Health Knowledge, Attitudes, Practice' }));
+    expect(c.naturalLabel).toBe('Health Knowledge, Attitudes, Practice');
+    expect(c.freeTextForms).toEqual(['Health Knowledge']);
+    expect(compileStrategy(strat([controlled('kap', { mesh: 'Health Knowledge, Attitudes, Practice' })]), 'scopus').query)
+      .toBe('TITLE-ABS-KEY("Health Knowledge")');
+    expect(compileStrategy(strat([controlled('aged', { mesh: 'Aged, 80 and over' })]), 'embase').query)
+      .toBe('Aged:ti,ab');
   });
 
   it('leaves parenthetical qualifiers alone and survives junk', () => {
@@ -91,19 +114,23 @@ describe('toCanonicalConcept', () => {
 /* ── 2. The mapping registry ──────────────────────────────────────────────── */
 
 describe('vocabulary mapping registry (100.md §4)', () => {
-  it('ships exactly the mappings it can justify: mesh → mesh, EXACT', () => {
-    const all = listVocabularyMappings();
-    expect(all).toEqual([{ from: 'mesh', to: 'mesh', confidence: CONFIDENCE.EXACT, authority: expect.any(String) }]);
-    // 100.md §20 — no invented Emtree / CINAHL / APA crosswalks are registered.
+  it('ships NO cross-vocabulary crosswalk — 100.md §20, do not invent mappings', () => {
+    expect(listVocabularyMappings()).toEqual([]);
     expect(lookupVocabularyMapping('mesh', 'emtree')).toBeNull();
     expect(lookupVocabularyMapping('mesh', 'cinahl')).toBeNull();
     expect(lookupVocabularyMapping('mesh', 'apa')).toBeNull();
   });
 
-  it('resolves the identity mapping to the descriptor itself', () => {
+  it('resolves a concept natively when the database indexes its OWN vocabulary', () => {
     const c = toCanonicalConcept(controlled('x', { mesh: 'Heart Failure', meshUI: 'D006333' }));
     const d = translateConcept(c, 'mesh');
     expect(d).toMatchObject({ status: 'native', system: 'mesh', heading: 'Heart Failure', confidence: CONFIDENCE.EXACT, explode: true });
+    // The identity rule is not MeSH-specific — an Emtree-sourced term resolves natively
+    // against an Emtree-indexed database with no registration at all (100.md §4).
+    const em = toCanonicalConcept(controlled('hf', { system: 'emtree', heading: 'heart failure' }));
+    expect(translateConcept(em, 'emtree')).toMatchObject({ status: 'native', heading: 'heart failure', confidence: CONFIDENCE.EXACT });
+    expect(compileStrategy(strat([controlled('hf', { system: 'emtree', heading: 'heart failure' })]), 'embase').query)
+      .toBe("'heart failure'/exp");
   });
 
   it('falls back to free text with a REASON, never a guessed heading', () => {
@@ -120,13 +147,11 @@ describe('vocabulary mapping registry (100.md §4)', () => {
 /* ── 3. Extensibility — the whole point of the registry ───────────────────── */
 
 describe('extensibility: a new vocabulary is ONE registration, zero renderer edits', () => {
-  const restore = () => registerVocabularyMapping({
-    from: 'mesh', to: 'emtree', confidence: CONFIDENCE.VERIFIED, authority: 'test',
-    translate: () => null, // no coverage → every concept falls back (the shipped behaviour)
-  });
-  afterEach(restore);
+  // The registry is module-global; restore the SHIPPED state (no crosswalks) after each
+  // case so these tests cannot leak into the assertions above, whatever the run order.
+  afterEach(() => resetVocabularyMappings());
 
-  it('a registered crosswalk changes Embase output without touching embase.js', () => {
+  it('a registered crosswalk changes the COMPILED Embase query with no renderer edit', () => {
     registerVocabularyMapping({
       from: 'mesh', to: 'emtree', confidence: CONFIDENCE.VERIFIED,
       authority: 'fixture crosswalk',
@@ -136,6 +161,14 @@ describe('extensibility: a new vocabulary is ONE registration, zero renderer edi
     expect(translateConcept(c, 'emtree')).toMatchObject({
       status: 'native', heading: 'heart failure', confidence: CONFIDENCE.VERIFIED,
     });
+    // …and end to end, which is the property the docs actually promise.
+    const s = strat([controlled('x', { mesh: 'Heart Failure', meshUI: 'D006333' })]);
+    const r = compileStrategy(s, 'embase');
+    expect(r.query).toBe("'heart failure'/exp");
+    expect(r.vocab).toMatchObject({ system: 'emtree', mapped: 1, fallback: 0 });
+    expect(r.warnings.map((w) => w.code)).not.toContain('VOCAB_NO_EQUIVALENT');
+    // A database the crosswalk does not cover is untouched.
+    expect(compileStrategy(s, 'cinahl').query).toBe('(TI "Heart Failure" OR AB "Heart Failure")');
   });
 
   it('a crosswalk that does not cover a concept degrades per-concept, not wholesale', () => {
