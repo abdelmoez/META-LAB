@@ -2422,7 +2422,10 @@ export async function getResumePoint(req, res) {
     const p = access.project;
     const me = req.user.id;
     const stage = normalizeResumeStage(req.query.stage);
-    const limit = Math.min(200, Math.max(10, parseInt(req.query.limit || '50', 10)));
+    // A non-numeric ?limit= would otherwise propagate NaN through the page maths and
+    // collapse every resume to page 1.
+    const rawLimit = parseInt(req.query.limit, 10);
+    const limit = Math.min(200, Math.max(10, Number.isFinite(rawLimit) ? rawLimit : 50));
 
     // The pool a reviewer can still act on at this stage: at the stage, not a resolved
     // duplicate, and without a decision of THEIRS that is anything but 'undecided'.
@@ -2475,6 +2478,7 @@ export async function getResumePoint(req, res) {
     ]);
 
     const target = pickResumeTarget({
+      decidedCount: decided,
       decisionAnchor,
       openAnchor: openRow ? { recordId: openRow.recordId } : null,
       nextAfterAnchor: nextRow ? nextRow.id : null,

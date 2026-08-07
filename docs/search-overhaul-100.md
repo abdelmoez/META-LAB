@@ -354,6 +354,19 @@ Manual §23 review, in the running app:
    load, `hasMore` over-counting after a page jump (with the pages before the jump
    unreachable — now an "↑ Earlier records" control plus a unit-tested `pageWindow`),
    a stale search debounce, and Resume announcing success over a failed load.
-7. Carried over from 98/99: `TermEditorPopover` is absolute-positioned (not portaled);
+7. **Round 3 (verified review findings).** Six further defects the skeptic pass
+   confirmed: `getResumePoint` ran several unindexed correlated counts and was re-fired
+   by *every* teammate decision (now a composite
+   `@@index([projectId, reviewerId, stage])` on `ScreenDecision` plus a 4 s coalescing
+   throttle on the client, with the reviewer's own decision still refreshing
+   immediately); an active AI queue mode or band reorders the pool server-side, so the
+   canonical position addressed a different list (resume now resets the worklist order
+   and says so); a non-numeric `?limit=` propagated `NaN` and collapsed every resume to
+   page 1; a stage emptied by *promotion* reported `empty`, erasing the completion
+   confirmation at the moment it was earned (now `complete` when the reviewer has
+   decisions there); "1 still need a decision"; and the one-shot resume scroll silently
+   did nothing once the list passed the 120-row virtualization threshold (it now drives
+   the virtual scroller to the row's offset and re-runs when the row mounts).
+8. Carried over from 98/99: `TermEditorPopover` is absolute-positioned (not portaled);
    Beginner Mode is per-browser localStorage; within-group Boolean is fixed OR and NOT is
    unsupported.

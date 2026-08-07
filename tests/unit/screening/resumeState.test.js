@@ -141,3 +141,32 @@ describe('resumeMessage — one wording, shared by every surface', () => {
     expect(resumeMessage()).toContain('Continuing from where you stopped');
   });
 });
+
+/* ── round 2 (adversarial review) ─────────────────────────────────────────────── */
+
+describe('pickResumeTarget — a stage the reviewer EMPTIED is complete, not empty', () => {
+  const anchor = { recordId: 'r9', id: 'r9', createdAt: new Date(), decidedAt: new Date() };
+
+  it('reports COMPLETE when promotion drained the stage after this reviewer screened it', () => {
+    // Every Title/Abstract record reached quorum and moved to full_text, so stageTotal
+    // is 0 — but this reviewer earned the confirmation and must still see it (§15).
+    expect(pickResumeTarget({ decisionAnchor: anchor, pendingCount: 0, stageTotal: 0, decidedCount: 143 }).status)
+      .toBe(RESUME_STATUS.COMPLETE);
+    expect(pickResumeTarget({ decidedCount: 5, pendingCount: 0, stageTotal: 0 }).status)
+      .toBe(RESUME_STATUS.COMPLETE);
+  });
+
+  it('still reports EMPTY for a stage that never had anything', () => {
+    expect(pickResumeTarget({ pendingCount: 0, stageTotal: 0, decidedCount: 0 }).status)
+      .toBe(RESUME_STATUS.EMPTY);
+  });
+});
+
+describe('resumeMessage — grammar', () => {
+  it('agrees in number on the final pending article', () => {
+    expect(resumeMessage({ status: RESUME_STATUS.RESUME, position: 8, pending: 1 }))
+      .toBe('Continuing from where you stopped (article 8) — 1 still needs a decision.');
+    expect(resumeMessage({ status: RESUME_STATUS.RESUME, position: 8, pending: 2 }))
+      .toBe('Continuing from where you stopped (article 8) — 2 still need a decision.');
+  });
+});

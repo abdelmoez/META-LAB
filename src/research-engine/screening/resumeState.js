@@ -98,10 +98,18 @@ export function pickResumeTarget(input = {}) {
   const {
     decisionAnchor = null, openAnchor = null,
     nextAfterAnchor = null, firstPending = null,
-    pendingCount = 0, stageTotal = 0,
+    pendingCount = 0, stageTotal = 0, decidedCount = 0,
   } = input;
 
-  if (!stageTotal) return { status: RESUME_STATUS.EMPTY, recordId: null, wrapped: false };
+  // An EMPTY stage and a stage the reviewer emptied are different things. Once every
+  // Title/Abstract record reaches quorum it is promoted to full_text, so `stageTotal`
+  // drops to 0 — reporting "there are no articles to screen yet" would erase the
+  // completion confirmation 100.md §15 requires at the exact moment it is earned.
+  if (!stageTotal) {
+    return decisionAnchor || decidedCount > 0
+      ? { status: RESUME_STATUS.COMPLETE, recordId: null, wrapped: false }
+      : { status: RESUME_STATUS.EMPTY, recordId: null, wrapped: false };
+  }
   if (!pendingCount) return { status: RESUME_STATUS.COMPLETE, recordId: null, wrapped: false };
 
   if (decisionAnchor) {
@@ -150,9 +158,12 @@ export function resumeMessage(payload = {}) {
     case RESUME_STATUS.START:
       return `Starting at the first article that needs a decision${at}.`;
     case RESUME_STATUS.RESUME:
-    default:
+    default: {
+      const n = Number(pending || 0);
+      const left = `${n.toLocaleString()} still need${n === 1 ? 's' : ''} a decision`;
       return wrapped
-        ? `Back to the earliest article you skipped${at} — ${Number(pending || 0).toLocaleString()} still need a decision.`
-        : `Continuing from where you stopped${at} — ${Number(pending || 0).toLocaleString()} still need a decision.`;
+        ? `Back to the earliest article you skipped${at} — ${left}.`
+        : `Continuing from where you stopped${at} — ${left}.`;
+    }
   }
 }

@@ -513,15 +513,30 @@ export default function ScreeningTab({ pid, project, access, refreshProject, use
   // inline arrow would re-run that effect on every render of the tab.
   const clearScrollToSelected = useCallback(() => setScrollToSelected(false), []);
 
-  const refreshResume = useCallback(() => {
-    if (!canScreen) { setResume(null); return; }
+  // The resume point is derived server-side from several indexed counts, so it is not
+  // free. `decision.saved` arrives for EVERY decision every teammate makes, which on a
+  // busy two-reviewer project would fan out to one heavy call each. Coalesce them: run
+  // at most once per REFRESH_MS, and run the trailing edge so the last event still lands.
+  const REFRESH_MS = 4000;
+  const resumeAtRef = useRef(0);
+  const resumeTimerRef = useRef(null);
+  const runRefreshResume = useCallback(() => {
+    resumeAtRef.current = Date.now();
     screeningApi.getResumePoint(pid, { stage: SCREENING_STAGE, limit: LIMIT })
       .then(r => setResume(r || null))
       .catch(() => { /* non-fatal — the control just stays out of the way */ });
-  }, [pid, canScreen]);
+  }, [pid]);
+  const refreshResume = useCallback(({ now = false } = {}) => {
+    if (!canScreen) { setResume(null); return; }
+    clearTimeout(resumeTimerRef.current);
+    const since = Date.now() - resumeAtRef.current;
+    if (now || since >= REFRESH_MS) { runRefreshResume(); return; }
+    resumeTimerRef.current = setTimeout(runRefreshResume, REFRESH_MS - since);
+  }, [canScreen, runRefreshResume]);
+  useEffect(() => () => clearTimeout(resumeTimerRef.current), []);
 
   useEffect(() => { refreshResumeRef.current = refreshResume; }, [refreshResume]);
-  useEffect(() => { setResume(null); setResumeNote(''); refreshResume(); }, [refreshResume]);
+  useEffect(() => { resumeAtRef.current = 0; setResume(null); setResumeNote(''); refreshResume({ now: true }); }, [refreshResume]);
 
   /* Jump to the resume target. Search / filters / keyword selection are cleared first:
      100.md §15 — a saved article that the current filter excludes must never become
@@ -539,7 +554,16 @@ export default function ScreeningTab({ pid, project, access, refreshProject, use
         return;
       }
       const hadKeywords = !!keywordsRef.current;
-      const narrowed = !!searchRef.current || filterRef.current !== 'all' || hadKeywords;
+      // An AI queue mode or band REORDERS (and filters) the whole pool server-side, so
+      // the canonical `position`/`page` the resume endpoint returned do not address the
+      // same list. Fall back to the default worklist rather than jumping to the right
+      // page of the wrong ordering.
+      const reordered = queueModeRef.current !== 'default' || aiBandRef.current !== 'all';
+      if (reordered) {
+        queueModeRef.current = 'default'; aiBandRef.current = 'all';
+        setQueueMode('default'); setAiBand('all');
+      }
+      const narrowed = !!searchRef.current || filterRef.current !== 'all' || hadKeywords || reordered;
       if (narrowed) {
         // Clearing the keyword chips changes `keywordsParam`, whose effect issues its
         // OWN `loadRecords({reset:true})` for page 1 — which would race the resume load
@@ -569,7 +593,9 @@ export default function ScreeningTab({ pid, project, access, refreshProject, use
         selectRecord(r.recordId);
       }
       setScrollToSelected(true);
-      setResumeNote(narrowed ? `${r.message} Your filters were cleared so it is visible.` : r.message);
+      setResumeNote(narrowed
+        ? `${r.message} Your ${reordered ? 'AI worklist order and filters were' : 'filters were'} cleared so it is visible.`
+        : r.message);
     } catch {
       setResumeNote('Could not work out where you stopped — try again in a moment.');
     } finally {
@@ -624,7 +650,7 @@ export default function ScreeningTab({ pid, project, access, refreshProject, use
       refreshRow(rid); // re-sync reviewer indicators / quorum / disputed
       // 100.md §13 — the stopping point moved: recompute how much is left and where
       // "continue" now points, so leaving the page and coming back is always accurate.
-      refreshResume();
+      refreshResume({ now: true });
       setResumeNote('');
       // se2.md §6 — surface the "scores updating" indicator promptly after a
       // settled decision (the server has queued a debounced rescore).
@@ -835,12 +861,25 @@ function LeftColumn({
   // clicking a row) never yanks the list around.
   useEffect(() => {
     if (!scrollToSelected || !selectedId) return;
-    const row = scrollRef.current && scrollRef.current.querySelector(`[data-record-id="${CSS.escape(selectedId)}"]`);
+    const el = scrollRef.current;
+    if (!el) return;
+    const row = el.querySelector(`[data-record-id="${CSS.escape(selectedId)}"]`);
     if (row && typeof row.scrollIntoView === 'function') {
       try { row.scrollIntoView({ block: 'center', behavior: 'smooth' }); } catch { row.scrollIntoView(); }
+    } else if (windowed) {
+      // Above WINDOW_MIN_COUNT rows only a slice is in the DOM (65.md SCR-5), so the
+      // resumed row can be absent — scrolling to nothing would silently strand the
+      // reviewer at the top of a list whose selected article is 400 rows down. Drive the
+      // virtual scroller to the row's computed offset instead; the window then renders
+      // it, and this effect's next pass centres it exactly.
+      const idx = records.findIndex(r => r.id === selectedId);
+      if (idx >= 0) {
+        el.scrollTop = Math.max(0, (idx * rowH) - (el.clientHeight / 2));
+        return; // keep the flag set: re-run once the row is mounted
+      }
     }
     if (onScrolledToSelected) onScrolledToSelected();
-  }, [scrollToSelected, selectedId, onScrolledToSelected]);
+  }, [scrollToSelected, selectedId, onScrolledToSelected, windowed, records, rowH]);
 
   return (
     <div style={{ width: 300, flexShrink: 0, borderRight: `1px solid ${C.brd}`, display: 'flex', flexDirection: 'column', background: C.surf, overflow: 'hidden', minHeight: 0 }}>

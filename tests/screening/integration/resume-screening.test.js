@@ -189,6 +189,14 @@ describe('GET /projects/:pid/resume — 100.md §§12-15', () => {
     expect((await resume(cookieB)).status).toBe('start');
   });
 
+  it('survives a junk ?limit= instead of collapsing every resume to page 1', async () => {
+    if (!up) return;
+    const r = await (await api('GET', `${SIFT}/${projectId}/resume?limit=abc`, cookieB)).json();
+    expect(r.limit).toBe(50);
+    expect(Number.isFinite(r.page)).toBe(true);
+    expect(r.page).toBeGreaterThanOrEqual(1);
+  });
+
   it('coerces an unknown stage to Title/Abstract and 404s an unknown project', async () => {
     if (!up) return;
     const r = await (await api('GET', `${SIFT}/${projectId}/resume?stage=nonsense`, cookieA)).json();

@@ -727,6 +727,11 @@ model ScreenDecision {
   // 62.md — export + AI input load fetch all decisions for a project; the unique key only
   // indexes recordId (the join side), not projectId (the filter side). Additive/safe.
   @@index([projectId])
+  // 100.md §12 — Resume Screening asks "which records still need THIS reviewer's decision
+  // at THIS stage?" on every call. Without this the `decisions: { none: {...} }` predicate
+  // and the most-recent-decision lookup both scan every decision row in the project.
+  // Additive/safe for `prisma db push`.
+  @@index([projectId, reviewerId, stage])
 }
 
 model ScreenLabel {
