@@ -52,7 +52,9 @@
  *   47 cases from 12 publications therefore leaves the publication count at 12.
  */
 
-import { citationKey, isStrongCitationKey, CITATION_FIELDS, PUBLICATION_LINK_FIELDS } from './outcomeGroups.js';
+import {
+  citationKey, isStrongCitationKey, caseAdoptionMap, CITATION_FIELDS, PUBLICATION_LINK_FIELDS,
+} from './outcomeGroups.js';
 import { progressOf, articleStatusOf } from './engine/articleStatus.js';
 import { mkValueProvenance } from './engine/articleProvenance.js';
 
@@ -143,11 +145,19 @@ export function caseCitationLabel(study = {}) {
  *      applies before sharing a PDF file).
  * Pure.
  */
-export function publicationKeyOf(study = {}) {
+export function publicationKeyOf(study = {}, adopt = null) {
   const pid = publicationIdOf(study);
   if (pid) return `pub:${pid}`;
   const key = citationKey(study);
-  if (isStrongCitationKey(key)) return key;
+  if (isStrongCitationKey(key)) {
+    // 106.md — a row can belong to a case-series article without carrying the case
+    // stamp: confirming an auto-extracted draft copies CITATION_FIELDS only (records.js
+    // `citationTemplate`), and so does `addOutcome`. Its key would be `doi:…` while the
+    // cases key on `pub:…`, so ONE article counted as TWO publications. `adopt` (from
+    // caseAdoptionMap over the whole array) folds it back onto the series it provably
+    // belongs to. Callers that pass no map get the per-row answer, unchanged.
+    return (adopt && adopt.get(key)) || key;
+  }
   return `row:${s(study.id)}`;
 }
 
@@ -711,12 +721,13 @@ export function countPublications(studies = [], opts = {}) {
 /** The distinct publication keys present in `studies` (the set countPublications sizes). */
 export function publicationKeys(studies = [], opts = {}) {
   const includeArchived = !!opts.includeArchived;
+  const list = (Array.isArray(studies) ? studies : [])
+    .filter((st) => st && typeof st === 'object' && (includeArchived || !isArchived(st)));
+  // Built over the SAME rows being counted, so an adopted row can only ever fold onto a
+  // series that is itself in scope.
+  const adopt = caseAdoptionMap(list);
   const keys = new Set();
-  for (const st of (Array.isArray(studies) ? studies : [])) {
-    if (!st || typeof st !== 'object') continue;
-    if (!includeArchived && isArchived(st)) continue;
-    keys.add(publicationKeyOf(st));
-  }
+  for (const st of list) keys.add(publicationKeyOf(st, adopt));
   return keys;
 }
 

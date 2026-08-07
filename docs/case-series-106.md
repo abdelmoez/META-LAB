@@ -125,6 +125,8 @@ trial already inflated them; a case series would have made every one of them acu
 - `study-validator.js` — `findDuplicates` flags any two rows sharing author+year, so all
   eight cases of Smith 2024 would have carried a false "duplicate" badge. Cases of the
   **same** publication are now skipped; cases of different publications still compare.
+  There were **two copies** of this function, and every UI caller imported the other one
+  (`monolithStats.js`); it is now a re-export, so they cannot diverge again.
 - `articleStatus.js` — `hasAnyValue` ignored `cv_*` values, so a fully extracted case
   report with no poolable effect size read "Not started" at 0% forever.
 
@@ -200,19 +202,22 @@ support this cleanly; there is no UI for it yet (see §8).
 
 ## 7. Verification
 
-- `tests/unit/caseSeries.test.js` — 52 tests over the pure engine.
-- `tests/unit/caseSeriesDownstream.test.jsx` — 38 tests over PRISMA counts, fact tokens,
+- `tests/unit/caseSeries.test.js` — 55 tests over the pure engine.
+- `tests/unit/caseSeriesDownstream.test.jsx` — 40 tests over PRISMA counts, fact tokens,
   the consistency check, dependency fingerprints, the sync hash, duplicate detection,
   publication-stable PDF anchors, list stats, and the SSR shape of the new UI.
 
 An adversarial multi-agent review over six dimensions (correctness, counting, React
 state, data safety, provenance, spec coverage) produced ~30 candidate defects; each was
-independently refuted or confirmed by a second agent. The confirmed ones are fixed above
-and pinned by the new tests — most importantly the remaining row-counted "studies"
-surfaces (§3), `duplicateCase` copying another patient's PDF coordinates, the
-publication anchor churning on delete, the variable editor being untypable, and the
-rename box committing to whichever case was open when Save was pressed.
-- `npm run test:ci` (hermetic: `tests/unit` + `tests/screening/unit`): **6742 passing**,
+independently refuted or confirmed by a second agent: **13 survived, 43 were refuted**.
+All 13 are fixed and pinned by the new tests — most importantly the remaining
+row-counted "studies" surfaces (§3), the case-series duplicate exemption landing in the
+copy of `findDuplicates` the UI never calls, one paper counting as two publications when
+a same-DOI row joined it after the mode was on, `duplicateCase` copying another
+patient's PDF coordinates, the publication anchor churning on delete, the variable
+editor being untypable, and the rename box committing to whichever case was open when
+Save was pressed.
+- `npm run test:ci` (hermetic: `tests/unit` + `tests/screening/unit`): **6747 passing**,
   no regressions (6652 before this change).
 
 ## 8. Known limitations
@@ -293,7 +298,12 @@ rename box committing to whichever case was open when Save was pressed.
     anchor churns when the first case is deleted, and `usePdfSource` keys its whole
     resolve on it — which unmounts the viewer (losing scroll position and any
     session-local upload) on a delete that had nothing to do with the PDF.
-12. **Only the RAW title may feed citation identity.** The article-list summary's
+12. **A row can belong to a case-series article WITHOUT the case stamp.** Confirming an
+    auto-extracted draft copies `CITATION_FIELDS` only (`records.js citationTemplate`),
+    and so does `addOutcome`. `caseAdoptionMap` folds such a row onto the series it
+    provably belongs to — for counting AND for PDF resolution. Without it one article
+    counted as two publications and the new row saw no PDF.
+13. **Only the RAW title may feed citation identity.** The article-list summary's
     `title` falls back to the author when a paper has none; using it would forge a
     strong `t:author|year|author` key and merge two different untitled papers. That is
     what `citationTitle` exists for.

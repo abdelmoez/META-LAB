@@ -723,20 +723,14 @@ export function validateStudy(s){
   return out;
 }
 
-/* Duplicate detection across studies (same author+year, or identical es+n) */
-export function findDuplicates(studies){
-  const dup={};
-  for(let i=0;i<studies.length;i++){
-    for(let j=i+1;j<studies.length;j++){
-      const a=studies[i],b=studies[j];
-      const sameAY=a.author&&b.author&&a.year&&b.year&&
-        a.author.trim().toLowerCase()===b.author.trim().toLowerCase()&&String(a.year).trim()===String(b.year).trim();
-      const sameES=a.es!==""&&a.es===b.es&&a.n!==""&&a.n===b.n;
-      if(sameAY||sameES){ dup[a.id]=true; dup[b.id]=true; }
-    }
-  }
-  return dup;
-}
+/* Duplicate detection across studies (same author+year, or identical es+n).
+   106.md — this used to be a SECOND copy of validation/study-validator.js's
+   findDuplicates, and it is the one every caller actually imports (projectHelpers.js,
+   extractionTabs.jsx, Workspace.jsx). The case-series exemption therefore had to be
+   written twice or it did nothing: without it all eight cases of Smith 2024 carry a
+   permanent false "duplicate" badge, because they are deliberately the same author+year.
+   Re-exported instead of re-implemented so the two can never diverge again. */
+export { findDuplicates } from "../validation/study-validator.js";
 
 /* Project-level poolability gate: should these studies be pooled at all? */
 export function checkPoolability(studies){

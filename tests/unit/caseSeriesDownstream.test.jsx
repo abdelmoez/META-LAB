@@ -19,6 +19,7 @@ import { checkConsistency } from '../../src/research-engine/manuscript/consisten
 import { computeDependencyState } from '../../src/research-engine/manuscript/dependencies.js';
 import { computeSyncHash } from '../../src/research-engine/extraction/engine/syncState.js';
 import { findDuplicates } from '../../src/research-engine/validation/study-validator.js';
+import { findDuplicates as monolithFindDuplicates } from '../../src/research-engine/statistics/monolithStats.js';
 import { buildArticleSummary, articleListStats } from '../../src/research-engine/extraction/engine/articleList.js';
 import { publicationSourceFor } from '../../src/research-engine/extraction/outcomeGroups.js';
 import CaseSeriesBar from '../../src/features/extraction/engine/CaseSeriesBar.jsx';
@@ -207,6 +208,15 @@ describe('duplicate detection understands cases', () => {
     expect(Object.keys(findDuplicates(studies))).toEqual([]);
   });
 
+  // Every UI caller (projectHelpers.js, extractionTabs.jsx, Workspace.jsx) imports
+  // findDuplicates from monolithStats, NOT from study-validator — so the exemption has
+  // to be reachable through that entry point or it does nothing in the product.
+  it('the exemption is live through the module the UI actually imports', () => {
+    const { studies } = review(4);
+    expect(Object.keys(monolithFindDuplicates(studies))).toEqual([]);
+    expect(monolithFindDuplicates).toBe(findDuplicates);   // one implementation, not two
+  });
+
   it('two genuinely duplicated studies are still flagged', () => {
     const studies = [
       row({ id: 'a', author: 'Smith', year: '2020' }),
@@ -245,6 +255,18 @@ describe('the PDF is resolved from the PUBLICATION, so switching cases cannot re
     expect(after.error).toBeUndefined();
     expect(publicationSourceFor(after.studies, cases[1].id).anchorId).toBe(before);
     expect(before).toBe(`pub:${publicationId}`);
+  });
+
+  it('a row added to the article after the fact shares the PDF and the anchor', () => {
+    seq = 0;
+    const en = enableCaseSeries(
+      [row({ id: 's1', doi: '10.1/x', screeningProjectId: 'sp1', screeningRecordId: 'rec9' })], 's1', { idFn },
+    );
+    // What confirmDraft / addOutcome produce: the paper's citation, no case stamp, no PDF link.
+    const list = [...en.studies, row({ id: 'c', doi: '10.1/x' })];
+    const orphan = publicationSourceFor(list, 'c');
+    expect(orphan.screeningRecordId).toBe('rec9');                       // resolves the paper's PDF
+    expect(orphan.anchorId).toBe(publicationSourceFor(list, 's1').anchorId); // no viewer remount
   });
 
   it('an ordinary paper keeps the legacy row-id anchor', () => {

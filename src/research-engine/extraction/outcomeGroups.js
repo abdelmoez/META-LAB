@@ -59,6 +59,37 @@ const casePublicationIdOf = (study) => {
 };
 
 /**
+ * caseAdoptionMap(list) — strong TEXT citation key → `pub:<publicationId>`, built from
+ * the case rows present in `list`.
+ *
+ * 106.md: a case row's key is `pub:<id>` while an ordinary row of the SAME paper keys on
+ * its DOI, so the two could never group. That is reachable — confirming an auto-extracted
+ * draft (records.js `citationTemplate` copies CITATION_FIELDS only, never
+ * `extractionMeta`) or adding an outcome while a case is open both append a same-DOI row
+ * with no case stamp. Left alone it split one article into two publications for counting
+ * and stopped the new row from resolving the paper's PDF. This map adopts such a row onto
+ * the series it provably belongs to. Pure.
+ * @returns {Map<string,string>}
+ */
+export function caseAdoptionMap(list = []) {
+  const m = new Map();
+  for (const st of (Array.isArray(list) ? list : [])) {
+    const pid = casePublicationIdOf(st);
+    if (!pid) continue;
+    const k = citationTextKey(st);
+    if (isStrongCitationKey(k) && !m.has(k)) m.set(k, `pub:${pid}`);
+  }
+  return m;
+}
+
+/** The grouping key for one row, honouring an adoption map from caseAdoptionMap. Pure. */
+export function adoptedCitationKey(study = {}, adopt = null) {
+  const k = citationKey(study);
+  if (k.startsWith('pub:') || !adopt) return k;
+  return adopt.get(k) || k;
+}
+
+/**
  * citationKey(study) — a STABLE identity for the paper a study row belongs to.
  * Prefers a DOI, then a PubMed id, then author|year|title. Two rows with the same
  * key are the same paper (different outcomes / time points).
@@ -68,6 +99,17 @@ export function citationKey(study = {}) {
   // it from mutable citation text would let a DOI correction split a series in half.
   const pub = casePublicationIdOf(study);
   if (pub) return `pub:${pub}`;
+  return citationTextKey(study);
+}
+
+/**
+ * citationTextKey(study) — the citation identity derived from the TEXT alone, ignoring
+ * any case-series publication id. 106.md needs this to notice that an ordinary row and
+ * a case row describe the SAME paper (they share a DOI but not a `pub:` key), which is
+ * how a row added to a case-series article after the fact gets adopted onto the series
+ * instead of counting as a second publication. Pure.
+ */
+export function citationTextKey(study = {}) {
   const doi = norm(study.doi);
   if (doi) return `doi:${doi}`;
   const pmid = norm(study.pmid);
@@ -114,10 +156,11 @@ export function outcomeSummary(study = {}) {
  */
 export function groupStudiesByCitation(studies = []) {
   const list = Array.isArray(studies) ? studies : [];
+  const adopt = caseAdoptionMap(list);           // 106.md — see publicationSourceFor
   const byKey = new Map();
   for (const st of list) {
     if (!st || typeof st !== 'object') continue;
-    const key = citationKey(st);
+    const key = adoptedCitationKey(st, adopt);
     if (!byKey.has(key)) {
       byKey.set(key, {
         key,
@@ -140,7 +183,7 @@ export function groupStudiesByCitation(studies = []) {
 export function groupForStudy(studies = [], studyId) {
   const target = (studies || []).find((x) => x && x.id === studyId);
   if (!target) return null;
-  const key = citationKey(target);
+  const key = adoptedCitationKey(target, caseAdoptionMap(studies));
   return groupStudiesByCitation(studies).find((g) => g.key === key) || null;
 }
 
@@ -287,7 +330,12 @@ export function publicationSourceFor(studies = [], studyId) {
   const list = Array.isArray(studies) ? studies : [];
   const target = list.find((x) => x && x.id === studyId);
   if (!target) return null;
-  const key = citationKey(target);
+  // 106.md — a row added to a case-series article after the fact (a confirmed draft, a
+  // new outcome) carries the paper's DOI but no case stamp. Adopt it onto the series so
+  // it resolves the SAME PDF; before this it saw an empty group and reported no PDF.
+  const adopt = caseAdoptionMap(list);
+  const keyOf = (x) => adoptedCitationKey(x, adopt);
+  const key = keyOf(target);
   // Weak identity may still group on shared PHYSICAL linkage — two rows pointing at
   // the same screening record / stored file are provably the same publication (the
   // inheritance path copies exactly these), while text-only weak matches are not.
@@ -295,8 +343,8 @@ export function publicationSourceFor(studies = [], studyId) {
     (!!target.screeningRecordId && x.screeningRecordId === target.screeningRecordId)
     || (!!(target.document && target.document.storedName) && !!(x.document && x.document.storedName === target.document.storedName));
   const members = isStrongCitationKey(key)
-    ? list.filter((x) => x && citationKey(x) === key) // array order (stable anchor)
-    : list.filter((x) => x && citationKey(x) === key && (x.id === target.id || samePhysicalFile(x)));
+    ? list.filter((x) => x && keyOf(x) === key) // array order (stable anchor)
+    : list.filter((x) => x && keyOf(x) === key && (x.id === target.id || samePhysicalFile(x)));
   const hasScreenLink = (st) => !!(st.screeningProjectId && st.screeningRecordId);
   const hasDoc = (st) => !!(st.document && st.document.storedName);
   // Own-row preference: a row that carries its own linkage keeps it (non-destructive
@@ -317,9 +365,11 @@ export function publicationSourceFor(studies = [], studyId) {
     // reordered, and usePdfSource keys its whole resolve on this value — so a stable
     // row id was still enough to unmount the viewer (losing scroll position, and any
     // session-local upload) on a delete that had nothing to do with the PDF.
-    anchorId: casePublicationIdOf(target)
-      ? `pub:${casePublicationIdOf(target)}`
-      : ((members[0] && members[0].id) || target.id),
+    //
+    // Derived from the ADOPTED key, not from the target's own stamp: a row folded onto
+    // the series (a confirmed draft, a new outcome) must share the cases' anchor too,
+    // or switching between it and a case would remount the viewer.
+    anchorId: key.startsWith('pub:') ? key : ((members[0] && members[0].id) || target.id),
     screeningProjectId: screenCarrier ? screenCarrier.screeningProjectId : null,
     screeningRecordId: screenCarrier ? screenCarrier.screeningRecordId : null,
     docStudyId: docCarrier ? docCarrier.id : null,
@@ -343,13 +393,15 @@ export function publicationFilesFor(studies = [], studyId) {
   const list = Array.isArray(studies) ? studies : [];
   const byId = new Map(list.filter((x) => x && x.id).map((x) => [x.id, x]));
   const target = byId.get(studyId);
-  const key = citationKey(target);
+  const adopt = caseAdoptionMap(list);            // 106.md — see publicationSourceFor
+  const keyOf = (x) => adoptedCitationKey(x, adopt);
+  const key = keyOf(target);
   const samePhysicalFile = (x) =>
     (!!target.screeningRecordId && x.screeningRecordId === target.screeningRecordId)
     || (!!(target.document && target.document.storedName) && !!(x.document && x.document.storedName === target.document.storedName));
   const members = isStrongCitationKey(key)
-    ? list.filter((x) => x && citationKey(x) === key)
-    : list.filter((x) => x && citationKey(x) === key && (x.id === studyId || samePhysicalFile(x)));
+    ? list.filter((x) => x && keyOf(x) === key)
+    : list.filter((x) => x && keyOf(x) === key && (x.id === studyId || samePhysicalFile(x)));
   const seen = new Set();
   const out = [];
   for (const st of members) {
@@ -373,10 +425,11 @@ export function publicationFilesFor(studies = [], studyId) {
  */
 export function spreadAvailabilityByCitation(studies = [], availability = new Map()) {
   const out = new Map(availability);
+  const adopt = caseAdoptionMap(studies);        // 106.md — see publicationSourceFor
   const byKey = new Map(); // key → { ids:[], any:boolean }
   for (const st of (Array.isArray(studies) ? studies : [])) {
     if (!st || typeof st !== 'object' || !st.id) continue;
-    const key = citationKey(st);
+    const key = adoptedCitationKey(st, adopt);
     if (!isStrongCitationKey(key)) continue; // weak identity → per-row availability only
     if (!byKey.has(key)) byKey.set(key, { ids: [], any: false });
     const g = byKey.get(key);

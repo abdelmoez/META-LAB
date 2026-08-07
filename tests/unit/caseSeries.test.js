@@ -407,6 +407,35 @@ describe('the counting contract (106.md §Prevent double counting)', () => {
     expect(casesForPublication(edited, pid)).toHaveLength(3);
   });
 
+  // A row can join a case-series article WITHOUT the case stamp: confirming an
+  // auto-extracted draft copies CITATION_FIELDS only (records.js `citationTemplate`),
+  // and so does `addOutcome`. Its key is `doi:…` while the cases key on `pub:…`.
+  it('a same-paper row added AFTER the mode is on does not become a second publication', () => {
+    reset();
+    const en = enableCaseSeries([row({ id: 'a', doi: '10.1/x' }), row({ id: 'b', doi: '10.1/x' })], 'a', { idFn });
+    const withOrphan = [...en.studies, row({ id: 'c', doi: '10.1/x' })];
+    expect(countPublications(withOrphan)).toBe(1);
+    expect(caseSeriesCounts(withOrphan)).toMatchObject({ publications: 1, cases: 2, rows: 3 });
+  });
+
+  it('adoption only folds rows onto a series they PROVABLY belong to', () => {
+    reset();
+    const en = enableCaseSeries([row({ id: 'a', doi: '10.1/x' })], 'a', { idFn });
+    const other = [
+      ...en.studies,
+      row({ id: 'c', doi: '10.9/different' }),      // a different paper
+      row({ id: 'd', author: 'Smith', year: '2020' }), // too thin to identify
+    ];
+    expect(countPublications(other)).toBe(3);
+  });
+
+  it('the per-row key is unchanged when no adoption map is supplied', () => {
+    reset();
+    const en = enableCaseSeries([row({ id: 'a', doi: '10.1/x' })], 'a', { idFn });
+    expect(publicationKeyOf(row({ id: 'c', doi: '10.1/x' }))).toBe('doi:10.1/x');
+    expect(publicationKeyOf(en.studies[0])).toBe(`pub:${en.publicationId}`);
+  });
+
   it('archived cases are excluded by default and included on request', () => {
     const { studies, pid } = series();
     const c2 = casesForPublication(studies, pid)[1];
