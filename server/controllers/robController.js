@@ -13,15 +13,16 @@
  * Every create / answer / override / finalise / delete writes a RobAuditLog row.
  */
 import { prisma } from '../db/client.js';
-import { getById as getOwnedProject, touchProjectActivity } from '../store.js';
+import { getById as getOwnedProject, touchProjectActivity, mutateProjectBlob } from '../store.js';
 import { getRobMemberAccess } from '../screening/metalabAccess.js';
 import { featureAccess } from '../services/featureAccess.js';
 import { canMutateAssessment, normaliseScreeningStudy, normaliseManualStudy } from './robAccess.js';
-import { getRobTool } from '../../src/research-engine/rob/tools.js';
+import { getRobTool, isStarScoredTool } from '../../src/research-engine/rob/tools.js';
 import { sendTierLimit } from '../services/entitlementService.js';
 import { requireProjectExport, settleProjectExport, EXPORT_TYPES } from '../services/projectExportGuard.js';
 import {
   getInstrument,
+  isScoringInstrument,
   proposeDomain,
   proposeAllDomains,
   proposeOverall,
@@ -32,6 +33,17 @@ import {
   appraiseFromText,
   ROB_APPRAISAL_VERSION,
   robDomainAgreement,
+  // 101.md §18–§22 — Newcastle–Ottawa Scale: star scoring + the deliberately
+  // separate, deliberately optional threshold-interpretation layer.
+  nosScoreAssessment,
+  nosSelectedValues,
+  interpretNos,
+  NOS_THRESHOLD_MODES,
+  NOS_DEFAULT_THRESHOLD_MODE,
+  NOS_MAX_STARS,
+  AHRQ_STANDARD,
+  NOS_CONVENTIONAL_BANDS,
+  NOS_CONVENTIONAL_BANDS_NOTICE,
 } from '../../src/research-engine/rob/index.js';
 
 // ── Instrument awareness (P14) ────────────────────────────────────────────────
@@ -41,11 +53,23 @@ import {
 // THAT instrument. Responses (Y/PY/PN/N/NI/NA) are identical across instruments,
 // so VALID_RESPONSES stays shared. The RoB2 path is byte-identical to before.
 const VALID_RESPONSES = new Set(RESPONSES);
-const SUPPORTED_INSTRUMENTS = ['RoB2', 'ROBINS-I'];
+// 101.md §18 — the two OFFICIAL Newcastle–Ottawa forms join the supported set.
+// They are SEPARATE instruments (Outcome vs Exposure domains) exactly as §19/§20
+// require; nothing about the RoB 2 / ROBINS-I paths changes.
+const SUPPORTED_INSTRUMENTS = ['RoB2', 'ROBINS-I', 'NOS', 'NOS-CC'];
+
+// 101.md §25 — a reconciled dual-reviewer record is a THIRD RobAssessment row
+// carrying this status. It is an IDENTITY, not a workflow stage: the row stays
+// 'consensus' through finalise/reopen so the reconciled record is always findable.
+export const CONSENSUS_STATUS = 'consensus';
 
 /** The instrument for a loaded assessment (defaults to RoB2 → unchanged path). */
 function instrumentFor(a) {
   return getInstrument((a && a.instrumentId) || 'RoB2');
+}
+/** True when the assessment/instrument is star-scored (NOS) rather than judgement-based. */
+function isStarInstrument(instrument) {
+  return isScoringInstrument(instrument);
 }
 /** Valid FINAL/override judgement values for an instrument (RoB2: low/some/high;
  *  ROBINS-I: low/moderate/serious/critical/ni). */
@@ -57,6 +81,142 @@ function questionDomainMap(instrument) {
   const map = {};
   for (const d of instrument.domains) for (const q of d.questions) map[q.id] = d.id;
   return map;
+}
+
+// ── NOS persistence boundary (101.md §18/§21) ─────────────────────────────────
+// RobAnswer.response is a single String column, shared with RoB 2 / ROBINS-I. The
+// NOS needs a SET for exactly one item (the additive Comparability question), so
+// that one item is stored as a JSON array string and decoded here — this pair of
+// functions is the ONLY place either encoding is applied. The pure engine never
+// sees the wire format: nos.js selectedValues() receives a value or an array.
+
+/**
+ * Decode a stored RobAnswer.response into the value the engine expects.
+ * '["a","b"]' → ['a','b']; 'a' → 'a'. A string that merely LOOKS like JSON but
+ * does not parse is returned untouched (never throws, never loses an answer).
+ * Pure.
+ */
+export function decodeAnswerResponse(raw) {
+  const s = typeof raw === 'string' ? raw : '';
+  if (s.length > 1 && s.charCodeAt(0) === 91 /* '[' */) {
+    try {
+      const parsed = JSON.parse(s);
+      if (Array.isArray(parsed)) return parsed.map((v) => String(v)).filter(Boolean);
+    } catch { /* not JSON after all — fall through to the literal value */ }
+  }
+  return s;
+}
+
+/**
+ * Encode validated option values for storage. select:'many' ALWAYS stores a JSON
+ * array (even for one value) so the column shape is a function of the instrument,
+ * not of what the reviewer happened to tick. Pure.
+ */
+export function encodeAnswerResponse(question, values) {
+  const list = Array.isArray(values) ? values : (values == null || values === '' ? [] : [String(values)]);
+  if (question && question.select === 'many') return JSON.stringify(list);
+  return list.length ? String(list[0]) : '';
+}
+
+/** Locate a question (and its domain) in an instrument by question id. Pure. */
+export function findInstrumentQuestion(instrument, questionId) {
+  for (const d of (instrument && instrument.domains) || []) {
+    for (const q of d.questions || []) {
+      if (q.id === questionId) return { domainId: d.id, domain: d, question: q };
+    }
+  }
+  return null;
+}
+
+/**
+ * Validate ONE Newcastle–Ottawa answer against its item's own option list.
+ *
+ * Two rules, both from the official header note (101.md §21):
+ *   · every value must be an option this item actually offers — an unknown value
+ *     is never stored, because a junk value would silently score 0 stars and look
+ *     like a considered "no star" judgement;
+ *   · a select:'one' item accepts exactly ONE value. Several Selection/Outcome/
+ *     Exposure items legitimately have two STARRED options, but they are mutually
+ *     exclusive alternatives capped at one star — accepting both would over-score
+ *     the study. Only the additive Comparability item takes a set.
+ *
+ * @returns {{ok:true,domainId,question,values:string[],encoded:string}|{ok:false,error:string}}
+ * Pure.
+ */
+export function validateStarAnswer(instrument, questionId, raw) {
+  const found = findInstrumentQuestion(instrument, questionId);
+  if (!found) return { ok: false, error: `Unknown questionId: ${questionId}` };
+  const { domainId, question } = found;
+  const optionOrder = (question.options || []).map((o) => o.value);
+  const allowed = new Set(optionOrder);
+
+  const given = nosSelectedValues(typeof raw === 'string' ? decodeAnswerResponse(raw) : raw);
+  const seen = [];
+  for (const v of given) { const s = String(v).trim(); if (s && !seen.includes(s)) seen.push(s); }
+
+  if (!seen.length) return { ok: false, error: `A response is required for ${questionId}` };
+
+  const unknown = seen.filter((v) => !allowed.has(v));
+  if (unknown.length) {
+    return {
+      ok: false,
+      error: `Invalid option${unknown.length > 1 ? 's' : ''} for ${questionId}: ${unknown.join(', ')}. Allowed: ${optionOrder.join(', ')}`,
+    };
+  }
+  if (question.select !== 'many' && seen.length > 1) {
+    return {
+      ok: false,
+      error: `${questionId} accepts a single option — the Newcastle–Ottawa Scale awards at most one star for this item (received ${seen.length}).`,
+    };
+  }
+  // Canonicalise to the instrument's own option order so ["b","a"] and ["a","b"]
+  // are stored identically and compare equal in dual-reviewer disagreement checks.
+  const values = optionOrder.filter((v) => seen.includes(v));
+  return { ok: true, domainId, question, values, encoded: encodeAnswerResponse(question, values) };
+}
+
+/**
+ * 101.md §22 — coerce a project's NOS interpretation config to something safe.
+ *
+ * Default mode is 'none': the Newcastle–Ottawa Scale defines NO threshold, so the
+ * honest default is to report the star profile and no verdict. Bands are only kept
+ * for 'custom' (AHRQ is a fixed published rule; 'none' has nothing to band) and are
+ * clamped to the 0..9 star range so a bad payload can never produce a nonsense band.
+ * Pure — this is the trust boundary for the PUT handler.
+ */
+export function coerceNosThresholds(raw) {
+  const src = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {};
+  const mode = NOS_THRESHOLD_MODES.includes(src.mode) ? src.mode : NOS_DEFAULT_THRESHOLD_MODE;
+  const label = String(src.label == null ? '' : src.label).slice(0, 120);
+  let bands = [];
+  if (mode === 'custom') {
+    bands = (Array.isArray(src.bands) ? src.bands : [])
+      .map((b) => ({
+        max: Number(b && b.max),
+        level: String((b && b.level) || '').trim().slice(0, 60),
+        label: String((b && b.label) || '').trim().slice(0, 60),
+      }))
+      .filter((b) => Number.isInteger(b.max) && b.max >= 0 && b.max <= NOS_MAX_STARS && b.level)
+      .sort((a, b) => a.max - b.max)
+      .slice(0, 10);
+  }
+  return { mode, bands, label };
+}
+
+/**
+ * The project's NOS threshold config, read from the Project.data blob key
+ * `robNosThresholds`. Best-effort: an unreadable project degrades to the honest
+ * default ('none') rather than failing an assessment read.
+ */
+async function loadNosThresholds(projectId) {
+  try {
+    const row = await prisma.project.findFirst({ where: { id: projectId }, select: { data: true } });
+    let blob = {};
+    try { blob = JSON.parse((row && row.data) || '{}'); } catch { blob = {}; }
+    return coerceNosThresholds(blob.robNosThresholds);
+  } catch {
+    return coerceNosThresholds(null);
+  }
 }
 
 // ── Feature flag ──────────────────────────────────────────────────────────────
@@ -163,13 +323,28 @@ function resolvedDomain(dj) {
   return (dj.overridden && dj.finalJudgment) ? dj.finalJudgment : (dj.proposedJudgment || null);
 }
 
-/** Group flat RobAnswer rows into { [domainId]: { [questionId]: response } }. */
+/**
+ * 101.md §21 — resolved STAR count for a domain. Prefers the dedicated Int column
+ * and only falls back to parsing the numeral out of the judgement string for rows
+ * written before those columns existed (§38 — old projects keep working).
+ */
+function resolvedDomainStars(dj) {
+  const v = (dj.overridden && dj.finalStars != null) ? dj.finalStars : dj.proposedStars;
+  if (v != null && Number.isFinite(Number(v))) return Number(v);
+  const n = Number(resolvedDomain(dj));
+  return Number.isFinite(n) ? n : 0;
+}
+
+/** Group flat RobAnswer rows into { [domainId]: { [questionId]: response } }.
+ *  Star-scored instruments (NOS) decode the stored wire format first — that is the
+ *  ONLY difference; the judgement-instrument path is byte-identical to before. */
 function answersByDomainFrom(instrument, answers) {
+  const star = isStarInstrument(instrument);
   const out = {};
   for (const d of instrument.domains) out[d.id] = {};
   for (const ans of answers) {
     if (!out[ans.domainId]) out[ans.domainId] = {};
-    out[ans.domainId][ans.questionId] = ans.response;
+    out[ans.domainId][ans.questionId] = star ? decodeAnswerResponse(ans.response) : ans.response;
   }
   return out;
 }
@@ -183,32 +358,47 @@ async function recomputeAndPersist(assessmentId, instrument = getInstrument('RoB
   const answers = await prisma.robAnswer.findMany({ where: { assessmentId } });
   const abd = answersByDomainFrom(instrument, answers);
   const proposals = proposeAllDomains(instrument, abd); // { D1:{judgment,reasons}, ... }
+  // 101.md §21 — for a star-scored instrument the SAME answers are also scored by
+  // nosScoreAssessment, so the Int columns come from the instrument's own scorer
+  // rather than from re-parsing a numeral back out of the judgement string.
+  const star = isStarInstrument(instrument);
+  const score = star ? nosScoreAssessment(instrument, abd) : null;
 
-  // Upsert each domain's proposedJudgment (final/overridden untouched).
+  // Upsert each domain's proposedJudgment (final/overridden untouched). Star
+  // instruments write BOTH representations: the numeral into the existing String
+  // column (backward compatibility) and the count into proposedStars.
   for (const d of instrument.domains) {
     const proposed = proposals[d.id].judgment;
+    const starCols = star ? { proposedStars: score.byDomain[d.id].stars } : {};
     await prisma.robDomainJudgment.upsert({
       where: { assessmentId_domainId: { assessmentId, domainId: d.id } },
-      update: { proposedJudgment: proposed },
-      create: { assessmentId, domainId: d.id, proposedJudgment: proposed },
+      update: { proposedJudgment: proposed, ...starCols },
+      create: { assessmentId, domainId: d.id, proposedJudgment: proposed, ...starCols },
     });
   }
 
   // Overall is computed from the RESOLVED domain judgements (override-aware).
   const djs = await prisma.robDomainJudgment.findMany({ where: { assessmentId } });
   const resolvedByDomain = {};
-  for (const dj of djs) resolvedByDomain[dj.domainId] = resolvedDomain(dj);
+  // Star instruments hand the resolved COUNT to judgeOverall ({ stars }) instead of
+  // a numeral string, so an overridden domain contributes its overridden stars.
+  for (const dj of djs) {
+    resolvedByDomain[dj.domainId] = star ? { stars: resolvedDomainStars(dj) } : resolvedDomain(dj);
+  }
   const overall = proposeOverall(instrument, resolvedByDomain);
   // multiSomeConcernsFlag is RoB2-specific; ROBINS-I overall returns no such flag →
   // coerce to a real boolean (false) so the non-nullable column is always set.
   const multiFlag = !!overall.multiSomeConcernsFlag;
+  const overallStarCols = star
+    ? { proposedStars: overall.stars != null ? Number(overall.stars) : null, maxStars: instrument.maxStars }
+    : {};
   await prisma.robOverall.upsert({
     where: { assessmentId },
-    update: { proposedOverall: overall.judgment, multiSomeConcernsFlag: multiFlag },
-    create: { assessmentId, proposedOverall: overall.judgment, multiSomeConcernsFlag: multiFlag },
+    update: { proposedOverall: overall.judgment, multiSomeConcernsFlag: multiFlag, ...overallStarCols },
+    create: { assessmentId, proposedOverall: overall.judgment, multiSomeConcernsFlag: multiFlag, ...overallStarCols },
   });
 
-  return { proposals, overall };
+  return { proposals, overall, score };
 }
 
 /**
@@ -223,6 +413,7 @@ async function buildView(assessmentId) {
   });
   if (!a) return null;
   const inst = instrumentFor(a);
+  const star = isStarInstrument(inst);
   const abd = answersByDomainFrom(inst, a.answers);
 
   const djByDomain = {};
@@ -231,7 +422,7 @@ async function buildView(assessmentId) {
   const domains = inst.domains.map(d => {
     const dj = djByDomain[d.id] || { proposedJudgment: '', finalJudgment: null, overridden: false, overrideJustification: null };
     const prop = proposeDomain(inst, d.id, abd[d.id] || {});
-    return {
+    const row = {
       domainId: d.id,
       proposedJudgment: prop.judgment,
       reasons: prop.reasons,
@@ -240,10 +431,21 @@ async function buildView(assessmentId) {
       overrideJustification: dj.overrideJustification || null,
       resolvedJudgment: (dj.overridden && dj.finalJudgment) ? dj.finalJudgment : prop.judgment,
     };
+    // 101.md §21/§26 — star instruments surface the count as a NUMBER alongside the
+    // numeral string, so no consumer has to parse a judgement vocabulary.
+    if (star) {
+      row.name = d.name;
+      row.maxStars = d.maxStars;
+      row.additive = !!d.additive;
+      row.proposedStars = prop.stars != null ? Number(prop.stars) : 0;
+      row.finalStars = dj.finalStars != null ? Number(dj.finalStars) : null;
+      row.resolvedStars = (dj.overridden && row.finalStars != null) ? row.finalStars : row.proposedStars;
+    }
+    return row;
   });
 
   const resolvedByDomain = {};
-  for (const d of domains) resolvedByDomain[d.domainId] = d.resolvedJudgment;
+  for (const d of domains) resolvedByDomain[d.domainId] = star ? { stars: d.resolvedStars } : d.resolvedJudgment;
   const overallProp = proposeOverall(inst, resolvedByDomain);
   const ov = a.overall || {};
   const overall = {
@@ -255,8 +457,41 @@ async function buildView(assessmentId) {
     overrideJustification: ov.overrideJustification || null,
     resolvedOverall: (ov.overridden && ov.finalOverall) ? ov.finalOverall : overallProp.judgment,
   };
+  if (star) {
+    overall.proposedStars = overallProp.stars != null ? Number(overallProp.stars) : 0;
+    overall.finalStars = ov.finalStars != null ? Number(ov.finalStars) : null;
+    overall.resolvedStars = (ov.overridden && overall.finalStars != null) ? overall.finalStars : overall.proposedStars;
+    overall.maxStars = inst.maxStars;
+    overall.profile = overallProp.profile || '';
+  }
 
   const comp = engineCompleteness(inst, { answersByDomain: abd });
+
+  // 101.md §21/§22 — the RESOLVED star profile (override-aware) plus, separately,
+  // the project's chosen interpretation. `score` is the profile; `interpretation`
+  // always carries `official:false` and an attribution, so no UI can render a
+  // verdict without saying whose rule produced it. Default mode is 'none' → no
+  // verdict at all, because the NOS defines no threshold.
+  let score = null;
+  let interpretation = null;
+  let thresholds = null;
+  if (star) {
+    const byDomain = {};
+    for (const d of domains) {
+      byDomain[d.domainId] = { domainId: d.domainId, stars: d.resolvedStars, maxStars: d.maxStars };
+    }
+    score = {
+      instrumentId: inst.id,
+      variant: inst.variant,
+      byDomain,
+      total: overall.resolvedStars,
+      maxStars: inst.maxStars,
+      complete: comp.overall.complete,
+      profile: domains.map(d => `${d.resolvedStars}/${d.maxStars}`).join(' · '),
+    };
+    thresholds = await loadNosThresholds(a.projectId);
+    interpretation = interpretNos(score, thresholds);
+  }
 
   return {
     id: a.id,
@@ -287,13 +522,30 @@ async function buildView(assessmentId) {
     domains,
     overall,
     completeness: comp,
+    // Star-scored instruments only; null for RoB 2 / ROBINS-I (unchanged shape).
+    scoring: star ? 'stars' : 'judgment',
+    score,
+    interpretation,
+    nosThresholds: thresholds,
+    // 101.md §25 — a reconciled dual-reviewer record identifies itself.
+    isConsensus: a.status === CONSENSUS_STATUS,
   };
 }
 
-// ── GET /api/rob/instruments/:id  (rob2 | robins-i) ───────────────────────────
+// ── GET /api/rob/instruments/:id  (rob2 | robins-i | nos | nos-cc) ────────────
 // Serves the serialisable instrument definition for a data-driven UI. `/rob2`
-// keeps working (RoB2 default); `/robins-i` serves the 7-domain, 5-level tool.
-const INSTRUMENT_URL_IDS = { rob2: 'RoB2', 'robins-i': 'ROBINS-I', robinsi: 'ROBINS-I' };
+// keeps working (RoB2 default); `/robins-i` serves the 7-domain, 5-level tool;
+// `/nos` and `/nos-cc` serve the two official Newcastle–Ottawa forms (101.md §18).
+const INSTRUMENT_URL_IDS = {
+  rob2: 'RoB2',
+  'robins-i': 'ROBINS-I',
+  robinsi: 'ROBINS-I',
+  nos: 'NOS',
+  'nos-cohort': 'NOS',
+  'nos-cc': 'NOS-CC',
+  noscc: 'NOS-CC',
+  'nos-case-control': 'NOS-CC',
+};
 export async function getRobInstrument(req, res) {
   if (!(await robEnabled(req.user))) return res.status(404).json({ error: 'Not found' });
   const raw = String(req.params.id || 'rob2').toLowerCase();
@@ -310,17 +562,20 @@ export async function createAssessment(req, res) {
     if (!projectId || !studyId) {
       return res.status(400).json({ error: 'projectId and studyId are required' });
     }
-    // Instrument selection (P14): RoB2 (default, unchanged) or ROBINS-I. Any other
-    // value is rejected rather than silently coerced (an unsupported tool must never
-    // be stored). The version + variant are taken from the instrument definition.
+    // Instrument selection (P14): RoB2 (default, unchanged), ROBINS-I, or either
+    // official Newcastle–Ottawa form. Any other value is rejected rather than
+    // silently coerced (an unsupported tool must never be stored). The version +
+    // variant are taken from the instrument definition.
     const wantInstrumentId = instrumentId ? String(instrumentId) : 'RoB2';
     if (!SUPPORTED_INSTRUMENTS.includes(wantInstrumentId)) {
       return res.status(400).json({ error: `instrumentId must be one of: ${SUPPORTED_INSTRUMENTS.join(', ')}` });
     }
-    // Any non-RoB2 instrument (ROBINS-I) is part of the guided-appraisal feature, so
-    // it may only be created when `guidedRobAppraisal` is ON. With the flag OFF the
-    // workspace stays RoB2-only exactly as before (a stray ROBINS-I request → 400).
-    if (wantInstrumentId !== 'RoB2' && !(await guidedAppraisalEnabled(req.user))) {
+    // ROBINS-I is part of the guided-appraisal feature, so it may only be created
+    // when `guidedRobAppraisal` is ON. With the flag OFF the workspace behaves
+    // exactly as before (a stray ROBINS-I request → 400). The NOS is NOT gated on
+    // guided appraisal: it is a manual, human-scored instrument (101.md §18/§23)
+    // with no machine-suggestion path, so it rides the `rob_engine_v2` flag alone.
+    if (wantInstrumentId === 'ROBINS-I' && !(await guidedAppraisalEnabled(req.user))) {
       return res.status(400).json({ error: 'ROBINS-I requires the Guided RoB Appraisal feature, which is not enabled.' });
     }
     const instrument = getInstrument(wantInstrumentId);
@@ -407,7 +662,7 @@ export async function listProjectAssessments(req, res) {
       const label = a.resultLabel
         ? `${st ? `${st.author || ''} ${st.year || ''}`.trim() || a.studyId : a.studyId} — ${a.resultLabel}`
         : (st ? `${st.author || ''} ${st.year || ''}`.trim() || a.studyId : a.studyId);
-      return {
+      const row = {
         id: a.id, studyId: a.studyId, resultLabel: a.resultLabel, status: a.status, label, domainJudgments: dj, overall,
         // prompt46 #3/#5 — creator + tool surfaced to the list UI.
         reviewerId: a.reviewerId, reviewerName: a.reviewerName,
@@ -417,7 +672,24 @@ export async function listProjectAssessments(req, res) {
         source: st ? st.source : 'screening',
         // prompt46 #3 — per-row mutate permission for disabling edit/delete in the UI.
         canMutate: canMutateAssessment(a, { canEdit: access.canEdit, isOwner: access.isOwner, role: access.role }, req.user.id),
+        // 101.md §25 — the reconciled dual-reviewer record is visually distinct.
+        isConsensus: a.status === CONSENSUS_STATUS,
       };
+      // 101.md §26 — a star-scored row carries its PROFILE, not a traffic light.
+      if (isStarScoredTool(a.instrumentId)) {
+        const starsByDomain = {};
+        for (const d of a.domainJudgments) starsByDomain[d.domainId] = resolvedDomainStars(d);
+        const inst = getInstrument(a.instrumentId);
+        row.scoring = 'stars';
+        row.starsByDomain = starsByDomain;
+        row.maxStarsByDomain = Object.fromEntries(inst.domains.map(d => [d.id, d.maxStars]));
+        row.stars = ov && ov.overridden && ov.finalStars != null
+          ? Number(ov.finalStars)
+          : inst.domains.reduce((sum, d) => sum + (starsByDomain[d.id] || 0), 0);
+        row.maxStars = (ov && ov.maxStars != null) ? Number(ov.maxStars) : inst.maxStars;
+        row.profile = inst.domains.map(d => `${starsByDomain[d.id] || 0}/${d.maxStars}`).join(' · ');
+      }
+      return row;
     });
 
     // The traffic-light matrix is per-instrument (RoB2 has 5 domains, ROBINS-I 7).
@@ -455,13 +727,31 @@ export async function upsertAnswers(req, res) {
     if (!list || list.length === 0) return res.status(400).json({ error: 'answers[] is required' });
 
     const instrument = instrumentFor(a);
+    const star = isStarInstrument(instrument);
     const questionDomain = questionDomainMap(instrument);
+
+    // 101.md §18 — validate the WHOLE batch before writing any of it, so a bad item
+    // can never leave half a batch persisted. Judgement instruments validate against
+    // the shared Y/PY/PN/N/NI/NA set; star instruments validate against the item's
+    // OWN option list, with the select:'one' arity enforced (never store junk).
+    const prepared = [];
     for (const item of list) {
       const questionId = String(item.questionId || '');
       const domainId = questionDomain[questionId];
       if (!domainId) return res.status(400).json({ error: `Unknown questionId: ${questionId}` });
-      const response = String(item.response || '');
-      if (!VALID_RESPONSES.has(response)) return res.status(400).json({ error: `Invalid response for ${questionId}: ${response}` });
+      let response;
+      if (star) {
+        const v = validateStarAnswer(instrument, questionId, item.response);
+        if (!v.ok) return res.status(400).json({ error: v.error });
+        response = v.encoded;
+      } else {
+        response = String(item.response || '');
+        if (!VALID_RESPONSES.has(response)) return res.status(400).json({ error: `Invalid response for ${questionId}: ${response}` });
+      }
+      prepared.push({ questionId, domainId, response, item });
+    }
+
+    for (const { questionId, domainId, response, item } of prepared) {
       await prisma.robAnswer.upsert({
         where: { assessmentId_questionId: { assessmentId: a.id, questionId } },
         update: {
@@ -506,41 +796,66 @@ export async function overrideJudgment(req, res) {
     if (a.status === 'complete') return res.status(409).json({ error: 'Assessment is finalised; re-open to edit' });
 
     const instrument = instrumentFor(a);
+    const star = isStarInstrument(instrument);
     const validJ = validJudgments(instrument);
     const { target, domainId, finalJudgment, justification, clear } = req.body || {};
     const wantClear = clear === true || finalJudgment == null || finalJudgment === '';
 
+    // 101.md §21 — on a star-scored instrument an "override" is a reviewer setting
+    // the STAR COUNT for a domain (or the total), not picking a judgement level, so
+    // it is validated as a whole number within that domain's official maximum. Both
+    // representations are then written: the numeral into the existing String column
+    // and the Int into finalStars.
+    let starValue = null;
     if (!wantClear) {
-      if (!validJ.has(finalJudgment)) {
+      if (star) {
+        let max = instrument.maxStars;
+        if (target === 'domain') {
+          const d = instrument.domains.find(x => x.id === domainId);
+          if (!d) return res.status(400).json({ error: `Unknown domainId: ${domainId}` });
+          max = d.maxStars;
+        }
+        const n = Number(finalJudgment);
+        if (!Number.isInteger(n) || n < 0 || n > max) {
+          return res.status(400).json({ error: `finalJudgment must be a whole number of stars between 0 and ${max}` });
+        }
+        starValue = n;
+      } else if (!validJ.has(finalJudgment)) {
         return res.status(400).json({ error: `finalJudgment must be one of: ${[...validJ].join(', ')}` });
       }
       if (typeof justification !== 'string' || !justification.trim()) {
         return res.status(400).json({ error: 'A justification is required to override the algorithm' });
       }
     }
+    // The value written into the legacy judgement String column.
+    const finalValue = star && !wantClear ? String(starValue) : finalJudgment;
 
     if (target === 'domain') {
       if (!domainId || !instrument.domains.some(d => d.id === domainId)) {
         return res.status(400).json({ error: `Unknown domainId: ${domainId}` });
       }
+      const seed = proposeDomain(instrument, domainId, {});
+      const seedStars = star ? { proposedStars: seed.stars != null ? Number(seed.stars) : 0 } : {};
+      const starCols = star ? { finalStars: wantClear ? null : starValue } : {};
       await prisma.robDomainJudgment.upsert({
         where: { assessmentId_domainId: { assessmentId: a.id, domainId } },
         update: wantClear
-          ? { overridden: false, finalJudgment: null, overrideJustification: null }
-          : { overridden: true, finalJudgment, overrideJustification: justification.trim().slice(0, 4000) },
+          ? { overridden: false, finalJudgment: null, overrideJustification: null, ...starCols }
+          : { overridden: true, finalJudgment: finalValue, overrideJustification: justification.trim().slice(0, 4000), ...starCols },
         create: wantClear
-          ? { assessmentId: a.id, domainId, proposedJudgment: proposeDomain(instrument, domainId, {}).judgment }
-          : { assessmentId: a.id, domainId, proposedJudgment: proposeDomain(instrument, domainId, {}).judgment, overridden: true, finalJudgment, overrideJustification: justification.trim().slice(0, 4000) },
+          ? { assessmentId: a.id, domainId, proposedJudgment: seed.judgment, ...seedStars }
+          : { assessmentId: a.id, domainId, proposedJudgment: seed.judgment, ...seedStars, overridden: true, finalJudgment: finalValue, overrideJustification: justification.trim().slice(0, 4000), ...starCols },
       });
     } else if (target === 'overall') {
+      const starCols = star ? { finalStars: wantClear ? null : starValue, maxStars: instrument.maxStars } : {};
       await prisma.robOverall.upsert({
         where: { assessmentId: a.id },
         update: wantClear
-          ? { overridden: false, finalOverall: null, overrideJustification: null }
-          : { overridden: true, finalOverall: finalJudgment, overrideJustification: justification.trim().slice(0, 4000) },
+          ? { overridden: false, finalOverall: null, overrideJustification: null, ...starCols }
+          : { overridden: true, finalOverall: finalValue, overrideJustification: justification.trim().slice(0, 4000), ...starCols },
         create: wantClear
-          ? { assessmentId: a.id }
-          : { assessmentId: a.id, overridden: true, finalOverall: finalJudgment, overrideJustification: justification.trim().slice(0, 4000) },
+          ? { assessmentId: a.id, ...starCols }
+          : { assessmentId: a.id, overridden: true, finalOverall: finalValue, overrideJustification: justification.trim().slice(0, 4000), ...starCols },
       });
     } else {
       return res.status(400).json({ error: "target must be 'domain' or 'overall'" });
@@ -550,7 +865,12 @@ export async function overrideJudgment(req, res) {
     await audit(a.projectId, a.id, req.user, 'ROB_OVERRIDE', {
       entityType: target === 'domain' ? 'RobDomainJudgment' : 'RobOverall',
       entityId: a.id,
-      details: { target, domainId: domainId || null, finalJudgment: wantClear ? null : finalJudgment, cleared: wantClear },
+      details: {
+        target, domainId: domainId || null,
+        finalJudgment: wantClear ? null : finalValue,
+        ...(star ? { finalStars: wantClear ? null : starValue } : {}),
+        cleared: wantClear,
+      },
     });
     return res.json({ assessment: await buildView(a.id) });
   } catch (err) {
@@ -567,6 +887,8 @@ export async function finaliseAssessment(req, res) {
     if (!a) return res.status(404).json({ error: 'Not found' });
     if (!canMutateAssessment(a, permsFor(a), req.user.id)) return res.status(403).json({ error: 'Only the assessment creator, a project leader, or the owner can modify or delete this assessment.' });
 
+    const instrument = instrumentFor(a);
+    const star = isStarInstrument(instrument);
     const view = await buildView(a.id);
     if (!view.completeness.overall.complete) {
       return res.status(400).json({ error: 'Assessment is incomplete', completeness: view.completeness });
@@ -575,15 +897,29 @@ export async function finaliseAssessment(req, res) {
     for (const d of view.domains) {
       await prisma.robDomainJudgment.update({
         where: { assessmentId_domainId: { assessmentId: a.id, domainId: d.domainId } },
-        data: { finalJudgment: d.resolvedJudgment },
+        data: { finalJudgment: d.resolvedJudgment, ...(star ? { finalStars: d.resolvedStars } : {}) },
       });
     }
     await prisma.robOverall.update({
       where: { assessmentId: a.id },
-      data: { finalOverall: view.overall.resolvedOverall },
+      data: {
+        finalOverall: view.overall.resolvedOverall,
+        ...(star ? { finalStars: view.overall.resolvedStars, maxStars: instrument.maxStars } : {}),
+      },
     });
-    await prisma.robAssessment.update({ where: { id: a.id }, data: { status: 'complete' } });
-    await audit(a.projectId, a.id, req.user, 'ROB_FINALISE', { entityType: 'RobAssessment', entityId: a.id, details: { overall: view.overall.resolvedOverall } });
+    // 101.md §25 — 'consensus' is the row's IDENTITY, not a workflow stage, so a
+    // reconciled record stays findable after it is finalised. Everything else goes
+    // to 'complete' exactly as before.
+    const nextStatus = a.status === CONSENSUS_STATUS ? CONSENSUS_STATUS : 'complete';
+    await prisma.robAssessment.update({ where: { id: a.id }, data: { status: nextStatus } });
+    await audit(a.projectId, a.id, req.user, 'ROB_FINALISE', {
+      entityType: 'RobAssessment', entityId: a.id,
+      details: {
+        overall: view.overall.resolvedOverall,
+        ...(star ? { totalStars: view.overall.resolvedStars, maxStars: instrument.maxStars, profile: view.score && view.score.profile } : {}),
+        consensus: nextStatus === CONSENSUS_STATUS,
+      },
+    });
     return res.json({ assessment: await buildView(a.id) });
   } catch (err) {
     console.error('[rob] finaliseAssessment error:', err.message);
@@ -600,10 +936,15 @@ export async function reopenAssessment(req, res) {
     if (!canMutateAssessment(a, permsFor(a), req.user.id)) return res.status(403).json({ error: 'Only the assessment creator, a project leader, or the owner can modify or delete this assessment.' });
     // Returning to draft must release the finalise-locked finals on NON-overridden
     // rows (genuine overrides are preserved) so the stored state matches "draft".
-    await prisma.robDomainJudgment.updateMany({ where: { assessmentId: a.id, overridden: false }, data: { finalJudgment: null } });
-    await prisma.robOverall.updateMany({ where: { assessmentId: a.id, overridden: false }, data: { finalOverall: null } });
-    await prisma.robAssessment.update({ where: { id: a.id }, data: { status: 'draft' } });
-    await audit(a.projectId, a.id, req.user, 'ROB_REOPEN', { entityType: 'RobAssessment', entityId: a.id });
+    // finalStars rides along: it is the star twin of finalJudgment (null on every
+    // judgement-instrument row, so clearing it there is a no-op).
+    await prisma.robDomainJudgment.updateMany({ where: { assessmentId: a.id, overridden: false }, data: { finalJudgment: null, finalStars: null } });
+    await prisma.robOverall.updateMany({ where: { assessmentId: a.id, overridden: false }, data: { finalOverall: null, finalStars: null } });
+    // 101.md §25 — reopening a consensus record does NOT strip its identity; it just
+    // becomes editable again. Only ordinary assessments return to 'draft'.
+    const nextStatus = a.status === CONSENSUS_STATUS ? CONSENSUS_STATUS : 'draft';
+    await prisma.robAssessment.update({ where: { id: a.id }, data: { status: nextStatus } });
+    await audit(a.projectId, a.id, req.user, 'ROB_REOPEN', { entityType: 'RobAssessment', entityId: a.id, details: { consensus: nextStatus === CONSENSUS_STATUS } });
     return res.json({ assessment: await buildView(a.id) });
   } catch (err) {
     console.error('[rob] reopenAssessment error:', err.message);
@@ -640,6 +981,14 @@ export async function exportAssessment(req, res) {
     if (!['json', 'csv', 'robvis'].includes(format)) {
       return res.status(400).json({ error: "format must be 'json', 'csv', or 'robvis'" });
     }
+    // 101.md §26 — robvis renders Cochrane traffic-light DOMAIN JUDGEMENTS. A NOS
+    // star profile is not that, and coercing "3 stars" into a Low/High colour would
+    // misrepresent the instrument. Refused before the export allowance is reserved.
+    if (isStarInstrument(inst) && format === 'robvis') {
+      return res.status(400).json({
+        error: 'The robvis traffic-light export does not apply to the Newcastle–Ottawa Scale, which reports a star profile rather than risk-of-bias judgements. Export as CSV or JSON instead.',
+      });
+    }
     // 79.md §3 — RoB assessment export is a project export: Free tier is blocked and
     // permitted tiers consume one unit of the monthly allowance. Reserved once here,
     // after the format is known to be valid, and confirmed on the successful return.
@@ -648,7 +997,8 @@ export async function exportAssessment(req, res) {
         exportType: EXPORT_TYPES.ROB_ASSESSMENT, projectId: a.projectId || null, format,
       });
     } catch (e) { if (sendTierLimit(res, e)) return; throw e; }
-    const filePrefix = inst.id === 'RoB2' ? 'rob2' : 'robins-i';
+    const FILE_PREFIXES = { RoB2: 'rob2', 'ROBINS-I': 'robins-i', NOS: 'nos-cohort', 'NOS-CC': 'nos-case-control' };
+    const filePrefix = FILE_PREFIXES[inst.id] || 'robins-i';
     const base = `${filePrefix}_${a.studyId}${a.resultLabel ? '_' + a.resultLabel.replace(/[^a-z0-9]+/gi, '-').toLowerCase() : ''}`;
 
     if (format === 'json') {
@@ -656,14 +1006,36 @@ export async function exportAssessment(req, res) {
       return res.json({ format, filename: `${base}.json`, mime: 'application/json', content: view });
     }
     if (format === 'csv') {
-      const rows = [['domain', 'questionId', 'response', 'rationale', 'proposed', 'final']];
+      // 101.md §26 — a star-scored instrument gets its OWN item-level CSV: the chosen
+      // option value(s), the option TEXT as printed on the official form, the stars
+      // that item earned, and the domain total. The judgement-instrument CSV below is
+      // untouched (byte-identical to before).
+      const rows = isStarInstrument(inst)
+        ? [['domain', 'questionId', 'question', 'selected', 'selectedText', 'stars', 'rationale', 'evidenceQuote', 'evidenceLocator', 'domainStars', 'domainMaxStars']]
+        : [['domain', 'questionId', 'response', 'rationale', 'proposed', 'final']];
       for (const d of view.domains) {
         const ans = view.answersByDomain[d.domainId] || {};
         const meta = view.answerMeta.filter(m => m.domainId === d.domainId);
-        const qids = inst.domains.find(x => x.id === d.domainId).questions.map(q => q.id);
-        for (const qid of qids) {
+        const defn = inst.domains.find(x => x.id === d.domainId);
+        for (const q of defn.questions) {
+          const qid = q.id;
           const m = meta.find(x => x.questionId === qid);
-          rows.push([d.domainId, qid, ans[qid] || '', (m?.rationale || '').replace(/\s+/g, ' '), d.proposedJudgment, d.resolvedJudgment]);
+          if (isStarInstrument(inst)) {
+            const chosen = nosSelectedValues(ans[qid]);
+            const texts = chosen.map(v => (q.options.find(o => o.value === v) || {}).text || v);
+            const starred = new Set((q.options || []).filter(o => o.star).map(o => o.value));
+            const hits = chosen.filter(v => starred.has(v)).length;
+            rows.push([
+              d.domainId, qid, q.text, chosen.join('; '), texts.join('; '),
+              q.select === 'many' ? hits : (hits > 0 ? 1 : 0),
+              (m?.rationale || '').replace(/\s+/g, ' '),
+              (m?.evidenceQuote || '').replace(/\s+/g, ' '),
+              m?.evidenceLocator || '',
+              d.resolvedStars, d.maxStars,
+            ]);
+          } else {
+            rows.push([d.domainId, qid, ans[qid] || '', (m?.rationale || '').replace(/\s+/g, ' '), d.proposedJudgment, d.resolvedJudgment]);
+          }
         }
       }
       const csv = rows.map(r => r.map(c => `"${String(c).replace(/"/g, '""')}"`).join(',')).join('\n');
@@ -842,6 +1214,13 @@ export async function appraiseAssessment(req, res) {
     if (a.status === 'complete') return res.status(409).json({ error: 'Assessment is finalised; re-open to edit' });
 
     const instrument = instrumentFor(a);
+    // 101.md §17 — the guided appraiser maps text onto the shared Y/PY/PN/N/NI
+    // signalling vocabulary. The Newcastle–Ottawa items have their own closed option
+    // lists and no such mapping exists, so we refuse rather than manufacture answers
+    // that would look like a considered human appraisal.
+    if (isStarInstrument(instrument)) {
+      return res.status(400).json({ error: 'Guided appraisal is not available for the Newcastle–Ottawa Scale; its items must be assessed by a reviewer against the study text.' });
+    }
     const force = req.body?.force === true;
     const fullText = typeof req.body?.fullText === 'string' ? req.body.fullText : '';
 
@@ -922,6 +1301,12 @@ export async function robValidation(req, res) {
       ? String(req.query.instrumentId)
       : 'RoB2';
     const instrument = getInstrument(instrumentId);
+    // 101.md §21/§26 — weighted κ needs an ORDINAL judgement scale. The NOS has none
+    // (it has a star count), and there is no machine appraiser to compare against, so
+    // this endpoint refuses rather than computing a κ over an empty category list.
+    if (isStarInstrument(instrument)) {
+      return res.status(400).json({ error: 'Machine-vs-human agreement is not defined for the Newcastle–Ottawa Scale, which has no ordinal judgement scale and no guided appraiser.' });
+    }
     // Ordinal, severity-ASCENDING categories for weighted κ. Use the instrument's
     // explicit `judgmentOrder` when present (ROBINS-I: low<moderate<ni<serious<
     // critical — `ni` is NOT most-severe); RoB2's judgmentLevels order already IS
@@ -978,6 +1363,330 @@ export async function robValidation(req, res) {
     });
   } catch (err) {
     console.error('[rob] robValidation error:', err.message);
+    return res.status(500).json({ error: 'Internal server error' });
+  }
+}
+
+// ── 101.md §22 — project-level NOS interpretation thresholds ──────────────────
+// Stored on the Project.data blob under `robNosThresholds`. There is deliberately
+// no server default other than 'none': the Newcastle–Ottawa Scale defines NO
+// quality threshold, so a project that has not chosen one reports the star profile
+// and nothing else. `interpretNos` always stamps `official:false` + an attribution,
+// so a configured threshold can never be presented as a NOS rule.
+
+// GET /api/rob/projects/:projectId/nos-thresholds — view access is enough.
+export async function getNosThresholds(req, res) {
+  try {
+    if (!(await robEnabled(req.user))) return res.status(404).json({ error: 'Not found' });
+    const access = await resolveRobAccess(req.params.projectId, req.user.id);
+    if (!access) return res.status(404).json({ error: 'Not found' });
+    return res.json({
+      thresholds: coerceNosThresholds(access.project.robNosThresholds),
+      modes: NOS_THRESHOLD_MODES,
+      defaultMode: NOS_DEFAULT_THRESHOLD_MODE,
+      maxStars: NOS_MAX_STARS,
+      // Offered as an explicitly-attributed option, never as "the NOS threshold".
+      ahrq: AHRQ_STANDARD,
+      conventionalBands: NOS_CONVENTIONAL_BANDS,
+      conventionalBandsNotice: NOS_CONVENTIONAL_BANDS_NOTICE,
+      canEdit: access.canEdit,
+    });
+  } catch (err) {
+    console.error('[rob] getNosThresholds error:', err.message);
+    return res.status(500).json({ error: 'Internal server error' });
+  }
+}
+
+// PUT /api/rob/projects/:projectId/nos-thresholds — body { mode, bands?, label? }.
+// Requires RoB edit rights. Written through mutateProjectBlob's compare-and-swap so
+// a concurrent project save can never lose it (101.md §32).
+export async function putNosThresholds(req, res) {
+  try {
+    if (!(await robEnabled(req.user))) return res.status(404).json({ error: 'Not found' });
+    const access = await resolveRobAccess(req.params.projectId, req.user.id);
+    if (!access) return res.status(404).json({ error: 'Not found' });
+    if (!access.canEdit) return res.status(403).json({ error: 'You have read-only access to Risk of Bias for this project.' });
+
+    const next = coerceNosThresholds(req.body);
+    if (next.mode === 'custom' && !next.bands.length) {
+      return res.status(400).json({ error: 'A project-defined interpretation needs at least one band of the form { max, level }, with max between 0 and 9.' });
+    }
+    let before = null;
+    const out = await mutateProjectBlob(req.params.projectId, (data) => {
+      before = coerceNosThresholds(data.robNosThresholds);
+      // A no-op PUT must not bump the project autosave revision (101.md §2/§30 — a
+      // change that changes nothing is not a material project change).
+      if (JSON.stringify(before) === JSON.stringify(next)) return { result: { changed: false }, commit: false };
+      data.robNosThresholds = next;
+      return { result: { changed: true } };
+    });
+    if (!out) return res.status(404).json({ error: 'Not found' });
+
+    if (out.result.changed) {
+      await audit(req.params.projectId, '', req.user, 'ROB_NOS_THRESHOLDS', {
+        entityType: 'Project', entityId: req.params.projectId, details: { before, after: next },
+      });
+    }
+    return res.json({
+      thresholds: next,
+      changed: !!out.result.changed,
+      // Any project-defined banding gets the "this is your rule, not the NOS's" notice.
+      notice: next.mode === 'custom' ? NOS_CONVENTIONAL_BANDS_NOTICE : '',
+    });
+  } catch (err) {
+    console.error('[rob] putNosThresholds error:', err.message);
+    return res.status(500).json({ error: 'Internal server error' });
+  }
+}
+
+// ── 101.md §25 — dual reviewer + consensus ────────────────────────────────────
+
+/**
+ * Compare the INDEPENDENT reviewer assessments of one study under ONE instrument.
+ *
+ * Two rows sharing (projectId, studyId, instrumentId) with different reviewerId
+ * are the two independent assessments; the reconciled record is the row whose
+ * status is 'consensus' and it is excluded from the comparison (it is the OUTPUT
+ * of reconciliation, not an input to it).
+ *
+ * A disagreement is a question that at least two reviewers ANSWERED and on which
+ * they chose different option values. A question only one reviewer has reached is
+ * incomplete, not a disagreement — reporting it as one would overstate discord
+ * (101.md §17). Comparison is order-insensitive for the additive Comparability
+ * item, so ['b','a'] and ['a','b'] agree.
+ *
+ * @param {object} instrument
+ * @param {Array<{id,reviewerId,reviewerName,status,answersByDomain}>} rows
+ * Pure.
+ */
+export function reviewerComparison(instrument, rows = []) {
+  const star = isStarInstrument(instrument);
+  const all = Array.isArray(rows) ? rows : [];
+  const consensusRow = all.find(r => r && r.status === CONSENSUS_STATUS) || null;
+  const independent = all.filter(r => r && r !== consensusRow);
+
+  const shape = (r) => {
+    if (!r) return null;
+    const abd = r.answersByDomain || {};
+    const out = {
+      assessmentId: r.id,
+      reviewerId: r.reviewerId || '',
+      reviewerName: r.reviewerName || '',
+      status: r.status || 'draft',
+      completeness: engineCompleteness(instrument, { answersByDomain: abd }).overall,
+      score: null,
+    };
+    if (star) {
+      const s = nosScoreAssessment(instrument, abd);
+      out.score = {
+        total: s.total, maxStars: s.maxStars, profile: s.profile, complete: s.complete,
+        byDomain: Object.fromEntries(instrument.domains.map(d => [d.id, s.byDomain[d.id].stars])),
+      };
+    }
+    return out;
+  };
+
+  // Comparison key: sorted so option ORDER never manufactures a disagreement.
+  const keyOf = (vals) => vals.slice().sort().join('+');
+
+  const disagreements = [];
+  let compared = 0;
+  for (const d of instrument.domains) {
+    for (const q of d.questions) {
+      const values = {};
+      const keys = [];
+      for (const r of independent) {
+        const raw = (r.answersByDomain && r.answersByDomain[d.id]) ? r.answersByDomain[d.id][q.id] : undefined;
+        const vals = nosSelectedValues(raw);
+        if (!vals.length) continue;
+        values[r.reviewerId || r.id] = vals.length === 1 ? vals[0] : vals;
+        keys.push(keyOf(vals));
+      }
+      if (keys.length < 2) continue;
+      compared += 1;
+      if (new Set(keys).size > 1) {
+        disagreements.push({
+          domainId: d.id,
+          domainName: d.name,
+          questionId: q.id,
+          questionText: q.text,
+          select: q.select || 'one',
+          values,
+        });
+      }
+    }
+  }
+
+  return {
+    reviewers: independent.map(shape),
+    disagreements,
+    consensus: shape(consensusRow),
+    agreement: {
+      comparedQuestions: compared,
+      agreedQuestions: compared - disagreements.length,
+      disagreedQuestions: disagreements.length,
+      // Null (not 1) when nothing has been compared yet — a study nobody has
+      // double-assessed has no agreement, rather than perfect agreement.
+      percentAgreement: compared ? (compared - disagreements.length) / compared : null,
+    },
+  };
+}
+
+// GET /api/rob/projects/:projectId/studies/:studyId/reviewers[?instrumentId=] ──
+// The dual-reviewer view for one study: each independent reviewer's assessment,
+// the per-question disagreements between them, and the consensus row if one exists.
+// Read-only — this endpoint NEVER writes, so it can never overwrite a reviewer's
+// judgement. View access is enough.
+export async function getStudyReviewers(req, res) {
+  try {
+    if (!(await robEnabled(req.user))) return res.status(404).json({ error: 'Not found' });
+    const access = await resolveRobAccess(req.params.projectId, req.user.id);
+    if (!access) return res.status(404).json({ error: 'Not found' });
+
+    const wanted = String(req.query.instrumentId || '');
+    const scopedId = SUPPORTED_INSTRUMENTS.includes(wanted) ? wanted : null;
+    const rows = await prisma.robAssessment.findMany({
+      where: {
+        projectId: req.params.projectId,
+        studyId: req.params.studyId,
+        deletedAt: null,
+        ...(scopedId ? { instrumentId: scopedId } : {}),
+      },
+      include: { answers: true, domainJudgments: true, overall: true },
+      orderBy: { createdAt: 'asc' },
+    });
+
+    if (!rows.length) {
+      return res.json({
+        studyId: req.params.studyId,
+        instrumentId: scopedId,
+        instrumentLabel: scopedId ? (getRobTool(scopedId)?.label || scopedId) : '',
+        reviewers: [], disagreements: [], consensus: null,
+        agreement: { comparedQuestions: 0, agreedQuestions: 0, disagreedQuestions: 0, percentAgreement: null },
+        instrumentIds: [],
+      });
+    }
+
+    // Comparison is STRICTLY scoped to one instrument — a RoB 2 row and a NOS row
+    // answer different questions entirely, so pooling them would be meaningless.
+    const instrumentIds = [...new Set(rows.map(r => r.instrumentId || 'RoB2'))];
+    const useId = scopedId || (SUPPORTED_INSTRUMENTS.includes(instrumentIds[0]) ? instrumentIds[0] : 'RoB2');
+    const inst = getInstrument(useId);
+    const scoped = rows.filter(r => (r.instrumentId || 'RoB2') === useId);
+
+    const cmp = reviewerComparison(inst, scoped.map(r => ({
+      id: r.id,
+      reviewerId: r.reviewerId,
+      reviewerName: r.reviewerName,
+      status: r.status,
+      answersByDomain: answersByDomainFrom(inst, r.answers),
+    })));
+
+    return res.json({
+      studyId: req.params.studyId,
+      instrumentId: inst.id,
+      instrumentLabel: getRobTool(inst.id)?.label || inst.id,
+      scoring: isStarInstrument(inst) ? 'stars' : 'judgment',
+      maxStars: isStarInstrument(inst) ? inst.maxStars : null,
+      // Surfaced so a UI can warn that this study also carries assessments under a
+      // different instrument rather than silently hiding them.
+      instrumentIds,
+      ...cmp,
+    });
+  } catch (err) {
+    console.error('[rob] getStudyReviewers error:', err.message);
+    return res.status(500).json({ error: 'Internal server error' });
+  }
+}
+
+// POST /api/rob/projects/:projectId/studies/:studyId/consensus ────────────────
+// Body: { instrumentId, outcomeId?, resultLabel?, seedFromAssessmentId? }
+// Creates the THIRD, reconciled assessment row (status 'consensus'). It requires
+// two genuinely independent reviewer assessments to already exist — a "consensus"
+// with nothing to reconcile would be a fabricated methodological claim (101.md §17).
+// Seeding COPIES a reviewer's answers into the NEW row; the source row is read and
+// never written to (§25 — never silently overwrite one reviewer with the other).
+export async function createConsensusAssessment(req, res) {
+  try {
+    if (!(await robEnabled(req.user))) return res.status(404).json({ error: 'Not found' });
+    const access = await resolveRobAccess(req.params.projectId, req.user.id);
+    if (!access) return res.status(404).json({ error: 'Not found' });
+    if (!access.canEdit) return res.status(403).json({ error: 'You have read-only access to Risk of Bias for this project.' });
+
+    const { instrumentId, outcomeId, resultLabel, seedFromAssessmentId } = req.body || {};
+    const wantId = instrumentId ? String(instrumentId) : '';
+    if (!SUPPORTED_INSTRUMENTS.includes(wantId)) {
+      return res.status(400).json({ error: `instrumentId must be one of: ${SUPPORTED_INSTRUMENTS.join(', ')}` });
+    }
+    const instrument = getInstrument(wantId);
+
+    const existing = await prisma.robAssessment.findMany({
+      where: { projectId: req.params.projectId, studyId: req.params.studyId, instrumentId: wantId, deletedAt: null },
+      orderBy: { createdAt: 'asc' },
+    });
+    const already = existing.find(r => r.status === CONSENSUS_STATUS);
+    if (already) {
+      return res.status(409).json({ error: 'A consensus assessment already exists for this study.', assessmentId: already.id });
+    }
+    const independent = existing.filter(r => r.status !== CONSENSUS_STATUS);
+    const reviewerIds = [...new Set(independent.map(r => r.reviewerId || '').filter(Boolean))];
+    if (reviewerIds.length < 2) {
+      return res.status(409).json({
+        error: 'A consensus record requires two independent reviewer assessments of this study.',
+        reviewerCount: reviewerIds.length,
+      });
+    }
+
+    const me = await prisma.user.findUnique({ where: { id: req.user.id }, select: { name: true, email: true } });
+    const row = await prisma.robAssessment.create({
+      data: {
+        projectId: req.params.projectId,
+        studyId: req.params.studyId,
+        outcomeId: outcomeId ? String(outcomeId) : (independent[0].outcomeId || null),
+        resultLabel: resultLabel ? String(resultLabel).slice(0, 300) : (independent[0].resultLabel || null),
+        instrumentId: instrument.id,
+        instrumentVersion: instrument.instrumentVersion,
+        variant: instrument.variant,
+        reviewerId: req.user.id,
+        reviewerName: me?.name || me?.email || '',
+        status: CONSENSUS_STATUS,
+      },
+    });
+
+    // Optional seed: copy one reviewer's answers into the NEW row so reconciliation
+    // starts from a real assessment rather than a blank form.
+    let seededFrom = null;
+    if (seedFromAssessmentId) {
+      const src = independent.find(r => r.id === String(seedFromAssessmentId));
+      if (!src) return res.status(400).json({ error: 'seedFromAssessmentId must be one of the reviewer assessments for this study.' });
+      const answers = await prisma.robAnswer.findMany({ where: { assessmentId: src.id } });
+      for (const ans of answers) {
+        await prisma.robAnswer.create({
+          data: {
+            assessmentId: row.id,
+            domainId: ans.domainId,
+            questionId: ans.questionId,
+            response: ans.response,
+            rationale: ans.rationale || null,
+            evidenceQuote: ans.evidenceQuote || null,
+            evidenceLocator: ans.evidenceLocator || null,
+            // A copied answer is a human starting point for reconciliation, and it
+            // carries no machine-suggestion provenance forward.
+            aiSuggested: false,
+          },
+        });
+      }
+      seededFrom = { assessmentId: src.id, reviewerId: src.reviewerId, answerCount: answers.length };
+    }
+
+    await recomputeAndPersist(row.id, instrument);
+    await audit(req.params.projectId, row.id, { ...req.user, name: me?.name }, 'ROB_CONSENSUS_CREATE', {
+      entityType: 'RobAssessment', entityId: row.id,
+      details: { studyId: req.params.studyId, instrumentId: instrument.id, reviewerIds, seededFrom },
+    });
+    return res.status(201).json({ assessment: await buildView(row.id), seededFrom });
+  } catch (err) {
+    console.error('[rob] createConsensusAssessment error:', err.message);
     return res.status(500).json({ error: 'Internal server error' });
   }
 }

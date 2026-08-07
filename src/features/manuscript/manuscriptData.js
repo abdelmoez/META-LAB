@@ -11,6 +11,7 @@
  *                      projectHelpers.linkedSiftId — also a COUNTS fallback when
  *                      the summary endpoint is unavailable)
  *   search methods     GET /api/search-builder/:pid/methods-text  (searchEngine flag)
+ *   search provenance  GET /api/search-builder/:pid/provenance    (searchEngine flag)
  *   RoB v2             GET /api/rob/projects/:pid/assessments     (rob_engine_v2 flag)
  *   pecan per-source   GET /api/pecan-search/projects/:pid/runs (+ /runs/:rid) —
  *                      newest COMPLETED run's per-database record counts/queries
@@ -30,6 +31,9 @@
  * All mappers are PURE and exported for unit tests; `fetchImpl` is injectable.
  */
 
+// 101.md §27 — the tools actually used, derived from the assessment rows.
+import { deriveRobUsage } from '../../research-engine/rob/usage.js';
+
 const num = (v) => {
   if (v === '' || v == null) return null;
   const n = Number(v);
@@ -44,7 +48,13 @@ export function emptyManuscriptSources() {
     searchMethodsText: '',
     robAssessments: null,
     robByStudyId: null,
+    // 101.md §27 — { tools:[{id,label,designLabel,scoring,count}], assessedCount, … }
+    robUsage: null,
     perSource: null,
+    // 101.md §1/§2 — deriveSearchProvenance output. null = "we do not know which
+    // databases were searched", which is NOT the same as "none were" and must
+    // never be rendered as a database list.
+    searchProvenance: null,
     dataStatus: { screening: 'unlinked', search: 'off', rob: 'off', grade: 'off', pecan: 'off' },
   };
 }
@@ -266,6 +276,12 @@ export function composeGenOpts({ project, runMeta, gradeByOutcome, sources } = {
   if (src.screening) out.screening = src.screening;
   if (src.searchMethodsText) out.searchMethodsText = src.searchMethodsText;
   if (src.robAssessments) out.robAssessments = src.robAssessments;
+  // 101.md §1/§2/§27 — the evidence behind the search and risk-of-bias claims.
+  // Only attached when actually present, matching the rule above: an absent
+  // source must never change the legacy generation path, and must never be
+  // silently substituted by a settings value.
+  if (src.searchProvenance) out.searchProvenance = src.searchProvenance;
+  if (src.robUsage) out.robUsage = src.robUsage;
   if (src.screeningWorkflow) {
     // methodsText + sources.js read the FLAT reviewers/blind keys.
     if (src.screeningWorkflow.reviewers != null) out.reviewers = src.screeningWorkflow.reviewers;
@@ -362,10 +378,33 @@ export async function fetchManuscriptSources({ projectId, screenProjectId, fetch
         out.robAssessments = mapped.assessments;
         out.robByStudyId = mapped.robByStudyId;
       }
+      // 101.md §27 — which instruments were ACTUALLY used, from the raw rows
+      // (instrumentId + status + studyId). Derived here rather than from
+      // project.robMethod so the Methods paragraph can never claim a tool that
+      // was merely selected in a settings panel.
+      out.robUsage = deriveRobUsage((d && d.assessments) || []);
       out.dataStatus.rob = 'ok';
     } catch (e) {
       out.dataStatus.rob = (e && e.status === 404) ? 'off' : 'error';
     }
+  })());
+
+  // 3b) 101.md §1/§2 — SEARCH EXECUTION PROVENANCE. The authoritative answer to
+  //     "which databases were actually searched, and when was the last valid
+  //     search". Deliberately separate from the methods-text fetch above: that
+  //     one returns prose, this one returns the evidence. On any failure the
+  //     provenance stays null and every search fact resolves MISSING — the
+  //     manuscript says "not recorded" rather than falling back to the settings
+  //     checkbox list (§17).
+  tasks.push((async () => {
+    if (flags.searchEngine !== true) return;
+    try {
+      // NOTE the mount point: routes/searchEngine.js is mounted at
+      // /api/search-builder (server/index.js), which is also why the methods-text
+      // fetch above uses that prefix. Same router, historical name.
+      const d = await j(`/api/search-builder/${enc(projectId)}/provenance`);
+      if (d && d.provenance) out.searchProvenance = d.provenance;
+    } catch { /* provenance is evidence, not enrichment — absent means "unknown" */ }
   })());
 
   // 4) Pecan per-source counts from the newest COMPLETED run (trio-gated like

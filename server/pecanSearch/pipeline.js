@@ -30,6 +30,10 @@ import { contentHashId } from './connectors/base.js';
 import { DEDUP_RULE_VERSION } from './dedup.js';
 import { PecanError, toPecanError, isRetryable } from './errors.js';
 import { sanitizeErrorDetail } from './redact.js';
+// 101.md §3/§29 — the search engine writes into the SAME unified ProjectEvent ledger
+// every other engine uses; no second, search-only provenance architecture (§40).
+import { recordEvents } from '../provenance/recordEvent.js';
+import { deriveSearchProvenance, reportableDatabases } from '../../src/research-engine/search/searchProvenance.js';
 
 const nt = (s) => normalizeTitle(s || '');
 
@@ -387,7 +391,142 @@ export async function runSource(a) {
     completedAt: new Date(),
   });
 
+  // 101.md §3/§29/§30 — this source is now terminal; if it was the LAST one, the run
+  // as a whole is a finished research action and belongs in the project ledger.
+  await emitRunProvenanceEvents(sourceRow.runId);
+
   return { provider, state: finalState, ...counts, capReached, errorClass, errorDetail };
+}
+
+/* ════════════ run-level provenance (101.md §3, §29, §30) ════════════ */
+
+/** Per-source states that mean "this source will not do any more work". */
+const TERMINAL_SOURCE_STATES = new Set(['completed', 'partial', 'failed', 'cancelled', 'skipped']);
+
+/**
+ * emitRunProvenanceEvents(runId) — write the run's DOMAIN events into the unified
+ * ProjectEvent ledger (101.md §29) once every source has reached a terminal state.
+ *
+ * Called from the tail of runSource rather than from a run-level finalizer because
+ * sources fan out concurrently: whichever source finishes last observes an all-terminal
+ * set and emits. Two sources finishing simultaneously would both observe it, so the
+ * drafts carry a deterministic `idempotencyKey` — ProjectEvent.idempotencyKey is
+ * UNIQUE, and recordEvent treats the resulting P2002 as a no-op. That also makes a
+ * worker crash-resume or a `retryRun` re-execution emit exactly once, forever.
+ *
+ * What is emitted (101.md §2/§30 — materiality is about the RESEARCH RECORD, not about
+ * whether code ran):
+ *   SEARCH_EXECUTED          once per run, when at least one database genuinely
+ *                            reached a reportable state (searched, or searched with
+ *                            zero results). A run in which nothing succeeded — "a
+ *                            failed test search that never becomes part of the
+ *                            research workflow" (§2) — emits NOTHING.
+ *   SEARCH_RESULTS_IMPORTED  additionally, only when the run actually landed records.
+ * Both share ONE correlationId so the manuscript layer can group the consequences
+ * into a single "Updated literature search" research event (§14).
+ *
+ * Significance / affected manuscript sections / recalc flags are NOT set here: §30
+ * materiality is computed by the pure classifier from each event type's
+ * dependencyKeys (src/research-engine/provenance/classify.js). This function only
+ * supplies an honest event type, actor and payload.
+ *
+ * Best-effort throughout — an audit write must never fail a search.
+ */
+export async function emitRunProvenanceEvents(runId) {
+  try {
+    if (!runId) return 0;
+    const sources = await prisma.pecanSearchSource.findMany({ where: { runId } });
+    if (!sources.length) return 0;
+    // Not the last source → the run is still executing; the real last one will emit.
+    if (sources.some((s) => !TERMINAL_SOURCE_STATES.has(String(s.state || '')))) return 0;
+
+    const run = await prisma.pecanSearchRun.findUnique({ where: { id: runId } });
+    if (!run) return 0;
+    // 101.md §1 — a run rolled back by a screening reset describes records that are no
+    // longer in the review. It is not a search the manuscript may report.
+    if (run.rolledBackAt) return 0;
+
+    // Reuse the SAME derivation the manuscript reads (searchProvenance.js) so the
+    // event names databases exactly as the Methods paragraph will — one vocabulary.
+    const provenance = deriveSearchProvenance({
+      runs: [{
+        id: run.id, state: run.state, rolledBackAt: run.rolledBackAt,
+        completedAt: run.completedAt, createdAt: run.createdAt,
+        origin: run.origin, name: run.name, sources,
+      }],
+    });
+    const databases = reportableDatabases(provenance).all;
+    // §2 — nothing genuinely searched ⇒ not a methodological event. Stay silent.
+    if (!databases.length) return 0;
+
+    const imported = sources.reduce((n, s) => n + (s.importedCount || 0), 0);
+    const rawRetrieved = sources.reduce((n, s) => n + (s.rawCount || 0), 0);
+    const existingMatched = sources.reduce((n, s) => n + (s.existingMatchCount || 0), 0);
+    const providers = sources
+      .filter((s) => s.state === 'completed' || s.state === 'partial')
+      .map((s) => s.provider);
+    const runName = String(run.name || '').slice(0, 200);
+
+    const drafts = [{
+      eventType: 'SEARCH_EXECUTED',
+      entityType: 'search_run',
+      entityId: run.id,
+      // §1 — 'living' runs are the living-review re-search; keep that distinction
+      // visible on the event instead of flattening every run into one shape.
+      subtype: String(run.origin || 'automated'),
+      origin: 'automated_search',
+      idempotencyKey: `search-run-executed:${run.id}`,
+      newValue: {
+        databases,
+        searchedAt: provenance.latestValidSearchAt,
+        imported,
+        rawRetrieved,
+      },
+      metadata: {
+        runName, providers, databases, imported, rawRetrieved, existingMatched,
+        sourceStates: sources.map((s) => `${s.provider}:${s.state}`),
+      },
+    }];
+
+    // §3 — records actually entering screening is the change that propagates
+    // downstream (dedup → screening → PRISMA → …). No records landed ⇒ no import event.
+    if (imported > 0) {
+      drafts.push({
+        eventType: 'SEARCH_RESULTS_IMPORTED',
+        entityType: 'search_run',
+        entityId: run.id,
+        subtype: String(run.origin || 'automated'),
+        // Not 'imported_file' (the taxonomy default): these records came from an
+        // executed search, not from a file somebody uploaded.
+        origin: 'automated_search',
+        idempotencyKey: `search-run-imported:${run.id}`,
+        newValue: { imported, rawRetrieved, existingMatched, databases },
+        metadata: { runName, providers, databases, imported, rawRetrieved, existingMatched },
+      });
+    }
+
+    // Project blob revision at write time — lets the History/hover card tie the event
+    // to the manuscript state it was written against. Best-effort; 0 when unavailable.
+    let projectRev = 0;
+    try {
+      const p = await prisma.project.findUnique({ where: { id: run.metaLabProjectId }, select: { autosaveRev: true } });
+      projectRev = (p && p.autosaveRev) || 0;
+    } catch { /* optional context only */ }
+
+    return await recordEvents(drafts, {
+      projectId: run.metaLabProjectId,
+      projectRev,
+      actorUserId: run.initiatedById || '',
+      actorName: run.initiatedByName || '',
+      // §14 — one correlationId per run groups every consequence of this one action.
+      correlationId: `search-run:${run.id}`,
+      jobId: run.jobId || '',
+    });
+  } catch (e) {
+    // 101.md §29 — provenance is additive; an audit failure never fails the search.
+    console.error('[pecan-search] provenance emit failed', (e && e.message) || e);
+    return 0;
+  }
 }
 
 /** Map a DUP_TYPES value to the short matchType stored on the decision. */

@@ -15,15 +15,21 @@
 import { useState, useEffect, useLayoutEffect, useRef, useCallback, useMemo } from 'react';
 import { C, FONT, MONO, alpha } from '../theme/tokens.js';
 import Icon from '../components/icons.jsx';
-import { robApi, getRobSettings, guidedRobAppraisalEnabled } from './robApi.js';
+import {
+  robApi, getRobSettings, guidedRobAppraisalEnabled,
+  nosResponsePayload, decodeNosAnswers, NOS_THRESHOLD_DEFAULTS,
+} from './robApi.js';
 import { judgmentStyle, legendFor } from './judgmentStyle.js';
 import RobTrafficLight from './RobTrafficLight.jsx';
 import RobPdfPanel from './RobPdfPanel.jsx';
+import NosAssessmentPanel from './NosAssessmentPanel.jsx';
+import { StarTotalPill } from './NosStarProfile.jsx';
 import { screeningApi } from '../screening/api-client/screeningApi.js';
 import { studyDocApi } from '../../features/extraction/unified/studyDocApi.js';
 import { extractStudyFullText } from './robFullText.js';
 import {
   ROB2, getInstrument, isReachable, proposeDomain, proposeOverall, completeness,
+  isScoringInstrument, nosScoreAssessment,
 } from '../../research-engine/rob/index.js';
 
 const RESPONSE_KEYS = ['Y', 'PY', 'PN', 'N', 'NI'];
@@ -443,6 +449,11 @@ export default function RobWorkspace({ assessmentId, onClose, onChanged, onConti
   }, [view?.instrumentId]);
   const domainIds = useMemo(() => instrument.domains.map(d => d.id), [instrument]);
   const legend = useMemo(() => legendFor(instrument.id), [instrument]);
+  // 101.md §18/§26 — the Newcastle–Ottawa forms are SCORED (stars), not judged, so
+  // they get their own pane, their own answer widgets and a star profile instead of
+  // a traffic light. Everything else in this workspace (PDF column, autosave,
+  // finalise, permissions) is shared unchanged.
+  const starScored = useMemo(() => isScoringInstrument(instrument), [instrument]);
 
   // ── Guided appraisal (P14, flag-gated) ──────────────────────────────────────
   // When the guidedRobAppraisal flag is OFF, none of this renders and the
@@ -460,9 +471,23 @@ export default function RobWorkspace({ assessmentId, onClose, onChanged, onConti
       const res = await robApi.getAssessment(assessmentId);
       const a = res.assessment;
       setView(a);
-      setAnswers(JSON.parse(JSON.stringify(a.answersByDomain || {})));
+      // 101.md §21 — a NOS answer is a LIST of option values ('a' or 'a,b' for the
+      // additive Comparability item) stored in one string column, so it is decoded
+      // to the engine's array shape on the way in and re-encoded on the way out.
+      // RoB 2 / ROBINS-I answers are single codes and take the untouched path.
+      const star = (() => { try { return isScoringInstrument(getInstrument(a.instrumentId || 'RoB2')); } catch { return false; } })();
+      setAnswers(star ? decodeNosAnswers(a.answersByDomain || {}) : JSON.parse(JSON.stringify(a.answersByDomain || {})));
       const m = {};
-      for (const x of (a.answerMeta || [])) m[x.questionId] = { rationale: x.rationale || '', evidenceQuote: x.evidenceQuote || '' };
+      for (const x of (a.answerMeta || [])) {
+        m[x.questionId] = {
+          rationale: x.rationale || '',
+          evidenceQuote: x.evidenceQuote || '',
+          // §24 — the source locator is edited only in the NOS pane, so it is loaded
+          // (and therefore echoed back on save) only there: a RoB 2 answer's locator
+          // may hold guided-appraisal provenance that must not be round-tripped away.
+          ...(star ? { evidenceLocator: x.evidenceLocator || '' } : {}),
+        };
+      }
       setMeta(m);
     } catch (e) { setError(e.message); }
     finally { setLoading(false); }
@@ -532,6 +557,17 @@ export default function RobWorkspace({ assessmentId, onClose, onChanged, onConti
     return proposeOverall(instrument, resolved);
   }, [liveProposals, view, instrument]);
   const liveCompleteness = useMemo(() => completeness(instrument, { answersByDomain: answers }), [answers, instrument]);
+  // 101.md §21 — the live star profile, from the SAME pure scorer the server uses.
+  const nosScore = useMemo(
+    () => (starScored ? nosScoreAssessment(instrument, answers) : null),
+    [starScored, instrument, answers],
+  );
+
+  // 101.md §22 — the project's OPTIONAL interpretation threshold rides along with
+  // the assessment view (`nosThresholds`), so there is no extra fetch here; the
+  // default is 'none', i.e. star profile and no verdict. Configuring it is a
+  // project-level action, not part of assessing one study.
+  const nosThresholds = view?.nosThresholds || NOS_THRESHOLD_DEFAULTS;
 
   const overriddenByDomain = useMemo(() => {
     const m = {};
@@ -568,11 +604,24 @@ export default function RobWorkspace({ assessmentId, onClose, onChanged, onConti
       const response = batch.answers[qid] !== undefined
         ? batch.answers[qid]
         : ((answersRef.current[domainId] || {})[qid] || '');
-      const item = { questionId: qid, response: response || 'NA' };
+      // 101.md §21 — a NOS selection travels as its array of option values (the
+      // server owns the column encoding and rejects an empty one, so an unanswered
+      // item is skipped rather than sent). Single-code instruments keep the exact
+      // old path, including the 'NA' default.
+      if (Array.isArray(response) && !response.length) continue;
+      const item = { questionId: qid, response: Array.isArray(response) ? nosResponsePayload(response) : (response || 'NA') };
       const mm = batch.meta[qid];
-      if (mm) { item.rationale = mm.rationale ?? ''; item.evidenceQuote = mm.evidenceQuote ?? ''; }
+      if (mm) {
+        item.rationale = mm.rationale ?? '';
+        item.evidenceQuote = mm.evidenceQuote ?? '';
+        // Only sent when this pane actually owns the field (NOS), so an existing
+        // RoB 2 locator is never overwritten with an empty string.
+        if (mm.evidenceLocator !== undefined) item.evidenceLocator = mm.evidenceLocator;
+      }
       items.push(item);
     }
+    // Everything in the batch was an un-answered NOS item — nothing to persist.
+    if (!items.length) return;
     if (mounted.current) setSaveState('saving');
     try {
       const res = await robApi.saveAnswers(assessmentId, items);
@@ -609,6 +658,22 @@ export default function RobWorkspace({ assessmentId, onClose, onChanged, onConti
     pending.current.answers[qid] = response;
     queueSave();
   }
+  /**
+   * 101.md §21 — a Newcastle–Ottawa answer is a LIST of option values. The API
+   * validates each value against the item's own option list and REQUIRES one, so
+   * an empty selection (un-ticking both Comparability boxes) is applied locally
+   * but not queued: sending it would 400 and — because the batch is re-queued on
+   * failure — would block every later save for this assessment. The item then
+   * reads "not yet answered" until an option is chosen, which is also what the
+   * server still holds.
+   */
+  function setNosAnswer(domainId, qid, values) {
+    const payload = nosResponsePayload(values);
+    setAnswers(prev => ({ ...prev, [domainId]: { ...(prev[domainId] || {}), [qid]: payload } }));
+    if (!payload.length) { delete pending.current.answers[qid]; return; }
+    pending.current.answers[qid] = payload;
+    queueSave();
+  }
   function setQMeta(qid, patch) {
     setMeta(prev => ({ ...prev, [qid]: { ...(prev[qid] || {}), ...patch } }));
     pending.current.meta[qid] = { ...(meta[qid] || {}), ...patch };
@@ -617,6 +682,11 @@ export default function RobWorkspace({ assessmentId, onClose, onChanged, onConti
 
   // ── Keyboard shortcuts (1–5 answer · n/p question · [ ] domain · o · ?) ─────
   useEffect(() => {
+    // 101.md §23 — these shortcuts encode the RoB 2 answer set. A NOS item has its
+    // OWN option list (a/b/c/d) and no judgement levels at all, so "1–5 = answer"
+    // and "o = override" would be wrong rather than merely unhelpful. The NOS pane
+    // uses native radios/checkboxes, which are keyboard-operable on their own.
+    if (starScored) return undefined;
     function onKey(e) {
       const tag = (e.target.tagName || '').toLowerCase();
       if (tag === 'input' || tag === 'textarea' || tag === 'select' || e.metaKey || e.ctrlKey || e.altKey) return;
@@ -656,7 +726,7 @@ export default function RobWorkspace({ assessmentId, onClose, onChanged, onConti
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [active, focusedQ, answers, finalised, readOnly, override, domainIds, instrument, editable]);
+  }, [active, focusedQ, answers, finalised, readOnly, override, domainIds, instrument, editable, starScored]);
 
   async function doOverride({ finalJudgment, justification, clear }) {
     try {
@@ -792,7 +862,10 @@ export default function RobWorkspace({ assessmentId, onClose, onChanged, onConti
             <Icon name="arrowLeft" size={15} /> Back to Risk of Bias
           </button>
           <span title="Assessment tool" style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '4px 10px', borderRadius: 7, background: alpha(C.acc, '14'), border: `1px solid ${alpha(C.acc, '38')}`, color: C.acc, fontSize: 11, fontFamily: MONO, fontWeight: 700, flexShrink: 0 }}>
-            <Icon name="scale" size={13} /> {view?.instrumentLabel || 'RoB 2'} · {instrument.id === 'ROBINS-I' ? 'non-randomised studies' : (view?.variant === 'adherence' ? 'effect of adherence' : 'effect of assignment')}
+            {/* 101.md §18 — the tool chip must describe the tool that is actually in
+                use; "effect of assignment" is a RoB 2 concept and would be nonsense
+                on a Newcastle–Ottawa form. */}
+            <Icon name="scale" size={13} /> {view?.instrumentLabel || 'RoB 2'} · {starScored ? `${instrument.variantLabel.toLowerCase()} · ${instrument.maxStars} stars` : instrument.id === 'ROBINS-I' ? 'non-randomised studies' : (view?.variant === 'adherence' ? 'effect of adherence' : 'effect of assignment')}
           </span>
           {/* Study title + single open-study link (the only metadata kept). */}
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, flex: '1 1 220px', minWidth: 0 }}>
@@ -870,16 +943,23 @@ export default function RobWorkspace({ assessmentId, onClose, onChanged, onConti
             server refreshes machine suggestions for un-answered questions but NEVER
             overwrites a reviewer's own answers/rationales/evidence (the old
             `!!appraisal` sent force=true, silently wiping human work on re-run). */}
-        {appraisalOn && editable && !finalised && (
+        {/* 101.md §18 — the guided appraisal maps study text onto RoB 2 / ROBINS-I
+            signalling answers; it has no Newcastle–Ottawa model, so the action is
+            hidden for a star-scored form rather than offered and producing nothing. */}
+        {appraisalOn && editable && !finalised && !starScored && (
           <button onClick={() => runAppraisal(false)} disabled={appraising}
             title={appraisal ? 'Refresh suggestions from the study text — your own answers and rationales are kept' : 'Suggest signalling answers from the study text — you review and accept each one'}
             style={{ ...ghostBtn, flexShrink: 0, background: appraising ? C.surf : alpha(C.acc, '12'), color: appraising ? C.muted : C.acc, borderColor: alpha(C.acc, '45'), cursor: appraising ? 'progress' : 'pointer' }}>
             <Icon name="clipboard" size={14} /> {appraising ? 'Appraising…' : appraisal ? 'Re-run appraisal' : 'Run guided appraisal'}
           </button>
         )}
+        {/* 101.md §26 — a NOS total is a star COUNT, not a risk judgement, so it must
+            not be shown in the traffic-light pill language. */}
         <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-          <span style={{ fontSize: 10, fontFamily: MONO, color: C.muted, textTransform: 'uppercase', letterSpacing: '0.06em' }}>Overall</span>
-          <JudgmentPill judgment={finalised ? view.overall.resolvedOverall : liveOverall.judgment} size="md" provisional={!liveCompleteness.overall.complete && !finalised} />
+          <span style={{ fontSize: 10, fontFamily: MONO, color: C.muted, textTransform: 'uppercase', letterSpacing: '0.06em' }}>{starScored ? 'Total' : 'Overall'}</span>
+          {starScored
+            ? <StarTotalPill score={nosScore} size="md" />
+            : <JudgmentPill judgment={finalised ? view.overall.resolvedOverall : liveOverall.judgment} size="md" provisional={!liveCompleteness.overall.complete && !finalised} />}
         </div>
       </div>
 
@@ -894,10 +974,37 @@ export default function RobWorkspace({ assessmentId, onClose, onChanged, onConti
 
       {error && <div style={{ padding: '8px 20px 0', flexShrink: 0 }}><ErrorBox msg={error} /></div>}
 
-      {/* ── Scrolling body: domain rail + questions. prompt43 Area 3 — the rail is a
-          vertical side-rail when the pane is wide, and a compact horizontal strip
-          (freeing the full width for the questions) when the PDF squeezes the pane,
-          so the questions are never crushed into a sliver. ── */}
+      {/* ── 101.md §23/§26 — Newcastle–Ottawa pane. A star-scored form has no
+          traffic-light rail, no algorithm-proposed judgement and no override, so it
+          replaces the domain rail + question pane wholesale rather than pretending
+          to be a RoB 2 domain walk. Everything around it (PDF column, autosave,
+          finalise, permissions) is the shared workspace, unchanged. ── */}
+      {starScored ? (
+        <main style={{ flex: 1, minHeight: 0, overflowY: 'auto', padding: '22px clamp(20px, 2.4vw, 36px)' }}>
+          <NosAssessmentPanel
+            instrument={instrument}
+            answers={answers}
+            meta={meta}
+            /* §19/§21 — the instrument's printed blanks are protocol decisions. The
+               project has no store for them yet, so they are rendered as printed
+               with the "your review team must define this" hint rather than an edit
+               box whose value would silently evaporate (§17). The panel supports
+               the edited path the moment a store exists. */
+            protocol={view.nosProtocol || {}}
+            protocolEditable={false}
+            threshold={nosThresholds}
+            editable={editable}
+            reduced={reduced}
+            studyLabel={view.resultLabel || studyRecord.record?.title || `Study ${view.studyId}`}
+            onAnswer={setNosAnswer}
+            onMeta={setQMeta}
+            /* §24 — no jump handler is passed: the RoB PDF column renders the
+               screening PdfViewer, which does not forward AppPdfViewer's `reveal`
+               prop, so a "go to source" button here could not actually move the
+               document. The locator is still recorded with the judgement. */
+          />
+        </main>
+      ) : (
       <div style={{ flex: 1, minHeight: 0, display: 'grid', gap: 0,
         ...(railTop
           ? { gridTemplateColumns: '1fr', gridTemplateRows: 'auto minmax(0, 1fr)' }
@@ -937,11 +1044,16 @@ export default function RobWorkspace({ assessmentId, onClose, onChanged, onConti
           )}
         </main>
       </div>
+      )}
 
       {/* ── Sticky action footer (Task 2/7) — always visible without page scroll.
-          Carries autosave state, domain nav, and the primary next action. ── */}
+          Carries autosave state, domain nav, and the primary next action. The
+          domain stepper is hidden for the NOS pane (§23): its domains are
+          accordions on one page, so Previous/Next would navigate nothing. ── */}
       <WorkspaceFooter
         active={active} setActive={setActive} setFocusedQ={setFocusedQ} domainIds={domainIds}
+        nav={!starScored}
+        incompleteHint={starScored ? 'Answer every Newcastle–Ottawa item first' : undefined}
         allComplete={allComplete} finalised={finalised} readOnly={readOnly} editable={editable}
         saving={saveState === 'saving'} saveState={saveState}
         onFinalise={doFinalise} onReopen={doReopen} onContinue={onContinue}
@@ -960,7 +1072,14 @@ export default function RobWorkspace({ assessmentId, onClose, onChanged, onConti
 // `domainIds` defaults to RoB 2's D1–D5 so the SSR test (which renders this in
 // isolation) still nav-labels correctly; the workspace passes the active
 // instrument's domain ids (RoB 2 → 5, ROBINS-I → 7).
-export function WorkspaceFooter({ active, setActive, setFocusedQ, domainIds = DOMAIN_IDS, allComplete, finalised, readOnly, editable = true, saving, saveState, onFinalise, onReopen, onContinue }) {
+// `nav` (default true) hides the Previous/Next domain stepper for instruments
+// whose pane is not a domain walk (101.md §23 — the Newcastle–Ottawa accordions
+// live on one page); the save state and the primary action are unaffected.
+export function WorkspaceFooter({
+  active, setActive, setFocusedQ, domainIds = DOMAIN_IDS, nav = true,
+  incompleteHint = 'Answer all reachable signalling questions first',
+  allComplete, finalised, readOnly, editable = true, saving, saveState, onFinalise, onReopen, onContinue,
+}) {
   const go = (target) => { setActive(target); setFocusedQ(null); };
   const onSummary = active === 'summary';
   const di = domainIds.indexOf(active);
@@ -974,10 +1093,12 @@ export function WorkspaceFooter({ active, setActive, setFocusedQ, domainIds = DO
     <div style={{ flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap', padding: '11px 18px', borderTop: `1px solid ${C.brd}`, background: C.card }}>
       <span aria-live="polite" style={{ fontSize: 11, fontFamily: MONO, color: saveState === 'error' ? C.red : C.muted, minWidth: 70 }}>{saveText}</span>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
-        <button onClick={() => prevTarget && go(prevTarget)} disabled={!prevTarget} style={{ ...ghostBtn, opacity: prevTarget ? 1 : 0.45, cursor: prevTarget ? 'pointer' : 'not-allowed' }}>
-          <Icon name="arrowLeft" size={14} /> {onSummary ? `Back to ${lastDomain}` : 'Previous'}
-        </button>
-        {nextTarget && (
+        {nav && (
+          <button onClick={() => prevTarget && go(prevTarget)} disabled={!prevTarget} style={{ ...ghostBtn, opacity: prevTarget ? 1 : 0.45, cursor: prevTarget ? 'pointer' : 'not-allowed' }}>
+            <Icon name="arrowLeft" size={14} /> {onSummary ? `Back to ${lastDomain}` : 'Previous'}
+          </button>
+        )}
+        {nav && nextTarget && (
           <button onClick={() => go(nextTarget)} style={ghostBtn}>
             Next: {nextLabel} <Icon name="arrowRight" size={14} />
           </button>
@@ -992,7 +1113,7 @@ export function WorkspaceFooter({ active, setActive, setFocusedQ, domainIds = DO
           </>
         ) : (
           <button onClick={onFinalise} disabled={!allComplete || saving}
-            title={saving ? 'Saving…' : (!allComplete ? 'Answer all reachable signalling questions first' : 'Finalise this assessment')}
+            title={saving ? 'Saving…' : (!allComplete ? incompleteHint : 'Finalise this assessment')}
             style={primaryBtn(!allComplete || saving)}>
             <Icon name="check" size={14} /> {saving ? 'Saving…' : 'Finalise'}
           </button>

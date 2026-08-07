@@ -1096,11 +1096,20 @@ model RobAssessment {
   studyId           String // in-document study.id (8-char uid); not a DB FK
   outcomeId         String? // optional specific outcome/result identifier
   resultLabel       String? // human-readable result being assessed (e.g. "Mortality at 6 months")
-  instrumentId      String    @default("RoB2")
+  instrumentId      String    @default("RoB2") // RoB2 | ROBINS-I | NOS | NOS-CC
   instrumentVersion String    @default("2019-08-22")
-  variant           String    @default("assignment") // assignment | adherence (future)
+  // 101.md §19/§20 — `variant` is the instrument's own form discriminator, REUSED
+  // (not duplicated) by the Newcastle–Ottawa Scale: RoB 2 uses assignment|adherence,
+  // the NOS uses cohort|case-control. It is always copied from the instrument
+  // definition, never from client input.
+  variant           String    @default("assignment") // assignment | adherence (RoB 2) · cohort | case-control (NOS)
   reviewerId        String // user id (bare string; not a FK)
   reviewerName      String    @default("") // denormalised for display/audit
+  // 101.md §25 — dual-reviewer + consensus is expressed with the columns that
+  // already exist: two rows sharing (projectId, studyId, instrumentId) with
+  // DIFFERENT reviewerId are the two INDEPENDENT assessments, and the reconciled
+  // record is a THIRD row with status 'consensus'. Neither reviewer's row is ever
+  // overwritten by the other's, nor by the consensus row.
   status            String    @default("draft") // draft | complete | consensus
   deletedAt         DateTime? // soft delete; never hard-delete
   createdAt         DateTime  @default(now())
@@ -1121,6 +1130,18 @@ model RobAssessment {
 // human decision (human judgements live in RobDomainJudgment.finalJudgment /
 // overridden). @@unique([assessmentId, questionId]) enables a clean upsert and
 // is additive-safe on a brand-new table.
+//
+// 101.md §18/§21 — NOS ENCODING. The Newcastle–Ottawa Scale does not use the
+// shared Y/PY/PN/N/NI/NA vocabulary: every NOS item has its OWN closed option list
+// and the answer is an option VALUE ('a'). `response` therefore stores:
+//   select:'one'  → the bare option value, e.g. "a"
+//   select:'many' → a JSON ARRAY STRING of option values, e.g. ["a","b"]
+// Only the additive Comparability item (C1) is select:'many' — it is the sole item
+// on either official form where two starred options are independent and additive
+// (0–2 stars). The controller JSON.parse()s at the boundary (decodeAnswerResponse)
+// before handing answers to the pure engine; nos.js selectedValues() accepts both
+// shapes. Nothing else in this table changes: rationale / evidenceQuote /
+// evidenceLocator ARE the §23/§24 evidence linkage and are reused as-is.
 model RobAnswer {
   id              String        @id @default(uuid())
   assessmentId    String
@@ -1144,13 +1165,23 @@ model RobAnswer {
 
 // Per-domain proposed + final judgement. proposed = engine output; final =
 // proposed unless overridden (overridden=true requires overrideJustification).
+//
+// 101.md §21 — STAR SCORING. The NOS scores stars, not risk judgements. Rather
+// than overload the judgement strings with numbers, the star count gets its own
+// nullable Int column and BOTH are written: the numeral goes into the existing
+// String column (so every judgement-shaped reader keeps working unchanged) and the
+// Int into proposedStars/finalStars (so no reader has to parse a numeral out of a
+// judgement vocabulary). Null on every RoB 2 / ROBINS-I row — additive and
+// nullable, so `prisma db push` stays safe.
 model RobDomainJudgment {
   id                    String        @id @default(uuid())
   assessmentId          String
   assessment            RobAssessment @relation(fields: [assessmentId], references: [id], onDelete: Cascade)
-  domainId              String // D1..D5
-  proposedJudgment      String        @default("") // low|some|high
-  finalJudgment         String? // low|some|high (null until resolved)
+  domainId              String // D1..D5 (RoB 2) · selection | comparability | outcome | exposure (NOS)
+  proposedJudgment      String        @default("") // low|some|high — NOS: the star count as a numeral ("3")
+  finalJudgment         String? // low|some|high (null until resolved) — NOS: the star count as a numeral
+  proposedStars         Int? // NOS only: engine-computed stars for this domain (null for judgement instruments)
+  finalStars            Int? // NOS only: the resolved/overridden star count for this domain
   overridden            Boolean       @default(false)
   overrideJustification String?
   createdAt             DateTime      @default(now())
@@ -1160,12 +1191,20 @@ model RobDomainJudgment {
 }
 
 // One overall judgement per assessment (proposed + final, override-aware).
+// 101.md §21 — NOS: proposedOverall/finalOverall carry the TOTAL as a numeral and
+// proposedStars/finalStars carry it as an Int, with maxStars (9 on both official
+// forms) recorded alongside so a stored row is self-describing. Deliberately NO
+// quality label is stored: the NOS defines no threshold (§22) and any verdict is
+// derived at read time from the project's own configured thresholds.
 model RobOverall {
   id                    String        @id @default(uuid())
   assessmentId          String        @unique
   assessment            RobAssessment @relation(fields: [assessmentId], references: [id], onDelete: Cascade)
-  proposedOverall       String        @default("") // low|some|high
+  proposedOverall       String        @default("") // low|some|high — NOS: the total star count as a numeral ("7")
   finalOverall          String?
+  proposedStars         Int? // NOS only: engine-computed TOTAL stars
+  finalStars            Int? // NOS only: the resolved/overridden TOTAL stars
+  maxStars              Int? // NOS only: the instrument maximum (9), recorded so the row is self-describing
   overridden            Boolean       @default(false)
   overrideJustification String?
   multiSomeConcernsFlag Boolean       @default(false)

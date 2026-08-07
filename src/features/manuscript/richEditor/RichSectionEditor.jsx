@@ -13,11 +13,25 @@
  * Commands go through document.execCommand (keeps native undo/redo) with a
  * Range-API fallback when a command is unsupported. Paste is sanitized down to
  * the markdown subset (Word/Docs HTML → htmlToMd → mdToHtml).
+ *
+ * 101.md adds two things on top of that, both deliberately small:
+ *   §4/§33  fact chips refresh IN PLACE from `facts`, using the same effect pattern
+ *           as cite/asset renumbering. A project change therefore updates the
+ *           manuscript without a remount, without touching prose, and without
+ *           moving the caret of someone mid-sentence.
+ *   §6      `showChanges` sets one attribute on the root. Nothing else. Every
+ *           overlay pixel lives in CSS behind [data-show-changes="true"], so the
+ *           document is byte-identical in both modes and turning the toggle off
+ *           leaves a genuinely clean manuscript.
  */
 import { useRef, useEffect, useMemo, useCallback, useImperativeHandle, forwardRef } from 'react';
 import { C, btnS, inp } from '../../../frontend/workspace/ui/styles.js';
 import { alpha } from '../../../frontend/theme/tokens.js';
-import { mdToHtml, htmlToMd, citeChipHtml, CITE_CHIP_CLASS, ASSET_CHIP_CLASS } from './mdDom.js';
+import {
+  mdToHtml, htmlToMd, citeChipHtml, factChipText, factOf,
+  CITE_CHIP_CLASS, ASSET_CHIP_CLASS, FACT_CHIP_CLASS,
+} from './mdDom.js';
+import { SHOW_CHANGES_CSS, indexFactChanges, factChipTitle } from '../showChanges.js';
 
 /* Page-scoped CSS: the paper is LITERAL white in both themes (a printed page),
    so the ink colors are fixed — theme tokens on purpose only OUTSIDE the page. */
@@ -45,7 +59,23 @@ export const RICH_EDITOR_CSS = `
 .ms-page-body .${ASSET_CHIP_CLASS}{display:inline-block;background:#eaf6ef;color:#1e7a46;border:1px solid #bfe3cd;
   border-radius:10px;padding:0 6px;margin:0 1px;font:600 10.5px/1.7 'IBM Plex Sans',sans-serif;
   vertical-align:baseline;cursor:default;white-space:nowrap;}
-`;
+/* 101.md §6 — the fact chip is deliberately NOT a chip to look at. It is an element
+   only so a project-derived value stays atomic and caret-safe; visually it must be
+   indistinguishable from the prose around it, or "turn Show Changes off → completely
+   clean manuscript" would be a half-truth. Everything is reset to inherit, so a
+   future global chip rule cannot accidentally start decorating facts either. All of
+   its paint lives in SHOW_CHANGES_CSS, behind [data-show-changes="true"]. */
+.ms-page-body .${FACT_CHIP_CLASS}{background:none;border:0;border-radius:0;padding:0;margin:0;
+  color:inherit;font:inherit;letter-spacing:inherit;text-decoration:none;box-shadow:none;
+  display:inline;white-space:normal;cursor:inherit;}
+${SHOW_CHANGES_CSS}`;
+
+/** Set-or-remove an attribute, writing only when it actually differs (a no-op write
+    inside a contentEditable can still cost a style recalculation). */
+function setAttr(el, name, val) {
+  if (val) { if (el.getAttribute(name) !== val) el.setAttribute(name, val); }
+  else if (el.hasAttribute(name)) el.removeAttribute(name);
+}
 
 export const RichSectionEditor = forwardRef(function RichSectionEditor({
   value, orderMap, onChange, placeholder, minHeight = 340,
@@ -57,6 +87,16 @@ export const RichSectionEditor = forwardRef(function RichSectionEditor({
   // 73.md Part 9 — locked sections render read-only: contentEditable off, no
   // emits, no paste rewriting. The parent remounts on lock toggle (resetKey).
   readOnly = false,
+  // 101.md §4/§5 — live fact resolution. `facts` is resolveFacts() output,
+  // `factOverrides` the §10 pinned wordings, `factChanges` the change log (or key
+  // set) that marks a value as recently updated. All three are refreshed IN PLACE
+  // by the effect below, never by re-rendering HTML into the surface (§33).
+  facts = null,
+  factOverrides = null,
+  factChanges = null,
+  // 101.md §6 — pure visualization switch. It only sets an attribute; the DOM's
+  // text content is byte-identical in both modes.
+  showChanges = false,
 }, ref) {
   const rootRef = useRef(null);
   const savedRange = useRef(null);
@@ -66,11 +106,17 @@ export const RichSectionEditor = forwardRef(function RichSectionEditor({
   useEffect(() => { orderMapRef.current = orderMap; });
   useEffect(() => { assetNumbersRef.current = assetNumbers; });
   useEffect(() => { onChangeRef.current = onChange; });
+  // One bundle so insertMarkdown()/paste render fact tokens against the SAME
+  // snapshot the rest of the section is showing (§16).
+  const factOptsRef = useRef(null);
+  factOptsRef.current = { facts, factOverrides, factChanges, showChanges };
 
   // Rendered from props exactly once (per mount/key) — React sees the SAME
   // __html string on every re-render and never touches the live DOM again.
   const html0 = useRef(null);
-  if (html0.current == null) html0.current = mdToHtml(value || '', { orderMap, assetNumbers });
+  if (html0.current == null) {
+    html0.current = mdToHtml(value || '', { orderMap, assetNumbers, facts, factOverrides, factChanges, showChanges });
+  }
 
   // Chips renumber in place when the order of first appearance changes; chips
   // are contenteditable=false islands, so this never disturbs the caret.
@@ -98,6 +144,34 @@ export const RichSectionEditor = forwardRef(function RichSectionEditor({
       if (chip.textContent !== label) chip.textContent = label;
     });
   }, [assetNumbers]);
+
+  // 101.md §4/§33 — THE live-synchronization seam. When the project changes, the
+  // engine re-resolves the facts and this effect writes the new values into the
+  // existing chips. Exactly the cite/asset renumbering pattern above: chips are
+  // contenteditable=false islands, so an engine-driven update lands mid-sentence
+  // WITHOUT touching the surrounding prose, remounting the editor, or moving the
+  // caret of a researcher who is typing three words away. That is what makes §4
+  // ("no Refresh manuscript button") and §5 ("do not overwrite human prose")
+  // simultaneously true.
+  useEffect(() => {
+    const el = rootRef.current;
+    if (!el || typeof el.querySelectorAll !== 'function') return;
+    const changed = indexFactChanges(factChanges);
+    el.querySelectorAll(`span.${FACT_CHIP_CLASS}[data-fact]`).forEach((chip) => {
+      const key = chip.getAttribute('data-fact') || '';
+      const f = factOf(facts, key);
+      const text = factChipText(key, facts, factOverrides);
+      if (chip.textContent !== text) chip.textContent = text;
+      // Inert provenance hooks — CSS in showChanges.js is the only thing that reads
+      // them, and only while the toggle is on.
+      setAttr(chip, 'data-engine', f && f.engine ? f.engine : '');
+      setAttr(chip, 'data-changed', changed.has(key) ? 'true' : '');
+      setAttr(chip, 'data-missing', f && f.missing ? 'true' : '');
+      // §6 — a tooltip is a provenance marker too, so it exists only in the mode
+      // that is meant to show provenance.
+      setAttr(chip, 'title', showChanges ? factChipTitle(key, f, changed.get(key)) : '');
+    });
+  }, [facts, factOverrides, factChanges, showChanges]);
 
   const readOnlyRef = useRef(readOnly);
   useEffect(() => { readOnlyRef.current = readOnly; });
@@ -187,7 +261,9 @@ export const RichSectionEditor = forwardRef(function RichSectionEditor({
     exec,
     focus: () => rootRef.current && rootRef.current.focus(),
     /** Insert subset markdown at the caret as normal editable content (MS-8). */
-    insertMarkdown: (md) => insertHtml(mdToHtml(md, { orderMap: orderMapRef.current, assetNumbers: assetNumbersRef.current })),
+    insertMarkdown: (md) => insertHtml(mdToHtml(md, {
+      orderMap: orderMapRef.current, assetNumbers: assetNumbersRef.current, ...factOptsRef.current,
+    })),
     /** Insert an atomic citation chip at the caret. */
     insertCitation: (refId) => {
       if (!refId) return;
@@ -198,11 +274,37 @@ export const RichSectionEditor = forwardRef(function RichSectionEditor({
   apiRef.current = api;
   useImperativeHandle(ref, () => api, [api]);
 
+  /**
+   * 101.md §11 — undo.
+   *
+   * Ctrl/Cmd+Z is deliberately NOT intercepted. Every mutation this editor makes
+   * goes through document.execCommand, which pushes onto the browser's NATIVE undo
+   * stack, so the platform shortcut already does the right thing; swallowing it here
+   * would only replace a working implementation with a worse one. The subsequent
+   * `input` event (inputType 'historyUndo') re-runs emit(), so the parent's autosave
+   * sees the reverted markdown like any other edit.
+   *
+   * §11's real requirement is the SCOPE, and it holds structurally: this stack is
+   * owned by one contentEditable element and contains only text operations on it.
+   * Research data — screening decisions, extracted values, analysis settings, risk-of-
+   * bias judgments — is never mutated from this surface; it changes through the
+   * engines, is recorded in the ProjectEvent ledger, and reaches the manuscript only
+   * as re-resolved fact-chip TEXT (see the fact effect above). There is therefore no
+   * path by which Ctrl+Z here can undo a research operation. Reverting project data
+   * is the project history's job; reverting a fact's WORDING is the §10 provenance
+   * card's job. Three separate histories, on purpose.
+   *
+   * Redo: Ctrl+Shift+Z is the cross-platform gesture, Ctrl+Y the Windows one. Both
+   * route to execCommand('redo') — the same native stack, just a shortcut some
+   * engines do not map by default.
+   */
   const onKeyDown = (e) => {
     if (!(e.ctrlKey || e.metaKey)) return;
     const k = String(e.key || '').toLowerCase();
     if (k === 'b') { e.preventDefault(); exec('bold'); }
     else if (k === 'i') { e.preventDefault(); exec('italic'); }
+    else if (k === 'y' || (k === 'z' && e.shiftKey)) { e.preventDefault(); exec('redo'); }
+    // k === 'z' without shift → falls through to the browser's native undo.
   };
 
   const onPaste = (e) => {
@@ -213,7 +315,9 @@ export const RichSectionEditor = forwardRef(function RichSectionEditor({
     if (!html) return; // plain-text paste → browser default (inserted as text)
     e.preventDefault();
     // Word/Docs HTML → markdown subset → clean HTML (everything else drops to text)
-    insertHtml(mdToHtml(htmlToMd(html), { orderMap: orderMapRef.current, assetNumbers: assetNumbersRef.current }));
+    insertHtml(mdToHtml(htmlToMd(html), {
+      orderMap: orderMapRef.current, assetNumbers: assetNumbersRef.current, ...factOptsRef.current,
+    }));
   };
 
   return (
@@ -228,6 +332,10 @@ export const RichSectionEditor = forwardRef(function RichSectionEditor({
       aria-readonly={readOnly ? 'true' : undefined}
       aria-label={ariaLabel || 'Section editor'}
       data-testid={testId}
+      /* 101.md §6 — the ONE thing the Show Changes toggle changes. Every overlay rule
+         in SHOW_CHANGES_CSS hangs off this attribute, so the document itself (text,
+         chips, markdown) is byte-identical in both modes. */
+      data-show-changes={showChanges ? 'true' : 'false'}
       data-placeholder={placeholder || 'Write this section, or generate it from your project data.'}
       spellCheck
       onInput={() => { rememberSelection(); emit(); }}

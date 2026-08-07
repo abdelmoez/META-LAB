@@ -45,6 +45,12 @@ import {
   // 85.md B1/B2 — asset registry, token numbering/placement + pre-export validation.
   computeManuscriptAssets, resolveNumbering, computePlacements, validateExport,
   assetToken,
+  // 101.md §4/§5/§8/§9/§10 — the live fact layer: resolve project-derived facts
+  // at render time, notice when one changes, and let a researcher pin a previous
+  // wording without falsifying the project record.
+  resolveFacts, findFactTokens, renderFacts,
+  reconcileFacts, groupChanges, overrideFact, clearFactOverride,
+  factDiscrepancies, markChangeReverted,
 } from '../../research-engine/manuscript/index.js';
 import { generateDraft } from '../../research-engine/manuscript/draft.js';
 import { gradeCertaintyEnabled, sofCertaintyMap } from '../../frontend/workspace/gradeApi.js';
@@ -484,6 +490,45 @@ export function useManuscript(project, upd) {
       overrides: draft.prismaOverrides,
       ...(fresh.screening ? { screening: fresh.screening } : {}),
     });
+
+    /* 101.md §36 — the export is a CLEAN manuscript.
+     *
+     * Fact tokens are resolved HERE, once, against the freshly-refetched sources,
+     * so (a) no export path can forget and leak raw `[[fact:…]]` syntax into a
+     * submitted document, and (b) the exported numbers are the same ones the
+     * editor was showing. Pinned wordings (§10) are honoured, because the export
+     * must say what the manuscript says.
+     *
+     * Only fact tokens are substituted: `[[cite:…]]` and `[[table:…]]`/`[[figure:…]]`
+     * deliberately SURVIVE, because asset numbering, placement and the exporter's
+     * own renderInlineMarkers run downstream and still need them.
+     *
+     * Change-tracking provenance is never consulted on this path at all — a normal
+     * export cannot carry an overlay because the overlay does not exist outside the
+     * editor's view state.
+     */
+    const exportFacts = (() => {
+      try { return resolveFacts(proj, { ...gOpts, prismaCounts: pc }); } catch { return {}; }
+    })();
+    const exportOverrides = (() => {
+      const src = draft.factOverrides || {};
+      const out = {};
+      for (const k of Object.keys(src)) if (src[k] && src[k].value != null) out[k] = src[k].value;
+      return out;
+    })();
+    const renderForExport = (md) => renderFacts(md, exportFacts, { overrides: exportOverrides });
+    const exportDraft = (() => {
+      const sections = {};
+      for (const id of Object.keys(draft.sections || {})) {
+        const s = draft.sections[id];
+        sections[id] = { ...s, content: renderForExport(s && s.content) };
+      }
+      const statements = {};
+      for (const id of Object.keys(draft.statements || {})) {
+        statements[id] = renderForExport(draft.statements[id]);
+      }
+      return { ...draft, sections, statements };
+    })();
     const tbls = {
       study: buildStudyCharacteristicsTable(proj, fresh.robByStudyId ? { robByStudyId: fresh.robByStudyId } : {}),
       sof: buildSummaryOfFindingsTable(proj, gOpts),
@@ -493,21 +538,23 @@ export function useManuscript(project, upd) {
     };
     const anals = allAnalyses(proj, gOpts);
     const prim = anals[0] || null;
-    const asts = computeManuscriptAssets(proj, draft, {
+    // Everything downstream reads the fact-resolved draft, so the exported
+    // document, its validation and its asset numbering all describe the SAME text.
+    const asts = computeManuscriptAssets(proj, exportDraft, {
       tables: tbls, prismaCounts: pc, analyses: anals, primary: prim,
       robByStudyId: fresh.robByStudyId || undefined,
       robAssessments: fresh.robAssessments || undefined,
       staleAssets,
     });
-    const numb = resolveNumbering({ sections: draft, assets: asts });
-    const plc = computePlacements({ sections: draft, numbering: numb, assets: asts });
+    const numb = resolveNumbering({ sections: exportDraft, assets: asts });
+    const plc = computePlacements({ sections: exportDraft, numbering: numb, assets: asts });
     const validation = validateExport({
-      project: proj, draft, assets: asts, numbering: numb, placements: plc,
+      project: proj, draft: exportDraft, assets: asts, numbering: numb, placements: plc,
       saveState: saveStateRef.current, sourcesSettled: true,
       freshness, dataStatus: fresh.dataStatus,
     });
     return {
-      draft, fetchedAt,
+      draft: exportDraft, fetchedAt,
       genOpts: gOpts, prismaCounts: pc, tables: tbls, analyses: anals, primary: prim,
       assets: asts, numbering: numb, placements: plc, validation,
       robAssessments: fresh.robAssessments, robByStudyId: fresh.robByStudyId,
@@ -721,11 +768,100 @@ export function useManuscript(project, upd) {
     mutateActive((d) => MS.markAllBlocksRefreshed(d, projectRef.current));
   }, [mutateActive]);
 
+  /* ══════════ 101.md §4/§5 — continuous fact synchronization ══════════
+   *
+   * There is deliberately NO refresh/regenerate/sync action here. Facts are
+   * RESOLVED AT RENDER from the live project, so a project change is reflected
+   * the moment the data arrives, and the researcher's prose is never rewritten —
+   * only the inside of a [[fact:…]] span can ever differ.
+   */
+
+  // Every fact the manuscript actually states, across all sections of the active
+  // draft. Only these are tracked or reported (§30 — a project change nobody
+  // wrote about is not a manuscript change).
+  const usedFactKeys = useMemo(() => {
+    const secs = (activeDraft && activeDraft.sections) || {};
+    const keys = new Set();
+    for (const id of Object.keys(secs)) {
+      for (const t of findFactTokens(secs[id] && secs[id].content)) keys.add(t.key);
+    }
+    return Array.from(keys);
+  }, [activeDraft]);
+
+  // ONE resolution per project snapshot — this is what makes §16 hold: Methods,
+  // Results, the Abstract and the PRISMA table cannot disagree because they all
+  // read the same object.
+  const resolvedFacts = useMemo(() => {
+    if (!activeDraft) return {};
+    try {
+      return resolveFacts(project, { ...genOpts, prismaCounts, primary });
+    } catch { return {}; }
+  }, [project, genOpts, prismaCounts, primary, activeDraft]);
+
+  // §10 — pinned wordings, flattened for renderFacts.
+  const factOverrides = useMemo(() => {
+    const src = (activeDraft && activeDraft.factOverrides) || {};
+    const out = {};
+    for (const k of Object.keys(src)) if (src[k] && src[k].value != null) out[k] = src[k].value;
+    return out;
+  }, [activeDraft]);
+
+  /** Render a section's markdown with its facts resolved (the CLEAN text, §6). */
+  const renderSection = useCallback(
+    (md) => renderFacts(md, resolvedFacts, { overrides: factOverrides }),
+    [resolvedFacts, factOverrides],
+  );
+
+  // §10 — where a pinned wording now disagrees with the project.
+  const discrepancies = useMemo(
+    () => factDiscrepancies(activeDraft, resolvedFacts),
+    [activeDraft, resolvedFacts],
+  );
+
+  // §8/§12 — the reconciliation pass. Runs only once the live sources have
+  // SETTLED: reconciling against half-loaded data would record a "change" from a
+  // real value to a placeholder and back, which is noise, not provenance.
+  //
+  // §31 — this is a cheap string comparison over the handful of facts the
+  // manuscript uses, not a regeneration; it is safe on every project change.
+  const reconcileRef = useRef(null);
+  reconcileRef.current = { usedFactKeys, resolvedFacts, activeDraft };
+  useEffect(() => {
+    if (!sourcesSettled) return undefined;
+    const { usedFactKeys: keys, resolvedFacts: facts, activeDraft: draft } = reconcileRef.current;
+    if (!draft || !keys.length) return undefined;
+    // Coalesce bursts (a search import lands several updates in a row) so one
+    // research action produces ONE grouped entry (§14) instead of a stream.
+    const t = setTimeout(() => {
+      const d = (readManuscripts(projectRef.current) || []).find((x) => x.id === draft.id);
+      if (!d) return;
+      const { draft: next, changes } = reconcileFacts(d, facts, {
+        usedKeys: keys,
+        nowIso: new Date().toISOString(),
+      });
+      // Nothing moved → no write at all. This is what keeps §31 true: the common
+      // case costs one comparison and zero I/O.
+      if (!changes.length && !d.factState) return;
+      if (!changes.length && d.factState) {
+        // First-observation bookkeeping only — still worth persisting once so the
+        // NEXT real change has a baseline to diff against (§38).
+        if (JSON.stringify(d.factState) === JSON.stringify(next.factState)) return;
+      }
+      updateDraftRef.current(next);
+    }, 400);
+    return () => clearTimeout(t);
+  }, [sourcesSettled, resolvedFacts, usedFactKeys]);
+
   const updateDraft = useCallback((nextDraft) => {
     flushPending();
     const list = readManuscripts(projectRef.current);
     persist(MS.upsertDraft(list, nextDraft));
   }, [flushPending, persist]);
+
+  // Stable handle so the reconcile effect above does not need updateDraft in its
+  // dependency list (which would re-run it on every autosave tick).
+  const updateDraftRef = useRef(updateDraft);
+  useEffect(() => { updateDraftRef.current = updateDraft; });
 
   const addDraft = useCallback((opts = {}) => {
     flushPending();
@@ -741,6 +877,67 @@ export function useManuscript(project, upd) {
     persist(arr);
     if (id === activeIdRef.current) setActiveId(arr[0] ? arr[0].id : null);
   }, [flushPending, persist]);
+
+  /* ══════════ 101.md §10 — reverting an automatic manuscript change ══════════
+   *
+   * These act on the MANUSCRIPT ONLY. Reverting the underlying research event is
+   * a different act with different consequences and belongs to the project
+   * history mechanism, exactly as §10 and §11 require. Pinning a wording that
+   * disagrees with the project surfaces in `discrepancies` so the divergence is
+   * communicated rather than hidden.
+   */
+
+  /** Restore the previous wording of one fact (§10 "Restore previous wording"). */
+  const revertFact = useCallback((key, change, opts = {}) => {
+    if (!key) return;
+    mutateActive((d) => {
+      const projectValue = resolvedFacts[key] ? resolvedFacts[key].raw : null;
+      const value = opts.value != null ? opts.value : (change && change.from);
+      if (value == null) return d;
+      const { draft } = overrideFact(d, key, value, {
+        nowIso: new Date().toISOString(),
+        by: opts.by || '',
+        reason: opts.reason || '',
+        projectValue,
+      });
+      // §12 — the change is MARKED reverted, never removed. Provenance that can
+      // simply disappear is not provenance.
+      if (change && change.id) {
+        const { draft: marked } = markChangeReverted(draft, change.id, {
+          nowIso: new Date().toISOString(), by: opts.by || '',
+        });
+        return marked;
+      }
+      return draft;
+    });
+  }, [mutateActive, resolvedFacts]);
+
+  /** Drop a pin so the fact tracks project data again (§10 "Keep current wording"). */
+  const keepCurrentFact = useCallback((key) => {
+    if (!key) return;
+    mutateActive((d) => clearFactOverride(d, key).draft);
+  }, [mutateActive]);
+
+  /* ══════════ 101.md §6/§34 — Show Changes ══════════
+   *
+   * Purely a VIEW state. It never alters stored content, which is what makes
+   * §6's "the underlying manuscript content should be identical in both modes"
+   * true by construction rather than by discipline. Persisted per browser like
+   * the other editor preferences.
+   */
+  const [showChanges, setShowChangesState] = useState(() => {
+    try { return window.localStorage.getItem('ms-show-changes') === '1'; } catch { return false; }
+  });
+  const setShowChanges = useCallback((next) => {
+    setShowChangesState(!!next);
+    try { window.localStorage.setItem('ms-show-changes', next ? '1' : '0'); } catch { /* private mode */ }
+  }, []);
+
+  /** Grouped recent updates for the Change Tracking panel (§34). Newest first. */
+  const changeGroups = useMemo(
+    () => groupChanges((activeDraft && activeDraft.factLog) || []),
+    [activeDraft],
+  );
 
   return {
     drafts: effectiveDrafts, activeDraft, activeId, setActiveId,
@@ -762,7 +959,14 @@ export function useManuscript(project, upd) {
     searchMethodsText: sources.searchMethodsText,
     robAssessments: sources.robAssessments,
     robByStudyId: sources.robByStudyId,
+    robUsage: sources.robUsage,
+    searchProvenance: sources.searchProvenance,
     perSource: sources.perSource,
+    // 101.md §4-§10 — the live fact surface: resolved values, the clean renderer,
+    // grouped provenance, Show Changes state, and the manuscript-only reverts.
+    resolvedFacts, usedFactKeys, renderSection, factOverrides, discrepancies,
+    changeGroups, revertFact, keepCurrentFact,
+    showChanges, setShowChanges,
     outdated, consistency, setSectionLocked,
     // 84.md — live manuscript sync surface for the Updates panel + freshness pills.
     freshDepState, contradictions, missingInfo, freshness, outdatedCount,

@@ -16,8 +16,12 @@ import {
   explainKeys, SECTION_DEPENDENCIES,
   // 85.md B2 — structured asset references (tokens ↔ live numbering).
   assetToken,
+  // 101.md §34 — locate the section that states a given project fact.
+  factToken,
 } from '../../research-engine/manuscript/index.js';
 import { RichSectionEditor, RichToolbar, RICH_EDITOR_CSS } from './richEditor/RichSectionEditor.jsx';
+// 101.md §34 — the optional "recent manuscript updates" panel paired with Show Changes.
+import { ChangeTrackingPanel } from './ChangeTrackingPanel.jsx';
 import { AbstractEditor } from './richEditor/AbstractEditor.jsx';
 import { extractOutline, mdToHtml } from './richEditor/mdDom.js';
 // 67.md — Word (.docx) export is a Plus-plan feature (server-enforced). This is
@@ -27,6 +31,24 @@ import { useEntitlements } from '../../frontend/entitlements';
 const WORD_EXPORT_LOCKED_MSG = 'Word export is available on the Plus plan and above.';
 
 /* ════════════ shared bits ════════════ */
+
+/**
+ * 101.md §34 — "Clicking an item could navigate directly to the affected
+ * manuscript text". A change identifies a FACT KEY; a fact can be stated in more
+ * than one section (a count usually appears in both Results and the Abstract), so
+ * this returns the FIRST section that states it, in canonical manuscript order.
+ * Returns '' when the fact is no longer stated anywhere.
+ */
+export function sectionStatingFact(draft, factKey) {
+  if (!draft || !factKey) return '';
+  const token = factToken(factKey);
+  const secs = draft.sections || {};
+  for (const s of SECTION_TYPES) {
+    const content = (secs[s.id] && secs[s.id].content) || '';
+    if (content.includes(token)) return s.id;
+  }
+  return '';
+}
 
 export function Select({ value, onChange, children, style, ...rest }) {
   return (
@@ -1198,6 +1220,14 @@ export function EditorPanel({ m, exporters, sectionRequest }) {
             ) : (
               <RichSectionEditor key={resetKey} ref={mainApi} value={pageValue} orderMap={orderMap}
                 assetNumbers={assetNumbers}
+                // 101.md §4/§5/§6 — the live fact layer. `facts` makes project
+                // values resolve at render (so no refresh action exists), and
+                // `showChanges` toggles ONLY the overlay: the markdown behind the
+                // editor is byte-identical in both modes.
+                facts={m.resolvedFacts}
+                factOverrides={m.factOverrides}
+                factChanges={(m.activeDraft && m.activeDraft.factLog) || null}
+                showChanges={m.showChanges}
                 onChange={onType} onActivate={setActive} readOnly={locked}
                 ariaLabel={(SECTION_TYPES.find((s) => s.id === sel) || {}).label || 'Section'}
                 placeholder="Write this section here, or generate it from your project data. Use the toolbar for headings, lists and citations." />
@@ -1213,6 +1243,21 @@ export function EditorPanel({ m, exporters, sectionRequest }) {
             <ToolsLabel>Save status</ToolsLabel>
             <SaveStatusPill saveState={m.saveState} lastError={m.lastError} onRetry={m.retry} />
           </Card>
+
+          {/* 101.md §6/§34 — Show Changes lives with the tools, not in the page
+              chrome, so a researcher who never turns it on never sees it. The
+              toggle is view-only state; the manuscript content does not move. */}
+          <ChangeTrackingPanel
+            groups={m.changeGroups}
+            showChanges={m.showChanges}
+            onToggle={m.setShowChanges}
+            // A change identifies a FACT, not a section — the same fact can appear
+            // in several sections. Jump to the first section that states it.
+            onNavigate={(change) => {
+              const id = change && sectionStatingFact(m.activeDraft, change.key);
+              if (id) switchTo(id);
+            }}
+          />
 
           <ToolsGroup id="generate" title="Generate" defaultOpen>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>

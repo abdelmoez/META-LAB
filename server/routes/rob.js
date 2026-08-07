@@ -24,6 +24,11 @@ import {
   deleteManualStudy,
   appraiseAssessment,
   robValidation,
+  // 101.md §22/§25 — NOS interpretation thresholds + dual-reviewer/consensus.
+  getNosThresholds,
+  putNosThresholds,
+  getStudyReviewers,
+  createConsensusAssessment,
 } from '../controllers/robController.js';
 
 const router = Router();
@@ -39,10 +44,22 @@ router.get('/projects/:projectId/assessments', listProjectAssessments);
 // instrument. Gated behind `guidedRobAppraisal` in the handler.
 router.get('/projects/:projectId/rob-validation', robValidation);
 
+// 101.md §22 — the project's Newcastle–Ottawa interpretation thresholds. GET needs
+// only view access; PUT requires RoB edit rights. Declared before the study routes
+// so `nos-thresholds` is never captured as a :studyId.
+router.get('/projects/:projectId/nos-thresholds', getNosThresholds);
+router.put('/projects/:projectId/nos-thresholds', putNosThresholds);
+
 // prompt46 #4 — RoB study universe (screening-derived + manual) + manual-study CRUD.
 router.get('/projects/:projectId/studies', listStudyUniverse);
 router.post('/projects/:projectId/manual-studies', createManualStudy);
 router.delete('/projects/:projectId/manual-studies/:studyId', deleteManualStudy);
+
+// 101.md §25 — dual reviewer + consensus, per study. The reviewers view is strictly
+// READ-ONLY (it can never overwrite a reviewer's judgement); the consensus POST
+// creates a THIRD assessment row and leaves both reviewer rows untouched.
+router.get('/projects/:projectId/studies/:studyId/reviewers', getStudyReviewers);
+router.post('/projects/:projectId/studies/:studyId/consensus', createConsensusAssessment);
 
 // Assessment CRUD + workflow.
 router.post('/assessments', createAssessment);

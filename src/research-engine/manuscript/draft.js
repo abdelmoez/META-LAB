@@ -42,6 +42,9 @@ import { computePrismaCounts } from './prismaCounts.js';
 import { JOURNAL_TEMPLATES } from './model.js';
 import { describeSynthesisModel, resolveAnalysis } from './analysisDescribe.js';
 import { computeSectionMeta } from './sources.js';
+// 101.md §1/§2 — shared, deterministic formatting for the search facts so the
+// Methods paragraph, the Abstract and the fact tokens all render them identically.
+import { formatFactDate, joinList } from './factTokens.js';
 
 const clean = (s) => String(s == null ? '' : s).trim();
 const PH = (label) => `[${label}]`;
@@ -137,8 +140,9 @@ export function timeframeText(pico) {
 /** Assemble the buildMethodsMarkdown ctx from the project + resolved counts. */
 function methodsCtx(project, opts) {
   const pico = (project && project.pico) || {};
-  const search = (project && project.search) || {};
-  const dbs = Object.keys(search.dbs || {}).filter((k) => search.dbs[k]);
+  // 101.md §1/§17 — was `Object.keys(search.dbs)`, i.e. the settings checkboxes.
+  // Now the execution record (see searchFacts above).
+  const sf = searchFacts(project, opts);
   const pc = opts.prismaCounts || computePrismaCounts(project, opts);
   const primary = opts.primary || primaryAnalysis(project, opts);
   const result = primary && primary.result;
@@ -159,8 +163,9 @@ function methodsCtx(project, opts) {
       studyDesign: pico.studyDesign,
       timeframe: timeframeText(pico),
     },
-    databases: dbs.join(', '),
-    dateSearched: clean(search.date),
+    databases: sf.databases,
+    dateSearched: sf.date,
+    registers: sf.registers,
     // Server-composed real search paragraph (overrides the generic sentence).
     searchMethodsText: clean(opts.searchMethodsText),
     registration: clean(pico.prosperoId),
@@ -185,8 +190,69 @@ function methodsCtx(project, opts) {
     predInterval: !!(result && result.predInt),
     outcomes: pairs.map((p) => p.label),
     robTool: clean(project && project.robMethod),
+    // 101.md §27 — the tools ACTUALLY used, derived from completed assessments.
+    // `robTool` above is only the project's *selected* instrument; the Methods
+    // paragraph must not claim a tool was used merely because it was selected.
+    robUsage: opts.robUsage || null,
+    // 101.md §17 — the extraction form's real field list, when the caller has one.
+    extractionFields: Array.isArray(opts.extractionFields) ? opts.extractionFields : [],
     grade: !!(project && project.grade && Object.keys(project.grade).length),
   };
+}
+
+/**
+ * 101.md §1/§2/§17 — the ONE place the draft generator learns which databases were
+ * searched and when. Every narration path (Methods, Abstract, Results) goes through
+ * here so they can never disagree, and so no path can quietly fall back to the
+ * settings checkboxes.
+ *
+ * Precedence:
+ *   1. opts.searchProvenance — the execution record (deriveSearchProvenance output).
+ *      Authoritative. A database appears ONLY if it was genuinely searched.
+ *   2. The legacy project.search blob — used ONLY when no provenance was supplied
+ *      at all (a pre-101 project, or a caller that has not been migrated). Flagged
+ *      `legacy:true` so callers can mark the claim as unverified rather than
+ *      presenting a settings list as an execution record.
+ *
+ * Returns { databases:string, registers:string, date:string, count:number, legacy:boolean }.
+ * Empty strings mean "the project cannot answer this" — never a fabricated value.
+ */
+export function searchFacts(project, opts = {}) {
+  const prov = opts.searchProvenance || null;
+  if (prov && Array.isArray(prov.reportable)) {
+    const dbs = prov.reportable.filter((d) => d.kind !== 'register').map((d) => d.label);
+    const regs = prov.reportable.filter((d) => d.kind === 'register').map((d) => d.label);
+    return {
+      databases: joinList(dbs),
+      registers: joinList(regs),
+      date: prov.latestValidSearchAt ? formatFactDate(prov.latestValidSearchAt) : '',
+      count: dbs.length,
+      legacy: false,
+    };
+  }
+  const search = (project && project.search) || {};
+  const dbs = Object.keys(search.dbs || {}).filter((k) => search.dbs[k]);
+  return {
+    databases: dbs.length ? dbs.join(', ') : '',
+    registers: '',
+    date: clean(search.date),
+    count: dbs.length,
+    legacy: true,
+  };
+}
+
+/**
+ * 101.md §17 — the extraction-workflow clause for the Abstract. Emits a reviewer
+ * count ONLY when the project's screening/extraction workflow actually records one;
+ * otherwise it emits nothing at all and lets the synthesis sentence stand alone.
+ * Never claims independent duplicate extraction that did not happen.
+ */
+function extractionWorkflowClause(opts = {}) {
+  const wf = opts.screeningWorkflow || {};
+  const n2 = Number(opts.reviewers != null ? opts.reviewers : wf.reviewers);
+  if (!Number.isFinite(n2) || n2 < 1) return '';
+  if (n2 === 1) return 'One reviewer extracted data; ';
+  return `${n2} reviewers extracted data independently; `;
 }
 
 /** Strip the leading "# Methods — …" H1 + the auto-note so it reads as a section body. */
@@ -229,9 +295,14 @@ export function generateAbstract(project, opts = {}) {
   const primary = opts.primary || primaryAnalysis(project, opts);
   const eff = effectSentence(primary, opts.prec);
   const inc = pc.counts.included;
-  const dbs = Object.keys((project.search && project.search.dbs) || {}).filter((k) => project.search.dbs[k]);
-  const dbText = dbs.length ? dbs.join(', ') : PH('databases not selected');
-  const dateText = clean(project.search && project.search.date) ? ` (last searched ${clean(project.search.date)})` : ` ${PH('Search date not entered')}`;
+  // 101.md §1/§2/§17 — databases and the search date come from the EXECUTION
+  // record, never from the settings checkboxes or a hand-typed date. Without a
+  // provenance bundle we say so rather than naming databases we cannot prove were
+  // searched. searchFacts() falls back to the legacy blob ONLY for projects that
+  // predate the provenance layer, and labels that fallback honestly.
+  const sf = searchFacts(project, opts);
+  const dbText = sf.databases || PH('No database search has been recorded');
+  const dateText = sf.date ? ` (last searched ${sf.date})` : ` ${PH('No completed search on record')}`;
   // Shared synthesis-model wording (analysisDescribe.js) — byte-identical for
   // fixed / DL-random; reflects the configured τ² estimator otherwise.
   const desc = describeSynthesisModel(resolveAnalysis(project, {
@@ -255,7 +326,11 @@ export function generateAbstract(project, opts = {}) {
     out.push('');
     out.push('**Study Selection.** ' + PH('State the eligibility criteria and how many studies were selected') + (inc != null ? ` (${inc} included).` : '.'));
     out.push('');
-    out.push('**Data Extraction and Synthesis.** Two reviewers extracted data; ' + modelText);
+    // 101.md §17 — "Two reviewers extracted data" was asserted unconditionally,
+    // for every project, regardless of how many reviewers the project actually had.
+    // That is precisely the fabricated-methodology case the brief forbids. State the
+    // reviewer count only when the project records one.
+    out.push('**Data Extraction and Synthesis.** ' + extractionWorkflowClause(opts) + modelText);
     out.push('');
     out.push('**Main Outcomes and Measures.** ' + (clean(pico.O) ? clean(pico.O) : PH('State the primary outcome')) + '.');
     out.push('');

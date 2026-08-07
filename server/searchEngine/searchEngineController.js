@@ -32,6 +32,7 @@ import {
 } from './searchVersionService.js';
 import { diffStrategies } from '../../src/research-engine/searchBuilder/versionDiff.js';
 import { buildSearchMethodsText } from '../../src/research-engine/searchBuilder/methodsText.js';
+import { loadSearchProvenance } from './searchProvenanceService.js';
 import { prisma } from '../db/client.js';
 
 const SEARCH_MODULE = 'search';
@@ -600,6 +601,45 @@ export async function getSearchMethodsText(req, res) {
     return res.json({ text });
   } catch (err) {
     console.error('[searchEngine] getSearchMethodsText error:', err.message);
+    return res.status(500).json({ error: 'Internal server error' });
+  }
+}
+
+// ── Search provenance (101.md §1/§2 — which databases were ACTUALLY searched) ───
+
+/**
+ * The database keys ticked in project settings. Read ONLY so the UI can show
+ * "configured, not searched"; 101.md §1/§17 forbid this list from ever making the
+ * manuscript claim a database was searched, and loadSearchProvenance enforces that.
+ * Best-effort — a blob read failure just means the UI shows no configured-only rows.
+ */
+async function configuredDatabases(projectId) {
+  try {
+    const row = await prisma.project.findUnique({ where: { id: projectId }, select: { data: true } });
+    const data = JSON.parse((row && row.data) || '{}');
+    const dbs = (data && data.search && data.search.dbs) || {};
+    return Object.keys(dbs).filter((k) => dbs[k]);
+  } catch { return []; }
+}
+
+/**
+ * GET /:projectId/provenance → { provenance }
+ *
+ * The per-database provenance record behind the manuscript's Information Sources
+ * paragraph and the "last searched" date (§2). Derived from execution records only.
+ */
+export async function getSearchProvenance(req, res) {
+  try {
+    const access = await gate(req, res);
+    if (!access) return;
+
+    const provenance = await loadSearchProvenance(prisma, {
+      metaLabProjectId: req.params.projectId,
+      configured: await configuredDatabases(req.params.projectId),
+    });
+    return res.json({ provenance });
+  } catch (err) {
+    console.error('[searchEngine] getSearchProvenance error:', err.message);
     return res.status(500).json({ error: 'Internal server error' });
   }
 }

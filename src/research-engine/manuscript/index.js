@@ -33,3 +33,8 @@ export * from './assets.js';
 export * from './refTokens.js';
 export * from './placement.js';
 export * from './exportValidation.js';
+// 101.md §5/§8/§9/§10 — live, sentence-level project facts: the [[fact:…]] token
+// layer that keeps methodology current without ever rewriting human prose, and the
+// provenance/revert history layered over it.
+export * from './factTokens.js';
+export * from './factProvenance.js';

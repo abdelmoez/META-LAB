@@ -20,9 +20,70 @@ const json = body => ({ headers: { 'Content-Type': 'application/json' }, body: J
 
 const BASE = '/api/rob';
 
-/** Map a stored instrument id ('RoB2' | 'ROBINS-I') to its route slug. */
+/** Map a stored instrument id ('RoB2' | 'ROBINS-I' | 'NOS' | 'NOS-CC') to its route slug. */
 export function instrumentSlug(instrumentId) {
-  return String(instrumentId || 'RoB2') === 'ROBINS-I' ? 'robins-i' : 'rob2';
+  const id = String(instrumentId || 'RoB2');
+  if (id === 'ROBINS-I') return 'robins-i';
+  if (id === 'NOS') return 'nos';
+  if (id === 'NOS-CC') return 'nos-cc';
+  return 'rob2';
+}
+
+/* ── Newcastle–Ottawa answers on the wire (101.md §21) ────────────────────────
+ * RoB 2 / ROBINS-I answers are ONE code from a shared set (Y/PY/PN/N/NI/NA). A
+ * NOS answer is one or more OPTION values from the item's own list — and the
+ * additive Comparability item (select:'many') genuinely carries two, which is the
+ * second star.
+ *
+ * The COLUMN encoding is owned by the server (robController's
+ * encodeAnswerResponse / decodeAnswerResponse: a JSON array for select:'many', a
+ * bare value otherwise). The client therefore sends the plain array of option
+ * values and reads whatever shape it is handed back. These helpers are the only
+ * place the UI crosses that boundary, so the widget, the pure scorer and the API
+ * can never disagree about what an answer means. Pure — no network. */
+
+/** The wire value for a NOS answer: a deduped array of option values. */
+export function nosResponsePayload(values) {
+  const list = Array.isArray(values) ? values : (values == null || values === '' ? [] : [values]);
+  const out = [];
+  for (const v of list) {
+    const s = String(v).trim();
+    if (s && s !== 'NA' && !out.includes(s)) out.push(s);
+  }
+  return out;
+}
+
+/**
+ * Any stored/returned response → the engine's array shape. Deliberately tolerant,
+ * because the same field arrives as an array (`answersByDomain` for a select:'many'
+ * item), a bare value ('a'), a raw JSON column value ('["a","b"]'), or `{ response }` —
+ * and a mis-parse would silently mis-score a study. ''/'NA' → [] (unanswered),
+ * never a phantom selection.
+ */
+export function decodeNosResponse(raw) {
+  const v = (raw && typeof raw === 'object' && !Array.isArray(raw)) ? raw.response : raw;
+  if (v == null || v === '') return [];
+  if (Array.isArray(v)) return nosResponsePayload(v);
+  const s = String(v).trim();
+  if (!s || s === 'NA') return [];
+  if (s.length > 1 && s[0] === '[') {
+    try {
+      const parsed = JSON.parse(s);
+      if (Array.isArray(parsed)) return nosResponsePayload(parsed);
+    } catch { /* a literal value that merely looks like JSON — keep it whole */ }
+  }
+  return [s];
+}
+
+/** Decode a whole { domainId: { qid: response } } blob into engine-shaped arrays. */
+export function decodeNosAnswers(answersByDomain) {
+  const out = {};
+  for (const [domainId, qs] of Object.entries(answersByDomain || {})) {
+    const d = {};
+    for (const [qid, v] of Object.entries(qs || {})) d[qid] = decodeNosResponse(v);
+    out[domainId] = d;
+  }
+  return out;
 }
 
 export const robApi = {
@@ -54,7 +115,60 @@ export const robApi = {
   // 404 when the guidedRobAppraisal flag is OFF.
   robValidation:       (projectId)      => req(`${BASE}/projects/${projectId}/rob-validation`),
   robValidationCsvUrl: (projectId)      => `${BASE}/projects/${projectId}/rob-validation?format=csv`,
+
+  // ── Newcastle–Ottawa (101.md §22) ─────────────────────────────────────────
+  // The OPTIONAL interpretation threshold is a PROJECT decision, not study data —
+  // the scale itself defines none — so it lives on the project. GET also returns
+  // the modes, the attributed AHRQ standard and the conventional-bands notice, so
+  // a configuration UI never has to hard-code (or misattribute) them.
+  nosThresholds:     (projectId)        => req(`${BASE}/projects/${projectId}/nos-thresholds`),
+  saveNosThresholds: (projectId, body)  => req(`${BASE}/projects/${projectId}/nos-thresholds`, { method: 'PUT', ...json(body) }),
 };
+
+/* ── NOS threshold config (101.md §22) ─────────────────────────────────────── */
+
+/** The honest default: report the star profile, no verdict. */
+export const NOS_THRESHOLD_DEFAULTS = Object.freeze({ mode: 'none', bands: [], label: '' });
+
+/**
+ * Read the project's NOS interpretation config. Never throws — a project that has
+ * never configured one (or an unreachable endpoint) degrades to 'none', which is
+ * the scientifically correct default rather than a convenient guess.
+ *
+ * An assessment view already carries `nosThresholds` + `interpretation`, so this
+ * is for a CONFIGURATION surface (which also wants `modes`/`ahrq`/`notice`), not
+ * for rendering a single assessment.
+ */
+export async function getNosThresholds(projectId) {
+  if (!projectId) return { ...NOS_THRESHOLD_DEFAULTS, canEdit: false, available: false };
+  try {
+    const body = await robApi.nosThresholds(projectId);
+    return {
+      ...NOS_THRESHOLD_DEFAULTS,
+      ...(body && body.thresholds ? body.thresholds : {}),
+      modes: (body && body.modes) || ['none', 'ahrq', 'custom'],
+      defaultMode: (body && body.defaultMode) || 'none',
+      ahrq: (body && body.ahrq) || null,
+      conventionalBands: (body && body.conventionalBands) || [],
+      conventionalBandsNotice: (body && body.conventionalBandsNotice) || '',
+      canEdit: !!(body && body.canEdit),
+      available: true,
+    };
+  } catch {
+    return { ...NOS_THRESHOLD_DEFAULTS, canEdit: false, available: false };
+  }
+}
+
+/** Persist the project's NOS interpretation config. Throws so the caller can show why. */
+export async function saveNosThresholds(projectId, body) {
+  const res = await robApi.saveNosThresholds(projectId, body);
+  return {
+    ...NOS_THRESHOLD_DEFAULTS,
+    ...((res && res.thresholds) || {}),
+    changed: !!(res && res.changed),
+    notice: (res && res.notice) || '',
+  };
+}
 
 // Shared, briefly-cached public feature-flag snapshot. `robFlagEnabled` and
 // `guidedRobAppraisalEnabled` both need `/api/settings/public`; deduping them into

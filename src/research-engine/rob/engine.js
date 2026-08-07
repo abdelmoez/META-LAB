@@ -28,8 +28,23 @@ import {
   judgeDomain as robinsJudgeDomain,
   judgeOverall as robinsJudgeOverall,
 } from './instruments/robinsI.js';
+// 101.md §18–§21 — the Newcastle–Ottawa Scale. NOS is a SCORING instrument, not a
+// judgement one: its algorithms need the instrument itself (the two forms differ),
+// so they are bound per-form below rather than taking (domainId, answers).
+import {
+  NOS_COHORT, NOS_CASE_CONTROL,
+  judgeDomain as nosJudgeDomain,
+  judgeOverall as nosJudgeOverall,
+  completeness as nosCompleteness,
+  scoreAssessment,
+} from './instruments/nos.js';
 
-const INSTRUMENTS = { RoB2: ROB2, 'ROBINS-I': ROBINSI };
+const INSTRUMENTS = {
+  RoB2: ROB2,
+  'ROBINS-I': ROBINSI,
+  NOS: NOS_COHORT,
+  'NOS-CC': NOS_CASE_CONTROL,
+};
 
 // Per-instrument judgement algorithms. Keyed by instrument id so the generic
 // engine dispatches to the right one instead of importing a single instrument's
@@ -37,7 +52,20 @@ const INSTRUMENTS = { RoB2: ROB2, 'ROBINS-I': ROBINSI };
 const ALGORITHMS = {
   RoB2: { judgeDomain: rob2JudgeDomain, judgeOverall: rob2JudgeOverall },
   'ROBINS-I': { judgeDomain: robinsJudgeDomain, judgeOverall: robinsJudgeOverall },
+  NOS: {
+    judgeDomain: (domainId, answers) => nosJudgeDomain(NOS_COHORT, domainId, answers),
+    judgeOverall: (domainJudgments) => nosJudgeOverall(NOS_COHORT, domainJudgments),
+  },
+  'NOS-CC': {
+    judgeDomain: (domainId, answers) => nosJudgeDomain(NOS_CASE_CONTROL, domainId, answers),
+    judgeOverall: (domainJudgments) => nosJudgeOverall(NOS_CASE_CONTROL, domainJudgments),
+  },
 };
+
+/** True for star-scored instruments (NOS), false for judgement instruments. */
+export function isScoringInstrument(instrument) {
+  return !!(instrument && instrument.scoring === 'stars');
+}
 
 /** Return a frozen instrument definition by id (RoB2 or ROBINS-I). */
 export function getInstrument(id = 'RoB2') {
@@ -103,8 +131,12 @@ export function nextQuestions(instrument, domainId, answers) {
 export function proposeDomain(instrument, domainId, answers) {
   findDomain(instrument, domainId); // validates the id
   const { judgeDomain } = getAlgorithm(instrument);
-  const { judgment, reasons } = judgeDomain(domainId, answers || {});
-  return { domainId, judgment, reasons };
+  const out = judgeDomain(domainId, answers || {}) || {};
+  const proposal = { domainId, judgment: out.judgment, reasons: out.reasons };
+  // Star-scored instruments (NOS) carry the score alongside the judgement string;
+  // pass it through so proposeOverall sums stars rather than re-parsing numerals.
+  if (out.stars != null) { proposal.stars = out.stars; proposal.maxStars = out.maxStars; }
+  return proposal;
 }
 
 /** Propose all five domain judgements at once: { [domainId]: { judgment, reasons } }. */
@@ -132,6 +164,10 @@ export function proposeOverall(instrument, domainJudgments) {
  * @returns {{ perDomain: Record<string,{answered:number,required:number,missing:string[]}>, overall: {answered:number,required:number,complete:boolean} }}
  */
 export function completeness(instrument, assessment) {
+  // Star-scored instruments answer with per-item OPTION values (and an array for
+  // the additive Comparability item), not the shared Y/PY/PN/N/NI codes, so they
+  // supply their own completeness. Dispatch before the judgement-instrument path.
+  if (isScoringInstrument(instrument)) return nosCompleteness(instrument, assessment);
   const answersByDomain = (assessment && assessment.answersByDomain) || {};
   const perDomain = {};
   let totalAnswered = 0;

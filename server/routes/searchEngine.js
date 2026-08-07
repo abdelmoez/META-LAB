@@ -9,6 +9,7 @@ import {
   postMesh, postMeshSuggest, postCount, getSearch, putSearch,
   postSearchVersion, getSearchVersions, getSearchVersion, postSearchVersionRestore,
   postSearchVersionFinal, getSearchVersionsCompare, getSearchMethodsText,
+  getSearchProvenance,
 } from '../searchEngine/searchEngineController.js';
 // P11 — Guided Boolean search-strategy Studio (flag `searchStrategyStudio`, which also
 // requires searchEngine + pecanSearch). Namespaced under /projects/ so the paths never
@@ -47,6 +48,10 @@ router.get('/:projectId/versions/:vid', getSearchVersion);
 router.post('/:projectId/versions/:vid/restore', postSearchVersionRestore);
 router.post('/:projectId/versions/:vid/final', postSearchVersionFinal);
 router.get('/:projectId/methods-text', getSearchMethodsText);
+// 101.md §1/§2 — per-database search provenance (which databases were ACTUALLY
+// searched, and when). Declared with the other extra-segment routes so it resolves
+// before the catch-all GET /:projectId.
+router.get('/:projectId/provenance', getSearchProvenance);
 
 // Per-project persistence (project access).
 router.get('/:projectId', getSearch);

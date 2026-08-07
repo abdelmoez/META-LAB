@@ -97,6 +97,11 @@ export function buildMethodsMarkdown(ctx = {}) {
   out.push('## Information sources and search strategy');
   // A server-composed search paragraph (real per-database strategy) wins over
   // the generic sentence; never both.
+  //
+  // 101.md §1/§17 — `databases` and `dateSearched` MUST arrive from the search
+  // EXECUTION record (searchProvenance.deriveSearchProvenance), never from the
+  // settings checkboxes. When the project has no execution record we emit a
+  // placeholder rather than naming databases we cannot prove were searched.
   out.push(clean(c.searchMethodsText) || line([
     'We searched ',
     c.databases ? clean(c.databases) : PLACEHOLDER,
@@ -107,13 +112,23 @@ export function buildMethodsMarkdown(ctx = {}) {
 
   // ── Study selection / screening ─────────────────────────────────────────────
   out.push('## Study selection');
+  // 101.md §17 — this paragraph previously asserted "by independent reviewers"
+  // and "Disagreements were resolved by discussion" UNCONDITIONALLY, i.e. even
+  // for a single-reviewer project that never recorded a conflict process. Those
+  // are methodological claims a reader would rely on, so each clause now appears
+  // only when the project record supports it, and the gap is made visible.
   const revN = Number(screening.reviewers);
+  const reviewerClause = Number.isFinite(revN) && revN >= 2
+    ? `by ${revN} independent reviewers`
+    : (Number.isFinite(revN) && revN === 1 ? 'by a single reviewer' : '');
   out.push(line([
     'Records were de-duplicated and screened ',
-    Number.isFinite(revN) && revN >= 2 ? `by ${revN} independent reviewers` : 'by independent reviewers',
-    screening.blind ? ', blinded to each other\'s decisions' : '',
+    reviewerClause || PLACEHOLDER,
+    reviewerClause && screening.blind ? ', blinded to each other\'s decisions' : '',
     ', first on title/abstract and then on full text against the eligibility criteria. ',
-    screening.conflictResolution ? `Disagreements were resolved by ${clean(screening.conflictResolution)}. ` : 'Disagreements were resolved by discussion. ',
+    screening.conflictResolution
+      ? `Disagreements were resolved by ${clean(screening.conflictResolution)}. `
+      : (Number.isFinite(revN) && revN >= 2 ? `Disagreement resolution: ${PLACEHOLDER}. ` : ''),
     'The selection process is summarised in the PRISMA 2020 flow diagram included in this package.',
   ]));
   if (prisma.identified != null || prisma.included != null) {
@@ -129,14 +144,56 @@ export function buildMethodsMarkdown(ctx = {}) {
 
   // ── Data extraction ─────────────────────────────────────────────────────────
   out.push('## Data extraction');
-  out.push('Study-level data (design, population, intervention/comparator, outcomes, sample sizes and effect estimates with measures of variance) were extracted into a structured form; raw inputs were retained so every derived value is auditable. The extracted study table is included in this package.');
+  // 101.md §17 — the old sentence enumerated the extracted fields as fact. Name
+  // only the fields the project's own extraction form actually defines; describe
+  // the platform guarantee (raw inputs retained) separately, because that one IS
+  // true of every project.
+  const extractedFields = (Array.isArray(c.extractionFields) ? c.extractionFields : [])
+    .map(clean).filter(Boolean);
+  out.push(line([
+    extractedFields.length
+      ? `Study-level data (${extractedFields.join(', ')}) were extracted into a structured form`
+      : 'Study-level data were extracted into a structured form',
+    '; raw inputs were retained so every derived value is auditable. ',
+    'The extracted study table is included in this package.',
+  ]));
   out.push('');
 
   // ── Risk of bias ────────────────────────────────────────────────────────────
   out.push('## Risk of bias');
-  out.push(c.robTool
-    ? `Risk of bias was assessed at the outcome level using ${clean(c.robTool)}; each domain judgement was recorded with its supporting rationale.`
-    : `Risk of bias assessment tool: ${PLACEHOLDER} (e.g. Cochrane RoB 2 for randomised trials).`);
+  // 101.md §27 — describe the tools ACTUALLY used, not the one selected in a
+  // settings dropdown. `robUsage.tools` carries only instruments with at least
+  // one real assessment; when several were used for different designs, name each
+  // with the designs it covered rather than collapsing them into one claim.
+  //
+  // Precedence mirrors the search facts: `robUsage` (real completed assessments)
+  // is authoritative when supplied; a caller that has not been migrated yet still
+  // gets the legacy `robTool` sentence unchanged, so no existing export regresses.
+  const usage = c.robUsage || null;
+  const usedTools = usage && Array.isArray(usage.tools)
+    ? usage.tools.filter((t) => t && Number(t.count) > 0) : [];
+  if (!usage && c.robTool) {
+    // Legacy path — the project's SELECTED instrument, byte-identical to pre-101
+    // output for callers that do not yet supply usage.
+    out.push(`Risk of bias was assessed at the outcome level using ${clean(c.robTool)}; each domain judgement was recorded with its supporting rationale.`);
+  } else if (usedTools.length > 1) {
+    out.push('Methodological quality was assessed using the instrument appropriate to each study design:');
+    for (const t of usedTools) {
+      out.push(`- ${clean(t.label)}${t.designLabel ? ` for ${clean(t.designLabel)}` : ''} (${t.count} ${Number(t.count) === 1 ? 'study' : 'studies'}).`);
+    }
+    out.push('');
+    out.push('Each judgement was recorded with its supporting rationale.');
+  } else if (usedTools.length === 1) {
+    const t = usedTools[0];
+    out.push(line([
+      `Methodological quality was assessed using ${clean(t.label)}`,
+      t.designLabel ? ` for ${clean(t.designLabel)}` : '',
+      `; each ${t.scoring === 'stars' ? 'item' : 'domain'} judgement was recorded with its supporting rationale.`,
+    ]));
+  } else {
+    // No completed assessment — say so instead of claiming the selected tool was used.
+    out.push(`Risk of bias / quality assessment tool: ${PLACEHOLDER} (no assessment has been completed in this project yet).`);
+  }
   out.push('');
 
   // ── Statistical synthesis ───────────────────────────────────────────────────

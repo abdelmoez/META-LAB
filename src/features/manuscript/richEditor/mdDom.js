@@ -13,20 +13,36 @@
  *   [[table:id]]/[[figure:id]]  → atomic chip <span class="ms-asset" data-asset=…
  *                                 contenteditable="false">Table 2</span> (85.md B1;
  *                                 number from opts.assetNumbers, unknown → 'Table ?')
+ *   [[fact:key]]                → atomic chip <span class="ms-fact" data-fact=…
+ *                                 contenteditable="false">four</span> (101.md §5/§6;
+ *                                 value from opts.facts, unknown → its placeholder)
+ *
+ * 101.md §6 — the fact chip is a chip STRUCTURALLY and prose VISUALLY. It exists as
+ * an element only so the resolved value stays atomic and caret-safe; it carries no
+ * styling of its own, so with Show Changes off the manuscript is genuinely clean
+ * rather than approximately clean. All of its paint lives in showChanges.js, scoped
+ * under `[data-show-changes="true"]`.
  *
  * Security: escape FIRST (same rule as the old mdToHtml) — user text is never
  * injected unescaped, link hrefs are scheme-whitelisted (http/https/mailto).
  *
  * Round-trip contract: htmlToMd(mdToHtml(md)) is IDEMPOTENT — canonical markdown
  * (blocks separated by blank lines, `- `/`1. ` markers, `---` separators) survives
- * a round trip byte-for-byte; non-canonical input converges after one pass.
+ * a round trip byte-for-byte; non-canonical input converges after one pass. The
+ * fact chip obeys it too: the TOKEN is what persists, never the resolved text (§5).
  */
 
 import { CITATION_TOKEN_RE } from '../../../research-engine/manuscript/citations.js';
 import { ASSET_TOKEN_RE } from '../../../research-engine/manuscript/refTokens.js';
+import { FACT_TOKEN_RE, factPlaceholder } from '../../../research-engine/manuscript/factTokens.js';
+import { indexFactChanges, factChipTitle } from '../showChanges.js';
 
 export const CITE_CHIP_CLASS = 'ms-cite';
 export const ASSET_CHIP_CLASS = 'ms-asset';
+export const FACT_CHIP_CLASS = 'ms-fact';
+
+/** The `[[fact:key]]` key grammar, mirrored for the reverse (HTML → md) direction. */
+const FACT_KEY_RE = /^[a-zA-Z][a-zA-Z0-9]*(?:\.[a-zA-Z][a-zA-Z0-9]*)*$/;
 
 /* ════════════ escaping ════════════ */
 
@@ -62,6 +78,27 @@ export function assetChipHtml(id, label) {
   return `<span class="${ASSET_CHIP_CLASS}" data-asset="${escapeAttr(id)}" contenteditable="false">${escapeHtml(label)}</span>`;
 }
 
+/**
+ * The atomic, non-editable fact chip (101.md §5/§6/§7). `text` is the RESOLVED value
+ * — the thing the reader sees — while `data-fact` keeps the stable key so htmlToMd()
+ * can put the token back. `data-engine`/`data-changed`/`data-missing` are inert
+ * hooks: they carry no pixels of their own, they only let the Show-Changes
+ * stylesheet paint the chip when (and only when) the toggle is on.
+ *
+ * `title` is emitted ONLY in Show-Changes mode. With the toggle off there is nothing
+ * to explain, and a tooltip on every project-derived date would be exactly the kind
+ * of lingering provenance marker §6 rules out.
+ */
+export function factChipHtml(key, text, meta = {}) {
+  const attr = (name, val) => (val ? ` ${name}="${escapeAttr(val)}"` : '');
+  return `<span class="${FACT_CHIP_CLASS}" data-fact="${escapeAttr(key)}"`
+    + attr('data-engine', meta.engine)
+    + (meta.changed ? ' data-changed="true"' : '')
+    + (meta.missing ? ' data-missing="true"' : '')
+    + attr('title', meta.title)
+    + ` contenteditable="false">${escapeHtml(text)}</span>`;
+}
+
 /** Look a number up in a Map OR plain-object numbering map (resolveNumbering.byId). */
 function assetNumberOf(assetNumbers, id) {
   if (!assetNumbers) return null;
@@ -69,9 +106,35 @@ function assetNumberOf(assetNumbers, id) {
   return n == null ? null : n;
 }
 
+/** Look a resolved fact up in a Map OR plain object (resolveFacts output). */
+export function factOf(facts, key) {
+  if (!facts) return null;
+  const f = typeof facts.get === 'function' ? facts.get(key) : facts[key];
+  return f || null;
+}
+
+/**
+ * The text a fact chip shows. Precedence mirrors renderFacts() exactly so the
+ * editor, the clean render and the export can never disagree about one word:
+ *   1. a §10 pinned override ("Restore previous wording"),
+ *   2. the live resolved value,
+ *   3. the honest placeholder — an unknown or unanswerable key NEVER leaks raw
+ *      `[[fact:…]]` syntax into the page or an export (§17).
+ * Pure.
+ */
+export function factChipText(key, facts, overrides) {
+  if (overrides && Object.prototype.hasOwnProperty.call(overrides, key)) {
+    const ov = overrides[key];
+    if (ov != null && String(ov) !== '') return String(ov);
+  }
+  const f = factOf(facts, key);
+  if (f && f.value != null && f.value !== '') return String(f.value);
+  return factPlaceholder(key);
+}
+
 /** Inline transforms over ALREADY-ESCAPED text. Chips first so a chip's [n] can
     never be re-parsed as a link; code before links/emphasis (verbatim spans). */
-function inlineHtml(escText, orderMap, assetNumbers) {
+function inlineHtml(escText, orderMap, assetNumbers, factOpts) {
   let t = escText;
   t = t.replace(new RegExp(CITATION_TOKEN_RE.source, 'g'), (_m, idEsc) => {
     const id = unescapeEntities(idEsc);
@@ -82,6 +145,20 @@ function inlineHtml(escText, orderMap, assetNumbers) {
     const id = `${kind}:${suffix}`;
     const n = assetNumberOf(assetNumbers, id);
     return assetChipHtml(id, `${kind === 'figure' ? 'Figure' : 'Table'} ${n == null ? '?' : n}`);
+  });
+  t = t.replace(new RegExp(FACT_TOKEN_RE.source, 'g'), (_m, keyEsc) => {
+    const key = unescapeEntities(keyEsc);
+    const o = factOpts || EMPTY_FACT_OPTS;
+    const f = factOf(o.facts, key);
+    const change = o.changes.get(key);
+    return factChipHtml(key, factChipText(key, o.facts, o.overrides), {
+      engine: f ? f.engine : '',
+      // `changes` may hold a bare key (a Set) with no change object — that is still
+      // "this value moved", so treat presence, not truthiness, as the signal.
+      changed: o.changes.has(key),
+      missing: !!(f && f.missing),
+      title: o.showChanges ? factChipTitle(key, f, change) : '',
+    });
   });
   t = t.replace(/`([^`]+)`/g, '<code>$1</code>');
   t = t.replace(/\[([^\]]*)\]\(([^)\s]+)\)/g, (m, txt, urlEsc) => {
@@ -114,9 +191,9 @@ export function parsePipeTable(lines) {
   return { header: null, rows: all };
 }
 
-function tableHtml(escLines, orderMap, assetNumbers) {
+function tableHtml(escLines, orderMap, assetNumbers, factOpts) {
   const { header, rows } = parsePipeTable(escLines);
-  const cell = (tag, c) => `<${tag}>${inlineHtml(c, orderMap, assetNumbers)}</${tag}>`;
+  const cell = (tag, c) => `<${tag}>${inlineHtml(c, orderMap, assetNumbers, factOpts)}</${tag}>`;
   const tr = (cells, tag) => `<tr>${cells.map((c) => cell(tag, c)).join('')}</tr>`;
   const parts = ['<table>'];
   if (header) parts.push(`<thead>${tr(header, 'th')}</thead>`);
@@ -125,14 +202,33 @@ function tableHtml(escLines, orderMap, assetNumbers) {
   return parts.join('');
 }
 
+/** Neutral fact options — used whenever a caller passes none (exports, previews). */
+const EMPTY_FACT_OPTS = { facts: null, overrides: null, changes: new Map(), showChanges: false };
+
+/** Normalize the fact-related slice of opts once per render (101.md §16 — every
+    token in one render resolves from ONE snapshot). */
+function factOptsOf(opts) {
+  if (!opts || (!opts.facts && !opts.factOverrides && !opts.factChanges && !opts.showChanges)) return EMPTY_FACT_OPTS;
+  return {
+    facts: opts.facts || null,
+    overrides: opts.factOverrides || null,
+    changes: indexFactChanges(opts.factChanges),
+    showChanges: !!opts.showChanges,
+  };
+}
+
 /**
  * Render the markdown subset to HTML. opts.orderMap: Map(citeId → 1-based n) for
  * cite-chip numbering (missing/absent → [?]). opts.assetNumbers: Map or plain
  * object (resolveNumbering.byId) for asset-chip labels (missing → 'Table ?').
+ * opts.facts: resolveFacts() output (Map or plain object) for fact-chip values;
+ * opts.factOverrides: §10 pinned wordings; opts.factChanges: the change log / key
+ * set that marks a chip as recently updated; opts.showChanges: emit chip tooltips.
  */
 export function mdToHtml(md, opts = {}) {
   const orderMap = opts.orderMap || null;
   const assetNumbers = opts.assetNumbers || null;
+  const factOpts = factOptsOf(opts);
   const esc = escapeHtml(md);
   if (!esc.trim()) return '';
   const lines = esc.split(/\r?\n/);
@@ -140,8 +236,8 @@ export function mdToHtml(md, opts = {}) {
   let list = null; // 'ul' | 'ol' | null
   let tableBuf = null;
   const closeList = () => { if (list) { out.push(`</${list}>`); list = null; } };
-  const flushTable = () => { if (tableBuf) { out.push(tableHtml(tableBuf, orderMap, assetNumbers)); tableBuf = null; } };
-  const inline = (s) => inlineHtml(s, orderMap, assetNumbers);
+  const flushTable = () => { if (tableBuf) { out.push(tableHtml(tableBuf, orderMap, assetNumbers, factOpts)); tableBuf = null; } };
+  const inline = (s) => inlineHtml(s, orderMap, assetNumbers, factOpts);
   for (const line of lines) {
     const isTable = /^\s*\|/.test(line);
     if (tableBuf && !isTable) flushTable();
@@ -238,6 +334,16 @@ function inlineOf(nodes, opts = {}) {
       // foreign/corrupt data-asset span degrades to its text content below.
       const id = String(n.attrs['data-asset']).replace(/[[\]\s]/g, '');
       if (/^(table|figure):[a-z0-9:-]+$/.test(id)) { out += `[[${id}]]`; continue; }
+    }
+    if (n.attrs && n.attrs['data-fact'] != null) {
+      // 101.md §5 — the fact chip reverses to its TOKEN, never to the resolved text.
+      // That is the whole guarantee: what persists is a pointer at project data, so
+      // a later search cannot be prevented from updating this sentence, and a
+      // researcher's surrounding prose cannot be rewritten to make it happen.
+      // Same grammar guard as the asset branch: a foreign/corrupt data-fact span
+      // degrades to its text content below rather than emitting a broken token.
+      const key = String(n.attrs['data-fact']).replace(/[[\]\s]/g, '');
+      if (FACT_KEY_RE.test(key)) { out += `[[fact:${key}]]`; continue; }
     }
     if (tag === 'code') { const t = textOf(n).replace(/`/g, '').trim(); if (t) out += `\`${t}\``; continue; }
     if (tag === 'a' && n.attrs && /^(https?:\/\/|mailto:)/i.test(n.attrs.href || '')) {
@@ -401,6 +507,9 @@ export function stripInlineMd(s) {
   return String(s == null ? '' : s)
     .replace(new RegExp(CITATION_TOKEN_RE.source, 'g'), '')
     .replace(new RegExp(ASSET_TOKEN_RE.source, 'g'), (_m, kind) => (kind === 'figure' ? 'Figure ?' : 'Table ?'))
+    // 101.md §6 — an outline label has no project snapshot to resolve against, so a
+    // fact token drops out entirely rather than leaking its raw syntax into the UI.
+    .replace(new RegExp(FACT_TOKEN_RE.source, 'g'), '')
     .replace(/\[([^\]]*)\]\([^)\s]+\)/g, '$1')
     .replace(/\*\*\*|\*\*|\*|`/g, '')
     .trim();
@@ -424,4 +533,8 @@ export function extractOutline(md) {
   return out;
 }
 
-export default { escapeHtml, mdToHtml, htmlToMd, citeChipHtml, assetChipHtml, parsePipeTable, extractOutline, stripInlineMd, CITE_CHIP_CLASS, ASSET_CHIP_CLASS };
+export default {
+  escapeHtml, mdToHtml, htmlToMd, citeChipHtml, assetChipHtml, factChipHtml,
+  factChipText, factOf, parsePipeTable, extractOutline, stripInlineMd,
+  CITE_CHIP_CLASS, ASSET_CHIP_CLASS, FACT_CHIP_CLASS,
+};
