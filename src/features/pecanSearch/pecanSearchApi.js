@@ -166,6 +166,20 @@ export const screeningImportHistoryApi = {
     const q = qs.toString();
     return http(`${SCREEN_BASE}/projects/${pid(projectId)}/import-history${q ? `?${q}` : ''}`);
   },
+  /**
+   * 104.md — record (or correct) a manual search's provenance: which database it
+   * hit, when the search was actually RUN (not uploaded), and whether it is part of
+   * the review's final search methodology at all. Flipping contributesToReview to
+   * false stops the search being reported by the manuscript while the batch, its
+   * records and its audit trail all stay exactly where they are.
+   * → { batch: { id, sourceDatabase, searchedAt, contributesToReview, exclusionNote } }
+   */
+  async updateBatchSearch(projectId, batchId, patch) {
+    return http(`${SCREEN_BASE}/projects/${pid(projectId)}/import-batches/${encodeURIComponent(batchId)}/search`, {
+      method: 'PATCH',
+      body: patch || {},
+    });
+  },
   // scope: 'search' | 'all' → { projectName?, confirmToken (the exact string to
   //   type: project name, or 'DELETE' when the title is blank), blockedBy (string
   //   reason while a job is active, else null), counts:{ records, decisions, notes,

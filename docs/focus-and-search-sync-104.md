@@ -181,12 +181,19 @@ It reports; it never rewrites either side.
    deprecated monolith with no shared layout component, and it already has its own
    `navCollapsed` sidebar-hiding. Adding a second, differently-behaving focus
    concept there would create the inconsistency 104.md is trying to prevent.
-2. **No UI yet for the manual-search fields.** The schema, the service and the
-   `PATCH` endpoint are in place and tested, but nothing in the Search or Import
-   screens currently lets a researcher set `sourceDatabase` / `searchedAt` /
-   `contributesToReview`. Until that exists the fields are reachable only via the
-   API, so a manual search still falls back to upload-date + parser attribution in
-   practice. **This is the largest remaining gap.**
+2. ~~No UI yet for the manual-search fields.~~ **Resolved.**
+   `src/frontend/screening/components/BatchSearchProvenance.jsx` adds a "Search
+   record" row to every manual dataset in Import History: a canonical database
+   picker (never free text — a name that does not canonicalize would be reported
+   verbatim), a date-searched field capped at today and labelled "not when the file
+   was uploaded", and a "Part of this review's search methodology" checkbox with an
+   audit note. A live summary states what the manuscript will make of the current
+   state, so the consequence is visible before saving rather than discovered later
+   in the Methods section. Excluded datasets get a "Not reported" badge and keep all
+   their numbers. Pecan runs do NOT get the editor — they already carry all three
+   facts, and offering to override them would invite a contradiction with the
+   execution record. Saves are non-optimistic: the server validates the date, so the
+   row reflects what was accepted, not what was typed.
 3. **`otherMethods` is read from the PRISMA other-methods arm**, so it reports
    citation/hand searching only once records with those origins exist. There is no
    separate place to declare "we hand-searched three journals" that produced nothing.

@@ -125,6 +125,8 @@ export async function getImportHistory(req, res) {
         id: true, filename: true, format: true, source: true, searchRunId: true,
         fileHash: true, updatedCount: true, recordCount: true, preDedupCount: true,
         duplicateCount: true, rejectedCount: true, importedByName: true, createdAt: true,
+        // 104.md — the manual-search provenance the history UI edits.
+        sourceDatabase: true, searchedAt: true, contributesToReview: true, exclusionNote: true,
       },
     });
     const remaining = await remainingByBatch(pid);

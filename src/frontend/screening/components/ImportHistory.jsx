@@ -31,6 +31,7 @@ import { screeningApi } from '../api-client/screeningApi.js';
 import { screeningImportHistoryApi } from '../../../features/pecanSearch/pecanSearchApi.js';
 import { providerLabel } from '../../../research-engine/search/runProgress.js';
 import ResetImportedRecordsModal from './ResetImportedRecordsModal.jsx';
+import BatchSearchProvenance from './BatchSearchProvenance.jsx';
 
 const n = (v) => (typeof v === 'number' && !Number.isNaN(v) ? v : 0);
 const num = (v) => (Number.isFinite(Number(v)) ? Number(v) : 0);
@@ -137,6 +138,12 @@ function normalizeBatch(b) {
     remainingCount: raw.remainingCount != null ? num(raw.remainingCount) : num(raw.recordCount),
     importedByName: raw.importedByName || '',
     createdAt: raw.createdAt || null,
+    // 104.md — the manual-search record. `contributesToReview` defaults TRUE so a
+    // batch from an un-migrated server keeps counting, exactly as it did before.
+    sourceDatabase: raw.sourceDatabase || '',
+    searchedAt: raw.searchedAt || null,
+    contributesToReview: raw.contributesToReview !== false,
+    exclusionNote: raw.exclusionNote || '',
   };
 }
 
@@ -377,7 +384,7 @@ export function RunEntry({ entry, canDelete, expanded, onToggle, onDeleteBatch }
  * One file/API import batch — the pre-96.md row, kept as-is (incl. issue list
  * + delete) so the existing per-batch delete flow keeps working unchanged.
  */
-export function BatchEntry({ batch: b, canDelete, onDelete, issues, onToggleIssues }) {
+export function BatchEntry({ batch: b, canDelete, onDelete, issues, onToggleIssues, canEditSearch, onSaveSearch, savingSearch, searchError }) {
   return (
     <Card style={{ padding: '13px 16px' }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 14, flexWrap: 'wrap' }}>
@@ -387,6 +394,12 @@ export function BatchEntry({ batch: b, canDelete, onDelete, issues, onToggleIssu
               {b.filename || '(unnamed dataset)'}
             </span>
             <Badge color={C.teal} title={`Source: ${SOURCE_LABEL[b.source] || b.source}`}>{SOURCE_LABEL[b.source] || b.source}</Badge>
+            {/* 104.md — a dataset excluded from the search methodology still shows
+                all its numbers; what changes is that the manuscript stops citing it.
+                Saying so on the row is the only way that is discoverable. */}
+            {b.contributesToReview === false && (
+              <Badge color={C.muted} title={b.exclusionNote || 'Not part of the reported search methodology'}>Not reported</Badge>
+            )}
           </div>
           <div style={{ fontSize: 11, color: C.muted, marginTop: 4 }}>
             {b.importedByName ? `by ${b.importedByName} · ` : ''}{fmtDate(b.createdAt)}
@@ -432,6 +445,18 @@ export function BatchEntry({ batch: b, canDelete, onDelete, issues, onToggleIssu
           </div>
         )
       )}
+      {/* 104.md — only MANUAL batches. A Pecan run already records its database and
+          execution time; offering to override those would invite a contradiction
+          with the execution record. */}
+      {b.source !== 'pecan-search' && (
+        <BatchSearchProvenance
+          batch={b}
+          canEdit={!!canEditSearch}
+          busy={!!savingSearch}
+          error={searchError || null}
+          onSave={(patch) => onSaveSearch && onSaveSearch(b, patch)}
+        />
+      )}
     </Card>
   );
 }
@@ -476,6 +501,9 @@ export default function ImportHistory({ pid, projectName = '', onChanged }) {
   const [confirm, setConfirm] = useState('');
   const [busy, setBusy] = useState(false);
   const [delErr, setDelErr] = useState(null);
+  // 104.md — per-batch search-record save state. Keyed by batch id so two rows
+  // can never share a spinner or an error message.
+  const [searchSave, setSearchSave] = useState({ id: null, error: null });
   const [resetOpen, setResetOpen] = useState(false);
   // 65.md SCR-3 — lazily fetched per-batch issue lists: { [batchId]: { loading, error, rows } }
   const [issues, setIssues] = useState({});
@@ -512,6 +540,27 @@ export default function ImportHistory({ pid, projectName = '', onChanged }) {
       setState({ loading: false, error: e?.message || 'Could not load import history.', ...EMPTY_HISTORY });
     }
   }, [pid]);
+
+  /**
+   * 104.md — persist a manual search's record. Optimism would be wrong here: the
+   * server rejects a future search date, and this changes what the manuscript
+   * reports, so the row must show the state the server actually accepted rather
+   * than the one the user typed.
+   */
+  const saveSearchRecord = useCallback(async (batch, patch) => {
+    if (!batch || !batch.id) return;
+    setSearchSave({ id: batch.id, error: null });
+    try {
+      await screeningImportHistoryApi.updateBatchSearch(pid, batch.id, patch);
+      setSearchSave({ id: null, error: null });
+      await load();
+      // The manuscript's search facts derive from these fields, so the surrounding
+      // page needs to know they moved.
+      if (onChanged) await onChanged({ searchRecord: batch.id });
+    } catch (e) {
+      setSearchSave({ id: batch.id, error: (e && e.message) || 'Could not save the search record.' });
+    }
+  }, [pid, load, onChanged]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -642,6 +691,10 @@ export default function ImportHistory({ pid, projectName = '', onChanged }) {
               onDelete={openDelete}
               issues={issues[entry.id]}
               onToggleIssues={toggleIssues}
+              canEditSearch={state.canDelete}
+              onSaveSearch={saveSearchRecord}
+              savingSearch={searchSave.id === entry.id}
+              searchError={searchSave.id === entry.id ? searchSave.error : null}
             />
           )
         ))}

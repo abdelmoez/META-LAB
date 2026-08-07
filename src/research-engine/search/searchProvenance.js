@@ -147,6 +147,18 @@ export function canonicalDbKey(name) {
  * (searchBuilder/methodsText.js DB_LABELS) with the canonical keys this module
  * emits, so the manuscript and the Search Engine name databases identically.
  */
+/**
+ * 104.md — the pickable canonical sources, for the manual-search provenance editor.
+ * Exported so the UI offers the SAME set the reporting layer understands: a
+ * free-typed name that does not canonicalize would be reported verbatim, which is
+ * how a manuscript ends up naming something that is not a database.
+ */
+export function knownDatabaseOptions() {
+  return Object.keys(DB_LABELS)
+    .map((key) => ({ key, label: DB_LABELS[key], kind: dbKind(key) }))
+    .sort((a, b) => (a.label < b.label ? -1 : a.label > b.label ? 1 : 0));
+}
+
 const DB_LABELS = Object.freeze({
   pubmed: 'PubMed',
   medline: 'MEDLINE',
