@@ -6,7 +6,7 @@
    IMPORTANT: these are the MONOLITH's OWN copies. They are intentionally NOT merged with
    the pre-existing `src/research-engine/statistics/*` or `project-model/constants.js`
    modules — those are separate duplicates and re-pointing could drift behavior. */
-import { ADJUST_LABEL, DATA_NATURE_LABEL } from "../project-model/monolithConstants.js";
+import { ADJUST_LABEL, DATA_NATURE_LABEL, DENOMINATOR_POPULATION_LABEL, ACTION_STATUS_LABEL } from "../project-model/monolithConstants.js";
 import { isNonPrimary } from "../import-export/referenceParsers.js";
 // RoadMap/2.md — opt-in τ² estimators (DL stays the default; existing results unchanged).
 import { estimateTau2, TAU2_METHODS } from "./tau2.js";
@@ -690,6 +690,20 @@ export function validateStudy(s){
   // single-arm proportion
   if(s.esType==="PROP"&&num(s.events)&&num(s.total)&&+s.events>+s.total)
     add("error","events","Events exceed total in single-arm proportion.");
+  // 107.md §8E — MIRROR of the rule in validation/study-validator.js. This copy is the
+  // one the classic Data Extraction tab renders (extractionTabs.jsx imports validateStudy
+  // from here), while completionGate/completionService run the other one — a fix that
+  // lands in only one copy is invisible on the other surface (see docs/case-series-106.md).
+  if(s.esType==="PROP"){
+    const denom=s.denominatorPopulation==null?"":String(s.denominatorPopulation).trim();
+    const action=s.actionStatus==null?"":String(s.actionStatus).trim();
+    if(denom==="other"&&!String(s.denominatorCustom==null?"":s.denominatorCustom).trim())
+      add("error","denominatorCustom","Custom denominator description is required for Other/custom.");
+    if(denom&&!DENOMINATOR_POPULATION_LABEL[denom])
+      add("warn","denominatorPopulation",`Unrecognised denominator population "${denom}" — pick one of the listed options.`);
+    if(action&&!ACTION_STATUS_LABEL[action])
+      add("warn","actionStatus",`Unrecognised action status "${action}" — pick one of the listed options.`);
+  }
   // diagnostic
   if(num(s.tp)||num(s.fp)||num(s.fn)||num(s.tn)){
     const dcells=["tp","fp","fn","tn"].filter(k=>num(s[k]));

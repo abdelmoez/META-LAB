@@ -1622,7 +1622,9 @@ export default function MetaLab({ initialProjectId = null, initialTab = null, on
           {tab==="prisma"&&<PRISMATab project={project} updNested={updNested} updateProject={updateProject} activeId={activeId} setTab={setTab}/>}
           {tab==="extraction"&&<ExtractionTab project={project} updateProject={updateProject} activeId={activeId} setTab={setTab}/>}
           {tab==="rob"&&<RoBTab project={project} updateProject={updateProject} activeId={activeId} setTab={setTab} onWorkspaceChange={setRobInWorkspace}/>}
-          {tab==="analysis"&&<AnalysisTab project={project} updateProject={fn=>updateProject(activeId,fn)} onApplyPrecisionToAll={prec=>projects.forEach(p=>updateProject(p.id,x=>({...x,analysisPrecision:prec})))}/>}
+          {/* 107.md §12 — currentUser only supplies the `by` field of a recorded
+              compatibility override; absent → the override records by:null. */}
+          {tab==="analysis"&&<AnalysisTab project={project} updateProject={fn=>updateProject(activeId,fn)} currentUser={authUser} onApplyPrecisionToAll={prec=>projects.forEach(p=>updateProject(p.id,x=>({...x,analysisPrecision:prec})))}/>}
           {tab==="forest"&&<ForestTab project={project}/>}
           {tab==="sensitivity"&&<SensitivityTab project={project}/>}
           {tab==="subgroup"&&<SubgroupTab project={project}/>}

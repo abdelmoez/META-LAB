@@ -121,11 +121,24 @@ export class ScreeningPage {
 
   /* ── Decision bar (middle column) ──────────────────────────────────────────── */
 
+  /** 107.md §6 — the sticky decision row under the abstract; `data-decision` carries
+   *  the reviewer's current decision (include | exclude | maybe | undecided). */
+  get decisionBar(): Locator { return this.main.getByTestId('screening-decision-bar'); }
   get includeButton(): Locator { return this.main.getByRole('button', { name: /Include/i }); }
   get excludeButton(): Locator { return this.main.getByRole('button', { name: /Exclude/i }); }
   get maybeButton(): Locator { return this.main.getByRole('button', { name: /Maybe/i }); }
   get undoButton(): Locator { return this.main.getByRole('button', { name: /Undo/i }); }
   get notesTextarea(): Locator { return this.main.getByPlaceholder('Optional screening notes…'); }
+
+  /* ── Record navigation footer (107.md §7) ──────────────────────────────────── */
+
+  get recordNav(): Locator { return this.main.getByTestId('screening-record-nav'); }
+  /** The subtle "there is nothing after this study" line by the position counter. */
+  get endOfList(): Locator { return this.main.getByTestId('screening-end-of-list'); }
+  /** The inline "Loading more…" indicator shown while auto-pagination is in flight. */
+  get loadingMore(): Locator { return this.main.getByTestId('screening-loading-more'); }
+  /** The manual fallback that auto-pagination augments (never replaces). */
+  get loadMoreButton(): Locator { return this.main.getByRole('button', { name: /Load more/ }); }
 
   /** The "<n> / 2 reviewers included" quorum line (count is server-backed). */
   reviewersIncluded(n: number): Locator {

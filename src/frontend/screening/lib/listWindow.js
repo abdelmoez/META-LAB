@@ -67,6 +67,47 @@ export function computeListWindow({ count, scrollTop, viewportHeight, rowHeight 
 }
 
 /**
+ * nearestScrollTop — 107.md §5: the MINIMAL scroll offset that brings a row fully
+ * into view, i.e. `scrollIntoView({ block: 'nearest' })` expressed as arithmetic on
+ * one container.
+ *
+ * The real `scrollIntoView` is unusable for ordinary keyboard navigation here: it
+ * walks up the tree and can scroll the page and the abstract pane as well as the
+ * record list, which §5 explicitly forbids. Feeding this result into
+ * `container.scrollTop` moves exactly one element and nothing else.
+ *
+ * 'nearest' semantics — a row that is already fully visible never moves (returns
+ * null), a row above the viewport is brought to the TOP edge, a row below it to the
+ * BOTTOM edge. It never centres and never jumps to the top of the list.
+ *
+ * @param {object} o
+ * @param {number} o.rowTop          row offset from the top of the scrollable CONTENT (px)
+ * @param {number} o.rowHeight       row height (px)
+ * @param {number} o.scrollTop       current container scroll offset (px)
+ * @param {number} o.viewportHeight  visible height of the container (px)
+ * @returns {number|null} the new scrollTop, or null when no scrolling is needed
+ */
+export function nearestScrollTop({ rowTop, rowHeight, scrollTop, viewportHeight } = {}) {
+  const top = Number(rowTop);
+  const rh = Number(rowHeight);
+  const cur = Math.max(0, Number(scrollTop) || 0);
+  const vh = Number(viewportHeight);
+  // Without a measured viewport there is no "visible" to reason about.
+  if (!Number.isFinite(top) || !Number.isFinite(rh) || !Number.isFinite(vh) || vh <= 0) return null;
+
+  const alignTop = top;                 // row's top edge at the viewport's top edge
+  const alignBottom = top + rh - vh;    // row's bottom edge at the viewport's bottom edge
+  // For a row shorter than the viewport this is [alignBottom, alignTop]; for a row
+  // TALLER than the viewport the order flips and the interval is every offset at which
+  // the row covers the whole viewport — both are "as visible as it gets".
+  const lo = Math.max(0, Math.min(alignTop, alignBottom));
+  const hi = Math.max(0, Math.max(alignTop, alignBottom));
+  if (cur >= lo && cur <= hi) return null;
+  const next = cur < lo ? lo : hi;
+  return next === cur ? null : next;
+}
+
+/**
  * measuredRowHeight — refine the row-height estimate from the rendered slice.
  * Returns the previous estimate unchanged for degenerate measurements or when
  * the change is below the jitter threshold (avoids re-render feedback loops).

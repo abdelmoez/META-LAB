@@ -78,6 +78,37 @@ the PICO snapshot, inclusion/exclusion criteria, study-type filter, and keyword
 lists. This is what makes the queue usable from record one, and it is the fallback
 whenever supervised training preconditions are not met.
 
+### 2.2.1 Keyword suggestion & review layer (107.md §2)
+
+The screening keyword lists have two layers, and only one of them reaches this
+engine:
+
+- **Active keywords** — `ScreenProject.inclusionKeywords` / `exclusionKeywords`
+  (the shared seed list until a leader edits it). These are what highlight, filter,
+  count, and feed the keyword signal below.
+- **Suggested keywords** — derived live from the project's eligibility criteria by
+  `src/research-engine/screening/suggestKeywords.js`, never persisted, and **not
+  active until a leader accepts them**. The generator is negation-aware (a concept
+  governed by "without" / "excluding" / "free of" contributes nothing to that side),
+  blocks bare generic nouns ("patients", "disease", "studies"), prefers the
+  qualified phrase over the bare one ("drug-resistant epilepsy" over "epilepsy"),
+  caps each side at 12, and withholds any concept whose polarity is ambiguous —
+  reporting it as a **conflict** for the reviewer to arbitrate instead of silently
+  activating it on both sides.
+
+Accept/reject verdicts and per-term origins live in the additive
+`ScreenProject.keywordMeta` column (`keywordModel.js`); every mutation goes through
+one pure reducer, applied server-side inside a transaction
+(`POST /api/screening/projects/:pid/keywords/ops`).
+
+**The engine below is deliberately unchanged by all of this.**
+`conceptKeywords.js` (`extractConcepts` / `expandSynonyms`) — which both the
+cold-start prior and the governed Criteria Screener depend on — was not modified,
+so cold-start scores and `ScreenAiScore` rows stay byte-identically reproducible.
+The suggestion rules live only in the suggestion layer. The keyword signal below
+still reads the ACTIVE stored lists, so a *pending* suggestion has no effect on any
+AI score until a human accepts it.
+
 ### 2.3 Semantic similarity
 
 Similarity of each record to the already-**included** set minus the already-**excluded**

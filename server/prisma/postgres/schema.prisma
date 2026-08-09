@@ -625,6 +625,12 @@ model ScreenProject {
   disabled                   Boolean   @default(false) // admin per-project disable
   inclusionKeywords          String    @default("[]") // JSON string[] — green highlight terms
   exclusionKeywords          String    @default("[]") // JSON string[] — red highlight terms
+  // 107.md §2 — keyword REVIEW state only (accept/reject verdicts + per-term
+  // origin), keyed by the normalized keyword. The suggested terms themselves are
+  // never persisted: they are re-derived from picoSnapshot on every read, so
+  // regeneration can never overwrite a manually added term. Additive + defaulted
+  // → prisma db push safe. Shape: keywordModel.js normalizeKeywordMeta().
+  keywordMeta                String    @default("{}")
   studyTypeFilter            String    @default("[]") // JSON string[]
   picoSnapshot               String    @default("{}") // cached PICO/criteria (from linked META·LAB project or standalone)
   chatRestricted             Boolean   @default(false) // when true, only members with canChat may post

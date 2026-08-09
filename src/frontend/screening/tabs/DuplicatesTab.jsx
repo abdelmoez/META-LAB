@@ -9,6 +9,8 @@
  * Props:
  *   pid            — screening project id
  *   project        — current project object (from the shell)
+ *   dataSummary    — the shell's overview dataSummary (107.md §1 — carries
+ *                    duplicateDetection.{status,stale,staleReason})
  *   access         — { isLeader, myRole, canScreen, ... }
  *   refreshProject — () => Promise, re-fetches the shell's project after a mutation
  */
@@ -18,6 +20,9 @@ import { Loading, ErrorBanner, Button, Badge, Card, EmptyState, Modal } from '..
 import { screeningApi } from '../api-client/screeningApi.js';
 // 92.md — detection progress is derived ONLY from the persisted job row (no fake %).
 import { computeDuplicateJobProgress, formatDurationMs } from '../../../research-engine/screening/duplicateJobProgress.js';
+// 107.md §1 — every job update fed by the network goes through this arbiter so an
+// older response can never move a job backward (completed → pending).
+import { pickNewerJob } from '../../../research-engine/screening/duplicateJobState.js';
 
 const JOB_POLL_MS = 1500;
 const jobIsActive = (j) => !!j && (j.status === 'queued' || j.status === 'processing');
@@ -66,7 +71,7 @@ function FieldLabel({ children }) {
 }
 
 // ── Component ────────────────────────────────────────────────────────────────
-export default function DuplicatesTab({ pid, project, access = {}, refreshProject }) {
+export default function DuplicatesTab({ pid, project, dataSummary = null, access = {}, refreshProject }) {
   const [groups, setGroups]   = useState([]);
   const [evaluation, setEvaluation] = useState(null); // se2.md §10 classifier accuracy (leader)
   const [loading, setLoading] = useState(true);
@@ -131,17 +136,24 @@ export default function DuplicatesTab({ pid, project, access = {}, refreshProjec
   useEffect(() => { loadRef.current = load; }, [load]);
   const refreshRef = useRef(refreshProject);
   useEffect(() => { refreshRef.current = refreshProject; }, [refreshProject]);
+  // 107.md §1 — the latest job WITHOUT going through a setState updater, so the
+  // polls can decide whether anything changed (and fire their side effects)
+  // outside React's updater, which StrictMode double-invokes.
+  const jobRef = useRef(job);
+  useEffect(() => { jobRef.current = job; }, [job]);
 
   // Reconnect on mount / project switch: pick up the project's latest detection
   // job so a refreshed page re-attaches to a running job (or shows the last run's
   // outcome). Rec round: reset first so a pid switch never shows another project's
   // job, and never CLOBBER a job the user just started while this fetch was in
-  // flight (functional set keeps the newer job).
+  // flight (107.md §1 — pickNewerJob generalises that guard: a slow response
+  // describing an OLDER job never displaces the run in hand).
   useEffect(() => {
     let gone = false;
+    jobRef.current = null;
     setJob(null);
     screeningApi.getDuplicateDetectStatus(pid)
-      .then((r) => { if (!gone && r?.job) setJob((prev) => prev || r.job); })
+      .then((r) => { if (!gone && r?.job) setJob((prev) => pickNewerJob(prev, r.job)); })
       .catch(() => { /* status is best-effort; detection can still be started */ });
     return () => { gone = true; };
   }, [pid]);
@@ -156,8 +168,13 @@ export default function DuplicatesTab({ pid, project, access = {}, refreshProjec
       try {
         const r = await screeningApi.getDuplicateJob(pid, jobId);
         if (gone || !r?.job) return;
-        setJob(r.job);
-        if (!jobIsActive(r.job)) {
+        // 107.md §1 — a poll response that lost the race to a fresher one (or to
+        // the detect/cancel reply) must not be applied.
+        const picked = pickNewerJob(jobRef.current, r.job);
+        if (picked === jobRef.current) return;
+        jobRef.current = picked;
+        setJob(picked);
+        if (!jobIsActive(picked)) {
           await loadRef.current();
           if (refreshRef.current) await refreshRef.current();
         }
@@ -170,6 +187,11 @@ export default function DuplicatesTab({ pid, project, access = {}, refreshProjec
   // slow status poll notices runs started (or finished) by other members, attaches
   // to them, and refreshes the groups list on their completion. This is the
   // client-side consumer of the worker's completion poke for tabs left open.
+  //
+  // 107.md §1 — two fixes here: the terminal transition now also refreshes the
+  // SHELL summary (it previously refreshed only the group list, so a completion
+  // noticed on this 10 s path left the workflow stepper stale), and the data load
+  // no longer runs INSIDE the setJob updater (StrictMode double-invokes updaters).
   useEffect(() => {
     if (jobActive) return undefined; // the fast poll above owns updates
     let gone = false;
@@ -177,12 +199,14 @@ export default function DuplicatesTab({ pid, project, access = {}, refreshProjec
       try {
         const r = await screeningApi.getDuplicateDetectStatus(pid);
         if (gone || !r?.job) return;
-        const latest = r.job;
-        setJob((prev) => {
-          if (prev && prev.id === latest.id && prev.status === latest.status) return prev;
-          if (!jobIsActive(latest)) loadRef.current().catch(() => {});
-          return latest;
-        });
+        const picked = pickNewerJob(jobRef.current, r.job);
+        if (picked === jobRef.current) return; // same observation — nothing to do
+        jobRef.current = picked;
+        setJob(picked);
+        if (!jobIsActive(picked)) {
+          await loadRef.current().catch(() => {});
+          if (refreshRef.current) await Promise.resolve(refreshRef.current()).catch(() => {});
+        }
       } catch { /* best-effort */ }
     }, 10_000);
     return () => { gone = true; clearInterval(t); };
@@ -196,7 +220,14 @@ export default function DuplicatesTab({ pid, project, access = {}, refreshProjec
       // 202 + the job row; if a run is already active the server returns THAT job,
       // so a double click (or two members clicking) can never start a second sweep.
       const res = await screeningApi.detectDuplicates(pid);
-      if (res?.job) setJob(res.job);
+      // 107.md §1 — a fresh retry job legitimately supersedes the previous run's
+      // terminal row; an in-flight status poll answering with that OLD row must not
+      // undo it. pickNewerJob resolves both directions.
+      if (res?.job) {
+        const picked = pickNewerJob(jobRef.current, res.job);
+        jobRef.current = picked;
+        setJob(picked);
+      }
     } catch (e) {
       setError(e?.message || 'Could not start duplicate detection.');
     } finally {
@@ -209,7 +240,11 @@ export default function DuplicatesTab({ pid, project, access = {}, refreshProjec
     setCancelBusy(true);
     try {
       const r = await screeningApi.cancelDuplicateJob(pid, jobId);
-      if (r?.job) setJob(r.job);
+      if (r?.job) {
+        const picked = pickNewerJob(jobRef.current, r.job);
+        jobRef.current = picked;
+        setJob(picked);
+      }
     } catch { /* the poll reflects the real state */ }
     finally { setCancelBusy(false); }
   }, [pid, jobId, cancelBusy]);
@@ -269,6 +304,11 @@ export default function DuplicatesTab({ pid, project, access = {}, refreshProjec
   const unresolved = groups.filter(g => !g.resolved);
   const resolved   = groups.filter(g => g.resolved);
   const exactUnresolved = unresolved.filter(g => g.dupType === 'exact_duplicate').length;
+
+  // 107.md §1 — the server decides staleness deterministically (records created
+  // after the last completed sweep, or a changed project record count). Never
+  // auto-rerun: say so, and leave the existing Detect button as the action.
+  const detectionStale = !jobActive && !!dataSummary?.duplicateDetection?.stale;
 
   // ── Loading / error (first paint) ──
   if (loading && groups.length === 0) {
@@ -368,6 +408,20 @@ export default function DuplicatesTab({ pid, project, access = {}, refreshProjec
       )}
       {job && !jobActive && (
         <DetectionOutcome job={job} canManage={canManage} onRetry={handleDetect} retryBusy={starting} />
+      )}
+
+      {/* ───────── Stale results notice (107.md §1) ───────── */}
+      {detectionStale && (
+        <div role="status" style={{
+          marginBottom: 18, padding: '9px 14px', borderRadius: 8,
+          background: alpha(C.gold, '10'), border: `1px solid ${alpha(C.gold, '3a')}`,
+          display: 'flex', alignItems: 'center', gap: 9, flexWrap: 'wrap',
+        }}>
+          <span style={{ fontSize: 13, opacity: 0.9 }} aria-hidden>⟳</span>
+          <span style={{ fontSize: 12, color: C.gold }}>
+            Records have changed since the last detection — rerun to update results.
+          </span>
+        </div>
       )}
 
       {/* ───────── Empty ───────── */}

@@ -4,7 +4,7 @@
  */
 import { describe, it, expect } from 'vitest';
 import {
-  fastListEligible, buildFastListQuery, FAST_LIST_FILTERS, pageWindow,
+  fastListEligible, buildFastListQuery, FAST_LIST_FILTERS, pageWindow, moveIntent,
 } from '../../../src/research-engine/screening/recordListQuery.js';
 
 describe('fastListEligible — conservative eligibility', () => {
@@ -73,6 +73,58 @@ describe('buildFastListQuery — where/orderBy mapping', () => {
   it('ordering is createdAt asc with a deterministic id tiebreak (stable skip/take)', () => {
     const q = buildFastListQuery({ ...args, filter: 'all' });
     expect(q.orderBy).toEqual([{ createdAt: 'asc' }, { id: 'asc' }]);
+  });
+});
+
+/* ── 107.md §7 — what a next/previous keystroke means at the current position ──── */
+
+describe('moveIntent — keyboard navigation at the edge of the loaded window', () => {
+  const M = (o) => moveIntent({ count: 50, hasMore: false, loadingMore: false, ...o });
+
+  it('moves within the loaded list in both directions', () => {
+    expect(M({ index: 0, dir: 1 })).toBe('move');
+    expect(M({ index: 24, dir: 1 })).toBe('move');
+    expect(M({ index: 48, dir: 1 })).toBe('move');   // → the last loaded row
+    expect(M({ index: 1, dir: -1 })).toBe('move');
+    expect(M({ index: 49, dir: -1 })).toBe('move');
+  });
+
+  it('paginates when the last loaded row is not the last record', () => {
+    expect(M({ index: 49, dir: 1, hasMore: true })).toBe('load-next');
+  });
+
+  it('refuses to queue a second request while one is in flight', () => {
+    // Holding the arrow key down must not fan out into concurrent page requests.
+    expect(M({ index: 49, dir: 1, hasMore: true, loadingMore: true })).toBe('noop');
+  });
+
+  it('reports the TRUE end of the list rather than pretending to load', () => {
+    expect(M({ index: 49, dir: 1, hasMore: false })).toBe('end');
+    expect(M({ index: 49, dir: 1, hasMore: false, loadingMore: true })).toBe('end');
+    expect(M({ index: 7, dir: 1, count: 8, hasMore: false })).toBe('end');
+  });
+
+  it('stops at the top — "earlier records" is a list control, not a selection move', () => {
+    expect(M({ index: 0, dir: -1 })).toBe('noop');
+    expect(M({ index: 0, dir: -1, hasMore: true })).toBe('noop');
+  });
+
+  it('does nothing at all on an empty list', () => {
+    expect(M({ index: -1, dir: 1, count: 0, hasMore: true })).toBe('noop');
+    expect(M({ index: 0, dir: 1, count: 0 })).toBe('noop');
+  });
+
+  it('with nothing selected, forward opens the first record and backward does nothing', () => {
+    expect(M({ index: -1, dir: 1 })).toBe('move');
+    expect(M({ index: -1, dir: -1 })).toBe('noop');
+  });
+
+  it('is defensive about junk', () => {
+    expect(moveIntent()).toBe('noop');
+    expect(M({ index: NaN, dir: 1 })).toBe('move');          // treated as "nothing selected"
+    expect(M({ index: 49, dir: 0, hasMore: true })).toBe('load-next'); // 0 reads as forward
+    expect(M({ index: 3, dir: -0.5 })).toBe('move');
+    expect(M({ index: 200, dir: 1, hasMore: false })).toBe('end');
   });
 });
 

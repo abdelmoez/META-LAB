@@ -7,8 +7,11 @@
  *   - a modifier key (Ctrl / Meta / Alt) is held
  *   - the event target / activeElement is INPUT, TEXTAREA, SELECT, or contenteditable
  *   - the focus is inside an element with class `sift-in`
+ *   - a screening dialog is open (107.md §7: arrow keys belong to the dialog's own
+ *     controls, and `i`/`e` behind a modal used to silently decide the record under it)
  */
 import { useEffect, useRef } from 'react';
+import { isScreeningModalOpen } from '../ui/components.jsx';
 
 /**
  * @param {object} opts
@@ -33,6 +36,10 @@ export function useScreeningShortcuts({ enabled, keys, onNext, onPrev, onInclude
 
       // Modifier guard
       if (e.ctrlKey || e.metaKey || e.altKey) return;
+
+      // Dialog guard — the Modal focuses its first focusable element, which is usually
+      // a <button>, so the active-element checks below never caught this.
+      if (isScreeningModalOpen()) return;
 
       // Active-element guard
       const el = document.activeElement;

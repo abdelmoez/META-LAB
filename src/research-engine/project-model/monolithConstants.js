@@ -30,10 +30,33 @@ export const EXTRACT_FLAGS=[
   ["figure","Estimated from figure"],["notprimary","Not primary data"],
   ["highrisk","High risk of extraction error"],["noconfirm","Do not pool unless confirmed"],
 ];
+/* 107.md §8A — DENOMINATOR POPULATION of a single-arm proportion estimate. This belongs
+   to the ESTIMATE, not the study: one paper may report several proportions over
+   different denominators. The visible labels are fixed by §8A. Note that "" is NOT a
+   member of this list: a row without the field is "not classified" (legacy/unset), a
+   state deliberately distinct from every genuine category (§8C). */
+export const DENOMINATOR_POPULATIONS=[
+  ["plp_molecular_diagnoses","P/LP molecular diagnoses"],
+  ["all_patients_tested","All patients tested"],
+  ["patients_with_management_change","Patients with management change"],
+  ["patients_with_follow_up","Patients with follow-up"],
+  ["other","Other/custom"],
+];
+/* 107.md §8B — what actually happened as a consequence of the estimate. `unclear` means
+   THE ARTICLE reports it as unclear; a missing/"" value means the field was never
+   collected. Those are scientifically different and must never be merged (§8C). */
+export const ACTION_STATUSES=[
+  ["implemented","Implemented"],
+  ["recommended_planned","Recommended/planned"],
+  ["potential_theoretical","Potential/theoretical"],
+  ["unclear","Unclear"],
+];
 export const DATA_NATURE_LABEL=Object.fromEntries(DATA_NATURE.map(([k,l])=>[k,l]));
 export const ADJUST_LABEL=Object.fromEntries(ADJUST_OPTIONS.map(([k,l])=>[k,l]));
 export const FLAG_LABEL=Object.fromEntries(EXTRACT_FLAGS.map(([k,l])=>[k,l]));
 export const SOURCE_LABEL=Object.fromEntries(SOURCE_OPTIONS.map(([k,l])=>[k,l]));
+export const DENOMINATOR_POPULATION_LABEL=Object.fromEntries(DENOMINATOR_POPULATIONS.map(([k,l])=>[k,l]));
+export const ACTION_STATUS_LABEL=Object.fromEntries(ACTION_STATUSES.map(([k,l])=>[k,l]));
 
 /* Effect-measure metadata: which measures share a scale, null value, whether log-scale */
 export const ES_TYPES={

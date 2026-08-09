@@ -37,9 +37,269 @@ import { C, btnS, inp, th, tagS } from "../ui/styles.js";
 import { SectionHeader, InfoBox, HelpTip } from "../ui/primitives.jsx";
 import { interpretResult } from "../projectHelpers.js";
 import { isCaseRow, publicationIdOf } from "../../../research-engine/extraction/caseSeries.js";
+// 107.md §11/§12 — the pre-analysis compatibility check for single-arm proportions and
+// its persisted resolutions. The RULE lives in the pure engine; this file only renders
+// it and writes the reviewer's choice through the existing updateProject choke point.
+import {
+  checkProportionCompatibility, applyProportionFilters, activeProportionFilters,
+  proportionOverrideStale, buildProportionOverride, describeOverrideCategories,
+  overrideDateText, proportionFilterLabel, subgroupGroupLabel,
+  proportionExportFields, proportionExportMetaRows,
+  UNCLASSIFIED_GROUP_LABEL, UNCLASSIFIED_FILTER, ALL_UNCLASSIFIED_NOTE, PROPORTION_FIELD_LABEL,
+} from "../../../research-engine/statistics/proportionCompatibility.js";
+import {
+  denominatorPopulationLabel, actionStatusLabel, denominatorCustomText,
+} from "../../../research-engine/extraction/proportionMeta.js";
+
+/* ════════════ SHARED: OUTCOME-PAIR SCOPING ════════════
+   The (outcome|||timepoint) enumeration + its row filter, hoisted out of AnalysisTab
+   so every tab that pools pools the SAME rows. SubgroupTab/SensitivityTab used to run
+   on the RAW `project.studies` — every outcome at once, with no `isExcludedFromAnalysis`
+   — which is the 86.md P1.6 defect `summaryPool.poolPrimaryOutcome` was created to fix
+   for the summary views but which was never applied here. 107.md §10 makes it load-
+   bearing: grouping proportions by denominator ACROSS different outcomes would compare
+   quantities that were never comparable in the first place. */
+export function enumerateOutcomePairs(studies){
+  const list=Array.isArray(studies)?studies:[];
+  const seen=new Set(), pairs=[];
+  list.filter(s=>s&&s.es!==""&&!isNaN(+s.es)&&!isExcludedFromAnalysis(s)).forEach(s=>{
+    const oc=(s.outcome||"").trim(), tp=(s.timepoint||"").trim();
+    const key=`${oc}|||${tp}`;
+    if(!seen.has(key)){ seen.add(key); pairs.push({outcome:oc,timepoint:tp,esType:(s.esType||"").trim(),key}); }
+  });
+  // prompt32 Task 9 — outcomes are organised by NAME. Append the timepoint, and the
+  // effect MEASURE only to disambiguate when the same name appears twice, so
+  // duplicate-named outcomes never read as one entry.
+  const nameCount={};
+  pairs.forEach(p=>{const n=(p.outcome||"(unnamed)").toLowerCase();nameCount[n]=(nameCount[n]||0)+1;});
+  pairs.forEach(p=>{
+    const base=p.outcome||"(unnamed)";
+    const dup=nameCount[base.toLowerCase()]>1;
+    p.label=base+(p.timepoint?` @ ${p.timepoint}`:"")+(dup&&p.esType?` · ${p.esType}`:"");
+  });
+  return pairs;
+}
+
+export function studiesForPair(studies,pair){
+  if(!pair) return [];
+  return (Array.isArray(studies)?studies:[]).filter(s=>{
+    if(!s) return false;
+    const oc=(s.outcome||"").trim(), tp=(s.timepoint||"").trim();
+    return oc===pair.outcome && tp===pair.timepoint && s.es!==""&&!isNaN(+s.es)&&!isExcludedFromAnalysis(s);
+  });
+}
+
+/** The persisted proportion filter for one outcome pair (107.md §12 resolution 1). */
+export function pairProportionFilter(project,pair){
+  const m=project&&project.analysisSettings&&project.analysisSettings.proportionFilters;
+  return (pair&&m&&m[pair.key])||null;
+}
+/** The persisted compatibility override for one outcome pair (107.md §12 resolution 5). */
+export function pairProportionOverride(project,pair){
+  const m=project&&project.analysisSettings&&project.analysisSettings.proportionOverrides;
+  return (pair&&m&&m[pair.key])||null;
+}
+/** True when this pair is a single-arm proportion analysis — every 107.md §11 gate is
+ *  conditioned on it so no other measure changes behaviour. */
+export function pairIsProportion(pair,dominantEsType){
+  return String((pair&&pair.esType)||dominantEsType||"").trim().toUpperCase()==="PROP";
+}
+
+/**
+ * 107.md §10/§12 — the rows SubgroupTab hands to `subgroupAnalysis`. For the two new
+ * keys the bucket key becomes the DISPLAY label, so a legacy/'' value (→ "Not classified
+ * (legacy)") and any unknown hand-edited value can never open a bucket that reads like a
+ * real category, and `actionStatus:'unclear'` — which means the ARTICLE said so — stays a
+ * bucket of its own. Every other grouping key is passed through untouched (same array
+ * reference), so the existing six variables behave exactly as before.
+ * Pure + exported: this is the interactive behaviour SSR cannot exercise.
+ */
+export function groupRowsForSubgroup(studies,groupKey){
+  const rows=Array.isArray(studies)?studies:[];
+  if(groupKey!=="denominatorPopulation"&&groupKey!=="actionStatus") return rows;
+  return rows.map(s=>({...s,[groupKey]:subgroupGroupLabel(groupKey,s&&s[groupKey])}));
+}
+
+/* ── pure blob writers for the two persisted resolutions ──────────────────────────
+   Pure and idFn-free by construction (no ids, no timestamps generated inside): the
+   override's `at` is seeded at the click handler and passed in, because StrictMode
+   double-invokes updaters and blob CAS retries re-run them. Empty containers are
+   deleted so a project that never used the feature keeps a byte-identical blob. */
+export function writeProportionFilter(project,outcomeKey,field,value){
+  const as={...((project&&project.analysisSettings)||{})};
+  const pf={...(as.proportionFilters||{})};
+  const cur={...(pf[outcomeKey]||{})};
+  if(value==null||value==="") delete cur[field]; else cur[field]=value;
+  if(Object.keys(cur).length) pf[outcomeKey]=cur; else delete pf[outcomeKey];
+  if(Object.keys(pf).length) as.proportionFilters=pf; else delete as.proportionFilters;
+  return {...project,analysisSettings:as};
+}
+export function writeProportionOverride(project,outcomeKey,record){
+  const as={...((project&&project.analysisSettings)||{})};
+  const po={...(as.proportionOverrides||{})};
+  if(record) po[outcomeKey]=record; else delete po[outcomeKey];
+  if(Object.keys(po).length) as.proportionOverrides=po; else delete as.proportionOverrides;
+  return {...project,analysisSettings:as};
+}
+/** Display name recorded on an override — null when the shell has no signed-in user. */
+export function overrideActorName(user){
+  if(!user||typeof user!=="object") return null;
+  const n=String(user.name||user.displayName||user.fullName||user.email||"").trim();
+  return n||null;
+}
+
+/* ════════════ PROPORTION COMPATIBILITY PANEL (107.md §11/§12) ════════════
+   Renders, in this order: the active filter chips (always, so a filter set in an
+   earlier session can always be cleared), a stale-override notice, an honoured
+   override banner, the blocking warning card(s) with their per-category filter
+   buttons, the four other resolution paths, the override form, and — for a wholly
+   legacy outcome — the small non-blocking note that keeps §21 projects working.
+   Presentational + exported so the SSR tests can pin the strings. */
+const ISSUE_HEADLINE={
+  denominatorPopulation:{
+    "mixed-categories":"The selected estimates use multiple denominator populations:",
+    "category-and-unclassified":"The selected estimates mix a classified denominator population with unclassified legacy records:",
+  },
+  actionStatus:{
+    "mixed-categories":"The selected estimates use multiple action statuses:",
+    "category-and-unclassified":"The selected estimates mix a classified action status with unclassified legacy records:",
+  },
+  denominatorCustom:{
+    "mixed-custom-definitions":"The selected estimates describe their custom denominator differently:",
+  },
+};
+const STUDY_LIST_CAP=6;
+
+export function ProportionCompatibilityPanel({check,filters,override,stale,onSetFilter,onClearFilter,onRecordOverride,onClearOverride}){
+  const[note,setNote]=useState("");
+  const c=check||{applicable:false,blocking:false,infoOnly:false,issues:[]};
+  const filterEntries=activeProportionFilters(filters);
+  const honored=!!override&&!stale;
+  if(!c.applicable&&!filterEntries.length&&!override) return null;
+
+  return(<div style={{marginBottom:16,display:"flex",flexDirection:"column",gap:8}}>
+
+    {/* ── ACTIVE FILTERS (resolution 1) — visible whenever set, incl. after reopen ── */}
+    {filterEntries.length>0&&(
+      <div style={{background:C.card,border:`1px solid ${themeAlpha(C.acc,'44')}`,borderLeft:`3px solid ${C.acc}`,borderRadius:8,padding:"9px 14px",display:"flex",alignItems:"center",gap:8,flexWrap:"wrap"}}>
+        <span style={{fontSize:10,fontWeight:700,color:C.acc,letterSpacing:0.8}}>ESTIMATES FILTERED</span>
+        {filterEntries.map(([field,value])=>(
+          <span key={field} style={{...tagS("blue"),gap:6}}>
+            {PROPORTION_FIELD_LABEL[field]}: {proportionFilterLabel(field,value)}
+            {onClearFilter&&(
+              <button onClick={()=>onClearFilter(field)} title={`Clear the ${PROPORTION_FIELD_LABEL[field]} filter`}
+                aria-label={`Clear the ${PROPORTION_FIELD_LABEL[field]} filter`}
+                style={{background:"transparent",border:"none",color:"inherit",cursor:"pointer",fontSize:12,lineHeight:1,padding:0}}>×</button>
+            )}
+          </span>
+        ))}
+        <span style={{fontSize:11,color:C.muted}}>Only the matching estimates are pooled below.</span>
+      </div>
+    )}
+
+    {/* ── STALE OVERRIDE — never silently honoured, never silently deleted ── */}
+    {override&&stale&&(
+      <div style={{background:"var(--t-yel-bg)",border:`1px solid ${themeAlpha(C.yel,'66')}`,borderLeft:`4px solid ${C.yel}`,borderRadius:8,padding:"11px 16px"}}>
+        <div style={{fontSize:12,color:C.txt,lineHeight:1.6}}>
+          <strong style={{color:C.yel}}>⚠ Recorded override is out of date. </strong>
+          A compatibility override was recorded {overrideDateText(override.at)||"earlier"} for a different set of estimates
+          {describeOverrideCategories(override)?` (${describeOverrideCategories(override)})`:""}. The estimates have changed since,
+          so it is <strong>not</strong> being applied — review the warning below and record a new override if you still intend to pool.
+        </div>
+        {onClearOverride&&(
+          <button onClick={onClearOverride} style={{...btnS("ghost"),fontSize:11,marginTop:8}}>Clear the stale override</button>
+        )}
+      </div>
+    )}
+
+    {/* ── HONOURED OVERRIDE — persistent, survives refresh (it is in the blob) ── */}
+    {honored&&(
+      <div style={{background:"var(--t-yel-bg)",border:`1px solid ${themeAlpha(C.yel,'66')}`,borderLeft:`4px solid ${C.yel}`,borderRadius:8,padding:"11px 16px"}}>
+        <div style={{fontSize:12,color:C.txt,lineHeight:1.6}}>
+          <strong style={{color:C.yel}}>⚠ Compatibility warning overridden{override.at?` ${overrideDateText(override.at)}`:""}: </strong>
+          {describeOverrideCategories(override)}. These estimates may not measure the same quantity — state the override in your methods.
+          {override.by?<span style={{color:C.muted}}> Recorded by {override.by}.</span>:null}
+        </div>
+        {override.note&&(
+          <div style={{marginTop:6,fontSize:12,color:C.muted,fontStyle:"italic",lineHeight:1.6}}>Rationale: {override.note}</div>
+        )}
+        {onClearOverride&&(
+          <button onClick={onClearOverride} style={{...btnS("ghost"),fontSize:11,marginTop:8}}>Clear override</button>
+        )}
+      </div>
+    )}
+
+    {/* ── BLOCKING WARNING CARDS ── */}
+    {!honored&&c.issues.map((issue)=>{
+      const headline=(ISSUE_HEADLINE[issue.field]&&ISSUE_HEADLINE[issue.field][issue.kind])
+        ||`The selected estimates disagree on ${issue.fieldLabel.toLowerCase()}:`;
+      return(
+        <div key={issue.field} style={{background:"var(--t-red-bg)",border:`1px solid ${C.red}`,borderLeft:`4px solid ${C.red}`,borderRadius:8,padding:"12px 16px"}}>
+          <div style={{fontSize:12,fontWeight:700,color:C.red,marginBottom:6}}>⛔ Incompatible {issue.fieldLabel.toLowerCase()}</div>
+          <div style={{fontSize:12,color:C.txt,lineHeight:1.6}}>{headline}</div>
+          <ul style={{margin:"8px 0 6px",paddingLeft:20,fontSize:12,color:C.txt,lineHeight:1.7}}>
+            {issue.values.map((v)=>(
+              <li key={v.value||"__unclassified__"}>
+                <strong>{v.label}</strong>: {v.count} estimate{v.count===1?"":"s"}
+                {v.studies.length?(<span style={{color:C.muted}}> — {v.studies.slice(0,STUDY_LIST_CAP).join(", ")}{v.studies.length>STUDY_LIST_CAP?`, +${v.studies.length-STUDY_LIST_CAP} more`:""}</span>):null}
+              </li>
+            ))}
+          </ul>
+          <div style={{fontSize:11,color:C.muted,lineHeight:1.6}}>
+            {issue.totalAffected} estimate{issue.totalAffected===1?"":"s"} affected. These proportions may not estimate the same quantity.
+          </div>
+          {onSetFilter&&(
+            <div style={{marginTop:10,display:"flex",gap:6,flexWrap:"wrap",alignItems:"center"}}>
+              <span style={{fontSize:11,color:C.muted}}>Filter to one:</span>
+              {issue.values.filter((v)=>!(issue.field==="denominatorCustom"&&!v.value)).map((v)=>(
+                <button key={v.value||"__unclassified__"} onClick={()=>onSetFilter(issue.field,v.value||UNCLASSIFIED_FILTER)}
+                  style={{...btnS("ghost"),fontSize:11,padding:"4px 10px"}}>Only {v.label}</button>
+              ))}
+            </div>
+          )}
+        </div>
+      );
+    })}
+
+    {/* ── THE OTHER RESOLUTION PATHS (107.md §12) ── */}
+    {!honored&&c.blocking&&(
+      <div style={{background:C.card,border:`1px solid ${C.brd}`,borderRadius:8,padding:"12px 16px"}}>
+        <div style={{fontSize:11,fontWeight:700,color:C.muted,letterSpacing:0.8,marginBottom:8}}>OTHER WAYS TO RESOLVE THIS</div>
+        <ul style={{margin:0,paddingLeft:20,fontSize:12,color:C.muted,lineHeight:1.8}}>
+          <li><strong style={{color:C.txt}}>Group by the variable instead</strong> — the Subgroup tab can stratify by denominator population or action status and report the between-group test.</li>
+          <li><strong style={{color:C.txt}}>Correct the extraction metadata</strong> — open the estimate in Data Extraction and set its denominator population / action status if it was recorded wrongly or never classified.</li>
+          <li><strong style={{color:C.txt}}>Exclude the problematic estimates</strong> — untick “include in analysis” on those rows in Data Extraction; they stay extracted but leave every pool.</li>
+        </ul>
+        {onRecordOverride&&(
+          <div style={{marginTop:12,paddingTop:12,borderTop:`1px solid ${C.brd}`}}>
+            <div style={{fontSize:11,fontWeight:700,color:C.yel,letterSpacing:0.8,marginBottom:6}}>OR RECORD AN EXPLICIT OVERRIDE</div>
+            <div style={{fontSize:11,color:C.muted,marginBottom:8,lineHeight:1.6}}>
+              Only if combining them is scientifically intended. The override is stored with the analysis, shown every time this outcome is opened, and exported with the reproducibility configuration.
+            </div>
+            <textarea value={note} onChange={(e)=>setNote(e.target.value)} rows={2}
+              placeholder="Rationale (optional) — why these estimates measure the same quantity"
+              aria-label="Override rationale"
+              style={{...inp,fontSize:12,resize:"vertical",marginBottom:8}}/>
+            <button onClick={()=>{onRecordOverride(note);setNote("");}}
+              style={{...btnS("ghost"),fontSize:11,color:C.red,borderColor:themeAlpha(C.red,'55')}}>
+              Pool anyway (record override)
+            </button>
+          </div>
+        )}
+      </div>
+    )}
+
+    {/* ── ALL-LEGACY NOTE — non-blocking, the 107.md §21 regression guard ── */}
+    {c.infoOnly&&(
+      <div style={{background:C.card,border:`1px solid ${C.brd}`,borderLeft:`3px solid ${C.dim}`,borderRadius:6,padding:"8px 12px",fontSize:11,color:C.muted,lineHeight:1.6}}>
+        <strong style={{color:C.txt}}>{UNCLASSIFIED_GROUP_LABEL}.</strong> {ALL_UNCLASSIFIED_NOTE}
+      </div>
+    )}
+  </div>);
+}
 
 /* ════════════ TAB: ANALYSIS ════════════ */
-export function AnalysisTab({project,updateProject,onApplyPrecisionToAll}){
+export function AnalysisTab({project,updateProject,onApplyPrecisionToAll,currentUser}){
   const studies=Array.isArray(project&&project.studies)?project.studies:[];
   const[method,setMethod]=useState("random");
   // RoadMap/2.md — opt-in τ² estimator (DerSimonian–Laird default keeps existing results).
@@ -53,25 +313,7 @@ export function AnalysisTab({project,updateProject,onApplyPrecisionToAll}){
   const[selectedKey,setSelectedKey]=useState("");
 
   // ── Outcome / time-point selector ─────────────────────────────────────────
-  const outcomePairs=useMemo(()=>{
-    const seen=new Set(), pairs=[];
-    studies.filter(s=>s.es!==""&&!isNaN(+s.es)&&!isExcludedFromAnalysis(s)).forEach(s=>{
-      const oc=(s.outcome||"").trim(), tp=(s.timepoint||"").trim();
-      const key=`${oc}|||${tp}`;
-      if(!seen.has(key)){ seen.add(key); pairs.push({outcome:oc,timepoint:tp,esType:(s.esType||"").trim(),key}); }
-    });
-    // prompt32 Task 9 — outcomes are organised by NAME. Append the timepoint, and
-    // the effect MEASURE only to disambiguate when the same name appears twice, so
-    // duplicate-named outcomes never read as one entry.
-    const nameCount={};
-    pairs.forEach(p=>{const n=(p.outcome||"(unnamed)").toLowerCase();nameCount[n]=(nameCount[n]||0)+1;});
-    pairs.forEach(p=>{
-      const base=p.outcome||"(unnamed)";
-      const dup=nameCount[base.toLowerCase()]>1;
-      p.label=base+(p.timepoint?` @ ${p.timepoint}`:"")+(dup&&p.esType?` · ${p.esType}`:"");
-    });
-    return pairs;
-  },[studies]);
+  const outcomePairs=useMemo(()=>enumerateOutcomePairs(studies),[studies]);
 
   // Derive effective key: auto-use the only outcome when there's exactly one,
   // regardless of whether setSelectedKey has fired yet. This avoids the
@@ -87,13 +329,14 @@ export function AnalysisTab({project,updateProject,onApplyPrecisionToAll}){
 
   const activeOutcome=outcomePairs.find(p=>p.key===effectiveKey)||null;
 
-  const filteredStudies=useMemo(()=>{
-    if(!activeOutcome) return [];
-    return studies.filter(s=>{
-      const oc=(s.outcome||"").trim(), tp=(s.timepoint||"").trim();
-      return oc===activeOutcome.outcome && tp===activeOutcome.timepoint && s.es!==""&&!isNaN(+s.es)&&!isExcludedFromAnalysis(s);
-    });
-  },[studies,activeOutcome]);
+  // 107.md §12 resolution 1 — the persisted per-pair proportion filter is applied HERE,
+  // before poolability, the compatibility check and runMeta, so every number on the tab
+  // describes the same estimate set. No filter → applyProportionFilters returns the very
+  // same array, so a project that never used the feature is unchanged.
+  const proportionFilters=pairProportionFilter(project,activeOutcome);
+  const filteredStudies=useMemo(
+    ()=>applyProportionFilters(studiesForPair(studies,activeOutcome),proportionFilters),
+    [studies,activeOutcome,proportionFilters]);
 
   const pool=useMemo(()=>checkPoolability(filteredStudies),[filteredStudies]);
   const result=useMemo(()=>runMeta(filteredStudies,method,{tau2Method}),[filteredStudies,method,tau2Method]);
@@ -109,6 +352,37 @@ export function AnalysisTab({project,updateProject,onApplyPrecisionToAll}){
   const usedTau2=result?.tau2Method||tau2Method;
   const tauName=TAU2_LABELS[usedTau2]||"DerSimonian–Laird";
   const methodLabel=method==="random"?`Random-effects (${tauName})`:"Fixed-effect (inverse-variance)";
+
+  // ── 107.md §11/§12 — proportion compatibility ─────────────────────────────
+  // Gated on the PAIR's measure (not the filtered set's) so a filter that empties the
+  // pool cannot hide the chip that clears it. Nothing below fires for any other measure.
+  const isPropPair=pairIsProportion(activeOutcome,esType);
+  const propCheck=useMemo(()=>(isPropPair?checkProportionCompatibility(filteredStudies)
+    :{applicable:false,blocking:false,infoOnly:false,issues:[],unclassifiedFields:[],propCount:0}),
+    [isPropPair,filteredStudies]);
+  const propOverride=isPropPair?pairProportionOverride(project,activeOutcome):null;
+  const propStale=proportionOverrideStale(propOverride,propCheck);
+  const propHonored=!!propOverride&&!propStale;
+  // Unresolved blocking incompatibility gates the pooled result exactly like a
+  // checkPoolability blocker does — 107.md §12 "Do not silently proceed."
+  const propBlocked=isPropPair&&propCheck.blocking&&!propHonored;
+
+  const outcomeKey=activeOutcome?activeOutcome.key:"";
+  const setProportionFilter=(field,value)=>{
+    if(!updateProject||!outcomeKey) return;
+    updateProject(ap=>writeProportionFilter(ap,outcomeKey,field,value));
+  };
+  const recordProportionOverride=(note)=>{
+    if(!updateProject||!outcomeKey) return;
+    // The timestamp is seeded HERE, at the event-handler call site — never inside the
+    // updater, which StrictMode double-invokes and the blob CAS retries re-run.
+    const rec=buildProportionOverride(propCheck,{at:new Date().toISOString(),by:overrideActorName(currentUser),note});
+    updateProject(ap=>writeProportionOverride(ap,outcomeKey,rec));
+  };
+  const clearProportionOverride=()=>{
+    if(!updateProject||!outcomeKey) return;
+    updateProject(ap=>writeProportionOverride(ap,outcomeKey,null));
+  };
 
   return(<div>
     <SectionHeader icon="sigma" title="Meta-Analysis" desc="Pool effect sizes by outcome. Select an outcome below — each outcome is analysed separately." badge={valid.length>0?`k = ${valid.length}`:undefined}/>
@@ -277,17 +551,29 @@ export function AnalysisTab({project,updateProject,onApplyPrecisionToAll}){
       </div>
     )}
 
+    {/* 107.md §11/§12 — PROPORTION COMPATIBILITY (PROP outcomes only) */}
+    {isPropPair&&(
+      <ProportionCompatibilityPanel
+        check={propCheck} filters={proportionFilters} override={propOverride} stale={propStale}
+        onSetFilter={updateProject?setProportionFilter:undefined}
+        onClearFilter={updateProject?(f)=>setProportionFilter(f,null):undefined}
+        onRecordOverride={updateProject?recordProportionOverride:undefined}
+        onClearOverride={updateProject?clearProportionOverride:undefined}/>
+    )}
+
     {!result&&!effectiveKey&&outcomePairs.length>1?(<div style={{background:C.card,border:`1px solid ${C.brd}`,borderRadius:8,padding:40,textAlign:"center",color:C.muted}}>
       <div style={{fontSize:36,marginBottom:10}}>📊</div>
       <div style={{fontSize:14,marginBottom:6,color:C.txt}}>Select an outcome above to run the analysis</div>
       <div style={{fontSize:12}}>Each outcome must be analysed separately. Choose one from the dropdown.</div>
     </div>):!result?(<div style={{background:C.card,border:`1px solid ${C.brd}`,borderRadius:8,padding:40,textAlign:"center",color:C.muted}}>
-      <div style={{fontSize:36,marginBottom:10}}>📊</div>Enter an effect size and 95% CI for at least 2 studies (Data Extraction tab)
-    </div>):(pool.blockers.length>0&&!forceShow)?(
+      <div style={{fontSize:36,marginBottom:10}}>📊</div>{proportionFilters?"No pooled result for the current filter — at least 2 estimates with an effect size and 95% CI must match it.":"Enter an effect size and 95% CI for at least 2 studies (Data Extraction tab)"}
+    </div>):((pool.blockers.length>0&&!forceShow)||propBlocked)?(
       <div style={{background:C.card,border:`1px solid ${C.brd}`,borderRadius:8,padding:32,textAlign:"center",color:C.muted}}>
         <div style={{fontSize:32,marginBottom:10}}>🛑</div>
         <div style={{fontSize:14,marginBottom:4,color:C.txt}}>Result hidden until you confirm</div>
-        <div style={{fontSize:12,maxWidth:480,margin:"0 auto",lineHeight:1.6}}>The studies appear incompatible to pool (see above). Forcing a pooled number here could be misleading. Fix the data, or click the button above to override.</div>
+        <div style={{fontSize:12,maxWidth:480,margin:"0 auto",lineHeight:1.6}}>{propBlocked&&!(pool.blockers.length>0&&!forceShow)
+          ?"These estimates do not all measure the same quantity (see above). Filter to one category, stratify on the Subgroup tab, correct the extraction metadata, exclude the estimates — or record an explicit override."
+          :"The studies appear incompatible to pool (see above). Forcing a pooled number here could be misleading. Fix the data, or click the button above to override."}</div>
       </div>
     ):(<div style={{display:"flex",flexDirection:"column",gap:16}}>
 
@@ -480,8 +766,10 @@ export function AnalysisTab({project,updateProject,onApplyPrecisionToAll}){
       {/* DATA BEHIND THIS ANALYSIS */}
       <DataBehindAnalysis result={result} studies={filteredStudies} esType={esType} prec={prec}/>
 
-      {/* RESEARCH-READY EXPORT */}
-      <ResearchExport result={result} esType={esType} method={method} studies={filteredStudies} prec={prec}/>
+      {/* RESEARCH-READY EXPORT — 107.md §13: the classification columns and metadata
+          lines appear ONLY when a filter/override was actually used. */}
+      <ResearchExport result={result} esType={esType} method={method} studies={filteredStudies} prec={prec}
+        proportionFilters={proportionFilters} proportionOverride={propHonored?propOverride:null}/>
 
       {/* COPYABLE STRUCTURED OUTPUTS */}
       <ResultsWriteup result={result} interp={interp} esType={esType} method={method} methodLabel={methodLabel} studies={filteredStudies} prec={prec}/>
@@ -584,10 +872,22 @@ export function DataBehindAnalysis({result,studies,esType,prec}){
 
 /* ════════════ RESEARCH-READY EXPORT ════════════ */
 /* Builds study-level + pooled + heterogeneity tables and offers copy / CSV / Excel(.xls) / publication table */
-export function ResearchExport({result,esType,method,studies,prec}){
+export function ResearchExport({result,esType,method,studies,prec,proportionFilters,proportionOverride}){
   const[copied,setCopied]=useState("");
   const[showTable,setShowTable]=useState(false);
   if(!result) return null;
+  // 107.md §13 — the classification only reaches the export when the reviewer actually
+  // filtered or overrode on it. Neither used → both lists are empty and every string
+  // below is byte-identical to the pre-107 output.
+  const propOverride=proportionOverride||null;
+  const classFields=proportionExportFields(proportionFilters,propOverride);
+  const propMetaRows=proportionExportMetaRows(proportionFilters,propOverride);
+  // Label-resolved, and deliberately EMPTY (never "Not classified") for a legacy row —
+  // an empty cell is honest, a label in a data column would read like a category.
+  const classCell=(s,f)=>f==="denominatorPopulation"?denominatorPopulationLabel(s)
+    :f==="actionStatus"?actionStatusLabel(s)
+    :f==="denominatorCustom"?denominatorCustomText(s):"";
+  const classCsvKey={denominatorPopulation:"Denominator_population",actionStatus:"Action_status",denominatorCustom:"Custom_denominator_definition"};
   const t=ES_TYPES[esType]||{};
   const isLog=!!t.log, isProp=esType==="PROP";
   const measureName=t.label||"Effect size";
@@ -607,31 +907,37 @@ export function ResearchExport({result,esType,method,studies,prec}){
     ci:`${dispVal(s._lo)} to ${dispVal(s._hi)}`,
     raw_es:s._es.toFixed(4), raw_lo:s._lo.toFixed(4), raw_hi:s._hi.toFixed(4),
     wF:fmtWeight(s._wFixedPct||0,prec), wR:fmtWeight(s._wRandomPct||0,prec),
+    cls:classFields.map(f=>classCell(s,f)),
   }));
   const anyCounts=rows.some(r=>r.exp||r.ctrl);
   const fx=result.fixed, rnd=result.random;
   const poolLine=(label,o)=>`${label}: ${dispVal(o.es)} (95% CI ${dispVal(o.lo)} to ${dispVal(o.hi)})`;
 
   // ---- TSV for clipboard / Excel paste ----
-  const head=["Study",...(anyCounts?["Experimental (n/N)","Control (n/N)"]:[]),
+  const head=["Study",...classFields.map(f=>PROPORTION_FIELD_LABEL[f]),...(anyCounts?["Experimental (n/N)","Control (n/N)"]:[]),
     isLog||isProp?`${isProp?"Proportion":ratioName}`:"Effect size","95% CI lower","95% CI upper","Weight common (%)","Weight random (%)"];
-  const tsvRows=rows.map(r=>[r.study,...(anyCounts?[r.exp,r.ctrl]:[]),
+  const tsvRows=rows.map(r=>[r.study,...r.cls,...(anyCounts?[r.exp,r.ctrl]:[]),
     r.es, dispVal(+r.raw_lo), dispVal(+r.raw_hi), r.wF, r.wR].join("\t"));
+  const blanks=classFields.map(()=>"");
   const tsv=[head.join("\t"),...tsvRows,
     "",
-    [`Pooled (common/fixed)`,...(anyCounts?["",""]:[]),dispVal(fx.es),dispVal(fx.lo),dispVal(fx.hi),"100",""].join("\t"),
-    [`Pooled (random)`,...(anyCounts?["",""]:[]),dispVal(rnd.es),dispVal(rnd.lo),dispVal(rnd.hi),"","100"].join("\t"),
+    [`Pooled (common/fixed)`,...blanks,...(anyCounts?["",""]:[]),dispVal(fx.es),dispVal(fx.lo),dispVal(fx.hi),"100",""].join("\t"),
+    [`Pooled (random)`,...blanks,...(anyCounts?["",""]:[]),dispVal(rnd.es),dispVal(rnd.lo),dispVal(rnd.hi),"","100"].join("\t"),
   ].join("\n");
 
   // ---- CSV ----
   const esc=v=>{const x=String(v==null?"":v).replace(/"/g,'""');return /[",\n]/.test(x)?`"${x}"`:x;};
-  const csvHead=["Study",...(anyCounts?["Experimental_n_N","Control_n_N"]:[]),
+  const csvHead=["Study",...classFields.map(f=>classCsvKey[f]||f),...(anyCounts?["Experimental_n_N","Control_n_N"]:[]),
     "EffectSize_display","CI_lower_display","CI_upper_display","ES_analysisScale","CIlo_analysisScale","CIhi_analysisScale","Weight_common_pct","Weight_random_pct"];
-  const csvRows=rows.map(r=>[r.study,...(anyCounts?[r.exp,r.ctrl]:[]),r.es,dispVal(+r.raw_lo),dispVal(+r.raw_hi),r.raw_es,r.raw_lo,r.raw_hi,r.wF,r.wR].map(esc).join(","));
+  const csvRows=rows.map(r=>[r.study,...r.cls,...(anyCounts?[r.exp,r.ctrl]:[]),r.es,dispVal(+r.raw_lo),dispVal(+r.raw_hi),r.raw_es,r.raw_lo,r.raw_hi,r.wF,r.wR].map(esc).join(","));
   const meta=[
     "",
     esc("Meta-analysis summary"),
     `${esc("Effect measure")},${esc(measureName)}`,
+    // 107.md §13 — the estimate SELECTION is part of the result. The builder returns an
+    // EMPTY list when no filter/override is in force, so an untouched export is
+    // byte-identical to the pre-107 output.
+    ...propMetaRows.map(([k,v])=>`${esc(k)},${esc(v)}`),
     `${esc("Model reported")},${esc(method==="fixed"?"Fixed/common effect":`Random effects (${TAU2_LABELS[result.tau2Method||"DL"]})`)}`,
     `${esc("Transformation")},${esc(transform)}`,
     `${esc("Studies (k)")},${result.k}`,
@@ -654,8 +960,8 @@ export function ResearchExport({result,esType,method,studies,prec}){
 
   // ---- Excel-compatible (.xls via HTML table) ----
   const xlsTable=`<table border="1"><thead><tr>${csvHead.map(h=>`<th>${h}</th>`).join("")}</tr></thead><tbody>`+
-    rows.map(r=>`<tr><td>${r.study}</td>${anyCounts?`<td>${r.exp}</td><td>${r.ctrl}</td>`:""}<td>${r.es}</td><td>${dispVal(+r.raw_lo)}</td><td>${dispVal(+r.raw_hi)}</td><td>${r.raw_es}</td><td>${r.raw_lo}</td><td>${r.raw_hi}</td><td>${r.wF}</td><td>${r.wR}</td></tr>`).join("")+
-    `</tbody></table><br/><table border="1"><tr><td>Effect measure</td><td>${measureName}</td></tr><tr><td>Model</td><td>${method==="fixed"?"Fixed/common":"Random effects"}</td></tr><tr><td>Transformation</td><td>${transform}</td></tr><tr><td>Pooled common</td><td>${dispVal(fx.es)} (${dispVal(fx.lo)} to ${dispVal(fx.hi)})</td></tr><tr><td>Pooled random</td><td>${dispVal(rnd.es)} (${dispVal(rnd.lo)} to ${dispVal(rnd.hi)})</td></tr>${result.hksj?`<tr><td>Pooled random (HKSJ, t-based)</td><td>${dispVal(result.hksj.es)} (${dispVal(result.hksj.lo)} to ${dispVal(result.hksj.hi)}); t(${result.hksj.df})=${result.hksj.t}, p=${result.hksj.pval}</td></tr>`:""}${result.predInt?`<tr><td>95% Prediction interval</td><td>${dispVal(result.predInt.lo)} to ${dispVal(result.predInt.hi)}</td></tr>`:""}<tr><td>I²</td><td>${result.I2}%</td></tr><tr><td>tau²</td><td>${result.tau2}</td></tr><tr><td>tau</td><td>${result.tau!=null?result.tau:Math.sqrt(result.tau2).toFixed(4)}</td></tr><tr><td>Q (df=${result.k-1})</td><td>${result.Q}, p=${result.Qpval}</td></tr></table>`;
+    rows.map(r=>`<tr><td>${r.study}</td>${r.cls.map(v=>`<td>${v}</td>`).join("")}${anyCounts?`<td>${r.exp}</td><td>${r.ctrl}</td>`:""}<td>${r.es}</td><td>${dispVal(+r.raw_lo)}</td><td>${dispVal(+r.raw_hi)}</td><td>${r.raw_es}</td><td>${r.raw_lo}</td><td>${r.raw_hi}</td><td>${r.wF}</td><td>${r.wR}</td></tr>`).join("")+
+    `</tbody></table><br/><table border="1"><tr><td>Effect measure</td><td>${measureName}</td></tr><tr><td>Model</td><td>${method==="fixed"?"Fixed/common":"Random effects"}</td></tr><tr><td>Transformation</td><td>${transform}</td></tr>${propMetaRows.map(([k,v])=>`<tr><td>${k}</td><td>${v}</td></tr>`).join("")}<tr><td>Pooled common</td><td>${dispVal(fx.es)} (${dispVal(fx.lo)} to ${dispVal(fx.hi)})</td></tr><tr><td>Pooled random</td><td>${dispVal(rnd.es)} (${dispVal(rnd.lo)} to ${dispVal(rnd.hi)})</td></tr>${result.hksj?`<tr><td>Pooled random (HKSJ, t-based)</td><td>${dispVal(result.hksj.es)} (${dispVal(result.hksj.lo)} to ${dispVal(result.hksj.hi)}); t(${result.hksj.df})=${result.hksj.t}, p=${result.hksj.pval}</td></tr>`:""}${result.predInt?`<tr><td>95% Prediction interval</td><td>${dispVal(result.predInt.lo)} to ${dispVal(result.predInt.hi)}</td></tr>`:""}<tr><td>I²</td><td>${result.I2}%</td></tr><tr><td>tau²</td><td>${result.tau2}</td></tr><tr><td>tau</td><td>${result.tau!=null?result.tau:Math.sqrt(result.tau2).toFixed(4)}</td></tr><tr><td>Q (df=${result.k-1})</td><td>${result.Q}, p=${result.Qpval}</td></tr></table>`;
   const xlsDoc=`<html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:x="urn:schemas-microsoft-com:office:excel"><head><meta charset="utf-8"></head><body>${xlsTable}</body></html>`;
 
   return(<div style={{background:C.card,border:`1px solid ${themeAlpha(C.acc,'55')}`,borderRadius:8,padding:16}}>
@@ -712,12 +1018,13 @@ export function ResearchExport({result,esType,method,studies,prec}){
     {showTable&&(<div style={{overflowX:"auto",border:`1px solid ${C.brd}`,borderRadius:6,marginBottom:6}}>
       <table style={{width:"100%",borderCollapse:"collapse",fontSize:11}}>
         <thead><tr>
-          {["Study",...(anyCounts?["Exp (n/N)","Ctrl (n/N)"]:[]),(isProp?"Proportion":isLog?ratioName:"ES"),"95% CI","Wt common","Wt random"].map((h,i)=>(
+          {["Study",...classFields.map(f=>PROPORTION_FIELD_LABEL[f]),...(anyCounts?["Exp (n/N)","Ctrl (n/N)"]:[]),(isProp?"Proportion":isLog?ratioName:"ES"),"95% CI","Wt common","Wt random"].map((h,i)=>(
             <th key={i} style={{...th,textAlign:i===0?"left":"right",padding:"6px 8px"}}>{h}</th>))}
         </tr></thead>
         <tbody>
           {rows.map((r,i)=>(<tr key={i} style={{borderBottom:`1px solid ${C.brd}`}}>
             <td style={{padding:"5px 8px"}}>{r.study}</td>
+            {r.cls.map((v,j)=>(<td key={j} style={{padding:"5px 8px",color:C.muted}}>{v||"—"}</td>))}
             {anyCounts&&<td style={{padding:"5px 8px",textAlign:"right",color:C.muted}}>{r.exp||"—"}</td>}
             {anyCounts&&<td style={{padding:"5px 8px",textAlign:"right",color:C.muted}}>{r.ctrl||"—"}</td>}
             <td style={{padding:"5px 8px",textAlign:"right",fontFamily:"'IBM Plex Mono',monospace"}}>{r.es}</td>
@@ -727,6 +1034,7 @@ export function ResearchExport({result,esType,method,studies,prec}){
           </tr>))}
           <tr style={{borderTop:`2px solid ${themeAlpha(C.grn,'55')}`}}>
             <td style={{padding:"6px 8px",color:C.grn,fontWeight:700}}>Pooled (common)</td>
+            {classFields.map((f)=><td key={f}/>)}
             {anyCounts&&<td/>}{anyCounts&&<td/>}
             <td style={{padding:"6px 8px",textAlign:"right",fontFamily:"'IBM Plex Mono',monospace",color:C.grn,fontWeight:700}}>{dispVal(fx.es)}</td>
             <td style={{padding:"6px 8px",textAlign:"right",fontFamily:"'IBM Plex Mono',monospace",color:C.grn}}>{dispVal(fx.lo)} to {dispVal(fx.hi)}</td>
@@ -734,6 +1042,7 @@ export function ResearchExport({result,esType,method,studies,prec}){
           </tr>
           <tr>
             <td style={{padding:"6px 8px",color:C.grn,fontWeight:700}}>Pooled (random)</td>
+            {classFields.map((f)=><td key={f}/>)}
             {anyCounts&&<td/>}{anyCounts&&<td/>}
             <td style={{padding:"6px 8px",textAlign:"right",fontFamily:"'IBM Plex Mono',monospace",color:C.grn,fontWeight:700}}>{dispVal(rnd.es)}</td>
             <td style={{padding:"6px 8px",textAlign:"right",fontFamily:"'IBM Plex Mono',monospace",color:C.grn}}>{dispVal(rnd.lo)} to {dispVal(rnd.hi)}</td>
@@ -816,24 +1125,8 @@ export function ForestTab({project}){
   const[showWeights,setShowWeights]=useState(true);
   const[showPubPreview,setShowPubPreview]=useState(false);
 
-  // ── Outcome / time-point selector (same logic as AnalysisTab) ─────────────
-  const outcomePairs=useMemo(()=>{
-    const seen=new Set(), pairs=[];
-    studies.filter(s=>s.es!==""&&!isNaN(+s.es)&&!isExcludedFromAnalysis(s)).forEach(s=>{
-      const oc=(s.outcome||"").trim(), tp=(s.timepoint||"").trim();
-      const key=`${oc}|||${tp}`;
-      if(!seen.has(key)){ seen.add(key); pairs.push({outcome:oc,timepoint:tp,esType:(s.esType||"").trim(),key}); }
-    });
-    // prompt32 Task 9 — label by outcome NAME; disambiguate by measure on collision.
-    const nameCount={};
-    pairs.forEach(p=>{const n=(p.outcome||"(unnamed)").toLowerCase();nameCount[n]=(nameCount[n]||0)+1;});
-    pairs.forEach(p=>{
-      const base=p.outcome||"(unnamed)";
-      const dup=nameCount[base.toLowerCase()]>1;
-      p.label=base+(p.timepoint?` @ ${p.timepoint}`:"")+(dup&&p.esType?` · ${p.esType}`:"");
-    });
-    return pairs;
-  },[studies]);
+  // ── Outcome / time-point selector (shared helper — same rows as AnalysisTab) ──
+  const outcomePairs=useMemo(()=>enumerateOutcomePairs(studies),[studies]);
   const[selectedKey,setSelectedKey]=useState("");
   useEffect(()=>{
     if(outcomePairs.length===1) setSelectedKey(outcomePairs[0].key);
@@ -841,13 +1134,12 @@ export function ForestTab({project}){
   },[outcomePairs.length]);
   const effectiveKey=outcomePairs.length===1?outcomePairs[0].key:selectedKey;
   const activeOutcome=outcomePairs.find(p=>p.key===effectiveKey)||null;
-  const filteredStudies=useMemo(()=>{
-    if(!activeOutcome) return [];
-    return studies.filter(s=>{
-      const oc=(s.outcome||"").trim(), tp=(s.timepoint||"").trim();
-      return oc===activeOutcome.outcome && tp===activeOutcome.timepoint && s.es!==""&&!isNaN(+s.es)&&!isExcludedFromAnalysis(s);
-    });
-  },[studies,activeOutcome]);
+  // 107.md §12 — the persisted proportion filter applies here too: the forest diamond
+  // and the Meta-Analysis headline must never disagree about which estimates were pooled.
+  const proportionFilters=pairProportionFilter(project,activeOutcome);
+  const filteredStudies=useMemo(
+    ()=>applyProportionFilters(studiesForPair(studies,activeOutcome),proportionFilters),
+    [studies,activeOutcome,proportionFilters]);
 
   const valid=filteredStudies;
   // auto-detect dominant effect measure from filtered studies
@@ -992,11 +1284,27 @@ export function ForestTab({project}){
 
 /* ════════════ TAB: SENSITIVITY ANALYSIS ════════════ */
 export function SensitivityTab({project}){
-  const studies=Array.isArray(project&&project.studies)?project.studies:[];
+  const allStudies=Array.isArray(project&&project.studies)?project.studies:[];
   const prec = project?.analysisPrecision;
   const[method,setMethod]=useState("random");
   // RoadMap/2.md recs — sensitivity analyses use the project-wide τ² estimator too.
   const tau2Method=(project&&project.analysisSettings&&project.analysisSettings.tau2Method)||"DL";
+  // 86.md P1.6 / 107.md §21 — this tab used to run leave-one-out, Egger and trim-and-fill
+  // over EVERY outcome at once, ignoring "exclude from analysis" too. Same outcome-pair
+  // scoping as Analysis/Forest, so the robustness checks describe the pool they claim to.
+  const outcomePairs=useMemo(()=>enumerateOutcomePairs(allStudies),[allStudies]);
+  const[selectedKey,setSelectedKey]=useState("");
+  useEffect(()=>{
+    if(outcomePairs.length===1) setSelectedKey(outcomePairs[0].key);
+    else if(outcomePairs.length>1&&!outcomePairs.find(p=>p.key===selectedKey)) setSelectedKey("");
+  },[outcomePairs.length]);
+  const effectiveKey=outcomePairs.length===1?outcomePairs[0].key:selectedKey;
+  const activeOutcome=outcomePairs.find(p=>p.key===effectiveKey)||null;
+  const proportionFilters=pairProportionFilter(project,activeOutcome);
+  const studies=useMemo(
+    ()=>applyProportionFilters(studiesForPair(allStudies,activeOutcome),proportionFilters),
+    [allStudies,activeOutcome,proportionFilters]);
+
   const result=useMemo(()=>runMeta(studies,method,{tau2Method}),[studies,method,tau2Method]);
   const loo=useMemo(()=>leaveOneOut(studies,method,{tau2Method}),[studies,method,tau2Method]);
   const egger=useMemo(()=>eggersTest(studies),[studies]);
@@ -1008,10 +1316,25 @@ export function SensitivityTab({project}){
   const nonPrimaryCount=useMemo(()=>studies.filter(s=>s.es!==""&&!isNaN(+s.es)&&isNonPrimary(s)).length,[studies]);
   const primaryResult=useMemo(()=>runMeta(primaryStudies,method,{tau2Method}),[primaryStudies,method,tau2Method]);
 
+  const outcomeSelector=(outcomePairs.length>1)?(
+    <div style={{background:C.card,border:`1px solid ${C.brd}`,borderRadius:8,padding:12,marginBottom:14,display:"flex",alignItems:"center",gap:12,flexWrap:"wrap"}}>
+      <span style={{fontSize:11,fontWeight:700,color:C.muted,letterSpacing:0.5,whiteSpace:"nowrap"}}>OUTCOME</span>
+      <select value={selectedKey} onChange={e=>setSelectedKey(e.target.value)}
+        style={{...inp,width:"auto",fontSize:12,padding:"5px 10px",flex:1,maxWidth:420}}>
+        <option value="">— select an outcome —</option>
+        {outcomePairs.map(p=>(<option key={p.key} value={p.key}>{p.label||p.outcome||"(unnamed)"}</option>))}
+      </select>
+      <span style={{fontSize:11,color:C.muted}}>Robustness checks run on one outcome at a time.</span>
+    </div>
+  ):null;
+
   if(!result) return (<div>
     <SectionHeader icon="activity" title="Sensitivity & Publication Bias" desc="Assess robustness and small-study effects. Needs ≥3 studies with effect sizes."/>
+    {outcomeSelector}
     <div style={{background:C.card,border:`1px solid ${C.brd}`,borderRadius:8,padding:40,textAlign:"center",color:C.muted}}>
-      <div style={{fontSize:36,marginBottom:10}}>🎯</div>Add at least 3 studies with effect sizes
+      <div style={{fontSize:36,marginBottom:10}}>🎯</div>{outcomePairs.length>1&&!effectiveKey
+        ?"Select an outcome above — each outcome is assessed separately."
+        :"Add at least 3 studies with effect sizes"}
     </div>
   </div>);
 
@@ -1024,6 +1347,7 @@ export function SensitivityTab({project}){
 
   return(<div>
     <SectionHeader icon="activity" title="Sensitivity & Publication Bias" desc="Robustness checks: leave-one-out, funnel plot, Egger's test." badge={`k = ${result.k}`}/>
+    {outcomeSelector}
     {result.k<10&&(
       <div style={{background:"var(--t-yel-bg)",border:`1px solid ${themeAlpha(C.yel,'44')}`,borderLeft:`3px solid ${C.yel}`,borderRadius:6,padding:"10px 14px",marginBottom:14,fontSize:12,color:C.muted,lineHeight:1.6}}>
         <strong style={{color:C.yel}}>⚠ Only {result.k} studies.</strong> Cochrane and most guidance recommend assessing publication bias (funnel plot, Egger's test) <strong>only when ≥10 studies</strong> are pooled. With fewer, these tests have low power and the funnel is hard to read — interpret the results below with caution and don't over-rely on them.
@@ -1234,15 +1558,32 @@ export function SensitivityTab({project}){
 
 /* ════════════ TAB: SUBGROUP ANALYSIS ════════════ */
 export function SubgroupTab({project}){
-  const studies=Array.isArray(project&&project.studies)?project.studies:[];
+  const allStudies=Array.isArray(project&&project.studies)?project.studies:[];
   const prec = project?.analysisPrecision;
   const[groupKey,setGroupKey]=useState("design");
   const[method,setMethod]=useState("random");
   // RoadMap/2.md recs — subgroup pools use the project-wide τ² estimator too.
   const tau2Method=(project&&project.analysisSettings&&project.analysisSettings.tau2Method)||"DL";
-  const result=useMemo(()=>subgroupAnalysis(studies,groupKey,method,{tau2Method}),[studies,groupKey,method,tau2Method]);
-  const overall=useMemo(()=>runMeta(studies,method,{tau2Method}),[studies,method,tau2Method]);
 
+  // 86.md P1.6 / 107.md §10 — this tab used to group the RAW project.studies: every
+  // outcome at once, with no "exclude from analysis". Stratifying proportions by
+  // denominator ACROSS outcomes would compare quantities that were never comparable,
+  // so it now scopes to one (outcome, timepoint) pair exactly like Analysis/Forest and
+  // honours the persisted proportion filter for that pair.
+  const outcomePairs=useMemo(()=>enumerateOutcomePairs(allStudies),[allStudies]);
+  const[selectedKey,setSelectedKey]=useState("");
+  useEffect(()=>{
+    if(outcomePairs.length===1) setSelectedKey(outcomePairs[0].key);
+    else if(outcomePairs.length>1&&!outcomePairs.find(p=>p.key===selectedKey)) setSelectedKey("");
+  },[outcomePairs.length]);
+  const effectiveKey=outcomePairs.length===1?outcomePairs[0].key:selectedKey;
+  const activeOutcome=outcomePairs.find(p=>p.key===effectiveKey)||null;
+  const proportionFilters=pairProportionFilter(project,activeOutcome);
+  const studies=useMemo(
+    ()=>applyProportionFilters(studiesForPair(allStudies,activeOutcome),proportionFilters),
+    [allStudies,activeOutcome,proportionFilters]);
+
+  const isPropPair=pairIsProportion(activeOutcome,"");
   const keys=[
     {id:"design",label:"Study Design"},
     {id:"drugClass",label:"Drug Class"},
@@ -1250,17 +1591,50 @@ export function SubgroupTab({project}){
     {id:"timepoint",label:"Time Point"},
     {id:"adjusted",label:"Adjusted vs Unadjusted"},
     {id:"outcome",label:"Outcome Measured"},
+    // 107.md §10 — the two per-estimate proportion classifications become first-class
+    // stratification variables, offered only where they exist (PROP outcomes).
+    ...(isPropPair?[
+      {id:"denominatorPopulation",label:"Denominator population"},
+      {id:"actionStatus",label:"Action status"},
+    ]:[]),
   ];
+  // Falls back cleanly if the reviewer switches from a PROP outcome to a non-PROP one.
+  const activeGroupKey=keys.some(k=>k.id===groupKey)?groupKey:"design";
+  const grouped=useMemo(()=>groupRowsForSubgroup(studies,activeGroupKey),[studies,activeGroupKey]);
+  const result=useMemo(()=>subgroupAnalysis(grouped,activeGroupKey,method,{tau2Method}),[grouped,activeGroupKey,method,tau2Method]);
 
   return(<div>
     <SectionHeader icon="layers" title="Subgroup Analysis" desc="Explore heterogeneity by stratifying studies. The Q-between test asks whether subgroups differ more than chance."/>
     <div style={{background:"var(--t-yel-bg)",border:`1px solid ${themeAlpha(C.yel,'44')}`,borderLeft:`3px solid ${C.yel}`,borderRadius:6,padding:"10px 14px",marginBottom:14,fontSize:12,color:C.muted,lineHeight:1.6}}>
       <strong style={{color:C.yel}}>⚠ Use subgroups responsibly.</strong> Subgroup analyses should be <strong>pre-specified in your protocol</strong>, not chosen after seeing the data. Treat post-hoc subgroups as exploratory only, and be cautious when any subgroup has fewer than ~5 studies — differences can easily arise by chance.
     </div>
+
+    {/* ── OUTCOME SELECTOR — subgroups are computed within ONE outcome ── */}
+    <div style={{background:C.card,border:`1px solid ${C.brd}`,borderRadius:8,padding:12,marginBottom:14,display:"flex",alignItems:"center",gap:12,flexWrap:"wrap"}}>
+      <span style={{fontSize:11,fontWeight:700,color:C.muted,letterSpacing:0.5,whiteSpace:"nowrap"}}>OUTCOME</span>
+      {outcomePairs.length===0?(
+        <span style={{fontSize:12,color:C.dim}}>No studies with an effect size yet.</span>
+      ):outcomePairs.length===1?(
+        <span style={{fontSize:12,color:C.grn}}>✓ {activeOutcome?.label||activeOutcome?.outcome||"(unnamed)"}</span>
+      ):(
+        <select value={selectedKey} onChange={e=>setSelectedKey(e.target.value)}
+          style={{...inp,width:"auto",fontSize:12,padding:"5px 10px",flex:1,maxWidth:420}}>
+          <option value="">— select an outcome —</option>
+          {outcomePairs.map(p=>(<option key={p.key} value={p.key}>{p.label||p.outcome||"(unnamed)"}</option>))}
+        </select>
+      )}
+      {studies.length>0&&<span style={{fontSize:11,color:C.muted,marginLeft:"auto"}}>{studies.length} estimates</span>}
+      {activeProportionFilters(proportionFilters).map(([field,value])=>(
+        <span key={field} style={tagS("blue")}>
+          {PROPORTION_FIELD_LABEL[field]}: {proportionFilterLabel(field,value)}
+        </span>
+      ))}
+    </div>
+
     <div style={{display:"flex",gap:10,marginBottom:16,flexWrap:"wrap",alignItems:"center"}}>
       <span style={{fontSize:12,color:C.muted}}>Group by:</span>
       {keys.map(k=>(
-        <button key={k.id} onClick={()=>setGroupKey(k.id)} style={btnS(groupKey===k.id?"primary":"ghost")}>{k.label}</button>
+        <button key={k.id} onClick={()=>setGroupKey(k.id)} style={btnS(activeGroupKey===k.id?"primary":"ghost")}>{k.label}</button>
       ))}
       <span style={{marginLeft:"auto",fontSize:11,color:C.muted}}>·</span>
       {[["random","Random"],["fixed","Fixed"]].map(([m,label])=>(
@@ -1269,7 +1643,9 @@ export function SubgroupTab({project}){
     </div>
 
     {!result || result.groups.length===0?(<div style={{background:C.card,border:`1px solid ${C.brd}`,borderRadius:8,padding:40,textAlign:"center",color:C.muted}}>
-      <div style={{fontSize:36,marginBottom:10}}>🔬</div>Need at least 2 studies per subgroup
+      <div style={{fontSize:36,marginBottom:10}}>🔬</div>{outcomePairs.length>1&&!effectiveKey
+        ?"Select an outcome above — subgroups are computed within a single outcome."
+        :"Need at least 2 studies per subgroup"}
     </div>):(<>
       <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(280px,1fr))",gap:14,marginBottom:16}}>
         {result.groups.map(g=>(
@@ -1312,8 +1688,9 @@ export function SubgroupTab({project}){
     <InfoBox>💡 Pre-specify subgroups in your protocol. Post-hoc subgroup analyses should be labelled as exploratory. Subgroups with k&lt;5 studies are statistically unreliable.</InfoBox>
     {/* P13 — CONTINUOUS sibling of subgroup analysis. Additive + self-gating: it
         renders nothing unless the `metaRegression` flag is ON, so this tab is
-        byte-for-byte unchanged when the flag is off. */}
-    <MetaRegression project={project}/>
+        byte-for-byte unchanged when the flag is off. It now regresses the SAME
+        outcome-scoped rows the subgroups use (86.md P1.6 — it read raw project.studies). */}
+    <MetaRegression project={project} studies={studies}/>
   </div>);
 }
 
@@ -1335,6 +1712,11 @@ const MR_BLOCK = new Set([
   "needsreview", "rob", "snapshot", "title", "authors", "author", "journal", "doi", "pmid", "pmcid",
   "abstract", "outcome", "primaryoutcome", "secondaryoutcomes", "populationdef", "interventiondef",
   "comparatordef", "funding", "enrollperiod", "notes", "note", "url", "fulltext", "tags", "decision",
+  // 107.md §8A — the free-text description behind "Other/custom". It is a DEFINITION,
+  // not a variable: two rows sharing the wording are the same denominator, and every
+  // other wording is a one-off. `denominatorPopulation`/`actionStatus` stay discoverable
+  // as ordinary categorical moderators; this one must never become a covariate.
+  "denominatorcustom",
 ]);
 
 const MR_FIELD_LABEL = {
@@ -1342,6 +1724,9 @@ const MR_FIELD_LABEL = {
   drugClass: "Drug class", followup: "Follow-up", timepoint: "Time point", adjusted: "Adjustment",
   dataSource: "Data source", meanAge: "Mean age", dose: "Dose", baselineRisk: "Baseline risk",
   region: "Region",
+  // 107.md §10 — pretty names so the picker doesn't read "Denominator population" as
+  // "Denominatorpopulation" via the camel-case fallback.
+  denominatorPopulation: "Denominator population", actionStatus: "Action status",
 };
 
 function mrPretty(field) {
@@ -1589,8 +1974,11 @@ export function MetaRegressionResults({ result, measure, covLabel, type, method,
   </div>);
 }
 
-export function MetaRegression({ project }) {
-  const studies = (project && Array.isArray(project.studies)) ? project.studies : [];
+export function MetaRegression({ project, studies: scopedStudies }) {
+  // 86.md P1.6 — prefer the outcome-scoped rows the host tab already computed; fall back
+  // to the raw blob only for callers that have not been scoped yet.
+  const studies = Array.isArray(scopedStudies) ? scopedStudies
+    : ((project && Array.isArray(project.studies)) ? project.studies : []);
   const prec = project && project.analysisPrecision;
   const [flagOn, setFlagOn] = useState(null);
   useEffect(() => {

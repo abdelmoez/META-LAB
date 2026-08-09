@@ -374,7 +374,9 @@ function DeepToolPage({ stage }) {
   } else if (stage === 'rob') {
     body = (<LazyRob project={project} updateProject={doc.updateProject} activeId={projectId} setTab={goStage} onWorkspaceChange={setRobInWorkspace} />);
   } else if (stage === 'analysis') {
-    body = (<LazyAnalysis project={project}
+    // 107.md §12 — currentUser only supplies the `by` field of a recorded compatibility
+    // override; absent (signed out / still loading) → the override records by:null.
+    body = (<LazyAnalysis project={project} currentUser={user}
       updateProject={(fn) => doc.updateProject(projectId, fn)}
       onApplyPrecisionToAll={(prec) => doc.updateProject(projectId, (x) => ({ ...x, analysisPrecision: prec }))} />);
   } else if (stage === 'forest') {

@@ -84,7 +84,13 @@ export function StatTile({ label, value, color = C.txt, sub, accent }) {
   );
 }
 
-export function DecisionChip({ decision, size = 'sm' }) {
+/**
+ * DecisionChip — glyph + wording for one screening decision.
+ * `label` overrides the wording (107.md §6 wants the past tense — "Included" — where
+ * the conflict/second-review lists read the bare verb); omitted, it capitalises the
+ * decision value exactly as before.
+ */
+export function DecisionChip({ decision, size = 'sm', label }) {
   const d = DECISION_COLORS[decision] || DECISION_COLORS.undecided;
   const pad = size === 'sm' ? '2px 8px' : '4px 12px';
   return (
@@ -94,7 +100,7 @@ export function DecisionChip({ decision, size = 'sm' }) {
       border: `1px solid ${d.border}`, color: d.txt, borderRadius: 5, padding: pad,
     }}>
       <span style={{ fontFamily: MONO }}>{DECISION_GLYPH[decision] || '·'}</span>
-      <span style={{ textTransform: 'capitalize' }}>{decision}</span>
+      <span style={{ textTransform: label ? 'none' : 'capitalize' }}>{label || decision}</span>
     </span>
   );
 }
@@ -232,6 +238,19 @@ export function Avatar({ name, size = 26 }) {
 }
 
 /**
+ * 107.md §3 — a stable, queryable marker that a screening dialog is on screen, so a
+ * global keydown guard can bail out without knowing which component opened it.
+ * (React state cannot answer "is ANY modal open?" from an unrelated listener.)
+ */
+export const SCREENING_MODAL_ATTR = 'data-screening-modal';
+
+/** True when any screening Modal is currently mounted. Safe outside the browser. */
+export function isScreeningModalOpen() {
+  if (typeof document === 'undefined') return false;
+  return !!document.querySelector(`[${SCREENING_MODAL_ATTR}]`);
+}
+
+/**
  * Modal — 65.md UX-8: full dialog a11y (role="dialog", aria-modal, labelled title,
  * focus trap, focus restore on close, body scroll lock). Mirrors the StitchModal
  * patterns WITHOUT importing Stitch code into the screening layer. `label` names
@@ -275,7 +294,8 @@ export function Modal({ children, onClose, width = 480, label = 'Dialog' }) {
     };
   }, [onClose]);
   return (
-    <div style={{ position: 'fixed', inset: 0, zIndex: 1000, background: alpha(C.bg, 0.82), display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24, animation: 'sift-fade 0.15s ease' }}
+    <div {...{ [SCREENING_MODAL_ATTR]: 'true' }}
+      style={{ position: 'fixed', inset: 0, zIndex: 1000, background: alpha(C.bg, 0.82), display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24, animation: 'sift-fade 0.15s ease' }}
       onClick={e => { if (e.target === e.currentTarget) onClose?.(); }}>
       <div
         ref={ref}

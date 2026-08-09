@@ -13,6 +13,11 @@ import { SECTION_IDS } from './model.js';
 import { describeSynthesisModel, resolveAnalysis } from './analysisDescribe.js';
 import { checkConsistency } from './consistency.js';
 import { countPublications, caseSeriesCounts } from '../extraction/caseSeries.js';
+// 107.md §12/§13 — a proportion filter or a compatibility override CHANGES which
+// estimates were pooled, so the reproducibility config has to carry it or the bundle
+// no longer describes the analysis it came from. Absent → the keys are omitted and the
+// exported settings/manifest are byte-identical to before.
+import { sanitizeProportionFilters, sanitizeProportionOverrides } from '../statistics/proportionCompatibility.js';
 
 /** 106.md — "N studies" for the readiness checklist: publications, with the case
  *  breakdown appended when the review extracted individual patients. */
@@ -142,6 +147,9 @@ export function analysisSettings(project, opts = {}) {
     ...opts, model: (opts.analysis && opts.analysis.model) || (primary && primary.model) || opts.model,
   });
   const desc = describeSynthesisModel(cfg);
+  const stored = (project && project.analysisSettings) || {};
+  const proportionFilters = sanitizeProportionFilters(stored.proportionFilters);
+  const proportionOverrides = sanitizeProportionOverrides(stored.proportionOverrides);
   return {
     effectMeasure: primary ? (primary.pair.esType || null) : null,
     model: (primary && primary.model) || cfg.model,
@@ -154,11 +162,21 @@ export function analysisSettings(project, opts = {}) {
     k: primary && primary.result ? primary.result.k : null,
     outcomes: opts.outcomes || null,
     software: opts.software || null,
+    // 107.md §13 — present ONLY when the reviewer actually used them.
+    ...(proportionFilters ? { proportionFilters } : {}),
+    ...(proportionOverrides ? { proportionOverrides } : {}),
   };
 }
 
 /** Reproducibility manifest object (serialised to manifest.json). Pure. */
 export function buildReproManifest(opts = {}) {
+  // 107.md §12 — "If exported analysis configurations exist, include the override."
+  // Surfaced at the TOP level of the manifest (not only nested inside analysisSettings)
+  // because a reader checking whether a result is reproducible must not have to dig for
+  // the fact that estimates were filtered or a compatibility warning was overridden.
+  const settings = opts.analysisSettings || null;
+  const proportionFilters = sanitizeProportionFilters(opts.proportionFilters || (settings && settings.proportionFilters));
+  const proportionOverrides = sanitizeProportionOverrides(opts.proportionOverrides || (settings && settings.proportionOverrides));
   return {
     schema: 'pecanrev-reproducibility/1',
     projectId: opts.projectId || null,
@@ -170,7 +188,9 @@ export function buildReproManifest(opts = {}) {
     engineVersions: opts.engineVersions || null,
     citationStyle: opts.citationStyle || null,
     templateId: opts.templateId || null,
-    analysisSettings: opts.analysisSettings || null,
+    analysisSettings: settings,
+    ...(proportionFilters ? { proportionFilters } : {}),
+    ...(proportionOverrides ? { proportionOverrides } : {}),
     files: (opts.files || []).map((f) => (typeof f === 'string' ? { name: f } : { name: f.name, note: f.note || '' })),
     warnings: opts.warnings || [],
   };

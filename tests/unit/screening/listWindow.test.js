@@ -5,7 +5,7 @@
  */
 import { describe, it, expect } from 'vitest';
 import {
-  computeListWindow, measuredRowHeight, shouldWindow,
+  computeListWindow, measuredRowHeight, shouldWindow, nearestScrollTop,
   WINDOW_MIN_COUNT, DEFAULT_OVERSCAN, DEFAULT_ROW_HEIGHT,
 } from '../../../src/frontend/screening/lib/listWindow.js';
 
@@ -77,6 +77,78 @@ describe('computeListWindow', () => {
     const w = computeListWindow({ count: 500, scrollTop: 0, viewportHeight: 600 });
     expect(w.start).toBe(0);
     expect(w.end).toBe(Math.ceil(600 / DEFAULT_ROW_HEIGHT) + DEFAULT_OVERSCAN);
+  });
+});
+
+/* ── 107.md §5 — keep the selected row visible, minimally ─────────────────────── */
+
+describe('nearestScrollTop', () => {
+  // A 600px viewport over 74px rows: row N occupies [74N, 74N+74).
+  const vh = 600, rh = 74;
+  const at = (index, scrollTop) => nearestScrollTop({ rowTop: index * rh, rowHeight: rh, scrollTop, viewportHeight: vh });
+
+  it('leaves a fully visible row exactly where it is', () => {
+    expect(at(0, 0)).toBeNull();          // first row, top of the list
+    expect(at(4, 0)).toBeNull();          // 296…370, well inside 0…600
+    expect(at(7, 0)).toBeNull();          // 518…592, the last fully visible row
+    expect(at(20, 20 * rh)).toBeNull();   // scrolled so the row is flush at the top
+  });
+
+  it('scrolls DOWN just far enough to reveal a row below the viewport', () => {
+    // Row 8 spans 592…666; the viewport ends at 600 → 66px short.
+    expect(at(8, 0)).toBe(8 * rh + rh - vh);
+    expect(at(8, 0)).toBe(66);
+    // Far below: the row lands flush against the bottom edge, never centred/topped.
+    expect(at(400, 0)).toBe(400 * rh + rh - vh);
+  });
+
+  it('scrolls UP just far enough to reveal a row above the viewport', () => {
+    // Row 10 spans 740…814; scrolled to 2000 it is off the top → align its top edge.
+    expect(at(10, 2000)).toBe(10 * rh);
+    // One row above the fold moves by only that row's overlap, not a page.
+    expect(at(26, 2000)).toBe(26 * rh); // 1924 — a 76px nudge
+  });
+
+  it('nudges a PARTIALLY visible row by only its overlap', () => {
+    // Row 8 (592…666) with scrollTop 30: bottom overflows by 36px.
+    expect(at(8, 30)).toBe(66);
+    // …and by 1px when it is 1px short.
+    expect(at(8, 65)).toBe(66);
+    expect(at(8, 66)).toBeNull();
+  });
+
+  it('never returns a negative offset', () => {
+    expect(nearestScrollTop({ rowTop: 0, rowHeight: 74, scrollTop: 0, viewportHeight: 600 })).toBeNull();
+    expect(nearestScrollTop({ rowTop: 10, rowHeight: 74, scrollTop: 300, viewportHeight: 600 })).toBe(10);
+    expect(nearestScrollTop({ rowTop: -20, rowHeight: 74, scrollTop: 300, viewportHeight: 600 })).toBe(0);
+  });
+
+  it('works off the WINDOWED estimate (row not mounted → rowTop = index × rowHeight)', () => {
+    // The virtualised list only knows `index * DEFAULT_ROW_HEIGHT` for an unmounted row.
+    const target = nearestScrollTop({
+      rowTop: 350 * DEFAULT_ROW_HEIGHT, rowHeight: DEFAULT_ROW_HEIGHT,
+      scrollTop: 0, viewportHeight: 600,
+    });
+    expect(target).toBe(350 * DEFAULT_ROW_HEIGHT + DEFAULT_ROW_HEIGHT - 600);
+    // Applying it once is enough — a second pass is a no-op (the loop terminates).
+    expect(nearestScrollTop({
+      rowTop: 350 * DEFAULT_ROW_HEIGHT, rowHeight: DEFAULT_ROW_HEIGHT,
+      scrollTop: target, viewportHeight: 600,
+    })).toBeNull();
+  });
+
+  it('handles a row taller than the viewport by aligning the nearest edge', () => {
+    const tall = { rowTop: 1000, rowHeight: 900, viewportHeight: 400 };
+    expect(nearestScrollTop({ ...tall, scrollTop: 0 })).toBe(1000);      // align top
+    expect(nearestScrollTop({ ...tall, scrollTop: 1200 })).toBeNull();   // row covers the viewport
+    expect(nearestScrollTop({ ...tall, scrollTop: 1900 })).toBe(1500);   // align bottom
+  });
+
+  it('declines to guess without a measured viewport', () => {
+    expect(nearestScrollTop({ rowTop: 500, rowHeight: 74, scrollTop: 0, viewportHeight: 0 })).toBeNull();
+    expect(nearestScrollTop({ rowTop: 500, rowHeight: 74, scrollTop: 0, viewportHeight: NaN })).toBeNull();
+    expect(nearestScrollTop({})).toBeNull();
+    expect(nearestScrollTop()).toBeNull();
   });
 });
 

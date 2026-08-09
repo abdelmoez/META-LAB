@@ -21,7 +21,7 @@ import { C, FONT, MONO, alpha } from '../ui/theme.js';
 import {
   Loading, ErrorBanner, Button, Badge, DecisionChip, Card, EmptyState, Modal,
 } from '../ui/components.jsx';
-import { renderHighlighted } from '../ui/highlightRender.jsx';
+import { renderAbstract } from '../ui/highlightRender.jsx';
 import PdfViewer from '../components/PdfViewer.jsx';
 import { screeningApi } from '../api-client/screeningApi.js';
 
@@ -551,7 +551,9 @@ function RecordCard({
           padding: '12px 14px', marginBottom: 14,
         }}>
           <div style={{ fontSize: 13, color: C.txt, lineHeight: 1.65, whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>
-            {renderHighlighted(shownAbstract, { inclusion, exclusion, showInclusion: true, showExclusion: true })}
+            {/* 107.md §4 — segment the CLAMPED string so heading offsets match what
+                is actually rendered (clamp first, then segment). */}
+            {renderAbstract(shownAbstract, { inclusion, exclusion, showInclusion: true, showExclusion: true })}
           </div>
           {isLong && (
             <button onClick={() => setExpanded(v => !v)}

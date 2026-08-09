@@ -542,6 +542,14 @@ export function addCase(studies = [], publicationId, opts = {}) {
  * false evidence claim — the single worst thing a provenance system can do. The
  * entries are kept as `manual` (with their history) so the values are still auditable
  * and are simply re-linked when the reviewer picks them from the PDF.
+ *
+ * 107.md §8D — the per-estimate proportion metadata (denominator population / custom
+ * description / action status) IS carried into the duplicate, unlike the sync stamps.
+ * "Duplicate a case structure" reproduces the same estimate context (same paper, same
+ * denominator definition), so keeping the classification is the honest default and the
+ * reviewer can change it. Note the contrast with `addOutcome`/`cloneForOutcome`, which
+ * inherit citation fields ONLY: a NEW outcome is a different estimate, so it starts
+ * unclassified rather than inheriting a classification nobody made for it.
  * @returns {{ studies:object[], id:string, caseNumber:number } | { error:string }}
  */
 export function duplicateCase(studies = [], studyId, opts = {}) {
@@ -848,6 +856,11 @@ export function buildCaseExportRows(studies = [], caseVariables = [], opts = {})
     { key: 'caseLabel', label: 'Case' },
     ...vars.map((v) => ({ key: caseVarKey(v.id), label: v.unit ? `${v.label} (${v.unit})` : v.label })),
     { key: 'esType', label: 'Effect measure' },
+    // 107.md §8F — per-estimate proportion metadata travels with the case-level export
+    // too (raw internal values; '' for an unclassified/legacy row).
+    { key: 'denominatorPopulation', label: 'Denominator population' },
+    { key: 'denominatorCustom', label: 'Denominator description' },
+    { key: 'actionStatus', label: 'Action status' },
     { key: 'es', label: 'Effect size' },
     { key: 'lo', label: 'CI lower' },
     { key: 'hi', label: 'CI upper' },
@@ -865,6 +878,9 @@ export function buildCaseExportRows(studies = [], caseVariables = [], opts = {})
       caseNumber: obs.caseNumber,
       caseLabel: obs.caseName,
       esType: s(st.esType), es: s(st.es), lo: s(st.lo), hi: s(st.hi),
+      denominatorPopulation: s(st.denominatorPopulation),
+      denominatorCustom: s(st.denominatorCustom),
+      actionStatus: s(st.actionStatus),
       notes: s(st.notes),
     };
     for (const v of vars) { const k = caseVarKey(v.id); row[k] = s(st[k]); }

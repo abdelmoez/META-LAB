@@ -9,6 +9,9 @@
  */
 
 import { ADJUST_LABEL, DATA_NATURE_LABEL, isNonPrimary } from '../project-model/constants.js';
+// 107.md §8 — the proportion-metadata registries live only in the LIVE constants module
+// (project-model/constants.js is the stale 8-measure copy — see monolithConstants.js).
+import { DENOMINATOR_POPULATION_LABEL, ACTION_STATUS_LABEL } from '../project-model/monolithConstants.js';
 
 /**
  * validateStudy(s)
@@ -56,6 +59,29 @@ export function validateStudy(s) {
   // single-arm proportion
   if (s.esType === "PROP" && num(s.events) && num(s.total) && +s.events > +s.total)
     add("error", "events", "Events exceed total in single-arm proportion.");
+
+  // 107.md §8E — per-estimate proportion metadata.
+  //  • "Other/custom" without its description is a BLOCKING error: the denominator would
+  //    otherwise be uninterpretable. Every other option (and an unclassified row) needs
+  //    no description, so the rule never fires for legacy data.
+  //  • An out-of-registry enum value is a WARNING only — the self-healing readers in
+  //    extraction/proportionMeta.js already fall back to "not classified", so the row is
+  //    usable; the reviewer just needs to pick a real option.
+  //  • A row that never carried these keys raises NOTHING: missing ≠ invalid (§8C).
+  // This function is the SERVER-SIDE integrity boundary too — the autosave schema is
+  // passthrough by design (server/schemas/requestSchemas.js), so the enforcement point
+  // is completionGate → server/extraction/engine/completionService.js, which runs this
+  // same validator and answers 422 VALIDATION_BLOCKED.
+  if (s.esType === "PROP") {
+    const denom = s.denominatorPopulation == null ? "" : String(s.denominatorPopulation).trim();
+    const action = s.actionStatus == null ? "" : String(s.actionStatus).trim();
+    if (denom === "other" && !String(s.denominatorCustom == null ? "" : s.denominatorCustom).trim())
+      add("error", "denominatorCustom", "Custom denominator description is required for Other/custom.");
+    if (denom && !DENOMINATOR_POPULATION_LABEL[denom])
+      add("warn", "denominatorPopulation", `Unrecognised denominator population "${denom}" — pick one of the listed options.`);
+    if (action && !ACTION_STATUS_LABEL[action])
+      add("warn", "actionStatus", `Unrecognised action status "${action}" — pick one of the listed options.`);
+  }
 
   // diagnostic cells
   if (num(s.tp) || num(s.fp) || num(s.fn) || num(s.tn)) {

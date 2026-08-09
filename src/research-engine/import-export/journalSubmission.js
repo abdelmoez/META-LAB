@@ -9,6 +9,10 @@
  * Exported for tests/unit/journalSubmission.test.js.
  */
 
+// 107.md §8F — human LABELS for the per-estimate proportion metadata (self-healing:
+// an unknown or absent value resolves to '', never a fabricated category).
+import { denominatorPopulationLabel, actionStatusLabel } from '../extraction/proportionMeta.js';
+
 /** Filesystem-safe slug for ZIP entry names. */
 export function safeName(s, fallback = 'item') {
   const t = String(s == null ? '' : s).trim().toLowerCase()
@@ -104,6 +108,12 @@ export function buildStudyTableCSV(studies, robByStudyId = {}) {
     ['country', 'Country'], ['design', 'Study design'], ['population', 'Population'],
     ['intervention', 'Intervention/Exposure'], ['comparator', 'Comparator'], ['outcome', 'Outcome(s)'],
     ['timepoint', 'Timepoint'], ['sampleSize', 'Sample size'], ['esType', 'Effect measure'],
+    // 107.md §8F — per-estimate proportion metadata. This table is READ BY HUMANS
+    // (journal submission / reproducibility package), so it carries the visible LABELS,
+    // not the internal enum values. An unclassified or legacy row exports '' — never
+    // "Unclear", which would fabricate a scientific category (§8C).
+    ['denominatorPopulation', 'Denominator population'], ['denominatorCustom', 'Denominator description'],
+    ['actionStatus', 'Action status'],
     // 82.md Part 12 — reported-as-stated values + provenance BEFORE the analysis es/lo/hi.
     ['reportedFormat', 'Reported format'], ['reported', 'Reported values (as stated)'],
     ['es', 'Effect size (analysis scale)'], ['lo', 'CI lower'], ['hi', 'CI upper'],
@@ -125,6 +135,9 @@ export function buildStudyTableCSV(studies, robByStudyId = {}) {
     timepoint: s.timepoint || '',
     sampleSize: sampleSize(s),
     esType: s.esType || '',
+    denominatorPopulation: denominatorPopulationLabel(s),
+    denominatorCustom: s.denominatorCustom || '',
+    actionStatus: actionStatusLabel(s),
     reportedFormat: s.reportedFormat || '',
     reported: reportedSummary(s),
     es: s.es ?? '', lo: s.lo ?? '', hi: s.hi ?? '',

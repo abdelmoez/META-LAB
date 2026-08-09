@@ -12,11 +12,18 @@
  */
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { C, FONT, MONO, alpha, DECISION_COLORS, DECISION_GLYPH } from '../ui/theme.js';
-import { Loading, ErrorBanner, Button, Badge, DecisionChip, Card, SectionLabel, EmptyState, Toggle } from '../ui/components.jsx';
-import { renderHighlighted } from '../ui/highlightRender.jsx';
-import { extractKeywords } from '../../../research-engine/screening/keywords.js';
+import { Loading, ErrorBanner, Button, Badge, DecisionChip, Card, SectionLabel, EmptyState, Toggle, Modal } from '../ui/components.jsx';
+import { renderAbstract } from '../ui/highlightRender.jsx';
 import { DEFAULT_INCLUDE_KEYWORDS, DEFAULT_EXCLUDE_KEYWORDS } from '../../../research-engine/screening/defaultKeywords.js';
-import { effectiveKeywords, KEYWORD_SOURCE } from '../../../research-engine/screening/criteriaKeywords.js';
+// 107.md §2 — active vs suggested keyword state + the shared single-term reducer.
+import { resolveKeywordState } from '../../../research-engine/screening/criteriaKeywords.js';
+import { KEYWORD_ORIGIN, dismissConflictOps } from '../../../research-engine/screening/keywordModel.js';
+import { normalizeKeywordKey } from '../../../research-engine/screening/keywordNormalize.js';
+// 107.md §4 — structured-abstract heading segmentation (memoized per record).
+import { segmentAbstract } from '../../../research-engine/screening/abstractSegments.js';
+// 107.md §3 — Cmd/Ctrl+I / Cmd/Ctrl+E over an abstract selection.
+import { useAbstractSelectionShortcuts } from '../hooks/useAbstractSelectionShortcuts.js';
+import KeywordSnackbar from '../components/KeywordSnackbar.jsx';
 import PdfViewer from '../components/PdfViewer.jsx';
 // 96.md 5D — collapsible article-level "Import provenance" (lazy; 404 soft-fail).
 import ImportProvenance from '../components/ImportProvenance.jsx';
@@ -33,10 +40,12 @@ import EligibilityCard from '../eligibility/EligibilityCard.jsx';
 import EligibilityValidationPanel from '../eligibility/EligibilityValidationPanel.jsx';
 import { rankItems } from '../../../research-engine/screening/ai/ranking.js';
 import { parseScreeningShortcuts, DEFAULT_SCREENING_SHORTCUTS, keyLabel } from '../screeningShortcuts.js';
-import { shouldWindow, computeListWindow, measuredRowHeight, DEFAULT_ROW_HEIGHT } from '../lib/listWindow.js';
+// 107.md §5 — nearestScrollTop: minimal-scroll ('nearest') arithmetic for one container.
+import { shouldWindow, computeListWindow, measuredRowHeight, nearestScrollTop, DEFAULT_ROW_HEIGHT } from '../lib/listWindow.js';
 // 100.md §13 — pure page-window arithmetic (what is still loadable before/after the
 // contiguous run of pages currently held), shared with the list-query module's tests.
-import { pageWindow } from '../../../research-engine/screening/recordListQuery.js';
+// 107.md §7 — moveIntent: what a next/previous keystroke means at the current position.
+import { pageWindow, moveIntent } from '../../../research-engine/screening/recordListQuery.js';
 import { api } from '../../api-client/apiClient.js';
 import Tooltip from '../../components/Tooltip.jsx';
 
@@ -104,35 +113,40 @@ export default function ScreeningTab({ pid, project, access, refreshProject, use
   const canScreen = !!access?.canScreen;
   const blindMode = !!project?.blindMode;
 
+  // 107.md §2 — keyword ops answer with the FULL updated keyword columns, so a
+  // single-term edit updates in place instead of refetching the whole project. Held
+  // as a local override that is dropped the moment the server-side project changes.
+  const [kwLocal, setKwLocal] = useState(null);
+  useEffect(() => {
+    setKwLocal(null);
+  }, [pid, project?.inclusionKeywords, project?.exclusionKeywords, project?.keywordMeta]);
+  const kwSrc = kwLocal || project || {};
+
   // Parsed project config (keywords / study-type filter). Projects created before
   // default-keyword seeding fall back to the shared defaults so the panel is never
   // empty (Task 8 — "default keyword sets to every project").
-  const storedIncl = parseList(project?.inclusionKeywords);
-  const storedExcl = parseList(project?.exclusionKeywords);
+  const storedIncl = parseList(kwSrc.inclusionKeywords);
+  const storedExcl = parseList(kwSrc.exclusionKeywords);
   const studyTypes = parseList(project?.studyTypeFilter);
 
-  // prompt28 Part 1 — layer this project's inclusion/exclusion CRITERIA on top of
-  // the stored (default/manual) keywords. The criteria are derived from the linked
-  // META·LAB project's eligibility criteria, cached per-screening-project in
-  // `picoSnapshot` (refreshed server-side on every load), so the keywords stay
-  // project-specific and update when the criteria change — WITHOUT persisting or
-  // duplicating anything. Each term carries a source so the panel can badge the
-  // criteria-derived ones.
-  const effKw = useMemo(() => effectiveKeywords({
+  // 107.md §2 — ACTIVE keywords (the stored list, or the shared defaults when it is
+  // empty) vs SUGGESTED ones derived live from this project's eligibility criteria.
+  // Suggestions never highlight, never filter and never count until a leader accepts
+  // them, and a concept whose polarity is ambiguous lands in `conflicts` instead of
+  // silently appearing on both sides. Nothing derived is persisted, so editing the
+  // criteria updates the suggestions and regeneration can never overwrite a manual term.
+  const kw = useMemo(() => resolveKeywordState({
     storedInclude: storedIncl,
     storedExclude: storedExcl,
     defaultInclude: DEFAULT_INCLUDE_KEYWORDS,
     defaultExclude: DEFAULT_EXCLUDE_KEYWORDS,
     picoSnapshot: project?.picoSnapshot,
-  }), [storedIncl.join('|'), storedExcl.join('|'), project?.picoSnapshot]); // eslint-disable-line react-hooks/exhaustive-deps
-  const inclusion = effKw.include.terms;
-  const exclusion = effKw.exclude.terms;
-  const inclSource = effKw.include.sourceByTerm;
-  const exclSource = effKw.exclude.sourceByTerm;
-  // The leader's keyword editor manages ONLY the stored (default/manual) list —
-  // the criteria-derived layer is read-only here (edit it in PICO & Question).
-  const editInclusion = storedIncl.length ? storedIncl : DEFAULT_INCLUDE_KEYWORDS;
-  const editExclusion = storedExcl.length ? storedExcl : DEFAULT_EXCLUDE_KEYWORDS;
+    keywordMeta: kwSrc.keywordMeta,
+  }), [storedIncl.join('|'), storedExcl.join('|'), project?.picoSnapshot, kwSrc.keywordMeta]); // eslint-disable-line react-hooks/exhaustive-deps
+  const inclusion = kw.include.terms;
+  const exclusion = kw.exclude.terms;
+  const inclSource = kw.include.sourceByTerm;
+  const exclSource = kw.exclude.sourceByTerm;
 
   // ── Keyboard shortcut prefs (per-user, persisted to /api/profile) ────────
   const lsKey = userId ? `metalab.screeningShortcuts.${userId}` : null;
@@ -211,6 +225,101 @@ export default function ScreeningTab({ pid, project, access, refreshProject, use
   const hlExcl = selectedExcl.length ? selectedExcl : exclusion;
 
   const clearKeywordFilters = useCallback(() => { setSelectedIncl([]); setSelectedExcl([]); }, []);
+
+  // ── 107.md §2/§3 — keyword operations (add / remove / move / accept / reject) ──
+  // Every mutation goes through ONE server endpoint that applies the shared reducer
+  // inside a transaction, so concurrent leaders compose instead of clobbering. The
+  // response carries the full updated columns; we adopt them locally rather than
+  // refetching the whole project per chip.
+  const [kwOpError, setKwOpError] = useState('');
+  const [kwNote, setKwNote] = useState(null);        // { message, tone, undo }
+  const [kwConflict, setKwConflict] = useState(null); // { phrase, from, to }
+  const canEditKeywords = !!access?.canManageSettings;
+
+  const runKeywordOp = useCallback(async (op) => {
+    setKwOpError('');
+    try {
+      const r = await screeningApi.keywordOp(pid, op);
+      setKwLocal({
+        inclusionKeywords: r.inclusionKeywords,
+        exclusionKeywords: r.exclusionKeywords,
+        keywordMeta: r.keywordMeta,
+      });
+      return r;
+    } catch (e) {
+      const message = e.message || 'Could not update keywords';
+      setKwOpError(message);
+      // Also surface it where the action was taken (the abstract, not the panel).
+      setKwNote({ message, tone: 'error' });
+      return null;
+    }
+  }, [pid]);
+
+  // Cmd/Ctrl+I / Cmd/Ctrl+E over a selection inside the abstract.
+  const abstractRef = useRef(null);
+  const kwCtxRef = useRef({});
+  kwCtxRef.current = { inclusion, exclusion, canEditKeywords, runKeywordOp };
+
+  const onSelectionKeyword = useCallback(({ list, phrase }) => {
+    const { inclusion: inc, exclusion: exc, canEditKeywords: may, runKeywordOp: run } = kwCtxRef.current;
+    const label = list === 'include' ? 'inclusion' : 'exclusion';
+    if (!may) {
+      setKwNote({ message: 'Only project leaders can edit keyword lists.', tone: 'warn' });
+      return;
+    }
+    const key = normalizeKeywordKey(phrase);
+    const inThis = (list === 'include' ? inc : exc).some(t => normalizeKeywordKey(t) === key);
+    if (inThis) {
+      setKwNote({ message: `Already in ${label} keywords: “${phrase}”`, tone: 'info' });
+      return;
+    }
+    const other = list === 'include' ? 'exclude' : 'include';
+    const inOther = (other === 'include' ? inc : exc).some(t => normalizeKeywordKey(t) === key);
+    if (inOther) {
+      // Never silently create a cross-list conflict (107.md §3 "Opposite List").
+      setKwConflict({ phrase, from: other, to: list });
+      return;
+    }
+    run({ type: 'add', list, term: phrase }).then(r => {
+      if (!r) return;
+      setKwNote({
+        message: `Added “${phrase}” to ${label} keywords.`,
+        tone: 'info',
+        // Undo is a real inverse op against the server, not a local rollback.
+        undo: { type: 'remove', list, term: phrase },
+      });
+    });
+  }, []);
+
+  useAbstractSelectionShortcuts({
+    enabled: true,
+    containerRef: abstractRef,
+    onTrigger: onSelectionKeyword,
+  });
+
+  const confirmKeywordMove = useCallback(() => {
+    const c = kwConflict;
+    if (!c) return;
+    setKwConflict(null);
+    const label = c.to === 'include' ? 'inclusion' : 'exclusion';
+    runKeywordOp({ type: 'move', list: c.from, term: c.phrase, toList: c.to }).then(r => {
+      if (!r) return;
+      setKwNote({
+        message: `Moved “${c.phrase}” to ${label} keywords.`,
+        tone: 'info',
+        undo: { type: 'move', list: c.to, term: c.phrase, toList: c.from },
+      });
+    });
+  }, [kwConflict, runKeywordOp]);
+
+  const undoKeywordNote = useCallback(() => {
+    const op = kwNote?.undo;
+    setKwNote(null);
+    if (op) runKeywordOp(op);
+  }, [kwNote, runKeywordOp]);
+  // Stable identity: the snackbar's auto-dismiss timer keys off onDismiss, and a
+  // fresh inline arrow every render would restart the 8s countdown forever.
+  const dismissKeywordNote = useCallback(() => setKwNote(null), []);
 
   const selected = records.find(r => r.id === selectedId) || null;
 
@@ -436,7 +545,10 @@ export default function ScreeningTab({ pid, project, access, refreshProject, use
       .then(s => setKwStats({ total: s.total || 0, include: s.include || {}, exclude: s.exclude || {} }))
       .catch(() => {});
   }, [pid]);
-  useEffect(() => { loadKwStats(); /* eslint-disable-next-line */ }, [pid, inclusion.join('|'), exclusion.join('|')]);
+  // 107.md §2 — pending suggestions are counted too (the review UI shows an article
+  // count per suggestion), so they belong in the refresh trigger.
+  useEffect(() => { loadKwStats(); /* eslint-disable-next-line */ },
+    [pid, inclusion.join('|'), exclusion.join('|'), kw.include.pending.join('|'), kw.exclude.pending.join('|')]);
 
   // Re-filter the list when the keyword selection changes (skip first mount).
   const kwFirst = useRef(true);
@@ -468,6 +580,11 @@ export default function ScreeningTab({ pid, project, access, refreshProject, use
     loadRecords({ reset: true, s: searchRef.current, f: val });
   }
 
+  // 100.md §13 / 107.md §7 — what is still loadable around the contiguous run of pages
+  // currently held. Hoisted out of the LeftColumn props because keyboard navigation
+  // needs `hasMore` too (and the middle column's end-of-list note reads it as well).
+  const pageWin = pageWindow({ firstPage, page, pages, total, limit: LIMIT });
+
   function loadMore() {
     if (loadingMore) return;
     loadRecords({ reset: false, direction: 'next' });
@@ -491,12 +608,57 @@ export default function ScreeningTab({ pid, project, access, refreshProject, use
     }
   }, [pid]);
 
+  /* ── 107.md §7 — keyboard navigation past the last loaded study ───────────────
+     Arrowing forward off the end used to be a silent no-op, so a reviewer working a
+     5,000-record list stopped dead at row 50 until they found the mouse. Moving
+     forward now paginates automatically and lands on the FIRST study of the new
+     batch — under three constraints that make the difference between seamless and
+     corrupt:
+       · one request at a time — a ref lock closes the window between the keystroke
+         and `loadingMore` becoming true, so held-down arrows cannot fan out into
+         concurrent page requests (which interleave and duplicate rows);
+       · never advance into an index that does not exist yet — the selection moves in
+         the effect below, after the records actually arrive;
+       · identify the new study by IDENTITY, not by index — an AI queue mode reorders
+         the merged list, so `records[previousCount]` is not reliably a new record. */
+  const navCtxRef = useRef({});
+  navCtxRef.current = { hasMore: pageWin.hasMore, loadingMore };
+  const advanceLockRef = useRef(false);
+  const pendingAdvanceRef = useRef(null);
+
   function moveSelection(dir) {
     const recs = displayRecordsRef.current;
     const idx = recs.findIndex(r => r.id === selectedIdRef.current);
-    const next = recs[idx + dir];
-    if (next) selectRecord(next.id);
+    const { hasMore, loadingMore: busy } = navCtxRef.current;
+    const intent = moveIntent({
+      index: idx, dir, count: recs.length,
+      hasMore, loadingMore: busy || advanceLockRef.current,
+    });
+    if (intent === 'move') {
+      const next = recs[idx + (Number(dir) < 0 ? -1 : 1)];
+      if (next) selectRecord(next.id);
+      return;
+    }
+    if (intent !== 'load-next') return;   // 'end' → stay put; 'noop' → already loading
+    advanceLockRef.current = true;
+    pendingAdvanceRef.current = { seen: new Set(recs.map(r => r.id)) };
+    loadMore();
   }
+
+  // The other half of the auto-advance: the batch has landed (or failed). Selecting
+  // here rather than in moveSelection is what guarantees no skipped/duplicated study —
+  // the choice is made against the list that really exists.
+  useEffect(() => {
+    const pend = pendingAdvanceRef.current;
+    if (!pend || loadingMore) return;     // still in flight
+    pendingAdvanceRef.current = null;
+    advanceLockRef.current = false;
+    // Failure: the error banner + the manual "Load more" button carry the retry, and
+    // the reviewer keeps the study (and the decision form) they were already on.
+    if (listError) return;
+    const next = displayRecords.find(r => !pend.seen.has(r.id));
+    if (next) selectRecord(next.id);
+  }, [displayRecords, loadingMore, listError, selectRecord]);
 
   /* ── 100.md §§12-15 — Resume Screening ─────────────────────────────────────
      The reviewer's stopping point lives on the SERVER, derived from their OWN
@@ -721,7 +883,7 @@ export default function ScreeningTab({ pid, project, access, refreshProject, use
              resume jump the loaded run starts at firstPage, so `records.length < total`
              would promise 499 more when only 399 lie ahead — and would hide the pages
              before the jump entirely. (pageWindow is pure + unit-tested.) */
-          {...pageWindow({ firstPage, page, pages, total, limit: LIMIT })}
+          {...pageWin}
           onLoadMore={loadMore} onLoadEarlier={loadEarlier}
           shortcutPrefs={shortcutPrefs}
           onCollapse={() => setPanel('leftCollapsed', true)}
@@ -748,9 +910,13 @@ export default function ScreeningTab({ pid, project, access, refreshProject, use
         recordIndex={displayRecords.findIndex(r => r.id === selectedId)}
         recordCount={displayRecords.length} totalCount={total}
         onPrev={() => moveSelection(-1)} onNext={() => moveSelection(1)}
+        /* 107.md §7 — the footer says whether "Next" can still go anywhere, so the
+           reviewer is never left guessing at the bottom of a 5,000-record list. */
+        hasMore={pageWin.hasMore} loadingMore={loadingMore} listError={listError}
         shortcutPrefs={shortcutPrefs}
         ai={ai}
         elig={elig}
+        abstractRef={abstractRef}
       />
 
       {uiPrefs.rightCollapsed ? (
@@ -761,7 +927,6 @@ export default function ScreeningTab({ pid, project, access, refreshProject, use
           isLeader={isLeader}
           inclusion={inclusion} exclusion={exclusion} studyTypes={studyTypes}
           inclSource={inclSource} exclSource={exclSource}
-          editInclusion={editInclusion} editExclusion={editExclusion}
           showInclusion={showInclusion} setShowInclusion={setShowInclusion}
           showExclusion={showExclusion} setShowExclusion={setShowExclusion}
           labels={labels} setLabels={setLabels} reasons={reasons} setReasons={setReasons}
@@ -774,8 +939,40 @@ export default function ScreeningTab({ pid, project, access, refreshProject, use
           onCollapse={() => setPanel('rightCollapsed', true)}
           ai={ai}
           elig={elig}
+          /* 107.md §2 — suggestion review + single-term ops */
+          kwPendingIncl={kw.include.pending} kwPendingExcl={kw.exclude.pending}
+          kwConflicts={kw.conflicts}
+          canEditKeywords={canEditKeywords}
+          runKeywordOp={runKeywordOp} kwOpError={kwOpError}
         />
       )}
+
+      {/* 107.md §3 — opposite-list confirmation. Moving is one atomic 'move' op. */}
+      {kwConflict && (
+        <Modal onClose={() => setKwConflict(null)} width={420} label="Move keyword to the other list">
+          <div style={{ fontSize: 14, fontWeight: 700, color: C.txt, marginBottom: 8 }}>
+            Already an {kwConflict.from === 'include' ? 'inclusion' : 'exclusion'} keyword
+          </div>
+          <p style={{ fontSize: 13, color: C.txt2, lineHeight: 1.6, margin: '0 0 18px' }}>
+            “{kwConflict.phrase}” is already in your {kwConflict.from === 'include' ? 'inclusion' : 'exclusion'} keywords.
+            Move it to {kwConflict.to === 'include' ? 'inclusion' : 'exclusion'} instead?
+          </p>
+          <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
+            <Button variant="ghost" onClick={() => setKwConflict(null)}>Cancel</Button>
+            <Button onClick={confirmKeywordMove}>
+              {kwConflict.to === 'include' ? 'Move to Inclusion' : 'Move to Exclusion'}
+            </Button>
+          </div>
+        </Modal>
+      )}
+
+      {/* 107.md §3 — subtle confirmation + real (server-persisted) Undo. */}
+      <KeywordSnackbar
+        message={kwNote?.message || ''}
+        tone={kwNote?.tone}
+        onUndo={kwNote?.undo ? undoKeywordNote : undefined}
+        onDismiss={dismissKeywordNote}
+      />
     </div>
   );
 }
@@ -880,6 +1077,54 @@ function LeftColumn({
     }
     if (onScrolledToSelected) onScrolledToSelected();
   }, [scrollToSelected, selectedId, onScrolledToSelected, windowed, records, rowH]);
+
+  /* ── 107.md §5 — keep the selected row visible during ordinary navigation ──────
+     Arrow keys could move the selection to a row far outside the visible slice (or,
+     above WINDOW_MIN_COUNT rows, to one that is not even mounted), so the reviewer
+     lost all list context while the abstract changed under them.
+
+     Deliberately NOT `row.scrollIntoView()`: that walks up the tree and can scroll the
+     page and the middle column too, which §5 forbids ("do not scroll the entire
+     browser page / reposition the abstract"). Writing `container.scrollTop` moves this
+     one element and nothing else. The offset is the MINIMUM that makes the row fully
+     visible ('nearest'), so a row already in view never moves — this is also why the
+     effect must fire on SELECTION changes only: reacting to scrollTop as well would
+     snap the list back every time the reviewer scrolled ahead by hand. */
+  const navSelRef = useRef(null);
+  const navPendingRef = useRef(false);
+  useEffect(() => {
+    if (navSelRef.current !== selectedId) { navSelRef.current = selectedId; navPendingRef.current = true; }
+    if (!navPendingRef.current) return;
+    if (scrollToSelected) return;                 // the resume one-shot owns this pass
+    const el = scrollRef.current;
+    const vh = el ? (el.clientHeight || 0) : 0;
+    if (!el || !selectedId || !vh) { navPendingRef.current = false; return; }
+
+    const row = el.querySelector(`[data-record-id="${CSS.escape(selectedId)}"]`);
+    if (row) {
+      // Measured against the container's own box: `offsetTop` is relative to whatever
+      // the nearest positioned ancestor happens to be, which is not this container.
+      const cRect = el.getBoundingClientRect();
+      const rRect = row.getBoundingClientRect();
+      const next = nearestScrollTop({
+        rowTop: (rRect.top - cRect.top) + el.scrollTop,
+        rowHeight: rRect.height,
+        scrollTop: el.scrollTop, viewportHeight: vh,
+      });
+      if (next != null) el.scrollTop = next;
+      navPendingRef.current = false;
+      return;
+    }
+    if (!windowed) { navPendingRef.current = false; return; }
+    // Windowed and unmounted: estimate from the uniform row height, drive the virtual
+    // scroller there, and keep the flag set — the window then mounts the row and the
+    // next pass measures it for real (same two-step the resume effect above uses).
+    const idx = records.findIndex(r => r.id === selectedId);
+    if (idx < 0) { navPendingRef.current = false; return; }
+    const next = nearestScrollTop({ rowTop: idx * rowH, rowHeight: rowH, scrollTop: el.scrollTop, viewportHeight: vh });
+    if (next == null) { navPendingRef.current = false; return; }
+    el.scrollTop = next;
+  }, [selectedId, scrollToSelected, windowed, records, rowH, scrollTop]);
 
   return (
     <div style={{ width: 300, flexShrink: 0, borderRight: `1px solid ${C.brd}`, display: 'flex', flexDirection: 'column', background: C.surf, overflow: 'hidden', minHeight: 0 }}>
@@ -1056,7 +1301,10 @@ export function ResumeBar({ resume, resuming, note, onResume, canScreen }) {
   );
 }
 
-function RecordRow({ record, selected, onClick, blindMode, scoreInfo }) {
+// 107.md §6 — the left-list decision indicator. Exported so the glyph contract (one
+// compact mark per row, driven by the optimistic `myDecision` patch) is regression-
+// locked alongside the decision bar it has to agree with.
+export function RecordRow({ record, selected, onClick, blindMode, scoreInfo }) {
   const [hover, setHover] = useState(false);
   const my = record.myDecision?.decision;
   const myDc = DECISION_COLORS[my] || DECISION_COLORS.undecided;
@@ -1167,17 +1415,21 @@ function RecordRow({ record, selected, onClick, blindMode, scoreInfo }) {
 // MIDDLE COLUMN — record detail · abstract · PDF · decision bar
 // ════════════════════════════════════════════════════════════════════════════
 
-function MiddleColumn({
+export function MiddleColumn({
   record, loading, blindMode, canScreen, isLeader,
   inclusion, exclusion, showInclusion, showExclusion, pid,
   decision, excReason, setExcReason, notes, setNotes, rating, setRating,
   reasons, setReasons, labels, chosenLabels, toggleLabel,
   onDecisionClick, onUndo, onSaveDetails, saving, saveMsg, decErr,
   recordIndex, recordCount, totalCount, onPrev, onNext,
-  shortcutPrefs, ai, elig,
+  hasMore, loadingMore, listError,
+  shortcutPrefs, ai, elig, abstractRef,
 }) {
   const k = shortcutPrefs?.keys ?? DEFAULT_SCREENING_SHORTCUTS.keys;
   const shortcutsOn = shortcutPrefs?.enabled !== false;
+  // 107.md §4 — segment once per record; highlighting still recomputes per render.
+  // Declared before the early returns so hook order stays stable.
+  const abstractSegs = useMemo(() => segmentAbstract(record?.abstract || ''), [record?.abstract]);
   if (loading && !record) {
     return <div className="sift-mid" style={{ flex: 1, overflowY: 'auto', padding: 28 }}><Loading label="Loading workbench…" /></div>;
   }
@@ -1226,8 +1478,13 @@ function MiddleColumn({
         <Card style={{ marginBottom: 18, padding: '18px 20px' }}>
           <SectionLabel>Abstract</SectionLabel>
           {record.abstract ? (
-            <p style={{ fontSize: 14, color: C.txt, lineHeight: 1.75, margin: 0, minWidth: 0, overflowWrap: 'anywhere' }}>
-              {renderHighlighted(record.abstract, { inclusion, exclusion, showInclusion, showExclusion })}
+            /* 107.md §3 — the ref proves a selection belongs to THIS abstract before
+               Cmd/Ctrl+I / Cmd/Ctrl+E may add it as a keyword.
+               107.md §4 — structured headings render <strong>; keyword <mark>s are
+               produced per text segment, so the two can never overlap. */
+            <p ref={abstractRef} data-testid="screening-abstract"
+              style={{ fontSize: 14, color: C.txt, lineHeight: 1.75, margin: 0, minWidth: 0, overflowWrap: 'anywhere' }}>
+              {renderAbstract(record.abstract, { inclusion, exclusion, showInclusion, showExclusion, segments: abstractSegs })}
             </p>
           ) : (
             <p style={{ fontSize: 13.5, color: C.muted, fontStyle: 'italic', margin: 0 }}>No abstract available for this record.</p>
@@ -1281,35 +1538,15 @@ function MiddleColumn({
           {record.disputed && <Badge color={C.gold}>⚠ Disputed</Badge>}
         </div>
 
-        {/* ── Decision bar ───────────────────────────────────────────────── */}
+        {/* ── Decision details ───────────────────────────────────────────────
+               107.md §6 — Include / Exclude / Maybe themselves live in the STICKY
+               DecisionBar below, directly under the abstract and permanently visible;
+               what stays here is everything that only matters once a decision is
+               made (reason, labels, notes, rating). */}
         <Card style={{ padding: '18px 20px' }}>
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14 }}>
-            <SectionLabel>{canScreen ? 'Your decision' : 'Decision (view-only)'}</SectionLabel>
+            <SectionLabel>{canScreen ? 'Decision details' : 'Decision details (view-only)'}</SectionLabel>
             {!canScreen && <span style={{ fontSize: 11, color: C.gold }}>You have view-only access</span>}
-          </div>
-
-          <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginBottom: decision === 'exclude' ? 16 : 0 }}>
-            <DecisionButton label="✓ Include" value="include" active={decision === 'include'} disabled={!canScreen} onClick={() => onDecisionClick('include')} keyHint={shortcutsOn ? keyLabel(k.include) : null} />
-            <DecisionButton label="✗ Exclude" value="exclude" active={decision === 'exclude'} disabled={!canScreen} onClick={() => onDecisionClick('exclude')} keyHint={shortcutsOn ? keyLabel(k.exclude) : null} />
-            <DecisionButton label="? Maybe"   value="maybe"   active={decision === 'maybe'}   disabled={!canScreen} onClick={() => onDecisionClick('maybe')}   keyHint={shortcutsOn ? keyLabel(k.maybe)   : null} />
-            <button
-              onClick={onUndo}
-              disabled={!canScreen || !decision}
-              style={{
-                background: 'transparent', border: `1px solid ${C.brd}`, color: C.muted,
-                fontSize: 13, fontWeight: 600, fontFamily: FONT, padding: '8px 18px',
-                borderRadius: 7, cursor: (!canScreen || !decision) ? 'not-allowed' : 'pointer',
-                opacity: (!canScreen || !decision) ? 0.4 : 1, transition: 'all 0.15s',
-                display: 'flex', alignItems: 'center', gap: 6,
-              }}
-            >
-              ↩ Undo
-              {shortcutsOn && (
-                <span style={{ fontSize: 9, fontFamily: MONO, background: alpha(C.brd, '80'), border: `1px solid ${C.brd2}`, borderRadius: 3, padding: '1px 4px', color: C.muted, lineHeight: 1.2 }}>
-                  {keyLabel(k.undo)}
-                </span>
-              )}
-            </button>
           </div>
 
           {/* Exclusion reason (when excluded) */}
@@ -1376,29 +1613,140 @@ function MiddleColumn({
           {canScreen && (
             <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginTop: 18 }}>
               <Button onClick={onSaveDetails} disabled={saving}>{saving ? 'Saving…' : 'Save reason · labels · notes'}</Button>
-              {saveMsg && <span style={{ fontSize: 11.5, fontFamily: MONO, color: C.grn }}>{saveMsg}</span>}
-              {decErr && <span style={{ fontSize: 11.5, fontFamily: MONO, color: C.red }}>{decErr}</span>}
             </div>
           )}
         </Card>
+
+        {/* 107.md §6 — the decision controls themselves: last in normal flow (so they
+            can never cover the abstract) and sticky to the bottom of this scroll
+            container (so they are never out of reach on a laptop screen). */}
+        <DecisionBar
+          decision={decision} canScreen={canScreen}
+          onDecisionClick={onDecisionClick} onUndo={onUndo}
+          shortcutPrefs={shortcutPrefs} saveMsg={saveMsg} decErr={decErr}
+        />
 
       </div>
       </div>
 
       {/* ── Prev / Next nav — sticky footer, always visible ────────────── */}
-      <div style={{ flexShrink: 0, borderTop: `1px solid ${C.brd}`, background: C.surf, padding: '12px 28px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-        <Button variant="ghost" onClick={onPrev} disabled={recordIndex <= 0} style={{ fontSize: 12, display: 'inline-flex', alignItems: 'center', gap: 5 }}>
-          {shortcutsOn && <span style={{ fontSize: 9, fontFamily: MONO, background: alpha(C.brd, '80'), border: `1px solid ${C.brd2}`, borderRadius: 3, padding: '1px 4px', color: C.muted, lineHeight: 1.2 }}>{keyLabel(k.previous)}</span>}
-          ← Previous
-        </Button>
+      <RecordNavFooter
+        recordIndex={recordIndex} recordCount={recordCount} totalCount={totalCount}
+        hasMore={hasMore} loadingMore={loadingMore} listError={listError}
+        onPrev={onPrev} onNext={onNext} shortcutPrefs={shortcutPrefs}
+      />
+    </div>
+  );
+}
+
+/**
+ * DecisionBar — 107.md §6. Include / Exclude / Maybe under the abstract, always
+ * visible, with the CURRENT decision stated rather than implied.
+ *
+ * Sticky rather than fixed: it is the last block of the middle column's scrolling
+ * content, so it occupies real space at the end of the record instead of floating
+ * over the text, and `bottom: 0` pins it to the viewport edge while the reviewer is
+ * still reading. A single compact row keeps it viable on short laptop displays.
+ *
+ * The chip is the honest part: an unscreened record reads "Undecided" in the muted
+ * palette — no button is left looking half-selected (§6 "neither should look falsely
+ * selected"), which is also why `aria-pressed` is on every button rather than only
+ * the active one.
+ */
+export function DecisionBar({ decision, canScreen, onDecisionClick, onUndo, shortcutPrefs, saveMsg, decErr }) {
+  const k = shortcutPrefs?.keys ?? DEFAULT_SCREENING_SHORTCUTS.keys;
+  const shortcutsOn = shortcutPrefs?.enabled !== false;
+  const current = decision || 'undecided';
+  return (
+    <div
+      data-testid="screening-decision-bar"
+      data-decision={current}
+      style={{
+        position: 'sticky', bottom: 0, zIndex: 3,
+        margin: '18px -28px -24px', padding: '10px 28px',
+        background: C.surf, borderTop: `1px solid ${C.brd}`, boxShadow: `0 -8px 20px ${C.shadow}`,
+        display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap',
+      }}
+    >
+      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 7, marginRight: 2 }}>
+        <span style={{ fontSize: 9.5, fontFamily: MONO, letterSpacing: '0.1em', textTransform: 'uppercase', color: C.muted }}>Decision</span>
+        <DecisionChip decision={current} label={DECISION_LABEL[current] || 'Undecided'} />
+      </span>
+      <DecisionButton label="✓ Include" value="include" active={decision === 'include'} disabled={!canScreen} onClick={() => onDecisionClick('include')} keyHint={shortcutsOn ? keyLabel(k.include) : null} />
+      <DecisionButton label="✗ Exclude" value="exclude" active={decision === 'exclude'} disabled={!canScreen} onClick={() => onDecisionClick('exclude')} keyHint={shortcutsOn ? keyLabel(k.exclude) : null} />
+      <DecisionButton label="? Maybe"   value="maybe"   active={decision === 'maybe'}   disabled={!canScreen} onClick={() => onDecisionClick('maybe')}   keyHint={shortcutsOn ? keyLabel(k.maybe)   : null} />
+      <button
+        onClick={onUndo}
+        disabled={!canScreen || !decision}
+        style={{
+          background: 'transparent', border: `1px solid ${C.brd}`, color: C.muted,
+          fontSize: 13, fontWeight: 600, fontFamily: FONT, padding: '8px 18px',
+          borderRadius: 7, cursor: (!canScreen || !decision) ? 'not-allowed' : 'pointer',
+          opacity: (!canScreen || !decision) ? 0.4 : 1, transition: 'all 0.15s',
+          display: 'flex', alignItems: 'center', gap: 6,
+        }}
+      >
+        ↩ Undo
+        {shortcutsOn && (
+          <span style={{ fontSize: 9, fontFamily: MONO, background: alpha(C.brd, '80'), border: `1px solid ${C.brd2}`, borderRadius: 3, padding: '1px 4px', color: C.muted, lineHeight: 1.2 }}>
+            {keyLabel(k.undo)}
+          </span>
+        )}
+      </button>
+      {/* Save feedback lives here, not down in the details card: a keyboard decision
+          must confirm itself somewhere the reviewer is actually looking. */}
+      <span role="status" aria-live="polite" style={{ fontSize: 11.5, fontFamily: MONO, color: decErr ? C.red : C.grn, minWidth: 0 }}>
+        {decErr || saveMsg || ''}
+      </span>
+    </div>
+  );
+}
+
+/**
+ * RecordNavFooter — 107.md §7. Prev / Next, the position counter, and an honest
+ * statement of what lies beyond the last loaded study.
+ *
+ * "Next" stays enabled at the end of the loaded window whenever more records exist
+ * server-side (it triggers the same auto-pagination the arrow key does); it only goes
+ * dead at the TRUE end of the list, where the muted "End of list" line says so
+ * explicitly instead of leaving a silently disabled button.
+ */
+export function RecordNavFooter({ recordIndex, recordCount, totalCount, hasMore, loadingMore, listError, onPrev, onNext, shortcutPrefs }) {
+  const k = shortcutPrefs?.keys ?? DEFAULT_SCREENING_SHORTCUTS.keys;
+  const shortcutsOn = shortcutPrefs?.enabled !== false;
+  const atLast = recordCount > 0 && recordIndex >= recordCount - 1;
+  const atEnd = atLast && !hasMore;
+  return (
+    <div data-testid="screening-record-nav" style={{ flexShrink: 0, borderTop: `1px solid ${C.brd}`, background: C.surf, padding: '12px 28px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+      <Button variant="ghost" onClick={onPrev} disabled={recordIndex <= 0} style={{ fontSize: 12, display: 'inline-flex', alignItems: 'center', gap: 5 }}>
+        {shortcutsOn && <span style={{ fontSize: 9, fontFamily: MONO, background: alpha(C.brd, '80'), border: `1px solid ${C.brd2}`, borderRadius: 3, padding: '1px 4px', color: C.muted, lineHeight: 1.2 }}>{keyLabel(k.previous)}</span>}
+        ← Previous
+      </Button>
+      <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 2, minWidth: 0 }}>
         <span style={{ fontSize: 11, color: C.muted, fontFamily: MONO }}>
           {recordIndex + 1} / {recordCount}{totalCount > recordCount ? ` (of ${totalCount})` : ''}
         </span>
-        <Button variant="ghost" onClick={onNext} disabled={recordIndex >= recordCount - 1} style={{ fontSize: 12, display: 'inline-flex', alignItems: 'center', gap: 5 }}>
-          Next →
-          {shortcutsOn && <span style={{ fontSize: 9, fontFamily: MONO, background: alpha(C.brd, '80'), border: `1px solid ${C.brd2}`, borderRadius: 3, padding: '1px 4px', color: C.muted, lineHeight: 1.2 }}>{keyLabel(k.next)}</span>}
-        </Button>
+        {loadingMore ? (
+          <span data-testid="screening-loading-more" role="status" aria-live="polite"
+            style={{ fontSize: 9.5, fontFamily: MONO, letterSpacing: '0.06em', color: C.acc }}>
+            Loading more…
+          </span>
+        ) : listError && atLast ? (
+          <span data-testid="screening-load-failed" role="status" aria-live="polite"
+            style={{ fontSize: 9.5, fontFamily: MONO, letterSpacing: '0.06em', color: C.red }}>
+            Could not load more — retry from the list
+          </span>
+        ) : atEnd ? (
+          <span data-testid="screening-end-of-list"
+            style={{ fontSize: 9.5, fontFamily: MONO, letterSpacing: '0.06em', color: C.muted }}>
+            End of list
+          </span>
+        ) : null}
       </div>
+      <Button variant="ghost" onClick={onNext} disabled={recordIndex < 0 || atEnd || (atLast && loadingMore)} style={{ fontSize: 12, display: 'inline-flex', alignItems: 'center', gap: 5 }}>
+        Next →
+        {shortcutsOn && <span style={{ fontSize: 9, fontFamily: MONO, background: alpha(C.brd, '80'), border: `1px solid ${C.brd2}`, borderRadius: 3, padding: '1px 4px', color: C.muted, lineHeight: 1.2 }}>{keyLabel(k.next)}</span>}
+      </Button>
     </div>
   );
 }
@@ -1413,6 +1761,11 @@ function DecisionButton({ label, value, active, disabled, onClick, keyHint }) {
     <button
       onClick={onClick}
       disabled={disabled}
+      /* 107.md §6 — the state is in the accessibility tree, not only in the colour:
+         `aria-pressed` is present on EVERY button (false, not omitted) so an
+         unscreened record reads as three explicitly un-pressed toggles. Visible focus
+         comes from the app-wide `button:focus-visible` ring in theme/tokens.js. */
+      aria-pressed={!!active}
       onMouseEnter={() => setHover(true)}
       onMouseLeave={() => setHover(false)}
       style={{
@@ -1542,11 +1895,12 @@ function StarRating({ value, onChange, disabled }) {
 
 function RightColumn({
   pid, project, access, refreshProject, isLeader,
-  inclusion, exclusion, studyTypes, inclSource, exclSource, editInclusion, editExclusion,
+  inclusion, exclusion, studyTypes, inclSource, exclSource,
   showInclusion, setShowInclusion, showExclusion, setShowExclusion,
   labels, setLabels, reasons, setReasons, blindMode,
   kwStats, loadKwStats, selectedIncl, setSelectedIncl, selectedExcl, setSelectedExcl,
   clearKeywordFilters, shownCount, projectTotal, onCollapse, ai, elig,
+  kwPendingIncl, kwPendingExcl, kwConflicts, canEditKeywords, runKeywordOp, kwOpError,
 }) {
   const [open, setOpen] = useState({
     ai: true, eligibility: true, pico: true, keywords: true,
@@ -1603,7 +1957,8 @@ function RightColumn({
           pid={pid} project={project} refreshProject={refreshProject} isLeader={isLeader}
           inclusion={inclusion} exclusion={exclusion}
           inclSource={inclSource} exclSource={exclSource}
-          editInclusion={editInclusion} editExclusion={editExclusion}
+          kwPendingIncl={kwPendingIncl} kwPendingExcl={kwPendingExcl} kwConflicts={kwConflicts}
+          canEditKeywords={canEditKeywords} runKeywordOp={runKeywordOp} kwOpError={kwOpError}
           kwStats={kwStats} loadKwStats={loadKwStats}
           selectedIncl={selectedIncl} setSelectedIncl={setSelectedIncl}
           selectedExcl={selectedExcl} setSelectedExcl={setSelectedExcl}
@@ -1721,15 +2076,17 @@ const KW_PREVIEW = 8; // collapsed list length
 
 function KeywordPanel({
   pid, project, refreshProject, isLeader,
-  inclusion, exclusion, inclSource, exclSource, editInclusion, editExclusion, kwStats, loadKwStats,
+  inclusion, exclusion, inclSource, exclSource, kwStats, loadKwStats,
   selectedIncl, setSelectedIncl, selectedExcl, setSelectedExcl, clearKeywordFilters,
   shownCount, projectTotal,
   showInclusion, setShowInclusion, showExclusion, setShowExclusion,
+  kwPendingIncl = [], kwPendingExcl = [], kwConflicts = [],
+  canEditKeywords, runKeywordOp, kwOpError,
 }) {
   const [editing, setEditing] = useState(false);
+  const [reviewOpen, setReviewOpen] = useState(false);
   const anySelected = selectedIncl.length + selectedExcl.length > 0;
-  const criteriaCount = [...Object.values(inclSource || {}), ...Object.values(exclSource || {})]
-    .filter(s => s === KEYWORD_SOURCE.CRITERIA).length;
+  const suggestionCount = kwPendingIncl.length + kwPendingExcl.length + kwConflicts.length;
 
   return (
     <div>
@@ -1760,17 +2117,16 @@ function KeywordPanel({
         selected={selectedExcl} setSelected={setSelectedExcl}
       />
 
-      {/* prompt28 Part 1 / prompt43 Area 1 — explain the criteria-derived layer.
-          These are SUGGESTED screening keywords intelligently extracted from the
-          project's PICO & eligibility criteria (clinical concepts + common
-          synonyms), not the raw criteria sentences. They are read-only here and
-          editable at the source (PICO & Question); the leader's own keyword list
-          below is never overwritten by them. */}
-      {criteriaCount > 0 && (
-        <div style={{ marginTop: 10, fontSize: 10.5, color: C.muted, lineHeight: 1.5, display: 'flex', alignItems: 'flex-start', gap: 6 }}>
-          <CriteriaBadge />
-          <span>Suggested screening keywords — auto-extracted from this project&apos;s PICO &amp; eligibility criteria (concepts &amp; common synonyms). Edit them in PICO &amp; Question.</span>
-        </div>
+      {/* 107.md §2 — SUGGESTED keywords derived from this project's eligibility
+          criteria. They do NOT highlight, filter or count until a leader accepts
+          them, and an ambiguous-polarity concept is flagged for review instead of
+          being added to both lists. */}
+      {canEditKeywords && suggestionCount > 0 && (
+        <SuggestedKeywords
+          open={reviewOpen} onToggle={() => setReviewOpen(o => !o)}
+          pendingIncl={kwPendingIncl} pendingExcl={kwPendingExcl} conflicts={kwConflicts}
+          counts={kwStats} runKeywordOp={runKeywordOp} error={kwOpError}
+        />
       )}
 
       {/* Highlight toggles (independent of filters) */}
@@ -1801,7 +2157,11 @@ function KeywordPanel({
             <div style={{ marginTop: 12 }}>
               <KeywordEditor
                 pid={pid} project={project} isLeader={isLeader}
-                inclusion={editInclusion} exclusion={editExclusion}
+                inclusion={inclusion} exclusion={exclusion}
+                inclSource={inclSource} exclSource={exclSource}
+                canEditKeywords={canEditKeywords} runKeywordOp={runKeywordOp} opError={kwOpError}
+                suggestionCount={suggestionCount}
+                onReviewSuggestions={() => setReviewOpen(true)}
                 refreshProject={() => { refreshProject?.(); loadKwStats?.(); }}
               />
             </div>
@@ -1812,18 +2172,141 @@ function KeywordPanel({
   );
 }
 
-// Subtle "Project criteria" provenance badge (prompt28 Part 1).
-function CriteriaBadge({ compact }) {
+// ── 107.md §2 — suggestion review ────────────────────────────────────────────
+// Pending suggestions per side (Accept / Reject) plus a flagged group for concepts
+// whose polarity is ambiguous. Nothing here is active until it is accepted.
+
+const ORIGIN_LABEL = {
+  [KEYWORD_ORIGIN.MANUAL]: 'Added manually',
+  [KEYWORD_ORIGIN.ACCEPTED]: 'Accepted suggestion',
+  [KEYWORD_ORIGIN.DEFAULT]: 'Default keyword',
+};
+const ORIGIN_GLYPH = {
+  [KEYWORD_ORIGIN.MANUAL]: '✎',
+  [KEYWORD_ORIGIN.ACCEPTED]: '✓',
+  [KEYWORD_ORIGIN.DEFAULT]: '·',
+};
+
+export function SuggestedKeywords({ open, onToggle, pendingIncl, pendingExcl, conflicts, counts, runKeywordOp, error }) {
+  const total = pendingIncl.length + pendingExcl.length + conflicts.length;
+  return (
+    <div data-testid="screening-keyword-suggestions"
+      style={{
+        marginTop: 14, border: `1px dashed ${alpha(C.acc, '55')}`, borderRadius: 9,
+        background: alpha(C.acc, '08'), padding: '10px 12px',
+      }}>
+      <button
+        onClick={onToggle}
+        style={{
+          width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+          background: 'none', border: 'none', cursor: 'pointer', padding: 0, textAlign: 'left',
+        }}>
+        <span style={{ fontSize: 10, fontFamily: MONO, fontWeight: 700, letterSpacing: '0.1em', textTransform: 'uppercase', color: C.acc }}>
+          Suggested · {total}
+        </span>
+        <span style={{ fontSize: 11, color: C.muted, fontFamily: MONO }}>{open ? '▾' : '▸'}</span>
+      </button>
+      {!open && (
+        <div style={{ fontSize: 10.5, color: C.muted, lineHeight: 1.5, marginTop: 6 }}>
+          Derived from this project&apos;s eligibility criteria. Not active until reviewed.
+        </div>
+      )}
+      {open && (
+        <div style={{ marginTop: 10 }}>
+          <div style={{ fontSize: 10.5, color: C.muted, lineHeight: 1.5, marginBottom: 10 }}>
+            Derived from this project&apos;s eligibility criteria. Suggestions do not highlight,
+            filter or count until you accept them.
+          </div>
+          <SuggestionGroup
+            label="For inclusion" accent={C.grn} list="include" terms={pendingIncl}
+            counts={counts.include || {}} runKeywordOp={runKeywordOp}
+          />
+          <SuggestionGroup
+            label="For exclusion" accent={C.red} list="exclude" terms={pendingExcl}
+            counts={counts.exclude || {}} runKeywordOp={runKeywordOp}
+          />
+          {conflicts.length > 0 && (
+            <div data-testid="screening-keyword-conflicts" style={{ marginTop: 12, paddingTop: 10, borderTop: `1px solid ${C.brd}` }}>
+              <div style={{ fontSize: 9.5, fontFamily: MONO, color: C.gold, letterSpacing: '0.1em', marginBottom: 4 }}>
+                NEEDS REVIEW
+              </div>
+              <div style={{ fontSize: 10.5, color: C.muted, lineHeight: 1.5, marginBottom: 8 }}>
+                Needs review — appears in both inclusion and exclusion contexts.
+              </div>
+              {conflicts.map(c => (
+                <div key={c.term} style={{ marginBottom: 10 }}>
+                  <div style={{ fontSize: 12, color: C.txt, marginBottom: 4 }} title={c.reason}>{c.term}</div>
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                    <MiniButton accent={C.grn} onClick={() => runKeywordOp({ type: 'accept', list: 'include', term: c.term })}>
+                      Add to inclusion
+                    </MiniButton>
+                    <MiniButton accent={C.red} onClick={() => runKeywordOp({ type: 'accept', list: 'exclude', term: c.term })}>
+                      Add to exclusion
+                    </MiniButton>
+                    {/* Sequential: each op is a read-modify-write, so firing both
+                        at once would let the second read a pre-commit snapshot. */}
+                    <MiniButton accent={C.muted} onClick={async () => {
+                      for (const op of dismissConflictOps(c.term)) await runKeywordOp(op);
+                    }}>
+                      Dismiss
+                    </MiniButton>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+          {error && <div style={{ fontSize: 10.5, color: C.red, marginTop: 8 }}>{error}</div>}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function SuggestionGroup({ label, accent, list, terms, counts, runKeywordOp }) {
+  if (!terms.length) return null;
+  return (
+    <div style={{ marginBottom: 10 }}>
+      <div style={{ fontSize: 9.5, fontFamily: MONO, color: accent, letterSpacing: '0.1em', marginBottom: 6 }}>
+        {label.toUpperCase()}
+      </div>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+        {terms.map(t => (
+          <div key={t} style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+            <span style={{ flex: 1, minWidth: 0, fontSize: 12, color: C.txt2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={t}>{t}</span>
+            <span style={{ fontSize: 10, fontFamily: MONO, color: C.muted, flexShrink: 0 }}>{counts[t] || 0}</span>
+            <MiniButton accent={accent} onClick={() => runKeywordOp({ type: 'accept', list, term: t })}>Accept</MiniButton>
+            <MiniButton accent={C.muted} onClick={() => runKeywordOp({ type: 'reject', list, term: t })}>Reject</MiniButton>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function MiniButton({ children, accent, onClick, title }) {
+  return (
+    <button onClick={onClick} title={title}
+      style={{
+        background: alpha(accent, '14'), border: `1px solid ${alpha(accent, '48')}`, color: accent,
+        fontSize: 10.5, fontFamily: FONT, padding: '2px 8px', borderRadius: 6,
+        cursor: 'pointer', whiteSpace: 'nowrap', flexShrink: 0,
+      }}>{children}</button>
+  );
+}
+
+// Subtle per-term origin badge (107.md §2 "Suggested vs User-Added Terms").
+function OriginBadge({ origin }) {
+  const label = ORIGIN_LABEL[origin] || ORIGIN_LABEL[KEYWORD_ORIGIN.MANUAL];
+  const color = origin === KEYWORD_ORIGIN.ACCEPTED ? C.acc : origin === KEYWORD_ORIGIN.DEFAULT ? C.muted : C.txt2;
   return (
     <span
-      title="Derived from this project's inclusion/exclusion criteria"
+      title={label}
       style={{
         display: 'inline-flex', alignItems: 'center', flexShrink: 0,
-        fontSize: 8.5, fontFamily: MONO, fontWeight: 700, letterSpacing: '0.03em',
-        color: C.acc, background: alpha(C.acc, '14'), border: `1px solid ${alpha(C.acc, '38')}`,
-        borderRadius: 5, padding: compact ? '0px 4px' : '1px 5px', textTransform: 'uppercase', whiteSpace: 'nowrap',
+        fontSize: 8.5, fontFamily: MONO, fontWeight: 700, color,
+        borderRadius: 5, padding: '0px 3px', whiteSpace: 'nowrap',
       }}
-    >criteria</span>
+    >{ORIGIN_GLYPH[origin] || ORIGIN_GLYPH[KEYWORD_ORIGIN.MANUAL]}</span>
   );
 }
 
@@ -1856,13 +2339,12 @@ function KeywordGroup({ title, accent, terms, counts, selected, setSelected, sou
           {list.map(t => {
             const on = selected.includes(t);
             const n = counts[t] || 0;
-            const isCriteria = (sourceByTerm || {})[t] === KEYWORD_SOURCE.CRITERIA;
+            const origin = (sourceByTerm || {})[t] || KEYWORD_ORIGIN.MANUAL;
             return (
               <label key={t} style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', padding: '2px 0' }}>
                 <input type="checkbox" checked={on} onChange={() => toggleTerm(t)}
                   style={{ accentColor: accent, cursor: 'pointer', flexShrink: 0 }} />
-                <span style={{ flex: 1, minWidth: 0, fontSize: 12, color: on ? C.txt : C.txt2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={isCriteria ? `${t} · from project criteria` : t}>{t}</span>
-                {isCriteria && <CriteriaBadge compact />}
+                <span style={{ flex: 1, minWidth: 0, fontSize: 12, color: on ? C.txt : C.txt2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={`${t} · ${ORIGIN_LABEL[origin] || ORIGIN_LABEL[KEYWORD_ORIGIN.MANUAL]}`}>{t}</span>
                 <span style={{ fontSize: 10, fontFamily: MONO, color: n ? accent : C.muted, background: n ? alpha(accent, '14') : 'transparent', borderRadius: 4, padding: '1px 6px', flexShrink: 0, minWidth: 22, textAlign: 'center' }}>{n}</span>
               </label>
             );
@@ -1880,78 +2362,98 @@ function KeywordGroup({ title, accent, terms, counts, selected, setSelected, sou
   );
 }
 
-// ── Keyword editor (chips + add + auto-generate, leader-only edits) ──────────
+// ── Keyword editor (active chips + add/remove/move, leader-only edits) ───────
+//
+// 107.md §2 — every mutation here is a SINGLE-TERM operation against the server
+// reducer (`POST /keywords/ops`), not a whole-array overwrite, so two leaders
+// editing at once compose instead of clobbering. The destructive
+// "✨ Auto-generate from PICO" button is gone: suggestions are now derived live and
+// reviewed above, so there is nothing left to "generate" over the top of a leader's
+// manual terms. "Reset to defaults" survives but needs an explicit confirm.
 
-function KeywordEditor({ pid, project, refreshProject, inclusion, exclusion, isLeader }) {
-  const [incl, setIncl] = useState(inclusion);
-  const [excl, setExcl] = useState(exclusion);
+function KeywordEditor({
+  pid, refreshProject, inclusion, exclusion, isLeader,
+  inclSource, exclSource, canEditKeywords, runKeywordOp, opError,
+  suggestionCount = 0, onReviewSuggestions,
+}) {
   const [newIncl, setNewIncl] = useState('');
   const [newExcl, setNewExcl] = useState('');
   const [saving, setSaving] = useState(false);
   const [msg, setMsg] = useState('');
   const [err, setErr] = useState('');
+  const [confirmReset, setConfirmReset] = useState(false);
 
-  // Re-sync when the project's persisted keywords change.
-  useEffect(() => { setIncl(inclusion); /* eslint-disable-next-line */ }, [inclusion.join('|')]);
-  useEffect(() => { setExcl(exclusion); /* eslint-disable-next-line */ }, [exclusion.join('|')]);
+  const mayEdit = canEditKeywords !== undefined ? canEditKeywords : isLeader;
 
-  async function persist(nextIncl, nextExcl) {
+  async function runOp(op) {
+    setSaving(true); setErr(''); setMsg('');
+    try {
+      const r = await runKeywordOp?.(op);
+      if (r) setMsg(r.changed ? 'Saved' : 'No change');
+      setTimeout(() => setMsg(''), 1800);
+    } finally { setSaving(false); }
+  }
+
+  function addTerm(kind) {
+    const list = kind === 'incl' ? 'include' : 'exclude';
+    const raw = (kind === 'incl' ? newIncl : newExcl).trim();
+    if (!raw) return;
+    if (kind === 'incl') setNewIncl(''); else setNewExcl('');
+    // Duplicate detection is normalized + case-insensitive (107.md §3) and is
+    // re-checked server-side by the same reducer.
+    const key = normalizeKeywordKey(raw);
+    const target = kind === 'incl' ? inclusion : exclusion;
+    if (target.some(t => normalizeKeywordKey(t) === key)) {
+      setMsg('Already in the list');
+      setTimeout(() => setMsg(''), 1800);
+      return;
+    }
+    runOp({ type: 'add', list, term: raw });
+  }
+
+  // Full-list reset stays on the legacy PUT (it deliberately replaces both lists).
+  async function resetDefaults() {
     setSaving(true); setErr(''); setMsg('');
     try {
       await screeningApi.updateProject(pid, {
-        inclusionKeywords: JSON.stringify(nextIncl),
-        exclusionKeywords: JSON.stringify(nextExcl),
+        inclusionKeywords: JSON.stringify(DEFAULT_INCLUDE_KEYWORDS),
+        exclusionKeywords: JSON.stringify(DEFAULT_EXCLUDE_KEYWORDS),
+        keywordMeta: {},
       });
-      setMsg('Saved');
+      setMsg('Reset to defaults');
+      setConfirmReset(false);
       refreshProject?.();
       setTimeout(() => setMsg(''), 1800);
     } catch (e) { setErr(e.message || 'Save failed'); }
     finally { setSaving(false); }
   }
 
-  function addTerm(kind) {
-    const raw = (kind === 'incl' ? newIncl : newExcl).trim();
-    if (!raw) return;
-    const list = kind === 'incl' ? incl : excl;
-    if (list.some(t => t.toLowerCase() === raw.toLowerCase())) {
-      kind === 'incl' ? setNewIncl('') : setNewExcl('');
-      return;
-    }
-    const next = [...list, raw];
-    if (kind === 'incl') { setIncl(next); setNewIncl(''); persist(next, excl); }
-    else { setExcl(next); setNewExcl(''); persist(incl, next); }
-  }
-
-  function removeTerm(kind, term) {
-    if (kind === 'incl') { const next = incl.filter(t => t !== term); setIncl(next); persist(next, excl); }
-    else { const next = excl.filter(t => t !== term); setExcl(next); persist(incl, next); }
-  }
-
-  async function autoGenerate() {
-    const k = extractKeywords({ question: project?.reviewQuestion || '' });
-    setIncl(k.inclusion); setExcl(k.exclusion);
-    persist(k.inclusion, k.exclusion);
-  }
-
-  function resetDefaults() {
-    setIncl(DEFAULT_INCLUDE_KEYWORDS); setExcl(DEFAULT_EXCLUDE_KEYWORDS);
-    persist(DEFAULT_INCLUDE_KEYWORDS, DEFAULT_EXCLUDE_KEYWORDS);
-  }
-
   const chip = (term, kind) => {
+    const list = kind === 'incl' ? 'include' : 'exclude';
+    const other = kind === 'incl' ? 'exclude' : 'include';
+    const origin = (kind === 'incl' ? inclSource : exclSource)?.[term] || KEYWORD_ORIGIN.MANUAL;
     const tint = kind === 'incl'
       ? { bg: alpha(C.grn, 0.14), bd: alpha(C.grn, 0.5), tx: C.grn }
       : { bg: alpha(C.red, 0.14), bd: alpha(C.red, 0.5), tx: C.red };
     return (
-      <span key={kind + term} style={{
-        display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 11,
-        background: tint.bg, border: `1px solid ${tint.bd}`, color: tint.tx,
-        borderRadius: 11, padding: '2px 4px 2px 9px',
-      }}>
+      <span key={kind + term} title={`${term} · ${ORIGIN_LABEL[origin] || ORIGIN_LABEL[KEYWORD_ORIGIN.MANUAL]}`}
+        style={{
+          display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 11,
+          background: tint.bg, border: `1px solid ${tint.bd}`, color: tint.tx,
+          borderRadius: 11, padding: '2px 4px 2px 9px',
+        }}>
+        <OriginBadge origin={origin} />
         {term}
-        {isLeader && (
+        {mayEdit && (
           <button
-            onClick={() => removeTerm(kind, term)}
+            onClick={() => runOp({ type: 'move', list, term, toList: other })}
+            style={{ background: 'none', border: 'none', color: tint.tx, cursor: 'pointer', fontSize: 11, lineHeight: 1, padding: '0 2px', opacity: 0.7 }}
+            title={kind === 'incl' ? 'Move to exclusion' : 'Move to inclusion'}
+          >{kind === 'incl' ? '→' : '←'}</button>
+        )}
+        {mayEdit && (
+          <button
+            onClick={() => runOp({ type: 'remove', list, term })}
             style={{ background: 'none', border: 'none', color: tint.tx, cursor: 'pointer', fontSize: 13, lineHeight: 1, padding: '0 2px', opacity: 0.7 }}
             title="Remove"
           >×</button>
@@ -1964,37 +2466,57 @@ function KeywordEditor({ pid, project, refreshProject, inclusion, exclusion, isL
     <div>
       {/* Inclusion */}
       <div style={{ fontSize: 9.5, fontFamily: MONO, color: C.grn, letterSpacing: '0.1em', marginBottom: 7 }}>INCLUSION (GREEN)</div>
-      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: isLeader ? 8 : 14 }}>
-        {incl.length === 0 && <span style={{ fontSize: 11.5, color: C.muted }}>None.</span>}
-        {incl.map(t => chip(t, 'incl'))}
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: mayEdit ? 8 : 14 }}>
+        {inclusion.length === 0 && <span style={{ fontSize: 11.5, color: C.muted }}>None.</span>}
+        {inclusion.map(t => chip(t, 'incl'))}
       </div>
-      {isLeader && (
+      {mayEdit && (
         <ChipAdder value={newIncl} setValue={setNewIncl} onAdd={() => addTerm('incl')} placeholder="Add inclusion term…" accent={C.grn} />
       )}
 
       {/* Exclusion */}
       <div style={{ fontSize: 9.5, fontFamily: MONO, color: C.red, letterSpacing: '0.1em', margin: '14px 0 7px' }}>EXCLUSION (RED)</div>
-      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: isLeader ? 8 : 14 }}>
-        {excl.length === 0 && <span style={{ fontSize: 11.5, color: C.muted }}>None.</span>}
-        {excl.map(t => chip(t, 'excl'))}
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: mayEdit ? 8 : 14 }}>
+        {exclusion.length === 0 && <span style={{ fontSize: 11.5, color: C.muted }}>None.</span>}
+        {exclusion.map(t => chip(t, 'excl'))}
       </div>
-      {isLeader && (
+      {mayEdit && (
         <ChipAdder value={newExcl} setValue={setNewExcl} onAdd={() => addTerm('excl')} placeholder="Add exclusion term…" accent={C.red} />
       )}
 
-      {/* Auto-generate */}
-      {isLeader && (
+      {mayEdit && (
         <div style={{ marginTop: 14 }}>
-          <Button variant="subtle" onClick={resetDefaults} disabled={saving} full style={{ fontSize: 12, marginBottom: 8 }}>
-            ↺ Reset to default keywords
-          </Button>
-          <Button variant="subtle" onClick={autoGenerate} disabled={saving} full style={{ fontSize: 12 }}>
-            ✨ Auto-generate from PICO
-          </Button>
+          <div style={{ fontSize: 10.5, color: C.muted, lineHeight: 1.5, marginBottom: 10 }}>
+            Tip: select text in an abstract and press Ctrl/⌘+I or Ctrl/⌘+E to add it here.
+          </div>
+          {suggestionCount > 0 && (
+            <Button variant="subtle" onClick={onReviewSuggestions} full style={{ fontSize: 12, marginBottom: 8 }}>
+              Review suggestions ({suggestionCount})
+            </Button>
+          )}
+          {confirmReset ? (
+            <div style={{ display: 'flex', gap: 6, marginBottom: 8 }}>
+              <Button variant="danger" onClick={resetDefaults} disabled={saving} style={{ fontSize: 11.5, flex: 1 }}>
+                Replace both lists
+              </Button>
+              <Button variant="ghost" onClick={() => setConfirmReset(false)} disabled={saving} style={{ fontSize: 11.5 }}>
+                Cancel
+              </Button>
+            </div>
+          ) : (
+            <Button variant="subtle" onClick={() => setConfirmReset(true)} disabled={saving} full style={{ fontSize: 12, marginBottom: 8 }}>
+              ↺ Reset to default keywords
+            </Button>
+          )}
+          {confirmReset && (
+            <div style={{ fontSize: 10.5, color: C.gold, lineHeight: 1.5, marginBottom: 8 }}>
+              This replaces both keyword lists, including terms you added manually.
+            </div>
+          )}
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 8, minHeight: 14 }}>
             {saving && <span style={{ fontSize: 10.5, color: C.muted, fontFamily: MONO }}>Saving…</span>}
             {msg && <span style={{ fontSize: 10.5, color: C.grn, fontFamily: MONO }}>{msg}</span>}
-            {err && <span style={{ fontSize: 10.5, color: C.red, fontFamily: MONO }}>{err}</span>}
+            {(err || opError) && <span style={{ fontSize: 10.5, color: C.red, fontFamily: MONO }}>{err || opError}</span>}
           </div>
         </div>
       )}

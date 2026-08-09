@@ -165,6 +165,11 @@ export default function SiftProject({ embedded = false, embeddedPid = null, onGo
     // prompt23 Task 4 — a decision or resolved conflict changes the workflow counts;
     // refresh the stepper/overview summary so the stage indicators stay live.
     'decision.saved':      ev => { if (!ev || ev.projectId === pid || ev.projectId === undefined) loadSummary(); },
+    // 107.md §1 — a duplicate-detection job reaching a terminal state (completed,
+    // failed or cancelled) changes the Duplicates step and the Overview duplicate
+    // tiles. The legacy/embedded stepper reads THIS summary, so it needs its own
+    // subscription — the worker now pokes the initiator too.
+    'duplicates.completed': ev => { if (!ev || ev.projectId === pid || ev.projectId === undefined) loadSummary(); },
   });
 
   const setTab = (key) => setParams(prev => { const n = new URLSearchParams(prev); n.set(tabParam, key); return n; }, { replace: true });
@@ -309,9 +314,9 @@ export default function SiftProject({ embedded = false, embeddedPid = null, onGo
                     onBack={() => setTab('overview')} />
                 </div>
               : isFullBleed
-                ? <div style={{ height: '100%' }}><ActiveComp pid={pid} project={project} access={access} refreshProject={refreshProject} setTab={setTab} onGoToExtraction={onGoToExtraction} presence={presence} userId={user?.id} embedded /></div>
+                ? <div style={{ height: '100%' }}><ActiveComp pid={pid} project={project} dataSummary={summary} access={access} refreshProject={refreshProject} setTab={setTab} onGoToExtraction={onGoToExtraction} presence={presence} userId={user?.id} embedded /></div>
                 : <ScreeningContentShell>
-                    <ActiveComp pid={pid} project={project} access={access} refreshProject={refreshProject} setTab={setTab} onGoToExtraction={onGoToExtraction} presence={presence} userId={user?.id} embedded />
+                    <ActiveComp pid={pid} project={project} dataSummary={summary} access={access} refreshProject={refreshProject} setTab={setTab} onGoToExtraction={onGoToExtraction} presence={presence} userId={user?.id} embedded />
                   </ScreeningContentShell>
           )}
         </div>
@@ -395,9 +400,9 @@ export default function SiftProject({ embedded = false, embeddedPid = null, onGo
 
         {!loading && !error && !disabled && project && (
           isFullBleed
-            ? <div style={{ height: '100%' }}><ActiveComp pid={pid} project={project} access={access} refreshProject={refreshProject} presence={presence} userId={user?.id} /></div>
+            ? <div style={{ height: '100%' }}><ActiveComp pid={pid} project={project} dataSummary={summary} access={access} refreshProject={refreshProject} presence={presence} userId={user?.id} /></div>
             : <ScreeningContentShell>
-                <ActiveComp pid={pid} project={project} access={access} refreshProject={refreshProject} presence={presence} userId={user?.id} />
+                <ActiveComp pid={pid} project={project} dataSummary={summary} access={access} refreshProject={refreshProject} presence={presence} userId={user?.id} />
               </ScreeningContentShell>
         )}
       </div>

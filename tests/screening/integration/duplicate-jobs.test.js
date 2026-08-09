@@ -220,6 +220,108 @@ describe('duplicate detection — durable job lifecycle (92.md)', () => {
     await api('DELETE', `${SIFT}/${pid}`, cookieA);
   }, 60_000);
 
+  // ── 107.md §1 — the overview projection is driven by the JOB ROW ────────────
+  it('REGRESSION: a completed run that finds ZERO duplicates reads as run in the overview', async () => {
+    if (!up) return;
+    const pid = await makeProject(`DUPJOB zero ${rnd()}`);
+    const suffix = rnd();
+    // Three unmistakably distinct records → detection completes, finds nothing.
+    await addRecord(pid, cookieA, { title: `Ambulatory blood pressure monitoring in pregnancy ${suffix}`, doi: `10.98/a-${suffix}`, year: '2019' });
+    await addRecord(pid, cookieA, { title: `Genomic surveillance of avian influenza in poultry ${suffix}`, doi: `10.98/b-${suffix}`, year: '2021' });
+    await addRecord(pid, cookieA, { title: `Occupational noise exposure and hearing loss in miners ${suffix}`, doi: `10.98/c-${suffix}`, year: '2023' });
+
+    const before = await api('GET', `${SIFT}/${pid}/overview`, cookieA);
+    expect(before.status).toBe(200);
+    expect(before.data.dataSummary.duplicateDetectionRun).toBe(false);
+    expect(before.data.dataSummary.duplicateDetection.status).toBe('never_run');
+    expect(before.data.dataSummary.duplicateDetection.lastCompletedAt).toBeNull();
+    expect(before.data.dataSummary.duplicateDetection.stale).toBe(false);
+
+    const start = await api('POST', `${SIFT}/${pid}/duplicates/detect`, cookieA, {});
+    const job = await waitForJob(pid, start.data.job.id, cookieA);
+    expect(job.status).toBe('completed');
+    expect(job.groupsFound).toBe(0); // the whole point: a clean project
+
+    const dups = await api('GET', `${SIFT}/${pid}/duplicates`, cookieA);
+    expect(dups.data.groups).toHaveLength(0);
+
+    // Pre-107 this stayed false forever (it was `dupGroups.length > 0`), leaving
+    // the workflow stepper on "Pending" after a successful run.
+    const after = await api('GET', `${SIFT}/${pid}/overview`, cookieA);
+    expect(after.status).toBe(200);
+    expect(after.data.dataSummary.duplicateDetectionRun).toBe(true);
+    expect(after.data.dataSummary.duplicateDetection.status).toBe('completed');
+    expect(after.data.dataSummary.duplicateDetection.lastCompletedAt).toBeTruthy();
+    expect(after.data.dataSummary.duplicateDetection.lastError).toBeNull();
+    expect(after.data.dataSummary.duplicateDetection.stale).toBe(false);
+    expect(after.data.dataSummary.unresolvedDuplicateGroups).toBe(0);
+
+    await api('DELETE', `${SIFT}/${pid}`, cookieA);
+  }, 60_000);
+
+  it('staleness flips on once records are added after the last completed sweep', async () => {
+    if (!up) return;
+    const pid = await makeProject(`DUPJOB stale ${rnd()}`);
+    const suffix = rnd();
+    await addRecord(pid, cookieA, { title: `Dietary sodium reduction and blood pressure in adults ${suffix}`, doi: `10.99/a-${suffix}`, year: '2018' });
+    await addRecord(pid, cookieA, { title: `Telemonitoring for chronic heart failure a cohort study ${suffix}`, doi: `10.99/b-${suffix}`, year: '2020' });
+
+    const start = await api('POST', `${SIFT}/${pid}/duplicates/detect`, cookieA, {});
+    const job = await waitForJob(pid, start.data.job.id, cookieA);
+    expect(job.status).toBe('completed');
+
+    const fresh = await api('GET', `${SIFT}/${pid}/overview`, cookieA);
+    expect(fresh.data.dataSummary.duplicateDetection.stale).toBe(false);
+
+    // A record imported AFTER the sweep was provably never scanned.
+    await addRecord(pid, cookieA, { title: `Telemonitoring for chronic heart-failure: a cohort study ${suffix}`, doi: `10.99/b-${suffix}`, year: '2020' });
+
+    const stale = await api('GET', `${SIFT}/${pid}/overview`, cookieA);
+    expect(stale.data.dataSummary.duplicateDetection.stale).toBe(true);
+    expect(['records_added', 'record_count_changed']).toContain(stale.data.dataSummary.duplicateDetection.staleReason);
+    // Still "run" — staleness is a separate, explicit signal, not a reset.
+    expect(stale.data.dataSummary.duplicateDetectionRun).toBe(true);
+    expect(stale.data.dataSummary.duplicateDetection.status).toBe('completed');
+
+    // Rerunning clears it (and this time the pair IS found).
+    const again = await api('POST', `${SIFT}/${pid}/duplicates/detect`, cookieA, {});
+    const job2 = await waitForJob(pid, again.data.job.id, cookieA);
+    expect(job2.status).toBe('completed');
+    const rerun = await api('GET', `${SIFT}/${pid}/overview`, cookieA);
+    expect(rerun.data.dataSummary.duplicateDetection.stale).toBe(false);
+
+    await api('DELETE', `${SIFT}/${pid}`, cookieA);
+  }, 90_000);
+
+  it('a cancelled run is reported as cancelled and does not claim a completed sweep', async () => {
+    if (!up) return;
+    const pid = await makeProject(`DUPJOB cancelstate ${rnd()}`);
+    const suffix = rnd();
+    for (let i = 0; i < 30; i++) {
+      await addRecord(pid, cookieA, {
+        title: `Comparative effectiveness of intervention arm ${i} across sites ${suffix}`,
+        doi: i % 2 === 0 ? `10.991/${suffix}-${Math.floor(i / 2)}` : '',
+        year: '2022',
+      });
+    }
+    const start = await api('POST', `${SIFT}/${pid}/duplicates/detect`, cookieA, {});
+    await api('POST', `${SIFT}/${pid}/duplicates/jobs/${start.data.job.id}/cancel`, cookieA, {});
+    const job = await waitForJob(pid, start.data.job.id, cookieA);
+
+    const ov = await api('GET', `${SIFT}/${pid}/overview`, cookieA);
+    expect(ov.status).toBe(200);
+    expect(ov.data.dataSummary.duplicateDetection.status).toBe(job.status);
+    if (job.status === 'cancelled') {
+      // No completed sweep exists, and the run produced groups or not — either way
+      // the state must be honest about never having finished.
+      expect(ov.data.dataSummary.duplicateDetection.lastCompletedAt).toBeNull();
+    } else {
+      expect(ov.data.dataSummary.duplicateDetectionRun).toBe(true);
+    }
+
+    await api('DELETE', `${SIFT}/${pid}`, cookieA);
+  }, 90_000);
+
   it('enforces access: 401 unauthenticated, 404 outsider (existence hidden)', async () => {
     if (!up) return;
     const pid = await makeProject(`DUPJOB access ${rnd()}`);

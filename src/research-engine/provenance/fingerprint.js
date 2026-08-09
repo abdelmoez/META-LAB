@@ -15,12 +15,17 @@ import { fnv1a } from './diff.js';
 const obj = (v) => (v && typeof v === 'object' && !Array.isArray(v) ? v : {});
 const arr = (v) => (Array.isArray(v) ? v : []);
 
-/** Per-study numeric/format fields that, when changed, alter the effect estimate. */
-const STUDY_VALUE_FIELDS = [
+/** Per-study numeric/format fields that, when changed, alter the effect estimate — or,
+ *  like `reportedFormat` and the 107.md proportion metadata, alter what it MEANS. */
+export const STUDY_VALUE_FIELDS = [
   'es', 'lo', 'hi', 'a', 'b', 'c', 'd', 'events', 'total',
   'nExp', 'meanExp', 'sdExp', 'nCtrl', 'meanCtrl', 'sdCtrl',
   'median', 'q1', 'q3', 'medianExp', 'q1Exp', 'q3Exp', 'medianCtrl', 'q1Ctrl', 'q3Ctrl',
   'reportedFormat',
+  // 107.md §8 — reclassifying an estimate's denominator or action status is a real,
+  // auditable change to an extracted value: it must reach the project-history ledger as
+  // an EXTRACTED_VALUE_CHANGED event like any other edit.
+  'denominatorPopulation', 'denominatorCustom', 'actionStatus',
 ];
 
 /** Extract the value-bearing slice of one study row (for EXTRACTED_VALUE_CHANGED). */

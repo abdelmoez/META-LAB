@@ -97,4 +97,118 @@ describe('buildScreeningSteps', () => {
     expect(live['second-review'].count).toMatch(/pending|sent/);
     expect(live.extraction.count).toBe('4 sent');
   });
+
+  // ── 107.md §1 — explicit duplicate-detection states ────────────────────────
+  describe('duplicates step reads the explicit detection state (107.md §1)', () => {
+    const base = { totalArticles: 40, unresolvedDuplicateGroups: 0, resolvedDuplicateGroups: 0 };
+
+    it('REGRESSION: a completed run that found ZERO duplicates is done, not "Pending"', () => {
+      // The reported bug: detection completed, produced no groups, and the stepper
+      // sat on 'Pending' forever because the flag was inferred from group EXISTENCE.
+      const s = byId(buildScreeningSteps({
+        ...base,
+        duplicateDetectionRun: true,
+        duplicateDetection: { status: 'completed', lastCompletedAt: '2026-01-02T03:04:05.000Z', lastError: null, stale: false, staleReason: null },
+      }));
+      expect(s.duplicates.status).toBe('done');
+      expect(s.duplicates.count).toBe('No duplicates');
+      expect(s.duplicates.hint).toBeNull();
+    });
+
+    it('a completed run whose groups are all resolved still says "Resolved"', () => {
+      const s = byId(buildScreeningSteps({
+        ...base,
+        resolvedDuplicateGroups: 5,
+        duplicateDetectionRun: true,
+        duplicateDetection: { status: 'completed', lastCompletedAt: '2026-01-02T03:04:05.000Z', lastError: null, stale: false, staleReason: null },
+      }));
+      expect(s.duplicates.status).toBe('done');
+      expect(s.duplicates.count).toBe('Resolved');
+    });
+
+    it('an active job (queued or processing) shows "Processing…"', () => {
+      for (const status of ['queued', 'processing']) {
+        const s = byId(buildScreeningSteps({
+          ...base,
+          duplicateDetectionRun: false,
+          duplicateDetection: { status, lastCompletedAt: null, lastError: null, stale: false, staleReason: null },
+        }));
+        expect(s.duplicates.status).toBe('active');
+        expect(s.duplicates.count).toBe('Processing…');
+      }
+    });
+
+    it('a running job wins over leftover unresolved groups from an earlier sweep', () => {
+      const s = byId(buildScreeningSteps({
+        ...base,
+        unresolvedDuplicateGroups: 7,
+        duplicateDetectionRun: true,
+        duplicateDetection: { status: 'processing', lastCompletedAt: '2026-01-01T00:00:00.000Z', lastError: null, stale: false, staleReason: null },
+      }));
+      expect(s.duplicates.count).toBe('Processing…');
+      // The attention hint is still available to the caller (nothing was resolved).
+      expect(s.duplicates.hint).toBe('7 to resolve');
+    });
+
+    it('a failed job needs attention and says "Failed"', () => {
+      const s = byId(buildScreeningSteps({
+        ...base,
+        duplicateDetectionRun: false,
+        duplicateDetection: { status: 'failed', lastCompletedAt: null, lastError: 'Duplicate detection failed unexpectedly.', stale: false, staleReason: null },
+      }));
+      expect(s.duplicates.status).toBe('attention');
+      expect(s.duplicates.count).toBe('Failed');
+    });
+
+    it('never run with records present is still active/"Pending" (unchanged)', () => {
+      const s = byId(buildScreeningSteps({
+        ...base,
+        duplicateDetectionRun: false,
+        duplicateDetection: { status: 'never_run', lastCompletedAt: null, lastError: null, stale: false, staleReason: null },
+      }));
+      expect(s.duplicates.status).toBe('active');
+      expect(s.duplicates.count).toBe('Pending');
+    });
+
+    it('a completed run with unresolved groups keeps the exact legacy attention strings', () => {
+      const s = byId(buildScreeningSteps({
+        ...base,
+        unresolvedDuplicateGroups: 3,
+        duplicateDetectionRun: true,
+        duplicateDetection: { status: 'completed', lastCompletedAt: '2026-01-02T03:04:05.000Z', lastError: null, stale: false, staleReason: null },
+      }));
+      expect(s.duplicates.status).toBe('attention');
+      expect(s.duplicates.count).toBe('3 unresolved');
+      expect(s.duplicates.hint).toBe('3 to resolve');
+    });
+
+    it('no records → pending/"—" whatever the job says', () => {
+      const s = byId(buildScreeningSteps({
+        totalArticles: 0,
+        duplicateDetection: { status: 'processing', lastCompletedAt: null, lastError: null, stale: false, staleReason: null },
+      }));
+      expect(s.duplicates.status).toBe('pending');
+      expect(s.duplicates.count).toBe('—');
+    });
+
+    it('a legacy caller with only duplicateDetectionRun keeps the pre-107 behaviour', () => {
+      const done = byId(buildScreeningSteps({ totalArticles: 40, duplicateDetectionRun: true, unresolvedDuplicateGroups: 0 }));
+      expect(done.duplicates.status).toBe('done');
+      expect(done.duplicates.count).toBe('Resolved'); // NOT 'No duplicates' without the explicit state
+      const pending = byId(buildScreeningSteps({ totalArticles: 40, duplicateDetectionRun: false }));
+      expect(pending.duplicates.status).toBe('active');
+      expect(pending.duplicates.count).toBe('Pending');
+      const attention = byId(buildScreeningSteps({ totalArticles: 40, duplicateDetectionRun: false, unresolvedDuplicateGroups: 2 }));
+      expect(attention.duplicates.status).toBe('attention');
+      expect(attention.duplicates.count).toBe('2 unresolved');
+    });
+
+    it('a garbage duplicateDetection value degrades to the legacy flag', () => {
+      for (const bad of [null, 'completed', 42, [], { status: '' }]) {
+        const s = byId(buildScreeningSteps({ totalArticles: 40, duplicateDetectionRun: false, duplicateDetection: bad }));
+        expect(s.duplicates.status).toBe('active');
+        expect(s.duplicates.count).toBe('Pending');
+      }
+    });
+  });
 });

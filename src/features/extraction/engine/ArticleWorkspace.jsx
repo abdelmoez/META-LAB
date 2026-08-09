@@ -39,6 +39,12 @@ import {
 } from '../../../research-engine/extraction/harmonize.js';
 import { publicationSourceFor, publicationFilesFor } from '../../../research-engine/extraction/outcomeGroups.js';
 import { isCaseRow, caseDisplayName, caseVarKey, isCaseVarKey, caseVarIdFromKey, caseProgressOf, publicationIdOf } from '../../../research-engine/extraction/caseSeries.js';
+// 107.md §8/§9 — per-estimate proportion metadata + the derived percentage.
+import { DENOMINATOR_POPULATIONS, ACTION_STATUSES } from '../../../research-engine/project-model/monolithConstants.js';
+import {
+  PROPORTION_META_FIELDS, UNCLASSIFIED_LABEL, effectiveDenominatorPopulation,
+  effectiveActionStatus, requiresCustomDenominator, formatProportionDisplay,
+} from '../../../research-engine/extraction/proportionMeta.js';
 import { studyDocApi } from '../unified/studyDocApi.js';
 import ConverterPanel from './ConverterPanel.jsx';
 import CaseFieldsPanel from './CaseFieldsPanel.jsx';
@@ -55,11 +61,21 @@ const FIELD_LABELS = {
   // 82.md reported-as-stated continuous fields (per arm)
   medianExp: 'Median (Exp)', q1Exp: 'Q1 / 25th pct (Exp)', q3Exp: 'Q3 / 75th pct (Exp)', minExp: 'Minimum (Exp)', maxExp: 'Maximum (Exp)', seExp: 'SE (Exp)', ciLoExp: 'Mean 95% CI lower (Exp)', ciHiExp: 'Mean 95% CI upper (Exp)',
   medianCtrl: 'Median (Ctrl)', q1Ctrl: 'Q1 / 25th pct (Ctrl)', q3Ctrl: 'Q3 / 75th pct (Ctrl)', minCtrl: 'Minimum (Ctrl)', maxCtrl: 'Maximum (Ctrl)', seCtrl: 'SE (Ctrl)', ciLoCtrl: 'Mean 95% CI lower (Ctrl)', ciHiCtrl: 'Mean 95% CI upper (Ctrl)',
+  // 107.md §8 — per-estimate proportion metadata (rendered as selects, not <Field>s).
+  denominatorPopulation: 'Denominator population', denominatorCustom: 'Denominator description', actionStatus: 'Action status',
 };
+/** Visually-hidden text (screen-reader only) — used for the derived proportion (§9). */
+const SR_ONLY = { position: 'absolute', width: 1, height: 1, padding: 0, margin: -1, overflow: 'hidden', clip: 'rect(0 0 0 0)', whiteSpace: 'nowrap', border: 0 };
+const PROP_META_SET = new Set(PROPORTION_META_FIELDS);
 const REPORTED_CONT_FIELDS = ['medianExp', 'q1Exp', 'q3Exp', 'minExp', 'maxExp', 'seExp', 'ciLoExp', 'ciHiExp', 'medianCtrl', 'q1Ctrl', 'q3Ctrl', 'minCtrl', 'maxCtrl', 'seCtrl', 'ciLoCtrl', 'ciHiCtrl'];
 const IDENTITY_FIELDS = ['author', 'year', 'outcome', 'timepoint'];
 const NUMERIC_FIELDS = new Set(['a', 'b', 'c', 'd', 'events', 'total', 'tp', 'fp', 'fn', 'tn', 'nExp', 'meanExp', 'sdExp', 'nCtrl', 'meanCtrl', 'sdCtrl', 'es', 'lo', 'hi', 'year', ...REPORTED_CONT_FIELDS]);
-const ALL_VALUE_KEYS = ['es', 'lo', 'hi', 'a', 'b', 'c', 'd', 'events', 'total', 'tp', 'fp', 'fn', 'tn', 'nExp', 'meanExp', 'sdExp', 'nCtrl', 'meanCtrl', 'sdCtrl', ...REPORTED_CONT_FIELDS];
+// 107.md §8 — the three proportion-metadata keys are in ALL_VALUE_KEYS so that every
+// write path (setField, writeValues) accepts them and their edits take the same
+// replace-with-history + provenance route as a number. They are NOT in NUMERIC_FIELDS,
+// NOT in expectedFieldsFor (legacy rows must not regress to "incomplete"), and NOT
+// click-to-pick targets — a picked PDF token is never a controlled term.
+const ALL_VALUE_KEYS = ['es', 'lo', 'hi', 'a', 'b', 'c', 'd', 'events', 'total', 'tp', 'fp', 'fn', 'tn', 'nExp', 'meanExp', 'sdExp', 'nCtrl', 'meanCtrl', 'sdCtrl', ...REPORTED_CONT_FIELDS, ...PROPORTION_META_FIELDS];
 const nonEmpty = (v) => v !== '' && v !== null && v !== undefined;
 
 const COACH_KEY = 'metalab.extraction.pickCoachDismissed';
@@ -204,7 +220,9 @@ export default function ArticleWorkspace({
   // RR + CI into es/lo/hi stays visible even though RR "expects" the 2×2 cells).
   const valueFields = useMemo(() => {
     const expected = expectedFieldsFor(study || {}).filter((f) => !['author', 'year', 'outcome', 'timepoint', 'esType'].includes(f));
-    const extra = ALL_VALUE_KEYS.filter((f) => !expected.includes(f) && nonEmpty((study || {})[f]));
+    // 107.md §8 — the proportion-metadata keys are ALL_VALUE_KEYS members (so writes
+    // accept them) but they render as their own selects below, never as text <Field>s.
+    const extra = ALL_VALUE_KEYS.filter((f) => !expected.includes(f) && !PROP_META_SET.has(f) && nonEmpty((study || {})[f]));
     return [...expected, ...extra];
   }, [study]);
   // Depends on esType AND reportedFormat — a continuous format switch (mean_sd →
@@ -529,6 +547,19 @@ export default function ArticleWorkspace({
   const reportedFormats = useMemo(() => reportedFormatsFor((study && study.esType) || ''), [study && study.esType]);
   const activeFormat = effectiveReportedFormat(study || {});
 
+  /* ── 107.md §9 — the DERIVED proportion beside Events / Total. Computed at render from
+     the live row values, so it updates the instant either field changes; nothing is
+     stored and no second editable numeric field exists — the analysis keeps using
+     events/total. `null` ⇒ blank / non-numeric / total ≤ 0 / negative / events > total,
+     in which case we show an em dash and let the DATA CHECKS panel do the explaining.
+     107.md §8 — the two classifications read through the SELF-HEALING readers, so a row
+     carrying an unknown value falls back to "not classified" instead of a broken select. */
+  const isProp = ((study && study.esType) || '') === 'PROP';
+  const propPct = isProp ? formatProportionDisplay((study || {}).events, (study || {}).total) : null;
+  const propEquation = propPct === null ? '' : `${String((study || {}).events).trim()} / ${String((study || {}).total).trim()} = ${propPct}`;
+  const denomPop = effectiveDenominatorPopulation(study || {});
+  const actionStatus = effectiveActionStatus(study || {});
+
   /** Apply the pending harmonization: derive meanExp/sdExp/… from the reported values,
    *  stamp the conversion audit (formatId + inputsHash so stale-detection works), and
    *  route through the SAME immediate-replace + provenance write path. Never touches the
@@ -771,6 +802,60 @@ export default function ArticleWorkspace({
                   onFocusField={() => focusField(f)} />
               ))}
             </div>
+
+            {/* 107.md §9 — derived percentage beside Events / Total. Display-only, live
+                on every keystroke, announced politely for screen readers. Precision is
+                the repo's centralised fmtPct convention (1 dp), never a new one. */}
+            {isProp && (
+              <div data-testid="pex-prop-derived" role="status" aria-live="polite"
+                style={{ marginTop: 8, fontSize: 12, fontFamily: "'IBM Plex Mono',monospace", color: propPct === null ? C.dim : C.grn }}>
+                {propPct === null
+                  ? <span aria-hidden="true">—</span>
+                  : (<>
+                    <span aria-hidden="true">{propEquation}</span>
+                    <span style={SR_ONLY}>Calculated proportion: {propPct}</span>
+                  </>)}
+              </div>
+            )}
+
+            {/* 107.md §8A/§8B — per-ESTIMATE classifications. Rendered as selects, so a
+                PDF click can never write one (a picked token is not a controlled term —
+                same rule as the case-variable selects). The first option names the
+                unclassified state explicitly, so a legacy row is visibly unresolved
+                rather than silently reading as a genuine category (§8C). */}
+            {isProp && (
+              <div data-testid="pex-prop-meta" style={{ marginTop: 10, display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+                <div>
+                  <label style={lbl} htmlFor="pex-denominatorPopulation">{FIELD_LABELS.denominatorPopulation}</label>
+                  <select id="pex-denominatorPopulation" data-testid="pex-field-denominatorPopulation"
+                    value={denomPop} onChange={(e) => setField('denominatorPopulation', e.target.value)}
+                    disabled={!editable} style={{ ...inp, fontSize: 12 }}>
+                    <option value="">{UNCLASSIFIED_LABEL}</option>
+                    {DENOMINATOR_POPULATIONS.map(([k, l]) => <option key={k} value={k}>{l}</option>)}
+                  </select>
+                </div>
+                <div>
+                  <label style={lbl} htmlFor="pex-actionStatus">{FIELD_LABELS.actionStatus}</label>
+                  <select id="pex-actionStatus" data-testid="pex-field-actionStatus"
+                    value={actionStatus} onChange={(e) => setField('actionStatus', e.target.value)}
+                    disabled={!editable} style={{ ...inp, fontSize: 12 }}>
+                    <option value="">{UNCLASSIFIED_LABEL}</option>
+                    {ACTION_STATUSES.map(([k, l]) => <option key={k} value={k}>{l}</option>)}
+                  </select>
+                </div>
+                {requiresCustomDenominator(denomPop) && (
+                  <div style={{ gridColumn: '1 / -1' }}>
+                    <label style={lbl} htmlFor="pex-denominatorCustom">
+                      {FIELD_LABELS.denominatorCustom} <span style={{ color: C.red }}>· required</span>
+                    </label>
+                    <input id="pex-denominatorCustom" data-testid="pex-field-denominatorCustom"
+                      value={study.denominatorCustom || ''} onChange={(e) => setField('denominatorCustom', e.target.value)}
+                      disabled={!editable} placeholder="e.g. Patients who completed post-test genetic counseling"
+                      style={{ ...inp, fontSize: 12.5 }} />
+                  </div>
+                )}
+              </div>
+            )}
             {/* 82.md — harmonization review: reported→analysis conversion status, transparent
                 and reversible. The reported values above are never overwritten. */}
             {harmonization.required && (

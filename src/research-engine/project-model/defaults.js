@@ -135,6 +135,12 @@ export const mkStudy = () => ({
   // raw single-arm proportion
   events: "", total: "",
 
+  // 107.md §8 — PER-ESTIMATE proportion metadata (one paper may report several
+  // proportions over different denominators). "" = NOT CLASSIFIED (legacy/unset),
+  // which is deliberately NOT the same as actionStatus "unclear" (§8C). Never inferred;
+  // readers must tolerate the keys being absent on older rows (proportionMeta.js).
+  denominatorPopulation: "", denominatorCustom: "", actionStatus: "",
+
   // raw diagnostic accuracy
   tp: "", fp: "", fn: "", tn: "",
 

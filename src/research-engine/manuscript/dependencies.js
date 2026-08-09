@@ -113,6 +113,13 @@ export function computeDependencyState(project, opts = {}) {
   // characteristics narrative, so they ride in the VALUES slice.
   const rosterSlice = studies.map((s) => ({
     id: s.id, outcome: s.outcome, timepoint: s.timepoint, esType: s.esType,
+    // 107.md §8 — the denominator population / custom description / action status are
+    // SCOPE-and-identity descriptors of an estimate (what it counts, and what followed),
+    // exactly like outcome and timepoint — so they ride in the ROSTER slice, not values.
+    // Reclassifying one changes what the characteristics narrative should say.
+    denominatorPopulation: s.denominatorPopulation,
+    denominatorCustom: s.denominatorCustom,
+    actionStatus: s.actionStatus,
     caseSeries: caseSliceOf(s),
   }));
   const valuesSlice = studies.map((s) => ({

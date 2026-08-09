@@ -94,6 +94,21 @@ async function fail(jobId, message) {
   });
 }
 
+/**
+ * 107.md §1 — poke EVERY member on a terminal transition, including the user who
+ * started the run. The completion events previously carried `{ exclude:
+ * job.createdById }` on the assumption that the initiator's own polling covers
+ * them; it does not — the workflow stepper's summary lives in a different
+ * component (useScreeningSummary / SiftProject) that the Duplicates tab cannot
+ * reach, and it has no polling loop at all. The initiator's extra refetch is
+ * idempotent. Emitted for failure and cancellation too: the stepper has to be
+ * able to show 'Failed', not just 'completed'.
+ */
+function emitDuplicateJobTerminal(projectId, jobId) {
+  emitToProjectMembers(projectId, { type: 'duplicates.completed', jobId });
+  emitToProjectMembers(projectId, { type: 'project.updated' });
+}
+
 /** Atomically claim the oldest queued job (queued → processing), or null. */
 async function claimNext() {
   for (let race = 0; race < MAX_CLAIM_RACES; race++) {
@@ -288,6 +303,7 @@ async function processJob(job) {
         statsJson: JSON.stringify({ cancelled: true, reason: 'admin-disabled' }),
       });
       console.log(`[dup-worker] cancelled job=${job.id} project=${job.projectId}: detection disabled by administrator`);
+      emitDuplicateJobTerminal(job.projectId, job.id);
       return;
     }
 
@@ -413,6 +429,10 @@ async function processJob(job) {
     const cpu = process.cpuUsage(cpu0);
     const statsJson = JSON.stringify({
       ...result.stats,
+      // 107.md §1 — project-wide record count at completion. `totalRecords` on the
+      // row excludes frozen resolved-group members, so it cannot answer "did the
+      // article set change since the last sweep?"; this can.
+      projectRecordCount: totalAll,
       plans: plans.length,
       healedGroups,
       skippedResolvedMidRun, // groups a reviewer resolved while the run was in flight — their decision won
@@ -440,11 +460,10 @@ async function processJob(job) {
       completedAt: new Date(),
     });
     console.log(`[dup-worker] completed job=${job.id} project=${job.projectId} n=${records.length} groups=${sizedGroups.length} created=${totals.groupsCreated} updated=${totals.groupsUpdated} cmp=${result.stats.comparisonsEvaluated}/${result.stats.comparisonsPlanned} in ${Date.now() - t0}ms`);
-    // Completion pokes so other sessions refresh; the initiating client polls the
-    // job row already. project.updated is the event existing shells subscribe to
-    // (87.md cross-engine sync), duplicates.completed carries the job handle.
-    emitToProjectMembers(job.projectId, { type: 'duplicates.completed', jobId: job.id }, { exclude: job.createdById });
-    emitToProjectMembers(job.projectId, { type: 'project.updated' }, { exclude: job.createdById });
+    // Completion pokes so EVERY session refreshes — project.updated is the event
+    // existing shells subscribe to (87.md cross-engine sync), duplicates.completed
+    // carries the job handle for the screening summaries (107.md §1).
+    emitDuplicateJobTerminal(job.projectId, job.id);
   } catch (e) {
     if (e instanceof JobCancelledError) {
       await patch(job.id, {
@@ -452,10 +471,12 @@ async function processJob(job) {
         statsJson: JSON.stringify({ cancelled: true, durationsMs: { total: Date.now() - t0 } }),
       });
       console.log(`[dup-worker] cancelled job=${job.id} project=${job.projectId} after ${Date.now() - t0}ms`);
+      emitDuplicateJobTerminal(job.projectId, job.id);
       return;
     }
     console.error(`[dup-worker] processJob job=${job.id} project=${job.projectId}:`, e?.stack || e?.message);
     await fail(job.id, 'Duplicate detection failed unexpectedly. You can safely retry; nothing was corrupted.');
+    emitDuplicateJobTerminal(job.projectId, job.id);
   }
 }
 
@@ -561,6 +582,10 @@ export async function cancelDuplicateJob(projectId, jobId) {
   });
   if (direct.count === 0) {
     await prisma.screenDuplicateJob.update({ where: { id: jobId }, data: { cancelRequested: true } }).catch(() => {});
+  } else {
+    // 107.md §1 — a queued job cancelled here never reaches the worker, so this is
+    // the only place that can announce its terminal state.
+    emitDuplicateJobTerminal(projectId, jobId);
   }
   return prisma.screenDuplicateJob.findUnique({ where: { id: jobId } });
 }

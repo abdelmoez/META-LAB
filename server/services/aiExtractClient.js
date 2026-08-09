@@ -209,6 +209,13 @@ export async function extractStudyFromDocument({ pdfBase64 = null, text = null, 
 
 /* ─────────────────────────── PURE MAPPING LAYER ─────────────────────────── */
 
+// 107.md §8D — `denominatorPopulation`, `denominatorCustom` and `actionStatus` are
+// DELIBERATELY absent from every whitelist below (and from the prompt contract above):
+// "Do not infer values automatically." These are scientific judgements a reviewer makes
+// while reading the paper, and a guessed classification is indistinguishable from a
+// human one once it is on the row. The mapper drops unknown keys, so an over-eager model
+// response simply cannot populate them — the estimate stays "not classified" (§8C) until
+// a human resolves it. Do not "fix" this by adding them here.
 const STRING_FIELDS = ['author', 'year', 'country', 'design', 'outcome', 'timepoint'];
 const NUMERIC_FIELDS = ['n', 'nExp', 'nCtrl', 'meanExp', 'sdExp', 'meanCtrl', 'sdCtrl', 'a', 'b', 'c', 'd'];
 const ADJUST_KEYS = new Set(ADJUST_OPTIONS.map(([k]) => k));

@@ -40,7 +40,7 @@ Source: `src/frontend/screening/ui/screeningSteps.js`. Inputs come from `getOver
 | Step | done | active | attention | pending |
 |---|---|---|---|---|
 | Import | `totalArticles > 0` | — | — | no records yet |
-| Duplicates | no unresolved groups | — | `unresolvedDuplicateGroups > 0` | no records yet |
+| Duplicates | see §4.1 | see §4.1 | see §4.1 | no records yet |
 | Title & Abstract | `eligibleSecondReview > 0 \|\| decided > 0` | otherwise (records exist) | — | no records yet |
 | Conflicts | no unresolved conflicts | — | `unresolvedConflicts > 0` | — |
 | Final Review | `finalRemaining === 0` (and eligible > 0) | `finalRemaining > 0` | — | none eligible yet |
@@ -49,6 +49,45 @@ Source: `src/frontend/screening/ui/screeningSteps.js`. Inputs come from `getOver
 `finalRemaining = eligibleSecondReview − (acceptedToExtraction + rejectedSecond)`
 
 Colour mapping: pending = muted, active = accent, done = green, attention = gold.
+
+## 4.1 Duplicates step — as-built states (107.md §1)
+
+This row was the one place where the implementation had drifted from the table
+above: it carried an undocumented `duplicateDetectionRun` gate that produced an
+`active` / **"Pending"** state the spec never described. Worse, the flag was
+derived server-side from `dupGroups.length > 0` — so a run that completed and
+found **zero** duplicates read as never-run forever. 107.md §1 made the job row
+authoritative; the states below are now the spec.
+
+Inputs: `dataSummary.totalArticles`, `unresolvedDuplicateGroups`,
+`resolvedDuplicateGroups`, `duplicateDetectionRun`, and the explicit
+`dataSummary.duplicateDetection` projection (see
+`docs/manager/duplicate-detection-async.md` → "Detection status semantics").
+
+Evaluated top-down; the first matching row wins.
+
+| Condition | status | count |
+|---|---|---|
+| `totalArticles === 0` | `pending` | `—` |
+| `duplicateDetection.status` is `queued` or `processing` | `active` | `Processing…` |
+| `duplicateDetection.status === 'failed'` | `attention` | `Failed` |
+| `unresolvedDuplicateGroups > 0` | `attention` | `<n> unresolved` |
+| `duplicateDetectionRun` and no groups at all exist | `done` | `No duplicates` |
+| `duplicateDetectionRun` (groups exist, all resolved) | `done` | `Resolved` |
+| otherwise (never run / cancelled, records present) | `active` | `Pending` |
+
+`hint` is unchanged: `"<n> to resolve"` whenever `unresolvedDuplicateGroups > 0`,
+otherwise `null` — it stays available even while a run is in flight.
+
+Back-compat: `buildScreeningSteps` is tolerant of summaries that carry only the
+legacy `duplicateDetectionRun` boolean (older callers, the Stitch stepper
+fixtures). Those keep the exact pre-107 strings — in particular `Resolved`, never
+`No duplicates`, because without the explicit projection the model cannot tell a
+zero-duplicate run from a fully-resolved one.
+
+Staleness (`duplicateDetection.stale`) deliberately does **not** change the step's
+status: a stale result is still a real result. It is surfaced in the Duplicates
+tab as an inline note next to the Detect button; nothing auto-reruns.
 
 ## 5. Theme and accessibility
 

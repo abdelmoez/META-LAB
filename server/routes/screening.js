@@ -128,6 +128,10 @@ r.delete('/metalab/:mlpid/chat/:messageId', CH.deleteMetaLabMessage);
 // Records
 r.get('/projects/:pid/records',          S.listRecords);
 r.get('/projects/:pid/keyword-stats',    S.getKeywordStats);
+// 107.md §2/§3 — single-term keyword mutations (add/remove/move/accept/reject).
+// canManageSettings-gated; applied through the shared reducer inside a transaction
+// so concurrent leaders no longer clobber each other's whole list.
+r.post('/projects/:pid/keywords/ops',    S.keywordOps);
 r.post('/projects/:pid/records',         S.createRecord);
 r.delete('/projects/:pid/records/:rid',  S.deleteRecord);
 r.post('/projects/:pid/records/:rid/open', S.markOpened);

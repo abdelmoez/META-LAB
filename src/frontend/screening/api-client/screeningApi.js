@@ -45,6 +45,11 @@ export const screeningApi = {
     return req('GET', `/projects/${pid}/records${qs ? '?' + qs : ''}`);
   },
   getKeywordStats: (pid) => req('GET', `/projects/${pid}/keyword-stats`),
+  // 107.md §2/§3 — one keyword mutation at a time, applied server-side through the
+  // shared reducer inside a transaction (no full-array last-write-wins).
+  // op: { type:'add'|'remove'|'move'|'accept'|'reject', list:'include'|'exclude',
+  //       term, toList? } → { changed, reason, inclusionKeywords, exclusionKeywords, keywordMeta }
+  keywordOp: (pid, op) => req('POST', `/projects/${pid}/keywords/ops`, op),
   // 100.md §§12-15 — "where did I stop?", per user + project + screening stage.
   // → { stage, status:'resume'|'reopen'|'start'|'complete'|'empty', recordId, wrapped,
   //     position, page, limit, pending, decided, stageTotal, listTotal,

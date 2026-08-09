@@ -27,7 +27,9 @@ import { downloadBlob } from "../../components/exportCore.js";
 import { fmtES } from "../../../research-engine/format/precision.js";
 import { orderStudies, EXTRACTION_SORTS, DEFAULT_EXTRACTION_SORT } from "../../pages/extractionOrder.js";
 import { isNonPrimary } from "../../../research-engine/import-export/referenceParsers.js";
-import { SOURCE_OPTIONS, DATA_NATURE, ADJUST_OPTIONS, EXTRACT_FLAGS, ES_TYPES } from "../../../research-engine/project-model/monolithConstants.js";
+import { SOURCE_OPTIONS, DATA_NATURE, ADJUST_OPTIONS, EXTRACT_FLAGS, ES_TYPES, DENOMINATOR_POPULATIONS, ACTION_STATUSES } from "../../../research-engine/project-model/monolithConstants.js";
+// 107.md §8/§9 — per-estimate proportion metadata + the derived percentage.
+import { UNCLASSIFIED_LABEL, effectiveDenominatorPopulation, effectiveActionStatus, requiresCustomDenominator, formatProportionDisplay } from "../../../research-engine/extraction/proportionMeta.js";
 import { calcES, CONVERSIONS, validateStudy, findDuplicates, checkPoolability } from "../../../research-engine/statistics/monolithStats.js";
 import { AI_FEATURES_ENABLED, callClaude, fetchCitationAI, fileToBase64, fetchByDOI, fetchByPMID, safeParseJSON } from "../../services/aiService.js";
 import { openExportDialog } from "../exportDialogBridge.js";
@@ -39,6 +41,8 @@ import { isCaseRow, caseInfoOf, caseDisplayName, caseVarKey, normalizeCaseVariab
 /* monolith-local utils (verbatim copies — projectHelpers.js does not export them) */
 const uid = () => Math.random().toString(36).slice(2, 10);
 const fmtDate = (iso) => iso ? new Date(iso).toLocaleDateString("en-US",{month:"short",day:"numeric",year:"numeric"}) : "—";
+/* Visually-hidden text (screen-reader only) — used for the derived proportion (107.md §9). */
+const SR_ONLY={position:"absolute",width:1,height:1,padding:0,margin:-1,overflow:"hidden",clip:"rect(0 0 0 0)",whiteSpace:"nowrap",border:0};
 
 /* ════════════ ES CALCULATOR ════════════ */
 function ESCalcInline({s,ch}){
@@ -47,6 +51,8 @@ function ESCalcInline({s,ch}){
   const[res,setRes]=useState(null);
   const[err,setErr]=useState("");
   const[note,setNote]=useState("");
+  // 107.md §9 — derived at render (no state), so it tracks events/total live.
+  const propPct=formatProportionDisplay(s.events,s.total);
   // Read raw values straight from the study object so they persist & are auditable
   const sp=(k,v)=>ch(k,v);
   const fi=(k,ph,hint)=>(<div><div style={{fontSize:9,color:C.dim,marginBottom:2}} title={hint||""}>{ph}</div>
@@ -128,7 +134,21 @@ function ESCalcInline({s,ch}){
       <div><div style={{fontSize:9,color:C.dim,marginBottom:2}}>95% CI Upper</div><input value={s._hrHi||""} onChange={e=>sp("_hrHi",e.target.value)} placeholder="upper" style={{...inp,fontSize:11,fontFamily:"'IBM Plex Mono',monospace",padding:"4px 6px"}}/></div>
     </div>}
     {type==="COR"&&<div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:8}}>{fi("r","r (Pearson)")}{fi("n","n (sample size)")}</div>}
-    {type==="PROP"&&<div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:8}}>{fi("events","events")}{fi("total","group total")}</div>}
+    {type==="PROP"&&<div style={{marginBottom:8}}>
+      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>{fi("events","events")}{fi("total","group total")}</div>
+      {/* 107.md §9 — the derived percentage, computed at RENDER from the live row values
+          so it updates on every keystroke (not only after "Calculate & Apply"). Display
+          only: nothing is stored and the pooling still uses events/total via calcES.
+          Blank / non-numeric / total ≤ 0 / negative / events > total → an em dash, never
+          a misleading number; the study's DATA CHECKS list explains the error. */}
+      <div data-testid="esc-prop-derived" role="status" aria-live="polite"
+        style={{marginTop:6,fontSize:11,fontFamily:"'IBM Plex Mono',monospace",color:propPct===null?C.dim:C.grn}}>
+        {propPct===null
+          ? <span aria-hidden="true">—</span>
+          : <><span aria-hidden="true">{`${String(s.events).trim()} / ${String(s.total).trim()} = ${propPct}`}</span>
+            <span style={SR_ONLY}>Calculated proportion: {propPct}</span></>}
+      </div>
+    </div>}
     {type==="DIAG"&&<div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:8,marginBottom:8}}>{fi("tp","TP")}{fi("fp","FP")}{fi("fn","FN")}{fi("tn","TN")}</div>}
     <div style={{display:"flex",alignItems:"center",gap:12,flexWrap:"wrap"}}>
       <button onClick={calc} style={btnS("primary")}>Calculate & Apply →</button>
@@ -475,6 +495,30 @@ function StudyCard({s,idx,updStudy,delStudy,dup,onClone}){
           </select></div>
       </div>
 
+      {/* 107.md §8A/§8B — PER-ESTIMATE proportion metadata. These describe THIS
+          proportion, not the study: one paper may report several proportions over
+          different denominators with different action statuses. The first option names
+          the unclassified state explicitly, so a row that predates the feature reads as
+          "not classified" rather than masquerading as the genuine "Unclear" category
+          (§8C). The values are read through the self-healing readers, so an unknown
+          stored value shows as unclassified instead of a blank select. */}
+      {s.esType==="PROP"&&(<div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:12}}>
+        <div><label style={lbl}>Denominator population <HelpTip text="Which population this proportion's DENOMINATOR counts. Belongs to this estimate — a second proportion from the same paper can use a different denominator."/></label>
+          <select value={effectiveDenominatorPopulation(s)} onChange={e=>ch("denominatorPopulation",e.target.value)} style={inp}>
+            <option value="">{UNCLASSIFIED_LABEL}</option>
+            {DENOMINATOR_POPULATIONS.map(([k,l])=><option key={k} value={k}>{l}</option>)}
+          </select></div>
+        <div><label style={lbl}>Action status <HelpTip text="What actually happened as a result. 'Unclear' means the ARTICLE reports it as unclear — leave it unclassified if the field was simply never collected."/></label>
+          <select value={effectiveActionStatus(s)} onChange={e=>ch("actionStatus",e.target.value)} style={inp}>
+            <option value="">{UNCLASSIFIED_LABEL}</option>
+            {ACTION_STATUSES.map(([k,l])=><option key={k} value={k}>{l}</option>)}
+          </select></div>
+        {requiresCustomDenominator(effectiveDenominatorPopulation(s))&&(<div style={{gridColumn:"1 / -1"}}>
+          <label style={lbl}>Denominator description <span style={{color:C.red}}>· required</span></label>
+          <input value={s.denominatorCustom||""} onChange={e=>ch("denominatorCustom",e.target.value)}
+            placeholder="e.g. Patients who completed post-test genetic counseling" style={{...inp,fontSize:12}}/></div>)}
+      </div>)}
+
       {/* Effect size block */}
       <div style={{border:`1px solid ${C.brd}`,borderRadius:6,padding:12}}>
         <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:10,flexWrap:"wrap",gap:8}}>
@@ -583,6 +627,50 @@ function ExtractionTab({project,updateProject,activeId,setTab,onWorkspaceChange,
   // Flag OFF — the classic split-screen workspace, unchanged. It never opens a
   // full-bleed article view, so the shell's lift stays false (its initial state).
   return <ClassicExtractionTab project={project} updateProject={updateProject} activeId={activeId} setTab={setTab}/>;
+}
+
+/* CSV export (Excel-compatible) — includes metadata, provenance, conversion audit.
+   Routed through the shared ExportDialog (CSV only, BOM preserved for Excel).
+   PURE and module-level (it used to be a closure inside ClassicExtractionTab) so the
+   hand-written column list can be pinned by a unit test — 107.md §8F added three
+   columns to it and a silently-dropped column is this exporter's known failure mode. */
+export function buildExtractionCSV(studies=[],project={}){
+  const list=Array.isArray(studies)?studies:[];
+  const cols=["author","year","title","authors","journal","doi","pmid","country","design","dataSource",
+    "enrollPeriod","followup","populationDef","interventionDef","comparatorDef","funding",
+    "outcome","primaryOutcome","secondaryOutcomes","timepoint","dataNature","adjusted","source","converted","flags",
+    "esType","n","nExp","nCtrl","meanExp","sdExp","meanCtrl","sdCtrl","a","b","c","d","events","total","tp","fp","fn","tn",
+    // 107.md §8F — per-estimate proportion metadata. RAW internal enum values (this file
+    // is the machine-readable extraction dump); a legacy/unclassified row exports an
+    // empty cell, which round-trips back as "not classified".
+    "denominatorPopulation","denominatorCustom","actionStatus",
+    "es","lo","hi","needsReview","extractedBy","extractedAt","conversions","notes"];
+  const esc=v=>{let t;if(Array.isArray(v))t=v.join("; ");else if(v&&typeof v==="object")t=JSON.stringify(v);else t=String(v==null?"":v);
+    t=t.replace(/"/g,'""');return /[",\n]/.test(t)?`"${t}"`:t;};
+  // 106.md §Export — when the review extracted individual patients, every row also
+  // carries its case identity and the review's patient-level variables, so this one
+  // file IS case-level. The parent-article columns (author/year/doi/pmid) are
+  // untouched, so a case can always be traced back to its publication. A review with
+  // no case series exports byte-identically to before.
+  const caseVars=normalizeCaseVariables((project||{}).caseVariables);
+  const anyCases=list.some(isCaseRow);
+  const caseCols=anyCases
+    ?["caseSeriesPublicationId","caseId","caseNumber","caseLabel",...caseVars.map(v=>caseVarKey(v.id))]
+    :[];
+  const caseHeaders=anyCases
+    ?["Publication ID","Case ID","Case number","Case",...caseVars.map(v=>v.unit?`${v.label} (${v.unit})`:v.label)]
+    :[];
+  const caseCell=(s,c)=>{
+    const info=caseInfoOf(s);
+    if(c==="caseSeriesPublicationId") return info?info.publicationId:"";
+    if(c==="caseId") return info?info.caseId:"";
+    if(c==="caseNumber") return info?info.caseNumber:"";
+    if(c==="caseLabel") return info?caseDisplayName(s):"";
+    return s[c]==null?"":s[c];
+  };
+  const header=[...cols,...caseHeaders.map(esc)].join(",");   // labels are user text — escape them
+  const rows=list.map(s=>[...cols.map(c=>esc(s[c])),...caseCols.map(c=>esc(caseCell(s,c)))].join(","));
+  return [header,...rows].join("\n");
 }
 
 function ClassicExtractionTab({project,updateProject,activeId,setTab}){
@@ -836,41 +924,6 @@ ${paperText.slice(0,15000)}`;
     setExtracting(false);
   };
 
-  // CSV export (Excel-compatible) — includes metadata, provenance, conversion audit.
-  // Routed through the shared ExportDialog (CSV only, BOM preserved for Excel).
-  const buildExtractionCSV=()=>{
-    const cols=["author","year","title","authors","journal","doi","pmid","country","design","dataSource",
-      "enrollPeriod","followup","populationDef","interventionDef","comparatorDef","funding",
-      "outcome","primaryOutcome","secondaryOutcomes","timepoint","dataNature","adjusted","source","converted","flags",
-      "esType","n","nExp","nCtrl","meanExp","sdExp","meanCtrl","sdCtrl","a","b","c","d","events","total","tp","fp","fn","tn",
-      "es","lo","hi","needsReview","extractedBy","extractedAt","conversions","notes"];
-    const esc=v=>{let t;if(Array.isArray(v))t=v.join("; ");else if(v&&typeof v==="object")t=JSON.stringify(v);else t=String(v==null?"":v);
-      t=t.replace(/"/g,'""');return /[",\n]/.test(t)?`"${t}"`:t;};
-    // 106.md §Export — when the review extracted individual patients, every row also
-    // carries its case identity and the review's patient-level variables, so this one
-    // file IS case-level. The parent-article columns (author/year/doi/pmid) are
-    // untouched, so a case can always be traced back to its publication. A review with
-    // no case series exports byte-identically to before.
-    const caseVars=normalizeCaseVariables(project.caseVariables);
-    const anyCases=studies.some(isCaseRow);
-    const caseCols=anyCases
-      ?["caseSeriesPublicationId","caseId","caseNumber","caseLabel",...caseVars.map(v=>caseVarKey(v.id))]
-      :[];
-    const caseHeaders=anyCases
-      ?["Publication ID","Case ID","Case number","Case",...caseVars.map(v=>v.unit?`${v.label} (${v.unit})`:v.label)]
-      :[];
-    const caseCell=(s,c)=>{
-      const info=caseInfoOf(s);
-      if(c==="caseSeriesPublicationId") return info?info.publicationId:"";
-      if(c==="caseId") return info?info.caseId:"";
-      if(c==="caseNumber") return info?info.caseNumber:"";
-      if(c==="caseLabel") return info?caseDisplayName(s):"";
-      return s[c]==null?"":s[c];
-    };
-    const header=[...cols,...caseHeaders.map(esc)].join(",");   // labels are user text — escape them
-    const rows=studies.map(s=>[...cols.map(c=>esc(s[c])),...caseCols.map(c=>esc(caseCell(s,c)))].join(","));
-    return [header,...rows].join("\n");
-  };
   const openExtractionExport=()=>{
     const filename=`${(project.name||"extraction").replace(/[^a-z0-9]/gi,"_")}_extraction.csv`;
     openExportDialog({
@@ -879,7 +932,7 @@ ${paperText.slice(0,15000)}`;
       formats:[{id:"csv",label:"CSV (Excel-compatible, UTF-8 BOM)"}],
       sizing:false,
       run:async()=>{
-        downloadBlob(new Blob(["﻿"+buildExtractionCSV()],{type:"text/csv;charset=utf-8;"}),filename);
+        downloadBlob(new Blob(["﻿"+buildExtractionCSV(studies,project)],{type:"text/csv;charset=utf-8;"}),filename);
       },
     });
   };

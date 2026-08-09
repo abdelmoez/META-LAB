@@ -69,6 +69,44 @@ export function pageWindow({ firstPage = 1, page = 1, pages = 1, total = 0, limi
 }
 
 /**
+ * moveIntent — 107.md §7. What a next/previous keystroke MEANS at the current
+ * position, decided before anything is selected or requested.
+ *
+ * Keyboard navigation used to dead-end at the last LOADED row: a reviewer arrowing
+ * through 5,000 records stopped silently at 50 until they reached for the mouse. The
+ * fix has to distinguish four cases, and getting any of them wrong is a data problem
+ * rather than a cosmetic one — advancing into a nonexistent index blanks the reader,
+ * and firing a second page request while one is in flight duplicates or skips studies.
+ *
+ *   'move'      → an adjacent row exists; select it.
+ *   'load-next' → past the last loaded row, more exist, nothing in flight: paginate.
+ *   'end'       → past the last loaded row and there is genuinely nothing more.
+ *   'noop'      → before the first row, empty list, or a request already in flight
+ *                 (repeated key presses while loading must NOT queue up).
+ *
+ * @param {object} o
+ * @param {number}  o.index        index of the selected row (−1 when none is selected)
+ * @param {number}  o.dir          +1 forward, −1 backward
+ * @param {number}  o.count        rows currently loaded
+ * @param {boolean} o.hasMore      more pages exist server-side (from pageWindow)
+ * @param {boolean} o.loadingMore  a pagination request is already in flight
+ * @returns {'move'|'load-next'|'end'|'noop'}
+ */
+export function moveIntent({ index, dir, count, hasMore, loadingMore } = {}) {
+  const n = Math.max(0, Math.floor(Number(count) || 0));
+  if (n === 0) return 'noop';
+  const i = Math.floor(Number(index));
+  const step = Number(dir) < 0 ? -1 : 1;
+  const next = (Number.isFinite(i) ? i : -1) + step;
+  if (next >= 0 && next < n) return 'move';
+  // Backwards off the top: the earlier pages are reachable through the list's own
+  // "Earlier records" control, which is a scroll position rather than a selection.
+  if (next < 0) return 'noop';
+  if (!hasMore) return 'end';
+  return loadingMore ? 'noop' : 'load-next';
+}
+
+/**
  * buildFastListQuery — the Prisma where/orderBy for an eligible request.
  * Ordering matches the in-memory path (createdAt asc) with an id tiebreak so
  * skip/take pagination is stable across requests when createdAt ties (bulk imports

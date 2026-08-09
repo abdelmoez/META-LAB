@@ -67,6 +67,88 @@ boot recovery). No new infrastructure.
   summary ("no duplicates found" included); failures show the user-facing
   error + safe Retry.
 
+## Detection status semantics (107.md §1)
+
+The job row is the **only** authoritative source of "has detection run, and how
+did it end". Before 107.md the Overview endpoint inferred it from results —
+`duplicateDetectionRun: dupGroups.length > 0` — which is wrong in three ways: a
+completed run finding **zero** duplicates read as never-run (the stepper's
+permanent "Pending"), a failed run was indistinguishable from never-run, and the
+flag silently regressed whenever an import-batch delete or a scoped reset removed
+the last group rows.
+
+`GET …/overview` → `dataSummary` now carries both:
+
+- **`duplicateDetectionRun`** (unchanged name; many callers/tests read it) —
+  `dupGroups.length > 0 || a completed job exists`. The coarse "is there a valid
+  dedup result?" flag; gates the Overview duplicate stat tiles.
+- **`duplicateDetection`** — the explicit state:
+
+  | field | meaning |
+  |---|---|
+  | `status` | `never_run` \| `queued` \| `processing` \| `completed` \| `failed` \| `cancelled` — the status of the **latest** job row (newest `createdAt`, id as tiebreak) |
+  | `lastCompletedAt` | `completedAt` of the newest `completed` job, else `null` |
+  | `lastError` | the failed job's user-facing `error`, truncated to 300 chars; `null` unless `status === 'failed'` |
+  | `stale` | the last completed sweep no longer covers the current record set |
+  | `staleReason` | `records_added` \| `record_count_changed` \| `null` |
+
+Both come from two indexed `findFirst`s on `ScreenDuplicateJob` plus one
+`_max: { createdAt }` aggregate over `ScreenRecord` — no extra record loads.
+
+### Staleness rule (explicit and deterministic)
+
+There is no input fingerprint on `ScreenDuplicateJob` (and 107.md needed none —
+no schema change). Staleness is derived, and only ever evaluated when a completed
+job exists:
+
+1. **`records_added`** — the newest `ScreenRecord.createdAt` is later than the
+   last completed job's `completedAt`. Such a record was provably never scanned.
+2. **`record_count_changed`** — the project's current record count differs from
+   the count the sweep saw. **Not** `job.totalRecords`: that column counts only
+   the records the sweep *considered* (members of resolved groups are frozen out),
+   so comparing it against the project total would report a false "stale" for
+   every project with a resolved group. The worker instead records the project-wide
+   count in `statsJson.projectRecordCount` at completion, and the overview compares
+   against that.
+
+Known gap: jobs that completed **before** `statsJson.projectRecordCount` existed
+have no count to compare, so for them rule 2 is skipped and only rule 1 applies
+(a pure deletion would go unnoticed until the next run). This degrades honestly
+rather than fabricating a comparison; the first rerun fixes it permanently.
+
+Staleness never rewrites the status and never triggers an automatic rerun — the
+Duplicates tab shows an inline note ("Records have changed since the last
+detection — rerun to update results.") beside the existing Detect button.
+
+### Realtime + out-of-order protection (107.md §1)
+
+- The worker emits `duplicates.completed` **and** `project.updated` on **every**
+  terminal transition — completed, failed, cancelled (including the admin
+  kill-switch path and a queued job cancelled before the worker ever claims it) —
+  and **no longer excludes the initiating user**. The old
+  `{ exclude: job.createdById }` assumed the initiator's own polling covered them;
+  it did not. The Duplicates tab's `refreshProject` updates *SiftProject's* summary,
+  while the Stitch white vertical stepper reads a **separate** summary owned by
+  `useScreeningSummary` that the tab cannot reach and that has no polling loop. The
+  person who clicked Detect was therefore the only one who never saw their own
+  result land. The extra refetch they now perform is idempotent.
+- Both summary owners subscribe to `duplicates.completed`:
+  `src/frontend/stitch/shell/useScreeningSummary.js` and the realtime map in
+  `src/frontend/screening/pages/SiftProject.jsx`.
+- `src/research-engine/screening/duplicateJobState.js` (pure) exports
+  `pickNewerJob(prev, next)`, used at **every** `setJob` site in `DuplicatesTab`
+  that is fed by a network response (reconnect fetch, 1.5 s poll, 10 s idle poll,
+  detect and cancel replies). Same job id → status may only advance
+  (queued < processing < terminal), equal rank resolved by `updatedAt` (now
+  included in `publicDuplicateJob`), identical observations return the previous
+  object so an idle poll of a settled job causes no re-render. Different job id →
+  the newer `createdAt` wins, so a fresh retry job supersedes an old completed run
+  while a stale response for the previous run cannot displace it.
+- The 10 s idle poll now also refreshes the shell summary on a terminal transition
+  (it previously refreshed only the group list, leaving the stepper stale), and its
+  data-load side effect was moved OUT of the `setJob` functional updater — React 18
+  StrictMode double-invokes updaters.
+
 ## Data integrity rules
 
 - Members of **resolved** groups are frozen — never re-detected, so keep-all /
@@ -163,4 +245,14 @@ boot recovery). No new infrastructure.
   extend/absorb determinism, primary preservation.
 - `tests/screening/integration/duplicate-jobs.test.js` — 202 lifecycle,
   rerun idempotency, concurrent-start convergence, refresh reconnect, manual
-  keep-all survival, 401/404 access, safe cancellation.
+  keep-all survival, 401/404 access, safe cancellation, and (107.md §1) the
+  zero-duplicate completed run reading as run in the overview, staleness
+  flipping after a post-completion import, and a cancelled run never claiming a
+  completed sweep.
+- `tests/unit/screening/duplicateJobState.test.js` — (107.md §1) forward-only
+  job state: pending→processing→completed/failed, stale same-id responses
+  dropped, older-job responses ignored, a newer queued retry superseding an old
+  completed run, null/garbage tolerance.
+- `tests/unit/screeningSteps.test.js` — (107.md §1) the duplicates step's
+  as-built states, including the regression case: completed with zero groups →
+  `done` / "No duplicates" (previously a permanent "Pending").

@@ -15,12 +15,44 @@
  * (acceptedToExtraction + rejectedSecond).
  *
  * Status values: 'done' | 'active' | 'attention' | 'pending'.
+ *
+ * 107.md §1 — the Duplicates step additionally reads `summary.duplicateDetection`
+ * ({ status, lastCompletedAt, lastError, stale, staleReason }) so it can tell
+ * "never run" apart from "ran, found nothing", show a live run, and surface a
+ * failure. Summaries that predate that field keep the pre-107 strings exactly.
+ * As-built matrix: docs/manager/screening-stepper-integration.md §4.1.
  */
 export function buildScreeningSteps(summary) {
   const s = summary || {};
   const total          = s.totalArticles || 0;
   const dupRun         = !!s.duplicateDetectionRun;
   const unresolvedDups = s.unresolvedDuplicateGroups || 0;
+  const resolvedDups   = s.resolvedDuplicateGroups || 0;
+  // 107.md §1 — the explicit duplicate-detection job state, when the overview
+  // exposes it. Callers that only pass the legacy boolean (older summaries, the
+  // Stitch fixtures) keep exactly the pre-107 strings; `dupState` is what unlocks
+  // 'Processing…' / 'Failed' / 'No duplicates'.
+  const dupState  = (s.duplicateDetection && typeof s.duplicateDetection === 'object') ? s.duplicateDetection : null;
+  const dupStatus = (dupState && typeof dupState.status === 'string' && dupState.status) || null;
+  const dupBusy   = dupStatus === 'queued' || dupStatus === 'processing';
+  const dupFailed = dupStatus === 'failed';
+  // A completed sweep that found nothing is DONE, not pending — that inversion is
+  // the reported bug. `dupRun` is now server-derived from the job row, so it is
+  // true for a zero-duplicate run; `resolvedDups + unresolvedDups === 0` is what
+  // distinguishes "no duplicates exist" from "every group was resolved".
+  const dupAnyGroups = unresolvedDups > 0 || resolvedDups > 0;
+  const dupStepStatus = total === 0 ? 'pending'
+    : dupBusy ? 'active'
+    : dupFailed ? 'attention'
+    : unresolvedDups > 0 ? 'attention'
+    : dupRun ? 'done'
+    : 'active';
+  const dupStepCount = total === 0 ? '—'
+    : dupBusy ? 'Processing…'
+    : dupFailed ? 'Failed'
+    : unresolvedDups > 0 ? `${unresolvedDups} unresolved`
+    : dupRun ? ((dupState && !dupAnyGroups) ? 'No duplicates' : 'Resolved')
+    : 'Pending';
   const eligible       = s.eligibleSecondReview || 0;   // records at full-text stage
   const accepted       = s.acceptedToExtraction || 0;   // finalStatus accepted (in extraction)
   const rejected       = s.rejectedSecond || 0;
@@ -45,9 +77,9 @@ export function buildScreeningSteps(summary) {
       status: total > 0 ? 'done' : 'active',
       count: total > 0 ? `${total} record${total === 1 ? '' : 's'}` : 'Not started' },
     { id: 'duplicates',    screen: 'duplicates',    label: 'Duplicates',       icon: 'copy',
-      status: total === 0 ? 'pending' : unresolvedDups > 0 ? 'attention' : (dupRun ? 'done' : 'active'),
+      status: dupStepStatus,
       hint: unresolvedDups > 0 ? `${unresolvedDups} to resolve` : null,
-      count: total === 0 ? '—' : unresolvedDups > 0 ? `${unresolvedDups} unresolved` : (dupRun ? 'Resolved' : 'Pending') },
+      count: dupStepCount },
     { id: 'screening',     screen: 'screening',     label: 'Title & Abstract', icon: 'filter',
       status: taStatus,
       hint: taExact && taPending > 0 ? `${taPending} to screen` : null,

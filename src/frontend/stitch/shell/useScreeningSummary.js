@@ -34,6 +34,12 @@ export function useScreeningSummary(spId) {
     'decision.saved': () => load(),
     'handoff.updated': () => load(),
     'project.updated': () => load(),
+    // 107.md §1 — a duplicate-detection run reaching a terminal state changes the
+    // Duplicates step. This hook is the ONLY owner of the summary behind the white
+    // vertical stepper (the Duplicates tab's refreshProject updates SiftProject's
+    // separate copy), and it has no polling loop — without this subscription the
+    // person who started the run never saw their own result land.
+    'duplicates.completed': () => load(),
   });
 
   return summary;

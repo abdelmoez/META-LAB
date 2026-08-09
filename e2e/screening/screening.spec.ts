@@ -113,6 +113,97 @@ test.describe('Screening — record decisions', () => {
   });
 });
 
+test.describe('Screening — keyboard navigation (107.md §§5-7)', () => {
+  test('arrowing past the last loaded study auto-loads the next batch and lands on its first record', async ({ page, screeningProject }) => {
+    const pid = screeningProject.project.id;
+    const siftId = screeningProject.siftId;
+
+    // Push the project past one page (LIMIT = 50) so there IS a next batch.
+    const extra = Array.from({ length: 92 }, (_, i) => ({
+      title: `Nav QA article ${String(i + 1).padStart(3, '0')}`,
+      year: 2021, doi: `10.9999/navqa.${i + 1}`, abstract: `Abstract ${i + 1}`,
+    }));
+    await api.importScreeningRecords(page.request, siftId, { content: api.makeRis(extra) });
+    const listed = await page.request.get(`/api/screening/projects/${siftId}/records?page=1&limit=200`);
+    const ids: string[] = (await listed.json()).records.map((r: { id: string }) => r.id);
+    expect(ids.length).toBe(100); // 8 seeded + 92 bulk
+
+    const sp = new ScreeningPage(page);
+    await sp.openWorkbench(pid);
+    await expect(sp.rows).toHaveCount(50);
+    // The manual fallback is still there — auto-pagination augments it (§7).
+    await expect(sp.loadMoreButton).toBeVisible();
+
+    // Stand on the LAST loaded study, then press the "next" key once.
+    await sp.rowById(ids[49]).click();
+    await expect(sp.selectedRow).toHaveAttribute('data-record-id', ids[49]);
+    await page.keyboard.press('ArrowRight');
+
+    // The next page loads and the FIRST newly loaded study is selected — no skip, no
+    // repeat, no reorder — and §5 keeps it inside the visible list region.
+    await expect(sp.rows).toHaveCount(100);
+    await expect(sp.selectedRow).toHaveAttribute('data-record-id', ids[50]);
+    await expect(sp.selectedRow).toBeInViewport();
+    // The middle column follows the selection, and the counter now spans both pages.
+    await expect(sp.recordNav).toContainText('51 / 100');
+  });
+
+  test('repeated presses at the true end keep the final study selected and say so', async ({ page, screeningProject }) => {
+    const pid = screeningProject.project.id;
+    const sp = new ScreeningPage(page);
+    await sp.openWorkbench(pid);
+
+    // 8 seeded records fit on one page, so row 8 IS the end of the list.
+    const ids = await sp.rows.evaluateAll(els => els.map(e => e.getAttribute('data-record-id')!));
+    expect(ids.length).toBe(screeningProject.recordCount);
+    await sp.rowById(ids[ids.length - 1]).click();
+    await expect(sp.selectedRow).toHaveAttribute('data-record-id', ids[ids.length - 1]);
+
+    // No "Load more" exists, so there is nothing to fetch: the footer says the list
+    // ended and the selection does not move, however many times the key is pressed.
+    await expect(sp.loadMoreButton).toHaveCount(0);
+    await expect(sp.endOfList).toBeVisible();
+    for (let i = 0; i < 3; i++) await page.keyboard.press('ArrowRight');
+    await expect(sp.selectedRow).toHaveAttribute('data-record-id', ids[ids.length - 1]);
+    await expect(sp.endOfList).toBeVisible();
+  });
+
+  test('a keyboard decision updates the sticky decision bar and the citation-list glyph', async ({ page, screeningProject }) => {
+    const pid = screeningProject.project.id;
+    const sp = new ScreeningPage(page);
+    await sp.openWorkbench(pid);
+
+    const ids = await sp.rows.evaluateAll(els => els.map(e => e.getAttribute('data-record-id')!));
+    await sp.rowById(ids[1]).click();
+    await expect(sp.selectedRow).toHaveAttribute('data-record-id', ids[1]);
+
+    // Undecided reads as undecided — no control looks falsely selected (§6).
+    await expect(sp.decisionBar).toHaveAttribute('data-decision', 'undecided');
+    await expect(sp.decisionBar).toContainText('Undecided');
+    await expect(sp.includeButton).toHaveAttribute('aria-pressed', 'false');
+
+    // `i` includes: the bar's chip, the button's pressed state and the row glyph all move.
+    await page.keyboard.press('i');
+    await expect(sp.decisionBar).toHaveAttribute('data-decision', 'include');
+    await expect(sp.decisionBar).toContainText('Included');
+    await expect(sp.includeButton).toHaveAttribute('aria-pressed', 'true');
+    await expect(sp.rowById(ids[1])).toContainText('✓');
+
+    // Changing the decision is non-destructive and stays in sync in both places.
+    await page.keyboard.press('e');
+    await expect(sp.decisionBar).toHaveAttribute('data-decision', 'exclude');
+    await expect(sp.excludeButton).toHaveAttribute('aria-pressed', 'true');
+    await expect(sp.includeButton).toHaveAttribute('aria-pressed', 'false');
+    await expect(sp.rowById(ids[1])).toContainText('✗');
+
+    // …and it survives a reload (the decision is server-owned, not local state).
+    await page.reload();
+    await sp.rowById(ids[1]).click();
+    await expect(sp.decisionBar).toHaveAttribute('data-decision', 'exclude');
+    await expect(sp.rowById(ids[1])).toContainText('✗');
+  });
+});
+
 test.describe('Screening — Resume Screening (100.md §§12-15)', () => {
   test('resumes at the next undecided article after leaving and coming back', async ({ page, screeningProject }) => {
     const sift = new ScreeningPage(page);

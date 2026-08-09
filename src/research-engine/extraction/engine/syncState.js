@@ -21,6 +21,11 @@ export const SYNC_INPUT_FIELDS = Object.freeze([
   'n', 'nExp', 'nCtrl', 'meanExp', 'sdExp', 'meanCtrl', 'sdCtrl',
   'a', 'b', 'c', 'd', 'events', 'total', 'tp', 'fp', 'fn', 'tn',
   'es', 'lo', 'hi',
+  // 107.md §8 — the per-estimate proportion metadata defines WHAT the proportion is a
+  // proportion OF, so reclassifying a denominator changes the meaning of an estimate
+  // already carried into the analysis. Without these three the article would keep
+  // reading "In analysis" after the reviewer changed its scope.
+  'denominatorPopulation', 'denominatorCustom', 'actionStatus',
 ]);
 
 /** The sync statuses surfaced in the article list (76.md §20). */

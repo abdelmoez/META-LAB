@@ -70,7 +70,14 @@ const DUP_TYPE_LABEL = {
   [DUP_TYPES.NOT]: 'Not a duplicate',
 };
 import { DEFAULT_INCLUDE_KEYWORDS, DEFAULT_EXCLUDE_KEYWORDS } from '../../src/research-engine/screening/defaultKeywords.js';
-import { effectiveKeywords } from '../../src/research-engine/screening/criteriaKeywords.js';
+import { resolveKeywordState } from '../../src/research-engine/screening/criteriaKeywords.js';
+// 107.md §2 — the shared keyword reducer: the ops endpoint below and the client
+// apply EXACTLY the same rules, and the read-modify-write runs inside a transaction
+// so two leaders editing single terms concurrently no longer clobber whole lists.
+import {
+  applyKeywordOp, normalizeKeywordMeta, materializeDefaults,
+  KEYWORD_OPS, KEYWORD_LISTS, MAX_KEYWORD_LENGTH,
+} from '../../src/research-engine/screening/keywordModel.js';
 import { isScreeningComplete } from '../utils/screeningCompletion.js';
 // 98.md §14 Defect 1 — substep evidence for the 'done' sign-off corroboration warning.
 import { loadScreeningProgressEvidence } from '../screening/progressEvidence.js';
@@ -382,7 +389,7 @@ export async function updateProject(req, res) {
       title, description, reviewQuestion, stage, blindMode,
       linkedMetaLabProjectId, progressStatus,
       inclusionKeywords, exclusionKeywords, studyTypeFilter, chatRestricted,
-      requiredScreeningReviewers,
+      requiredScreeningReviewers, keywordMeta,
     } = req.body || {};
 
     const data = {};
@@ -435,6 +442,10 @@ export async function updateProject(req, res) {
     if (inclusionKeywords !== undefined) data.inclusionKeywords = asJson(inclusionKeywords);
     if (exclusionKeywords !== undefined) data.exclusionKeywords = asJson(exclusionKeywords);
     if (studyTypeFilter !== undefined) data.studyTypeFilter = asJson(studyTypeFilter);
+    // 107.md §2 — the review-state column is structured, so unlike the sibling
+    // keyword arrays it is VALIDATED (garbage degrades to the empty canonical
+    // shape) rather than written through unchecked.
+    if (keywordMeta !== undefined) data.keywordMeta = JSON.stringify(normalizeKeywordMeta(keywordMeta));
     if (chatRestricted !== undefined) data.chatRestricted = !!chatRestricted;
 
     const updated = await prisma.screenProject.update({ where: { id: p.id }, data });
@@ -1028,11 +1039,11 @@ export async function getKeywordStats(req, res) {
       where: { projectId: access.project.id },
       select: { id: true, title: true, abstract: true, keywords: true },
     });
-    // prompt28 Part 1 — count the EFFECTIVE keyword lists: stored (default/manual)
-    // PLUS this project's criteria-derived terms, so the criteria badges in the
-    // panel also show article counts. Refresh the cached picoSnapshot from the
-    // linked META·LAB project first (same lazy pattern as getProject) so the
-    // server's effective list matches the freshly-derived one on the client.
+    // prompt28 Part 1 / 107.md §2 — count the ACTIVE keyword lists AND the still
+    // PENDING criteria suggestions, so the review UI can show a per-term article
+    // count next to each suggestion before the reviewer accepts it. Refresh the
+    // cached picoSnapshot from the linked META·LAB project first (same lazy pattern
+    // as getProject) so the server's derivation matches the client's.
     let picoSnapshot = access.project.picoSnapshot;
     if (access.project.linkedMetaLabProjectId) {
       try {
@@ -1054,20 +1065,123 @@ export async function getKeywordStats(req, res) {
     // Fall back to the shared defaults for projects created before keyword seeding.
     const storedIncl = parseJsonList(access.project.inclusionKeywords);
     const storedExcl = parseJsonList(access.project.exclusionKeywords);
-    const eff = effectiveKeywords({
+    const kw = resolveKeywordState({
       storedInclude: storedIncl,
       storedExclude: storedExcl,
       defaultInclude: DEFAULT_INCLUDE_KEYWORDS,
       defaultExclude: DEFAULT_EXCLUDE_KEYWORDS,
       picoSnapshot,
+      keywordMeta: access.project.keywordMeta,
     });
+    // Wire shape is unchanged ({ total, include:{term:n}, exclude:{term:n} }) —
+    // pending suggestion terms are simply additional keys in the same maps.
     res.json({
       total: records.length,
-      include: countArticlesByKeyword(records, eff.include.terms),
-      exclude: countArticlesByKeyword(records, eff.exclude.terms),
+      include: countArticlesByKeyword(records, [...kw.include.terms, ...kw.include.pending]),
+      exclude: countArticlesByKeyword(records, [...kw.exclude.terms, ...kw.exclude.pending]),
     });
   } catch (err) {
     console.error('[screening] getKeywordStats:', err.message);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+}
+
+/**
+ * POST /projects/:pid/keywords/ops — single-term keyword mutation (107.md §2/§3).
+ *
+ * Body: { type: 'add'|'remove'|'move'|'accept'|'reject',
+ *         list: 'include'|'exclude', term: string, toList?: 'include'|'exclude' }
+ *
+ * Why this exists next to the legacy full-array PUT /projects/:pid: the old path
+ * sends the WHOLE list on every chip add/remove with no concurrency control, so two
+ * leaders editing keywords at the same time silently discard each other's terms.
+ * Here the read-modify-write runs through the shared pure reducer INSIDE a
+ * transaction, so concurrent single-term ops compose instead of clobbering.
+ */
+export async function keywordOps(req, res) {
+  try {
+    const access = await getProjectAccess(req.params.pid, req.user);
+    if (!access) return res.status(404).json({ error: 'Project not found' });
+    // Same gate as editing the keyword lists today (updateProject).
+    if (!access.canManageSettings) {
+      return res.status(403).json({ error: 'Only project leaders can edit keyword lists' });
+    }
+
+    const { type, list, term, toList } = req.body || {};
+    if (!KEYWORD_OPS.includes(type)) return res.status(400).json({ error: 'invalid keyword operation' });
+    if (!KEYWORD_LISTS.includes(list)) return res.status(400).json({ error: 'list must be "include" or "exclude"' });
+    if (typeof term !== 'string' || !term.trim()) return res.status(400).json({ error: 'term is required' });
+    if (term.length > MAX_KEYWORD_LENGTH) {
+      return res.status(400).json({ error: `term must be ${MAX_KEYWORD_LENGTH} characters or fewer` });
+    }
+    if (type === 'move') {
+      if (toList !== undefined && !KEYWORD_LISTS.includes(toList)) {
+        return res.status(400).json({ error: 'toList must be "include" or "exclude"' });
+      }
+      if (toList === list) return res.status(400).json({ error: 'toList must differ from list' });
+    }
+
+    const pidVal = access.project.id;
+    const touched = type === 'move' ? [list, toList || (list === 'include' ? 'exclude' : 'include')] : [list];
+
+    const result = await prisma.$transaction(async (tx) => {
+      const row = await tx.screenProject.findUnique({
+        where: { id: pidVal },
+        select: { inclusionKeywords: true, exclusionKeywords: true, keywordMeta: true },
+      });
+      if (!row) return { missing: true };
+      const before = {
+        inclusion: parseJsonList(row.inclusionKeywords),
+        exclusion: parseJsonList(row.exclusionKeywords),
+        meta: normalizeKeywordMeta(row.keywordMeta),
+      };
+      // A side whose stored list is empty is DISPLAYED as the shared defaults; the
+      // first real edit writes those out so the edit is additive, never a wipe.
+      const seeded = materializeDefaults(
+        before,
+        { include: DEFAULT_INCLUDE_KEYWORDS, exclude: DEFAULT_EXCLUDE_KEYWORDS },
+        touched,
+      );
+      const out = applyKeywordOp(seeded, { type, list, term: term.trim(), toList });
+      if (!out.ok) return { badRequest: out.error };
+      const next = out.state;
+      const wrote = out.changed || seeded !== before;
+      if (wrote) {
+        await tx.screenProject.update({
+          where: { id: pidVal },
+          data: {
+            inclusionKeywords: JSON.stringify(next.inclusion),
+            exclusionKeywords: JSON.stringify(next.exclusion),
+            keywordMeta: JSON.stringify(next.meta),
+          },
+        });
+      }
+      return {
+        wrote,
+        changed: out.changed,
+        reason: out.reason,
+        inclusionKeywords: JSON.stringify(next.inclusion),
+        exclusionKeywords: JSON.stringify(next.exclusion),
+        keywordMeta: JSON.stringify(next.meta),
+      };
+    });
+
+    if (result?.missing) return res.status(404).json({ error: 'Project not found' });
+    if (result?.badRequest) return res.status(400).json({ error: result.badRequest });
+
+    if (result.wrote) {
+      void touchProjectActivity(access.project.linkedMetaLabProjectId);
+      emitToProjectMembers(pidVal, { type: 'project.updated' }, { exclude: req.user.id });
+    }
+    res.json({
+      changed: !!result.changed,
+      reason: result.reason,
+      inclusionKeywords: result.inclusionKeywords,
+      exclusionKeywords: result.exclusionKeywords,
+      keywordMeta: result.keywordMeta,
+    });
+  } catch (err) {
+    console.error('[screening] keywordOps:', err.message);
     res.status(500).json({ error: 'Internal server error' });
   }
 }
@@ -2030,6 +2144,10 @@ function publicDuplicateJob(job) {
     error: job.error, attempts: job.attempts,
     createdByName: job.createdByName,
     startedAt: job.startedAt, completedAt: job.completedAt, createdAt: job.createdAt,
+    // 107.md §1 — the row's own clock. pickNewerJob (duplicateJobState.js) uses it
+    // to drop a slow poll response that describes an OLDER observation of the same
+    // job, so an in-flight read can never move a finished job backward.
+    updatedAt: job.updatedAt,
     stats,
   };
 }

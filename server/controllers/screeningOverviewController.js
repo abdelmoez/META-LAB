@@ -18,13 +18,30 @@ export async function getOverview(req, res) {
     await ensureLeaderMember(access.project);
     const pid = access.project.id;
 
-    const [total, members, decisions, conflicts, dupGroups, records] = await Promise.all([
+    // 107.md §1 — the ScreenDuplicateJob ROW is authoritative for duplicate
+    // detection state; the group rows are only its results. `latestDupJob` drives
+    // the live status, `lastCompletedDupJob` proves a sweep finished (even one
+    // that found nothing), and the newest record timestamp answers "has the input
+    // set changed since?". All three are cheap indexed lookups — never a full
+    // record load.
+    const [total, members, decisions, conflicts, dupGroups, records, latestDupJob, lastCompletedDupJob, newestRecordAgg] = await Promise.all([
       prisma.screenRecord.count({ where: { projectId: pid } }),
       prisma.screenProjectMember.findMany({ where: { projectId: pid }, orderBy: [{ role: 'asc' }, { joinedAt: 'asc' }] }),
       prisma.screenDecision.findMany({ where: { projectId: pid } }),
       prisma.screenConflict.findMany({ where: { projectId: pid } }),
       prisma.screenDuplicateGroup.findMany({ where: { projectId: pid } }),
       prisma.screenRecord.findMany({ where: { projectId: pid }, select: { id: true, currentStage: true, finalStatus: true, isDuplicate: true } }),
+      prisma.screenDuplicateJob.findFirst({
+        where: { projectId: pid },
+        orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+        select: { id: true, status: true, error: true, completedAt: true, createdAt: true },
+      }),
+      prisma.screenDuplicateJob.findFirst({
+        where: { projectId: pid, status: 'completed' },
+        orderBy: [{ completedAt: 'desc' }, { id: 'desc' }],
+        select: { id: true, completedAt: true, totalRecords: true, statsJson: true },
+      }),
+      prisma.screenRecord.aggregate({ where: { projectId: pid }, _max: { createdAt: true } }),
     ]);
 
     const confirmedDuplicates       = records.filter(r => r.isDuplicate).length;
@@ -34,6 +51,58 @@ export async function getOverview(req, res) {
     const acceptedToExtraction      = records.filter(r => r.finalStatus === 'accepted').length;
     const rejectedSecond            = records.filter(r => r.finalStatus === 'rejected').length;
     const unresolvedConflicts       = conflicts.filter(c => !c.resolvedAt).length;
+
+    // ── 107.md §1 — explicit duplicate-detection state ───────────────────────
+    // Previously `duplicateDetectionRun` was `dupGroups.length > 0`, i.e. "has
+    // detection run?" was inferred from whether it FOUND anything. A completed
+    // sweep that found zero duplicates therefore read as never-run forever (the
+    // stepper's permanent "Pending"), and the flag silently regressed whenever a
+    // batch delete or scoped reset removed the last group rows. The job row is
+    // the authoritative signal; groups stay in the OR so projects whose groups
+    // predate the job model keep reading as run.
+    const DUP_STATUSES = ['queued', 'processing', 'completed', 'failed', 'cancelled'];
+    const duplicateDetectionStatus = DUP_STATUSES.includes(latestDupJob?.status) ? latestDupJob.status : 'never_run';
+    const duplicateDetectionRun = dupGroups.length > 0 || !!lastCompletedDupJob;
+    // Staleness is DETERMINISTIC, not a UI guess (107.md "explicit and
+    // deterministic"): a record created after the last sweep finished was
+    // provably never scanned, and a changed project-wide record count means
+    // records were added or deleted since. `job.totalRecords` counts only the
+    // records the sweep CONSIDERED (frozen resolved-group members are excluded),
+    // so it cannot be compared against the project total — the worker records the
+    // project-wide count in statsJson.projectRecordCount instead. Jobs completed
+    // before that field existed fall back to the timestamp rule alone rather than
+    // fabricating a comparison.
+    let duplicateDetectionStale = false;
+    let duplicateDetectionStaleReason = null;
+    if (lastCompletedDupJob) {
+      const completedMs = lastCompletedDupJob.completedAt ? new Date(lastCompletedDupJob.completedAt).getTime() : null;
+      const newestRecordAt = newestRecordAgg?._max?.createdAt || null;
+      const newestMs = newestRecordAt ? new Date(newestRecordAt).getTime() : null;
+      let scannedProjectCount = null;
+      try {
+        const st = JSON.parse(lastCompletedDupJob.statsJson || '{}');
+        if (Number.isFinite(st?.projectRecordCount)) scannedProjectCount = st.projectRecordCount;
+      } catch { /* unparseable stats → timestamp rule only */ }
+      if (completedMs != null && newestMs != null && newestMs > completedMs) {
+        duplicateDetectionStale = true;
+        duplicateDetectionStaleReason = 'records_added';
+      } else if (scannedProjectCount != null && scannedProjectCount !== total) {
+        duplicateDetectionStale = true;
+        duplicateDetectionStaleReason = 'record_count_changed';
+      }
+    }
+    const duplicateDetection = {
+      status: duplicateDetectionStatus,
+      lastCompletedAt: lastCompletedDupJob?.completedAt || null,
+      // Only a failed run carries a user-facing message (the worker clears `error`
+      // on every claim); truncated so a pathological message can never bloat the
+      // overview payload.
+      lastError: duplicateDetectionStatus === 'failed' && latestDupJob?.error
+        ? String(latestDupJob.error).slice(0, 300)
+        : null,
+      stale: duplicateDetectionStale,
+      staleReason: duplicateDetectionStaleReason,
+    };
 
     // Disputed = records with >1 distinct non-undecided decision at title/abstract.
     const byRecord = {};
@@ -140,7 +209,10 @@ export async function getOverview(req, res) {
       isLeader: access.isLeader, myRole: access.role,
       dataSummary: {
         totalArticles: total,
-        duplicateDetectionRun: dupGroups.length > 0,
+        // 107.md §1 — kept as the coarse "is there a valid dedup result?" flag
+        // (many callers/tests read it); `duplicateDetection` carries the states.
+        duplicateDetectionRun,
+        duplicateDetection,
         confirmedDuplicates, unresolvedDuplicateGroups, resolvedDuplicateGroups,
         disputedDecisions, unresolvedConflicts,
         eligibleSecondReview, acceptedToExtraction, rejectedSecond,
