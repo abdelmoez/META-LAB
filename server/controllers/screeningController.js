@@ -75,8 +75,8 @@ import { resolveKeywordState } from '../../src/research-engine/screening/criteri
 // apply EXACTLY the same rules, and the read-modify-write runs inside a transaction
 // so two leaders editing single terms concurrently no longer clobber whole lists.
 import {
-  applyKeywordOp, normalizeKeywordMeta, materializeDefaults,
-  KEYWORD_OPS, KEYWORD_LISTS, MAX_KEYWORD_LENGTH,
+  applyKeywordOps, normalizeKeywordMeta, materializeDefaults,
+  KEYWORD_OPS, KEYWORD_LISTS, KEYWORD_ORIGIN, MAX_KEYWORD_LENGTH, MAX_KEYWORD_OPS,
 } from '../../src/research-engine/screening/keywordModel.js';
 import { isScreeningComplete } from '../utils/screeningCompletion.js';
 // 98.md §14 Defect 1 — substep evidence for the 'done' sign-off corroboration warning.
@@ -1090,12 +1090,81 @@ export async function getKeywordStats(req, res) {
 // shape and budget rationale as mutateProjectBlob's loop in server/store.js.
 const KEYWORD_OP_MAX_ATTEMPTS = 5;
 
+const KEYWORD_ORIGIN_VALUES = Object.values(KEYWORD_ORIGIN);
+
 /**
- * POST /projects/:pid/keywords/ops — single-term keyword mutation (107.md §2/§3).
+ * 108.md §20 — body validation for ONE keyword op, mirroring the shared reducer's
+ * own checks so a malformed batch is rejected before the transaction is even opened.
+ * Returns an error string, or null when the op is well formed.
  *
- * Body: { type: 'add'|'remove'|'move'|'accept'|'reject',
- *         list: 'include'|'exclude', term: string, toList?: 'include'|'exclude',
- *         reject?: boolean }
+ * HARD-400 FLAG DISCIPLINE: every optional flag is legal on a fixed set of op types
+ * and rejected everywhere else. A silently-ignored `index` or `clearSeeded` would
+ * turn an "exact inverse" into a quiet approximation, which is worse than a 400.
+ * `index` is the one exception to strictness on VALUE: any integer is accepted and
+ * the reducer CLAMPS it to [0, list.length], because a collaborator can legitimately
+ * shrink the list between the delete and the undo and restoring the term at the edge
+ * beats refusing the undo.
+ */
+function validateKeywordOpBody(op) {
+  if (!op || typeof op !== 'object' || Array.isArray(op)) return 'each keyword operation must be an object';
+  if (!KEYWORD_OPS.includes(op.type)) return 'invalid keyword operation';
+  if (!KEYWORD_LISTS.includes(op.list)) return 'list must be "include" or "exclude"';
+  if (typeof op.term !== 'string' || !op.term.trim()) return 'term is required';
+  if (op.term.length > MAX_KEYWORD_LENGTH) {
+    return `term must be ${MAX_KEYWORD_LENGTH} characters or fewer`;
+  }
+  if (op.type === 'move') {
+    if (op.toList !== undefined && !KEYWORD_LISTS.includes(op.toList)) {
+      return 'toList must be "include" or "exclude"';
+    }
+    if (op.toList === op.list) return 'toList must differ from list';
+  } else if (op.toList !== undefined) {
+    return 'toList applies only to "move"';
+  }
+  if (op.reject !== undefined) {
+    if (typeof op.reject !== 'boolean') return 'reject must be a boolean';
+    if (op.type === 'clear-decision') return 'reject does not apply to "clear-decision"';
+    if (op.reject === false && op.type !== 'remove' && op.type !== 'move') {
+      return 'reject:false applies only to "remove" and "move"';
+    }
+  }
+  if (op.index !== undefined) {
+    if (!Number.isInteger(op.index)) return 'index must be an integer';
+    if (op.type !== 'add' && op.type !== 'move') return 'index applies only to "add" and "move"';
+  }
+  if (op.origin !== undefined) {
+    if (op.type !== 'add') return 'origin applies only to "add"';
+    if (op.origin !== null && !KEYWORD_ORIGIN_VALUES.includes(op.origin)) {
+      return 'origin must be "manual", "accepted", "default" or null';
+    }
+  }
+  if (op.removeTerm !== undefined) {
+    if (typeof op.removeTerm !== 'boolean') return 'removeTerm must be a boolean';
+    if (op.type !== 'clear-decision') return 'removeTerm applies only to "clear-decision"';
+  }
+  if (op.clearSeeded !== undefined) {
+    if (typeof op.clearSeeded !== 'boolean') return 'clearSeeded must be a boolean';
+    if (op.type !== 'add') return 'clearSeeded applies only to "add"';
+  }
+  return null;
+}
+
+/** Whitelist the op fields the reducer understands — nothing else reaches it. */
+function pickKeywordOp(raw) {
+  const op = { type: raw.type, list: raw.list, term: raw.term.trim() };
+  for (const f of ['toList', 'reject', 'index', 'origin', 'removeTerm', 'clearSeeded']) {
+    if (raw[f] !== undefined) op[f] = raw[f];
+  }
+  return op;
+}
+
+/**
+ * POST /projects/:pid/keywords/ops — keyword mutation(s) (107.md §2/§3, 108.md §20).
+ *
+ * Body, either shape:
+ *   single — { type, list, term, toList?, reject?, index?, origin?, removeTerm?,
+ *              clearSeeded? }
+ *   batch  — { ops: [ …up to MAX_KEYWORD_OPS of the above… ] }
  *
  * Why this exists next to the legacy full-array PUT /projects/:pid: the old path
  * sends the WHOLE list on every chip add/remove with no concurrency control, so two
@@ -1107,6 +1176,12 @@ const KEYWORD_OP_MAX_ATTEMPTS = 5;
  * `reject: false` (remove/move only) is the non-verdict Undo variant — it deletes
  * the term without recording a "rejected" decision, so undoing an accidental add
  * does not permanently suppress the matching criteria suggestion.
+ *
+ * 108.md §20 — the batch shape exists so a COMPOUND inverse (the reducer needs up to
+ * five ops to put a moved term back exactly as it was) is ONE round trip, ONE CAS
+ * write and ONE history entry. It is all-or-nothing: an invalid op anywhere in the
+ * array rejects the whole request and writes nothing. Single-op bodies are unchanged
+ * on the wire and in the response.
  */
 export async function keywordOps(req, res) {
   try {
@@ -1117,28 +1192,32 @@ export async function keywordOps(req, res) {
       return res.status(403).json({ error: 'Only project leaders can edit keyword lists' });
     }
 
-    const { type, list, term, toList, reject } = req.body || {};
-    if (!KEYWORD_OPS.includes(type)) return res.status(400).json({ error: 'invalid keyword operation' });
-    if (!KEYWORD_LISTS.includes(list)) return res.status(400).json({ error: 'list must be "include" or "exclude"' });
-    if (typeof term !== 'string' || !term.trim()) return res.status(400).json({ error: 'term is required' });
-    if (term.length > MAX_KEYWORD_LENGTH) {
-      return res.status(400).json({ error: `term must be ${MAX_KEYWORD_LENGTH} characters or fewer` });
+    const body = req.body || {};
+    const batch = body.ops !== undefined;
+    if (batch && !Array.isArray(body.ops)) return res.status(400).json({ error: 'ops must be an array' });
+    const rawOps = batch ? body.ops : [body];
+    if (!rawOps.length) return res.status(400).json({ error: 'ops must contain at least one operation' });
+    if (rawOps.length > MAX_KEYWORD_OPS) {
+      return res.status(400).json({ error: `ops must contain at most ${MAX_KEYWORD_OPS} operations` });
     }
-    if (type === 'move') {
-      if (toList !== undefined && !KEYWORD_LISTS.includes(toList)) {
-        return res.status(400).json({ error: 'toList must be "include" or "exclude"' });
-      }
-      if (toList === list) return res.status(400).json({ error: 'toList must differ from list' });
-    }
-    if (reject !== undefined && typeof reject !== 'boolean') {
-      return res.status(400).json({ error: 'reject must be a boolean' });
-    }
-    if (reject === false && type !== 'remove' && type !== 'move') {
-      return res.status(400).json({ error: 'reject:false applies only to "remove" and "move"' });
+    const ops = [];
+    for (const raw of rawOps) {
+      const bad = validateKeywordOpBody(raw);
+      if (bad) return res.status(400).json({ error: bad });
+      ops.push(pickKeywordOp(raw));
     }
 
     const pidVal = access.project.id;
-    const touched = type === 'move' ? [list, toList || (list === 'include' ? 'exclude' : 'include')] : [list];
+    // Every side any op touches must be materialized before the batch runs, or an op
+    // late in the batch would see a still-empty list and re-seed it mid-transaction.
+    const touched = [];
+    for (const op of ops) {
+      if (!touched.includes(op.list)) touched.push(op.list);
+      if (op.type === 'move') {
+        const other = op.toList || (op.list === 'include' ? 'exclude' : 'include');
+        if (!touched.includes(other)) touched.push(other);
+      }
+    }
 
     // 107.md rec — OPTIMISTIC PRE-IMAGE GUARD. A bare interactive transaction is
     // ATOMIC but not ISOLATED: Prisma inherits the database default, i.e. READ
@@ -1171,7 +1250,9 @@ export async function keywordOps(req, res) {
           { include: DEFAULT_INCLUDE_KEYWORDS, exclude: DEFAULT_EXCLUDE_KEYWORDS },
           touched,
         );
-        const out = applyKeywordOp(seeded, { type, list, term: term.trim(), toList, reject });
+        // ALL-OR-NOTHING: applyKeywordOps folds the batch and discards everything if
+        // any op is invalid, so a compound inverse never lands half applied.
+        const out = applyKeywordOps(seeded, ops);
         if (!out.ok) return { badRequest: out.error };
         const next = out.state;
         const wrote = out.changed || seeded !== before;
@@ -1197,6 +1278,7 @@ export async function keywordOps(req, res) {
           wrote,
           changed: out.changed,
           reason: out.reason,
+          results: out.results,
           inclusionKeywords: JSON.stringify(next.inclusion),
           exclusionKeywords: JSON.stringify(next.exclusion),
           keywordMeta: JSON.stringify(next.meta),
@@ -1218,13 +1300,17 @@ export async function keywordOps(req, res) {
       void touchProjectActivity(access.project.linkedMetaLabProjectId);
       emitToProjectMembers(pidVal, { type: 'project.updated' }, { exclude: req.user.id });
     }
-    res.json({
+    const payload = {
       changed: !!result.changed,
       reason: result.reason,
       inclusionKeywords: result.inclusionKeywords,
       exclusionKeywords: result.exclusionKeywords,
       keywordMeta: result.keywordMeta,
-    });
+    };
+    // Per-op outcomes only for the batch shape — the single-op response stays byte
+    // for byte what every pre-108 client already parses.
+    if (batch) payload.results = result.results;
+    res.json(payload);
   } catch (err) {
     console.error('[screening] keywordOps:', err.message);
     res.status(500).json({ error: 'Internal server error' });

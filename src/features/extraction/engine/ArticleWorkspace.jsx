@@ -47,6 +47,13 @@ import {
   denominatorPopulationPatch,
 } from '../../../research-engine/extraction/proportionMeta.js';
 import { studyDocApi } from '../unified/studyDocApi.js';
+// 108.md §5/§12/§13 — every extraction field mutation records ONE logical history
+// entry at the MUTATION SITE. Nothing else records: autosave, the 800 ms debounce and
+// the server's ack are not user actions (§12). The hook is inert outside a provider.
+import { useProjectHistory } from '../../../frontend/history/HistoryContext.jsx';
+import {
+  buildExtractionEntry, canMergeExtractionEdit, EXTRACTION_SURFACE,
+} from '../../../research-engine/interaction/extractionHistory.js';
 import ConverterPanel from './ConverterPanel.jsx';
 import CaseFieldsPanel from './CaseFieldsPanel.jsx';
 
@@ -148,6 +155,9 @@ export default function ArticleWorkspace({
   const docRef = useRef(null);
   const rowRef = useRef(null);
   const split = useExtractionSplit(rowRef);
+  // 108.md §5 — the page-scoped history. `record`/`coalesce` are referentially stable
+  // (and no-ops outside a provider), so they are safe in the write callbacks' deps.
+  const { record: recordHistory, coalesce: coalesceHistory } = useProjectHistory();
 
   // When a PDF is persisted to the blob-anchored study-document store (a non-screening
   // study), stamp the pointer into the study blob so a whole-blob autosave can't clobber
@@ -243,6 +253,33 @@ export default function ArticleWorkspace({
     for (const v of (caseVariables || [])) m[caseVarKey(v.id)] = v.unit ? `${v.label} (${v.unit})` : v.label;
     return (f) => m[f] || FIELD_LABELS[f] || f;
   }, [caseVariables]);
+
+  /**
+   * recordFieldEdit — 108.md §5/§12/§13. Turn one write into one history entry.
+   *
+   * `study` here is the row as it stands BEFORE the patch, which is where the prev
+   * value, the FULL prior provenance entry and the prior `needsReview` are read from
+   * (108.md §8 — the executor restores all three verbatim through writeStudy, never
+   * through setFields, which would downgrade a PDF-clicked value to 'manual' and
+   * destroy its jump-to-source coordinates).
+   *
+   * Typed edits COALESCE per (study, field) so 42 keystrokes cost one Ctrl+Z (§13);
+   * discrete actions — selects, click-to-pick, the Converter, harmonization — never
+   * merge. Nothing downstream of this call records anything: the autosave debounce and
+   * the server ack are not user actions (§12).
+   */
+  const recordFieldEdit = useCallback((spec) => {
+    if (!study) return;
+    const entry = buildExtractionEntry({
+      study,
+      surface: EXTRACTION_SURFACE.ENGINE,
+      fieldLabel: labelFor(((spec.primaryFields || Object.keys(spec.patch || {}))[0]) || ''),
+      ...spec,
+    });
+    if (!entry) return;                       // no real change → no entry (§12)
+    if (spec.discrete) recordHistory(entry);
+    else coalesceHistory(entry, canMergeExtractionEdit);
+  }, [study, labelFor, recordHistory, coalesceHistory]);
 
   const locked = !!(article && article.status === 'locked');
   const completed = !!(article && (article.status === 'complete' || article.status === 'locked'));
@@ -382,12 +419,17 @@ export default function ArticleWorkspace({
     p.needsReview = true;
     if (!study.source && !extra.source) p.source = 'text';
     Object.assign(p, extra);
+    // 108.md §5 — ONE entry for the whole capture (a Smart click can fill es+lo+hi, the
+    // Converter also appends a conversions[] record and a note): the undo restores every
+    // key this patch touches, plus each field's prior provenance (`null` where the field
+    // had none, so a first pick is removed rather than downgraded to a manual stub).
+    recordFieldEdit({ patch: p, primaryFields: written, provenanceNext: provFields, discrete: true });
     // ONE blob write for value + provenance (83.md §5): a save that flushes between two
     // separate writes could persist a value without its provenance/history entry.
     if (onWriteStudy) onWriteStudy(study.id, p, provFields);
     else { patch(p); if (onAttachProvenance) onAttachProvenance(study.id, provFields); }
     return { written, replaced };
-  }, [study, editable, patch, onAttachProvenance, onWriteStudy]);
+  }, [study, editable, patch, onAttachProvenance, onWriteStudy, recordFieldEdit]);
 
   /* ── Pick from PDF: snap a token, write the active field(s), auto-advance ── */
   const assignFromClick = useCallback((payload) => {
@@ -596,7 +638,13 @@ export default function ArticleWorkspace({
     return { mode: 'click', onTextClick: assignFromClick, onTextMiss: () => setStatus('No number there — zoom in, or run text recognition on scanned pages.') };
   }, [method, assignFromClick, effUrl, editable]);
 
-  const setFields = useCallback((fields) => {
+  /**
+   * setFields(fields, opts) — the MANUAL write path.
+   * `opts.discrete` marks a one-shot choice (a select, including the combined
+   * denominator patch) so it gets its own history entry; without it the write is
+   * treated as typing and coalesces per (study, field) — 108.md §13.
+   */
+  const setFields = useCallback((fields, opts = {}) => {
     if (!editable || !study) return;
     const keys = Object.keys(fields || {});
     if (!keys.length) return;
@@ -620,13 +668,19 @@ export default function ArticleWorkspace({
       }
     }
     const p = { ...fields, needsReview: true };
+    // 108.md §5/§8 — record BEFORE the write, while `study` is still the prev state.
+    // `needsReview` rides in the patch and is therefore snapshotted and restored
+    // verbatim: an undo must not leave a previously-reviewed row flagged for review.
+    recordFieldEdit({ patch: p, primaryFields: keys, provenanceNext: provEntry, discrete: !!opts.discrete });
     if (onWriteStudy) onWriteStudy(study.id, p, provEntry || undefined);
     else {
       patch(p);
       if (provEntry && onAttachProvenance) onAttachProvenance(study.id, provEntry);
     }
-  }, [editable, study, patch, onAttachProvenance, onWriteStudy]);
+  }, [editable, study, patch, onAttachProvenance, onWriteStudy, recordFieldEdit]);
   const setField = useCallback((f, v) => setFields({ [f]: v }), [setFields]);
+  /** A select / one-shot choice: its own history entry, never merged with typing (§13). */
+  const setFieldOnce = useCallback((f, v) => setFields({ [f]: v }, { discrete: true }), [setFields]);
   const focusField = useCallback((f) => { if (method === 'click' && assignOptions.some(([k]) => k === f)) setActiveField(f); }, [method, assignOptions]);
 
   const activeLabel = activeField === 'smart'
@@ -784,7 +838,7 @@ export default function ArticleWorkspace({
               ))}
               <div>
                 <label style={lbl} htmlFor="pex-esType">{FIELD_LABELS.esType}</label>
-                <select id="pex-esType" data-testid="pex-esType" value={study.esType || ''} onChange={(e) => setField('esType', e.target.value)} disabled={!editable} style={{ ...inp, fontSize: 12 }}>
+                <select id="pex-esType" data-testid="pex-esType" value={study.esType || ''} onChange={(e) => setFieldOnce('esType', e.target.value)} disabled={!editable} style={{ ...inp, fontSize: 12 }}>
                   {ES_TYPES.map(([k, l]) => <option key={k} value={k}>{l}</option>)}
                 </select>
               </div>
@@ -795,7 +849,7 @@ export default function ArticleWorkspace({
                 <div>
                   <label style={lbl} htmlFor="pex-reportedFormat">Reported as</label>
                   <select id="pex-reportedFormat" data-testid="pex-reportedFormat" value={activeFormat}
-                    onChange={(e) => setField('reportedFormat', e.target.value)} disabled={!editable} style={{ ...inp, fontSize: 12 }}>
+                    onChange={(e) => setFieldOnce('reportedFormat', e.target.value)} disabled={!editable} style={{ ...inp, fontSize: 12 }}>
                     {reportedFormats.map((f) => <option key={f.id} value={f.id}>{f.label}</option>)}
                   </select>
                 </div>
@@ -838,7 +892,7 @@ export default function ArticleWorkspace({
                 <div>
                   <label style={lbl} htmlFor="pex-denominatorPopulation">{FIELD_LABELS.denominatorPopulation}</label>
                   <select id="pex-denominatorPopulation" data-testid="pex-field-denominatorPopulation"
-                    value={denomPop} onChange={(e) => setFields(denominatorPopulationPatch(study, e.target.value))}
+                    value={denomPop} onChange={(e) => setFields(denominatorPopulationPatch(study, e.target.value), { discrete: true })}
                     disabled={!editable} style={{ ...inp, fontSize: 12 }}>
                     <option value="">{UNCLASSIFIED_LABEL}</option>
                     {DENOMINATOR_POPULATIONS.map(([k, l]) => <option key={k} value={k}>{l}</option>)}
@@ -847,7 +901,7 @@ export default function ArticleWorkspace({
                 <div>
                   <label style={lbl} htmlFor="pex-actionStatus">{FIELD_LABELS.actionStatus}</label>
                   <select id="pex-actionStatus" data-testid="pex-field-actionStatus"
-                    value={actionStatus} onChange={(e) => setField('actionStatus', e.target.value)}
+                    value={actionStatus} onChange={(e) => setFieldOnce('actionStatus', e.target.value)}
                     disabled={!editable} style={{ ...inp, fontSize: 12 }}>
                     <option value="">{UNCLASSIFIED_LABEL}</option>
                     {ACTION_STATUSES.map(([k, l]) => <option key={k} value={k}>{l}</option>)}

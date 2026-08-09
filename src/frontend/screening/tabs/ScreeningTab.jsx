@@ -23,7 +23,18 @@ import { normalizeKeywordKey } from '../../../research-engine/screening/keywordN
 import { segmentAbstract } from '../../../research-engine/screening/abstractSegments.js';
 // 107.md §3 — Cmd/Ctrl+I / Cmd/Ctrl+E over an abstract selection.
 import { useAbstractSelectionShortcuts } from '../hooks/useAbstractSelectionShortcuts.js';
-import KeywordSnackbar from '../components/KeywordSnackbar.jsx';
+// 108.md §§4/§8/§17/§20 — the project-wide history + its shared feedback surface.
+// Both hooks are safe outside their providers (they return inert no-ops), so this
+// engine records entries whether or not the shell has mounted them yet.
+import { useProjectHistory } from '../../history/HistoryContext.jsx';
+import { useUndoFeedback } from '../../history/useUndoFeedback.jsx';
+import { SCOPE_SCREENING } from '../../../research-engine/interaction/projectScopes.js';
+import KeywordContextMenu, { canOpenKeywordMenu } from '../components/KeywordContextMenu.jsx';
+import {
+  SCREENING_KIND,
+  previousDecision, decisionEntry, decisionPrecondition, decisionAlreadyApplied,
+  keywordStateBefore, keywordEntry, keywordLabelFor, keywordOpBody,
+} from '../lib/screeningHistory.js';
 import PdfViewer from '../components/PdfViewer.jsx';
 // 96.md 5D — collapsible article-level "Import provenance" (lazy; 404 soft-fail).
 import ImportProvenance from '../components/ImportProvenance.jsx';
@@ -123,6 +134,44 @@ export default function ScreeningTab({ pid, project, access, refreshProject, use
     setKwLocal(null);
   }, [pid, project?.inclusionKeywords, project?.exclusionKeywords, project?.keywordMeta]);
   const kwSrc = kwLocal || project || {};
+
+  // ── 108.md §§4/§8/§17 — project history + shared undo feedback ───────────────
+  // Read through refs everywhere below: the executors are registered once and the
+  // window-listener callbacks are stable, so neither may close over a render's value.
+  const history = useProjectHistory();
+  const feedback = useUndoFeedback();
+  const histRef = useRef(history);
+  histRef.current = history;
+  const fbRef = useRef(feedback);
+  fbRef.current = feedback;
+  const registerExecutor = history.registerExecutor;
+
+  /**
+   * Post one subtle note (108.md §17). Stamped with the live history scope so the
+   * queue's `data-scope` is meaningful and `clearScope` can drop screening's notes
+   * without touching another engine's. Stable identity — see useUndoFeedback's
+   * timer note: an unstable callback restarts the snackbar's 8 s countdown forever.
+   */
+  const notify = useCallback((note) => fbRef.current.notify({
+    scope: histRef.current.scope || SCOPE_SCREENING, ...note,
+  }), []);
+  /**
+   * A note whose Undo button IS the history undo, so the button and Ctrl+Z are one
+   * code path (108.md §20: "not a one-off keyword-specific undo hack").
+   */
+  const notifyUndoable = useCallback((message, tone = 'info') => fbRef.current.notify({
+    scope: histRef.current.scope || SCOPE_SCREENING,
+    message, tone, undo: () => { histRef.current.undo(); },
+  }), []);
+
+  // The RAW keyword columns behind a ref: an inverse must be derived from the state the
+  // op actually ran against, and that has to be read synchronously at call time.
+  const kwRawRef = useRef({});
+  kwRawRef.current = {
+    inclusionKeywords: kwSrc.inclusionKeywords,
+    exclusionKeywords: kwSrc.exclusionKeywords,
+    keywordMeta: kwSrc.keywordMeta,
+  };
 
   // Parsed project config (keywords / study-type filter). Projects created before
   // default-keyword seeding fall back to the shared defaults so the panel is never
@@ -234,8 +283,11 @@ export default function ScreeningTab({ pid, project, access, refreshProject, use
   // response carries the full updated columns; we adopt them locally rather than
   // refetching the whole project per chip.
   const [kwOpError, setKwOpError] = useState('');
-  const [kwNote, setKwNote] = useState(null);        // { message, tone, undo }
   const [kwConflict, setKwConflict] = useState(null); // { phrase, from, to }
+  // 108.md §§18-21 — the right-click menu: { term, list, origin, x, y }.
+  const [kwMenu, setKwMenu] = useState(null);
+  const [kwMenuBusy, setKwMenuBusy] = useState(false);
+  const kwMenuTriggerRef = useRef(null);
   const canEditKeywords = canEditScreeningKeywords(access);
 
   // 107.md rec — RESPONSE SEQUENCING. Two ops can be in flight at once (nothing locks
@@ -246,11 +298,13 @@ export default function ScreeningTab({ pid, project, access, refreshProject, use
   // realtime poke). Only the latest request may write `kwLocal`.
   const kwSeqRef = useRef(0);
 
-  const runKeywordOp = useCallback(async (op) => {
+  // The low-level client. `body` is either a single op or a `{ ops }` batch (108.md
+  // §20 — a compound inverse must be ONE transaction, so it is ONE round trip).
+  const runKeywordOp = useCallback(async (body) => {
     const seq = (kwSeqRef.current += 1);
     setKwOpError('');
     try {
-      const r = await screeningApi.keywordOp(pid, op);
+      const r = await screeningApi.keywordOp(pid, body);
       if (seq !== kwSeqRef.current) return r;   // superseded — its state is stale
       setKwLocal({
         inclusionKeywords: r.inclusionKeywords,
@@ -263,28 +317,70 @@ export default function ScreeningTab({ pid, project, access, refreshProject, use
       if (seq === kwSeqRef.current) {
         setKwOpError(message);
         // Also surface it where the action was taken (the abstract, not the panel).
-        setKwNote({ message, tone: 'error' });
+        notify({ message, tone: 'error' });
       }
       return null;
     }
-  }, [pid]);
+  }, [pid, notify]);
+
+  /**
+   * 108.md §§4/§11/§20 — the ONE place a keyword mutation becomes a history entry.
+   *
+   * The inverse is NEVER hand-rolled: `keywordEntry` asks `keywordInverseOps` to derive
+   * it from the state the op actually ran against (post-`materializeDefaults`, exactly
+   * as the server sees it), which is the only place the term's index, the ABSENCE of an
+   * explicit origin and the pre-existing `seeded` marker are knowable. The redo side
+   * replays the original forward op rather than inverting the inverse.
+   *
+   * Nothing is recorded until the server says `changed` (108.md §12: a duplicate add or
+   * a remove of a term someone else already deleted is not a user action to undo).
+   */
+  const runKeywordOpTracked = useCallback(async (op, opts = {}) => {
+    const before = keywordStateBefore(kwRawRef.current, [op]);
+    const entry = keywordEntry(before, op, keywordLabelFor(op));
+    const r = await runKeywordOp(op);
+    if (!r || !r.changed) return r;
+    if (entry) histRef.current.record(entry);
+    if (opts.note) {
+      if (entry) notifyUndoable(opts.note);
+      else notify({ message: opts.note, tone: 'info' });
+    }
+    return r;
+  }, [runKeywordOp, notify, notifyUndoable]);
+
+  // 108.md §8 — undo/redo of a keyword action replays real ops through the SAME
+  // endpoint as the forward action. `changed:false` means the world already looks like
+  // the op's result, i.e. a collaborator got there first: refuse rather than pretend.
+  const keywordExecutor = useCallback(async (op) => {
+    const body = keywordOpBody(op && op.ops);
+    if (!body) return { ok: false, reason: 'no-executor' };
+    const r = await runKeywordOp(body);
+    if (!r) return { ok: false, reason: 'failed' };
+    if (!r.changed) return { ok: false, reason: 'refused' };
+    return true;
+  }, [runKeywordOp]);
+
+  useEffect(
+    () => registerExecutor(SCREENING_KIND.KEYWORD, keywordExecutor),
+    [registerExecutor, keywordExecutor],
+  );
 
   // Cmd/Ctrl+I / Cmd/Ctrl+E over a selection inside the abstract.
   const abstractRef = useRef(null);
   const kwCtxRef = useRef({});
-  kwCtxRef.current = { inclusion, exclusion, canEditKeywords, runKeywordOp };
+  kwCtxRef.current = { inclusion, exclusion, canEditKeywords, runKeywordOp: runKeywordOpTracked };
 
   const onSelectionKeyword = useCallback(({ list, phrase }) => {
-    const { inclusion: inc, exclusion: exc, canEditKeywords: may, runKeywordOp: run } = kwCtxRef.current;
+    const { inclusion: inc, exclusion: exc, runKeywordOp: run } = kwCtxRef.current;
     const label = list === 'include' ? 'inclusion' : 'exclusion';
-    if (!may) {
-      setKwNote({ message: 'Only project leaders can edit keyword lists.', tone: 'warn' });
-      return;
-    }
+    // 108.md §1 — the permission gate moved INTO the shortcut's guard chain
+    // (`canHandle` below), so a reviewer who may not edit keyword lists never has the
+    // browser default suppressed and never reaches this callback. The warning note that
+    // used to live here was unreachable once that landed.
     const key = normalizeKeywordKey(phrase);
     const inThis = (list === 'include' ? inc : exc).some(t => normalizeKeywordKey(t) === key);
     if (inThis) {
-      setKwNote({ message: `Already in ${label} keywords: “${phrase}”`, tone: 'info' });
+      notify({ message: `Already in ${label} keywords: “${phrase}”`, tone: 'info' });
       return;
     }
     const other = list === 'include' ? 'exclude' : 'include';
@@ -294,24 +390,21 @@ export default function ScreeningTab({ pid, project, access, refreshProject, use
       setKwConflict({ phrase, from: other, to: list });
       return;
     }
-    run({ type: 'add', list, term: phrase }).then(r => {
-      if (!r) return;
-      setKwNote({
-        message: `Added “${phrase}” to ${label} keywords.`,
-        tone: 'info',
-        // Undo is a real inverse op against the server, not a local rollback.
-        // `reject: false` is what makes it an INVERSE rather than a second edit: a
-        // plain `remove` also records a 'rejected' verdict, which permanently
-        // suppressed the matching criteria suggestion the add was never meant to touch.
-        undo: { type: 'remove', list, term: phrase, reject: false },
-      });
-    });
-  }, []);
+    // The note's Undo button and Ctrl+Z run the SAME recorded entry (108.md §20).
+    run({ type: 'add', list, term: phrase }, { note: `Added “${phrase}” to ${label} keywords.` });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [notify]);
 
   useAbstractSelectionShortcuts({
     enabled: true,
     containerRef: abstractRef,
     onTrigger: onSelectionKeyword,
+    // 108.md §1 cond. 5 — "PecanRev can successfully process the selected text".
+    // Read fresh from the ref: the listener is bound once, and a reviewer whose role
+    // changes mid-session must not keep (or keep losing) the chord. A `false` here
+    // means the guard chain never reaches preventDefault, so the browser keeps its own
+    // Ctrl/Cmd+I behaviour instead of the press being silently swallowed.
+    canHandle: () => kwCtxRef.current.canEditKeywords,
   });
 
   const confirmKeywordMove = useCallback(() => {
@@ -319,26 +412,58 @@ export default function ScreeningTab({ pid, project, access, refreshProject, use
     if (!c) return;
     setKwConflict(null);
     const label = c.to === 'include' ? 'inclusion' : 'exclusion';
-    runKeywordOp({ type: 'move', list: c.from, term: c.phrase, toList: c.to }).then(r => {
-      if (!r) return;
-      setKwNote({
-        message: `Moved “${c.phrase}” to ${label} keywords.`,
-        tone: 'info',
-        // Non-verdict inverse: restores the source origin verbatim and leaves no
-        // 'rejected' residue on the list the term is being moved back onto.
-        undo: { type: 'move', list: c.to, term: c.phrase, toList: c.from, reject: false },
-      });
-    });
-  }, [kwConflict, runKeywordOp]);
+    runKeywordOpTracked(
+      { type: 'move', list: c.from, term: c.phrase, toList: c.to },
+      { note: `Moved “${c.phrase}” to ${label} keywords.` },
+    );
+  }, [kwConflict, runKeywordOpTracked]);
 
-  const undoKeywordNote = useCallback(() => {
-    const op = kwNote?.undo;
-    setKwNote(null);
-    if (op) runKeywordOp(op);
-  }, [kwNote, runKeywordOp]);
-  // Stable identity: the snackbar's auto-dismiss timer keys off onDismiss, and a
-  // fresh inline arrow every render would restart the 8s countdown forever.
-  const dismissKeywordNote = useCallback(() => setKwNote(null), []);
+  /* ── 108.md §§18-21 — the keyword context menu ─────────────────────────────── */
+
+  /**
+   * Open the menu at the pointer. Gating is the pure `canOpenKeywordMenu`, and when it
+   * says no we do NOT preventDefault — the browser's own context menu stays intact for
+   * default-origin chips and for reviewers who may not edit keyword lists (§18/§19,
+   * the same discipline §1 applies to Ctrl/Cmd+I).
+   */
+  const openKeywordMenu = useCallback((e, { term, list, origin, keyboard } = {}) => {
+    if (!canOpenKeywordMenu({ origin, canEdit: kwCtxRef.current.canEditKeywords })) return;
+    e.preventDefault();
+    const el = e.currentTarget;
+    kwMenuTriggerRef.current = el;
+    let x = e.clientX || 0;
+    let y = e.clientY || 0;
+    // Shift+F10 / the ContextMenu key carry no pointer — anchor on the chip itself so
+    // the keyboard path lands the menu next to the keyword (§21/§25).
+    if (keyboard || (!x && !y)) {
+      let r = null;
+      try { r = el && el.getBoundingClientRect ? el.getBoundingClientRect() : null; } catch { r = null; }
+      x = r ? r.left : 0;
+      y = r ? r.bottom : 0;
+    }
+    setKwMenuBusy(false);
+    setKwMenu({ term, list, origin, x, y });
+  }, []);
+
+  const closeKeywordMenu = useCallback((refocus) => {
+    setKwMenu(null);
+    setKwMenuBusy(false);
+    if (refocus) { try { kwMenuTriggerRef.current?.focus?.(); } catch { /* detached node */ } }
+  }, []);
+
+  /**
+   * 108.md §20 — delete = the SAME verdict `remove` the chip × sends (one behaviour,
+   * two entry points), recorded with its exact inverse so Ctrl+Z restores the list, the
+   * position, the display text, the origin and the decision state.
+   */
+  const deleteKeyword = useCallback(async (term, list) => {
+    setKwMenuBusy(true);
+    try {
+      await runKeywordOpTracked({ type: 'remove', list, term }, { note: 'Keyword deleted' });
+    } finally {
+      closeKeywordMenu(true);
+    }
+  }, [runKeywordOpTracked, closeKeywordMenu]);
 
   const selected = records.find(r => r.id === selectedId) || null;
 
@@ -841,26 +966,139 @@ export default function ScreeningTab({ pid, project, access, refreshProject, use
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedId]);
 
+  /* ── 108.md §14 — the decision write path's two race guards ──────────────────
+     The decision upsert has NO compare-and-set and NO revision: last write wins per
+     (record, reviewer, stage). Two overlapping POSTs — which is exactly what
+     "include, then Ctrl+Z before the first save returns" produces — therefore land in
+     ARRIVAL order, and both optimistically rewrite the row on resolve. Two guards, both
+     scoped per record so one slow record never blocks another:
+
+       · decChainRef — a serialized send chain (the useStitchProjectDoc/serverStorage
+         pattern). The undo's POST is not even ISSUED until the save it is undoing has
+         settled, so the server can never see them out of order.
+       · decSeqRef — a monotonic intent counter (the kwSeqRef pattern). A response that
+         is no longer the newest intent for its record is dropped instead of writing its
+         optimistic row patch over a newer one.
+
+     Together: the newest user intent wins, on the client AND on the server. */
+  const decSeqRef = useRef(null);
+  if (decSeqRef.current === null) decSeqRef.current = new Map();
+  const decChainRef = useRef(null);
+  if (decChainRef.current === null) decChainRef.current = new Map();
+
+  const postDecision = useCallback((rid, payload) => {
+    const seq = (decSeqRef.current.get(rid) || 0) + 1;
+    decSeqRef.current.set(rid, seq);
+    const prev = decChainRef.current.get(rid) || Promise.resolve();
+    const run = prev.then(() => screeningApi.saveDecision(pid, rid, payload));
+    // The chain must survive a rejection, or one failed save would wedge the record.
+    decChainRef.current.set(rid, run.then(() => {}, () => {}));
+    return run.then(resp => ({ resp, current: decSeqRef.current.get(rid) === seq }));
+  }, [pid]);
+
+  /**
+   * patchRecord — write one row through `recordsRef` AND state in the same call.
+   *
+   * `recordsRef` is normally refreshed by an effect, i.e. one commit LATE. That is a
+   * problem here and nowhere else: the undo executor re-validates against
+   * `recordsRef.current` (108.md §15), and a Ctrl+Z issued in the same tick as the
+   * forward click would otherwise validate against the pre-click row and either refuse
+   * or — worse — decide the undo was already satisfied. Assigning the ref first is the
+   * same idiom `loadRecords` already uses for exactly this reason.
+   */
+  const patchRecord = useCallback((rid, patch) => {
+    const next = recordsRef.current.map(r => (r.id === rid ? { ...r, ...patch(r) } : r));
+    recordsRef.current = next;
+    setRecords(next);
+  }, []);
+
+  /** Optimistically reflect a written decision in the row (stage-stamped — see below). */
+  const applyDecisionRow = useCallback((rid, payload) => {
+    patchRecord(rid, r => ({
+      myDecision: {
+        ...(r.myDecision || {}),
+        decision: payload.decision,
+        exclusionReason: payload.exclusionReason,
+        notes: payload.notes,
+        rating: payload.rating,
+        labels: JSON.stringify(payload.labels || []),
+        // 108.md §4 — the server's `myDecision` is stage-agnostic, so stamping the
+        // stage here is what lets `previousDecision` refuse a foreign-stage row.
+        stage: payload.stage || SCREENING_STAGE,
+      },
+    }));
+  }, [patchRecord]);
+
+  /** Keep the decision form honest after an undo/redo writes the open record. */
+  const syncDecisionForm = useCallback((rid, payload) => {
+    if (selectedIdRef.current !== rid) return;
+    setDecision(payload.decision && payload.decision !== 'undecided' ? payload.decision : '');
+    setExcReason(payload.exclusionReason || '');
+    setNotes(payload.notes || '');
+    setRating(payload.rating || 0);
+    setChosenLabels(Array.isArray(payload.labels) ? payload.labels : []);
+  }, []);
+
   // ── Save a decision (auto-save on click; persist on Save) ────────────────
   const saveDecision = useCallback(async (rid, dec, extra = {}) => {
-    if (!rid || !canScreen) return;
+    if (!rid || !canScreen) return null;
     setSaving(true);
     setSaveMsg('');
     setDecErr('');
+    // 108.md §4 — capture the COMPLETE prior state, stage-scoped, from the live row
+    // BEFORE the write. `myDecision` is not stage-filtered server-side, so
+    // previousDecision discards a full-text row rather than snapshotting it as ours.
+    const recBefore = recordsRef.current.find(r => r.id === rid) || null;
+    const prev = previousDecision(recBefore, SCREENING_STAGE);
+    const body = {
+      decision: dec || 'undecided',
+      exclusionReason: extra.exclusionReason !== undefined ? extra.exclusionReason : excReason,
+      notes: extra.notes !== undefined ? extra.notes : notes,
+      rating: extra.rating !== undefined ? extra.rating : rating,
+      labels: extra.labels !== undefined ? extra.labels : chosenLabels,
+      // THE STAGE TRAP (108.md §4): never let the server default `stage` to
+      // rec.currentStage — after a promotion that is 'full_text', so a stage-less
+      // write lands a phantom full-text decision and leaves this one standing.
+      stage: SCREENING_STAGE,
+    };
+    // 108.md §8.2 + §26 — the optimistic row patch AND the history entry are applied at
+    // ISSUE time, not on resolve. "Include → Ctrl+Z before the first save returns" is a
+    // required scenario, and it needs both: an entry to undo, and a row whose state the
+    // entry's precondition recognises. (The write is still real; the entry is dropped
+    // by its own precondition if the save turns out to have failed.)
+    applyDecisionRow(rid, body);
+    if (extra.record !== false) {
+      const entry = decisionEntry({
+        recordId: rid,
+        stage: SCREENING_STAGE,
+        prev,
+        next: body,
+        currentStage: recBefore?.currentStage || SCREENING_STAGE,
+        title: recBefore?.title,
+      });
+      if (entry) histRef.current.record(entry);
+    }
+    // postDecision bumps the record's intent counter SYNCHRONOUSLY, so reading it back
+    // here captures this write's own sequence number (needed on the failure path,
+    // where the promise rejects and cannot report it).
+    const inFlight = postDecision(rid, body);
+    const mySeq = decSeqRef.current.get(rid);
     try {
-      const body = {
-        decision: dec || 'undecided',
-        exclusionReason: extra.exclusionReason !== undefined ? extra.exclusionReason : excReason,
-        notes: extra.notes !== undefined ? extra.notes : notes,
-        rating: extra.rating !== undefined ? extra.rating : rating,
-        labels: extra.labels !== undefined ? extra.labels : chosenLabels,
-      };
-      const resp = await screeningApi.saveDecision(pid, rid, body);
-      // Optimistically reflect the new decision in the row.
-      setRecords(prev => prev.map(r => r.id === rid
-        ? { ...r, myDecision: { decision: body.decision, exclusionReason: body.exclusionReason, notes: body.notes, rating: body.rating, labels: JSON.stringify(body.labels) } }
-        : r));
+      const { resp, current } = await inFlight;
+      if (!current) return resp;   // superseded by a newer intent for this record
       setSaveMsg(resp?.promoted ? 'Saved · advanced to Final Review' : 'Saved');
+      if (resp?.promoted) {
+        // 108.md §4 — PROMOTION IS A ONE-WAY RATCHET. No demotion path exists anywhere
+        // in the server, so reversing this decision's DATA would not reverse the
+        // workflow state. Stamping the new stage onto the row is what makes the entry
+        // recorded above INERT: its precondition pins `currentStage`, so a later Ctrl+Z
+        // refuses instead of writing a decision the workflow no longer honours.
+        patchRecord(rid, () => ({ currentStage: 'full_text' }));
+        notify({
+          message: 'Advanced to Final Review — this decision can no longer be undone',
+          tone: 'warn',
+        });
+      }
       refreshRow(rid); // re-sync reviewer indicators / quorum / disputed
       // 100.md §13 — the stopping point moved: recompute how much is left and where
       // "continue" now points, so leaving the page and coming back is always accurate.
@@ -870,12 +1108,87 @@ export default function ScreeningTab({ pid, project, access, refreshProject, use
       // settled decision (the server has queued a debounced rescore).
       if (dec === 'include' || dec === 'exclude') ai.loadJobStatus?.();
       setTimeout(() => setSaveMsg(''), 2200);
+      return resp;
     } catch (e) {
       setDecErr(e.message || 'Save failed');
+      // The write never landed, so the optimistic patch above is a lie — put the row
+      // (and the form, if this is the open record) back, unless a newer intent has
+      // already claimed the record. The entry that was recorded stays and reports
+      // success as a no-op: `decisionAlreadyApplied` sees the row is already in the
+      // state the undo wanted, which beats telling the user a collaborator moved it.
+      if (decSeqRef.current.get(rid) === mySeq) {
+        applyDecisionRow(rid, prev);
+        syncDecisionForm(rid, prev);
+      }
+      return null;
     } finally {
       setSaving(false);
     }
-  }, [pid, canScreen, excReason, notes, rating, chosenLabels, refreshRow, refreshResume]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [canScreen, excReason, notes, rating, chosenLabels, refreshRow, refreshResume, postDecision, applyDecisionRow, patchRecord, syncDecisionForm, notify]);
+
+  /**
+   * 108.md §8/§14/§15 — the decision undo/redo executor.
+   *
+   * Re-validates against the CURRENT row read from `recordsRef` at execute time, never
+   * from the closure that recorded the entry: a realtime `decision.saved` replaces the
+   * whole page wholesale and the decision form is not resynced with it. A record that
+   * has moved on (promoted, or re-decided by a collaborator) is REFUSED, which puts the
+   * entry back on its stack and shows "changed by a collaborator".
+   *
+   * The write itself goes through the same serialized `postDecision` as every forward
+   * action, with the COMPLETE prior payload and an explicit `stage`.
+   */
+  const decisionExecutor = useCallback(async (op) => {
+    const rid = op && op.recordId;
+    if (!rid || !op.payload) return { ok: false, reason: 'no-executor' };
+    if (!canScreen) return { ok: false, reason: 'refused', detail: 'not-permitted' };
+    const rec = recordsRef.current.find(r => r.id === rid) || null;
+    // Already there (a failed forward save that was rolled back) — the goal is met, so
+    // report success rather than accusing a collaborator.
+    if (decisionAlreadyApplied(rec, op)) return true;
+    const refuse = decisionPrecondition(rec, op);
+    if (refuse) return { ok: false, reason: 'refused', detail: refuse };
+    const stage = op.stage || SCREENING_STAGE;
+    const payload = { ...op.payload, stage };
+    const restore = previousDecision(rec, stage);
+    // §8.2 — the UI moves immediately; the write is what makes it true.
+    applyDecisionRow(rid, payload);
+    syncDecisionForm(rid, payload);
+    const inFlight = postDecision(rid, payload);
+    const mySeq = decSeqRef.current.get(rid);
+    let resp = null;
+    let current = false;
+    try {
+      ({ resp, current } = await inFlight);
+    } catch (e) {
+      // A throw propagates to the history layer as a PERSISTENCE FAILURE, which puts
+      // the entry back on its stack — so the local state has to go back too.
+      if (decSeqRef.current.get(rid) === mySeq) {
+        applyDecisionRow(rid, restore);
+        syncDecisionForm(rid, restore);
+      }
+      throw e;
+    }
+    if (!current) return true;   // a newer intent already owns this record
+    refreshRow(rid);
+    refreshResume({ now: true });
+    if (resp?.promoted) {
+      // A redo can re-cross the quorum line if a teammate decided meanwhile. Say so:
+      // the record is now in Final Review and cannot be walked back.
+      patchRecord(rid, () => ({ currentStage: 'full_text' }));
+      notify({
+        message: 'Advanced to Final Review — this decision can no longer be undone',
+        tone: 'warn',
+      });
+    }
+    return true;
+  }, [canScreen, postDecision, applyDecisionRow, patchRecord, syncDecisionForm, refreshRow, refreshResume, notify]);
+
+  useEffect(
+    () => registerExecutor(SCREENING_KIND.DECISION, decisionExecutor),
+    [registerExecutor, decisionExecutor],
+  );
 
   // Click Include/Exclude/Maybe → auto-save immediately (toggle = undo).
   function onDecisionClick(val) {
@@ -919,6 +1232,15 @@ export default function ScreeningTab({ pid, project, access, refreshProject, use
         .sift-rl::-webkit-scrollbar, .sift-mid::-webkit-scrollbar, .sift-rt::-webkit-scrollbar { width: 8px; }
         .sift-rl::-webkit-scrollbar-thumb, .sift-mid::-webkit-scrollbar-thumb, .sift-rt::-webkit-scrollbar-thumb { background: ${C.brd2}; border-radius: 4px; }
         .sift-in:focus { border-color: ${C.acc} !important; }
+        /* 108.md §21/§25 — a keyword chip that owns a context menu is reachable by
+           keyboard, so it needs the app's focus ring. The app-wide rule in
+           theme/tokens.js only matches button / [role="button"], and a chip is
+           neither (it CONTAINS buttons), so it gets the same treatment here. The
+           filter-panel ROWS need no rule: their own checkbox is the focusable element
+           and already draws the native ring. */
+        .sift-kwchip:focus-visible {
+          outline: none; box-shadow: 0 0 0 3px ${alpha(C.acc, '48')};
+        }
       `}</style>
 
       {uiPrefs.leftCollapsed ? (
@@ -995,7 +1317,9 @@ export default function ScreeningTab({ pid, project, access, refreshProject, use
           kwPendingIncl={kw.include.pending} kwPendingExcl={kw.exclude.pending}
           kwConflicts={kw.conflicts}
           canEditKeywords={canEditKeywords}
-          runKeywordOp={runKeywordOp} kwOpError={kwOpError}
+          runKeywordOp={runKeywordOpTracked} kwOpError={kwOpError}
+          /* 108.md §18 — the same menu opener for BOTH keyword surfaces */
+          onKeywordMenu={openKeywordMenu}
         />
       )}
 
@@ -1018,13 +1342,23 @@ export default function ScreeningTab({ pid, project, access, refreshProject, use
         </Modal>
       )}
 
-      {/* 107.md §3 — subtle confirmation + real (server-persisted) Undo. */}
-      <KeywordSnackbar
-        message={kwNote?.message || ''}
-        tone={kwNote?.tone}
-        onUndo={kwNote?.undo ? undoKeywordNote : undefined}
-        onDismiss={dismissKeywordNote}
-      />
+      {/* 108.md §§18-21 — right-click delete. Rendered at the workbench root (not next
+          to the chip) so `position: fixed` is measured against the viewport and the menu
+          is never clipped by the right column's own scroll container. */}
+      {kwMenu && (
+        <KeywordContextMenu
+          term={kwMenu.term} list={kwMenu.list} origin={kwMenu.origin}
+          x={kwMenu.x} y={kwMenu.y} busy={kwMenuBusy}
+          onDelete={() => deleteKeyword(kwMenu.term, kwMenu.list)}
+          onClose={closeKeywordMenu}
+        />
+      )}
+
+      {/* 108.md §17 — the confirmation + Undo surface is the shared, QUEUED
+          `useUndoFeedback` provider (mounted by the shell). It renders the same
+          KeywordSnackbar with the same testids the 107 tests and page objects pin; what
+          changed is that its Undo button now runs the recorded history entry, so the
+          button and Ctrl+Z are one code path instead of two. */}
     </div>
   );
 }
@@ -1983,6 +2317,7 @@ function RightColumn({
   kwStats, loadKwStats, selectedIncl, setSelectedIncl, selectedExcl, setSelectedExcl,
   clearKeywordFilters, shownCount, projectTotal, onCollapse, ai, elig,
   kwPendingIncl, kwPendingExcl, kwConflicts, canEditKeywords, runKeywordOp, kwOpError,
+  onKeywordMenu,
 }) {
   const [open, setOpen] = useState({
     ai: true, eligibility: true, pico: true, keywords: true,
@@ -2048,6 +2383,7 @@ function RightColumn({
           shownCount={shownCount} projectTotal={projectTotal}
           showInclusion={showInclusion} setShowInclusion={setShowInclusion}
           showExclusion={showExclusion} setShowExclusion={setShowExclusion}
+          onKeywordMenu={onKeywordMenu}
         />
       </Section>
 
@@ -2163,7 +2499,7 @@ function KeywordPanel({
   shownCount, projectTotal,
   showInclusion, setShowInclusion, showExclusion, setShowExclusion,
   kwPendingIncl = [], kwPendingExcl = [], kwConflicts = [],
-  canEditKeywords, runKeywordOp, kwOpError,
+  canEditKeywords, runKeywordOp, kwOpError, onKeywordMenu,
 }) {
   const [editing, setEditing] = useState(false);
   const [reviewOpen, setReviewOpen] = useState(false);
@@ -2187,16 +2523,22 @@ function KeywordPanel({
           }}>Clear filters</button>
       </div>
 
+      {/* 108.md §18 (dossier) — these checkbox rows are the ALWAYS-VISIBLE keyword
+          list: the editor chips below live behind a leader-gated accordion most users
+          never open, so targeting only those would make right-click delete effectively
+          unreachable. Both surfaces share one menu and one gating predicate. */}
       <KeywordGroup
-        title="Include keywords" accent={C.grn}
+        title="Include keywords" accent={C.grn} list="include"
         terms={inclusion} counts={kwStats.include || {}} sourceByTerm={inclSource}
         selected={selectedIncl} setSelected={setSelectedIncl}
+        canEditKeywords={canEditKeywords} onKeywordMenu={onKeywordMenu}
       />
       <div style={{ height: 14 }} />
       <KeywordGroup
-        title="Exclude keywords" accent={C.red}
+        title="Exclude keywords" accent={C.red} list="exclude"
         terms={exclusion} counts={kwStats.exclude || {}} sourceByTerm={exclSource}
         selected={selectedExcl} setSelected={setSelectedExcl}
+        canEditKeywords={canEditKeywords} onKeywordMenu={onKeywordMenu}
       />
 
       {/* 107.md §2 — SUGGESTED keywords derived from this project's eligibility
@@ -2242,6 +2584,7 @@ function KeywordPanel({
                 inclusion={inclusion} exclusion={exclusion}
                 inclSource={inclSource} exclSource={exclSource}
                 canEditKeywords={canEditKeywords} runKeywordOp={runKeywordOp} opError={kwOpError}
+                onKeywordMenu={onKeywordMenu}
                 suggestionCount={suggestionCount}
                 onReviewSuggestions={() => setReviewOpen(true)}
                 refreshProject={() => { refreshProject?.(); loadKwStats?.(); }}
@@ -2392,9 +2735,13 @@ function OriginBadge({ origin }) {
   );
 }
 
-function KeywordGroup({ title, accent, terms, counts, selected, setSelected, sourceByTerm }) {
+export function KeywordGroup({
+  title, accent, terms, counts, selected, setSelected, sourceByTerm,
+  list, canEditKeywords, onKeywordMenu,
+}) {
   const [expanded, setExpanded] = useState(false);
-  const list = expanded ? terms : terms.slice(0, KW_PREVIEW);
+  // `shown`, not `list` — `list` is now the prop naming the side these terms belong to.
+  const shown = expanded ? terms : terms.slice(0, KW_PREVIEW);
   const allSelected = terms.length > 0 && selected.length === terms.length;
 
   const toggleTerm = t => setSelected(prev => prev.includes(t) ? prev.filter(x => x !== t) : [...prev, t]);
@@ -2418,12 +2765,28 @@ function KeywordGroup({ title, accent, terms, counts, selected, setSelected, sou
         <span style={{ fontSize: 11.5, color: C.muted, fontStyle: 'italic' }}>None defined.</span>
       ) : (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
-          {list.map(t => {
+          {shown.map(t => {
             const on = selected.includes(t);
             const n = counts[t] || 0;
             const origin = (sourceByTerm || {})[t] || KEYWORD_ORIGIN.MANUAL;
+            const menuable = !!onKeywordMenu && canOpenKeywordMenu({ origin, canEdit: canEditKeywords });
+            const openMenu = (e, opts) => onKeywordMenu(e, { term: t, list, origin, ...opts });
             return (
-              <label key={t} style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', padding: '2px 0' }}>
+              <label
+                key={t}
+                data-testid="screening-keyword-row"
+                data-term={t} data-origin={origin} data-list={list || ''}
+                /* Not a class: the row needs no styling of its own, only a queryable
+                   statement of whether the fast delete is available here. */
+                data-menu={menuable ? 'true' : undefined}
+                /* 108.md §19 — no handler at all for a default-origin term or a
+                   non-editor, so the browser's own context menu is untouched. */
+                onContextMenu={menuable ? openMenu : undefined}
+                onKeyDown={menuable ? (e) => {
+                  if (e.key === 'ContextMenu' || (e.shiftKey && e.key === 'F10')) openMenu(e, { keyboard: true });
+                } : undefined}
+                style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', padding: '2px 0', borderRadius: 5 }}
+              >
                 <input type="checkbox" checked={on} onChange={() => toggleTerm(t)}
                   style={{ accentColor: accent, cursor: 'pointer', flexShrink: 0 }} />
                 <span style={{ flex: 1, minWidth: 0, fontSize: 12, color: on ? C.txt : C.txt2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={`${t} · ${ORIGIN_LABEL[origin] || ORIGIN_LABEL[KEYWORD_ORIGIN.MANUAL]}`}>{t}</span>
@@ -2453,9 +2816,9 @@ function KeywordGroup({ title, accent, terms, counts, selected, setSelected, sou
 // reviewed above, so there is nothing left to "generate" over the top of a leader's
 // manual terms. "Reset to defaults" survives but needs an explicit confirm.
 
-function KeywordEditor({
+export function KeywordEditor({
   pid, refreshProject, inclusion, exclusion, isLeader,
-  inclSource, exclSource, canEditKeywords, runKeywordOp, opError,
+  inclSource, exclSource, canEditKeywords, runKeywordOp, opError, onKeywordMenu,
   suggestionCount = 0, onReviewSuggestions,
 }) {
   const [newIncl, setNewIncl] = useState('');
@@ -2467,10 +2830,12 @@ function KeywordEditor({
 
   const mayEdit = canEditKeywords !== undefined ? canEditKeywords : isLeader;
 
-  async function runOp(op) {
+  // `note` rides through to the shared undo-feedback surface (108.md §17): the chip ×
+  // used to be the ONE keyword mutation with no undo affordance at all.
+  async function runOp(op, note) {
     setSaving(true); setErr(''); setMsg('');
     try {
-      const r = await runKeywordOp?.(op);
+      const r = await runKeywordOp?.(op, note ? { note } : undefined);
       if (r) setMsg(r.changed ? 'Saved' : 'No change');
       setTimeout(() => setMsg(''), 1800);
     } finally { setSaving(false); }
@@ -2510,33 +2875,69 @@ function KeywordEditor({
     finally { setSaving(false); }
   }
 
+  /**
+   * 108.md §21 — the chip's ×/→ used to be ~11×17px, well under the 24-26px minimum
+   * every other tap target in this repo uses (TermChipRow, VocabManager,
+   * KeywordSnackbar). §21 makes the × "the touch path" for deletion, so it has to
+   * actually be usable with a thumb.
+   */
+  const chipButton = {
+    background: 'none', border: 'none', cursor: 'pointer', opacity: 0.7,
+    minWidth: 24, minHeight: 24, padding: 0, borderRadius: 6, lineHeight: 1,
+    display: 'inline-flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0,
+  };
+
   const chip = (term, kind) => {
     const list = kind === 'incl' ? 'include' : 'exclude';
     const other = kind === 'incl' ? 'exclude' : 'include';
+    const otherLabel = kind === 'incl' ? 'exclusion' : 'inclusion';
     const origin = (kind === 'incl' ? inclSource : exclSource)?.[term] || KEYWORD_ORIGIN.MANUAL;
     const tint = kind === 'incl'
       ? { bg: alpha(C.grn, 0.14), bd: alpha(C.grn, 0.5), tx: C.grn }
       : { bg: alpha(C.red, 0.14), bd: alpha(C.red, 0.5), tx: C.red };
+    // 108.md §19 — no menu (and therefore no preventDefault) for default-origin terms
+    // or for a viewer who may not edit: the browser keeps its own context menu.
+    const menuable = !!onKeywordMenu && canOpenKeywordMenu({ origin, canEdit: mayEdit });
+    const openMenu = (e, opts) => onKeywordMenu(e, { term, list, origin, ...opts });
     return (
-      <span key={kind + term} title={`${term} · ${ORIGIN_LABEL[origin] || ORIGIN_LABEL[KEYWORD_ORIGIN.MANUAL]}`}
+      <span
+        key={kind + term}
+        className={menuable ? 'sift-kwchip' : undefined}
+        data-testid="screening-keyword-chip"
+        data-term={term} data-origin={origin} data-list={list}
+        title={`${term} · ${ORIGIN_LABEL[origin] || ORIGIN_LABEL[KEYWORD_ORIGIN.MANUAL]}`}
+        /* §21/§25 — the chip itself is reachable and carries the keyboard route to the
+           same menu (ContextMenu key / Shift+F10). It stays a <span>: it CONTAINS
+           buttons, so giving it a widget role would nest interactive elements. */
+        tabIndex={menuable ? 0 : undefined}
+        aria-haspopup={menuable ? 'menu' : undefined}
+        aria-label={menuable ? `${term} — keyword actions` : undefined}
+        onContextMenu={menuable ? openMenu : undefined}
+        onKeyDown={menuable ? (e) => {
+          if (e.key === 'ContextMenu' || (e.shiftKey && e.key === 'F10')) openMenu(e, { keyboard: true });
+        } : undefined}
         style={{
-          display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 11,
+          display: 'inline-flex', alignItems: 'center', gap: 3, fontSize: 11,
           background: tint.bg, border: `1px solid ${tint.bd}`, color: tint.tx,
-          borderRadius: 11, padding: '2px 4px 2px 9px',
+          borderRadius: 13, padding: '1px 3px 1px 9px',
         }}>
         <OriginBadge origin={origin} />
         {term}
         {mayEdit && (
           <button
-            onClick={() => runOp({ type: 'move', list, term, toList: other })}
-            style={{ background: 'none', border: 'none', color: tint.tx, cursor: 'pointer', fontSize: 11, lineHeight: 1, padding: '0 2px', opacity: 0.7 }}
+            onClick={() => runOp({ type: 'move', list, term, toList: other }, `Keyword moved to ${otherLabel}`)}
+            data-testid="screening-keyword-chip-move"
+            aria-label={`Move ${term} to ${otherLabel}`}
+            style={{ ...chipButton, color: tint.tx, fontSize: 12 }}
             title={kind === 'incl' ? 'Move to exclusion' : 'Move to inclusion'}
           >{kind === 'incl' ? '→' : '←'}</button>
         )}
         {mayEdit && (
           <button
-            onClick={() => runOp({ type: 'remove', list, term })}
-            style={{ background: 'none', border: 'none', color: tint.tx, cursor: 'pointer', fontSize: 13, lineHeight: 1, padding: '0 2px', opacity: 0.7 }}
+            onClick={() => runOp({ type: 'remove', list, term }, 'Keyword deleted')}
+            data-testid="screening-keyword-chip-remove"
+            aria-label={`Remove ${term}`}
+            style={{ ...chipButton, color: tint.tx, fontSize: 14 }}
             title="Remove"
           >×</button>
         )}

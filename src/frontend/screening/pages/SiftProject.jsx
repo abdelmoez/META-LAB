@@ -18,6 +18,10 @@ import PresenceIndicator from '../components/PresenceIndicator.jsx';
 import ChatLauncher from '../components/ChatLauncher.jsx';
 import UserMenu from '../../components/UserMenu.jsx';
 import NotificationsBell from '../../components/NotificationsBell.jsx';
+// 108.md §§2-3/§17 — the project-wide history + shortcut router + undo snackbar,
+// mounted here for the STANDALONE route only (see the comment above the return).
+import ProjectInteractionProvider from '../../history/ProjectInteractionProvider.jsx';
+import { SCOPE_SCREENING } from '../../../research-engine/interaction/projectScopes.js';
 
 import OverviewTab       from '../tabs/OverviewTab.jsx';
 import ScreeningTab      from '../tabs/ScreeningTab.jsx';
@@ -321,7 +325,15 @@ export default function SiftProject({ embedded = false, embeddedPid = null, onGo
     );
   }
 
+  // 108.md §§2-3 — the STANDALONE /sift-beta route has no Stitch shell above it, so
+  // it mounts its own interaction layer. The EMBEDDED branch above deliberately does
+  // NOT: it renders inside StitchProjectWorkspace / the legacy Workspace, which
+  // already provide one, and a nested provider would shadow the host's stacks with
+  // an empty second history. Scope is the constant 'screening' — the sub-tabs
+  // (Title & Abstract, Conflicts, Final Review …) are navigation inside one engine
+  // and share one stack (§16).
   return (
+    <ProjectInteractionProvider projectId={pid} scope={SCOPE_SCREENING}>
     <div style={{ minHeight: '100vh', height: '100vh', background: C.bg, fontFamily: FONT, color: C.txt, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
       <GlobalStyle />
 
@@ -404,6 +416,7 @@ export default function SiftProject({ embedded = false, embeddedPid = null, onGo
         )}
       </div>
     </div>
+    </ProjectInteractionProvider>
   );
 }
 

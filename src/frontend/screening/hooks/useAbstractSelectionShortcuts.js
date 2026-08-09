@@ -11,6 +11,12 @@
  * `preventDefault()` fires ONLY once every guard has passed, so Cmd/Ctrl+I and
  * Cmd/Ctrl+E keep their normal browser meaning everywhere else on the page.
  *
+ * 108.md §1 — "everywhere else" now includes the cases where PecanRev cannot
+ * process the press: the `canHandle` predicate is part of the guard chain, so a
+ * reviewer who may not edit keyword lists never has the chord swallowed. Shift'd
+ * chords (Ctrl/Cmd+Shift+I = DevTools) are not ours and are never claimed; repeated,
+ * IME-composing and already-claimed events are skipped.
+ *
  * Selection ownership is proven structurally: BOTH the selection's anchor and focus
  * nodes must be inside the abstract element (`el.contains(node)`), so a selection
  * that merely starts in the abstract and runs into the decision bar is rejected —
@@ -18,7 +24,7 @@
  */
 import { useEffect, useRef } from 'react';
 import {
-  matchesShortcut, shouldHandleSelectionShortcut,
+  matchesShortcut, keyEventRejection, shouldHandleSelectionShortcut,
 } from '../../../research-engine/screening/selectionShortcut.js';
 import { isScreeningModalOpen } from '../ui/components.jsx';
 
@@ -42,18 +48,25 @@ function inEditableContext() {
  * @param {boolean} opts.enabled          — master switch (off ⇒ no listener work)
  * @param {{current: HTMLElement|null}} opts.containerRef — the abstract element
  * @param {(hit:{list:'include'|'exclude', phrase:string}) => void} opts.onTrigger
+ * @param {boolean|(()=>boolean)} [opts.canHandle] — 108.md §1 cond. 5: may PecanRev
+ *        actually process this press (e.g. `() => canEditKeywords`)? Evaluated
+ *        INSIDE the guard chain, so a `false` means the event is never cancelled and
+ *        the browser keeps its default. Omitted ⇒ permitted.
  */
-export function useAbstractSelectionShortcuts({ enabled, containerRef, onTrigger }) {
+export function useAbstractSelectionShortcuts({ enabled, containerRef, onTrigger, canHandle }) {
   // Latest values behind a ref so the window listener is bound exactly once.
   const ref = useRef({});
-  ref.current = { enabled, containerRef, onTrigger };
+  ref.current = { enabled, containerRef, onTrigger, canHandle };
 
   useEffect(() => {
     function onKey(e) {
-      const { enabled: on, containerRef: cRef, onTrigger: fire } = ref.current;
+      const { enabled: on, containerRef: cRef, onTrigger: fire, canHandle: may } = ref.current;
       if (!on) return;
-      // Cheap pre-check: never touch the DOM (or the selection) for other keys.
+      // Cheap pre-checks: never touch the DOM (or the selection) for other keys, for
+      // auto-repeat ticks, mid-IME-composition, or an event someone else already
+      // claimed. Same predicates the pure chain re-applies below.
       if (!matchesShortcut(e)) return;
+      if (keyEventRejection(e)) return;
 
       const el = cRef?.current || null;
       const sel = typeof window !== 'undefined' && window.getSelection ? window.getSelection() : null;
@@ -67,6 +80,9 @@ export function useAbstractSelectionShortcuts({ enabled, containerRef, onTrigger
         selectionInsideAbstract: insideAbstract,
         editableContext: inEditableContext(),
         modalOpen: isScreeningModalOpen(),
+        // Boolean or predicate — the pure chain resolves it last, so the permission
+        // source is only consulted for a press that would otherwise be handled.
+        canProcess: may,
       });
       if (!res.handled) return;
 

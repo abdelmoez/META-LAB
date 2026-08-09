@@ -11,7 +11,7 @@
  * here is identical and interoperable), while article STATE (complete/reopen) round-
  * trips through the engine API. Analysis keeps reading the same studies[] blob.
  */
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { C } from '../../../frontend/workspace/ui/styles.js';
 import { protocolOutcomes } from '../../../research-engine/extraction/protocolOutcomes.js';
 import { confirmDraft as confirmDraftPure, parkRecord as parkRecordPure, unparkToDraft as unparkPure } from '../../../research-engine/extraction/records.js';
@@ -27,6 +27,11 @@ import {
   buildCaseExportRows,
 } from '../../../research-engine/extraction/caseSeries.js';
 import { downloadBlob } from '../../../frontend/components/exportCore.js';
+// 108.md §8 — the project-wide history + the pure extraction inverse appliers.
+import { useProjectHistory } from '../../../frontend/history/HistoryContext.jsx';
+import {
+  applyExtractionWrite, findStudyRow, matchesExpected, EXTRACTION_HISTORY_KIND,
+} from '../../../research-engine/interaction/extractionHistory.js';
 import ArticleList from './ArticleList.jsx';
 import ArticleWorkspace from './ArticleWorkspace.jsx';
 import OutcomeNavigator from './OutcomeNavigator.jsx';
@@ -119,19 +124,50 @@ export default function PecanExtractionEngine({ project, updateProject, activeId
 
   // 83.md §5 — value fields + their provenance land in ONE functional update, so an
   // autosave flush can never persist a captured value without its provenance/history.
-  const writeStudy = useCallback((id, patch, entriesByField) => updateProject(activeId, (p) => {
-    // 106.md — article-level keys fan out to sibling cases FIRST (still one functional
-    // update), then this row's provenance is attached. Provenance stays strictly
-    // per-row: a source link belongs to the case whose value it justifies, never to
-    // its siblings, even when the underlying field was propagated.
-    const spread = propagateArticleFields(p.studies || [], id, patch, { at: new Date().toISOString() }).studies;
-    return {
-      ...p,
-      studies: entriesByField
-        ? spread.map((s) => (s && s.id === id ? attachProvenanceMany(s, entriesByField) : s))
-        : spread,
-    };
-  }), [updateProject, activeId]);
+  // 106.md — article-level keys fan out to sibling cases FIRST (still one functional
+  // update), then this row's provenance is attached. Provenance stays strictly per-row:
+  // a source link belongs to the case whose value it justifies, never to its siblings,
+  // even when the underlying field was propagated.
+  // 108.md §8 — the body moved into the pure applyExtractionWrite so the undo executor
+  // below and the forward write are provably ONE path, and so the inverse can carry
+  // `null` for a field whose provenance must be REMOVED (see extractionHistory.js).
+  const writeStudy = useCallback((id, patch, entriesByField) => {
+    // Purity rule: the timestamp is seeded OUTSIDE the updater (StrictMode invokes
+    // updaters twice, and a CAS retry re-runs them).
+    const at = new Date().toISOString();
+    return updateProject(activeId, (p) => ({
+      ...p, studies: applyExtractionWrite(p.studies || [], id, patch, entriesByField, { at }),
+    }));
+  }, [updateProject, activeId]);
+
+  /* ── 108.md §8 — the extraction undo/redo executor ──────────────────────────────
+     Undo is a REAL mutation through the same write path as the forward action, never
+     a local rollback: it restores the value(s), the FULL prior provenance entry and
+     `needsReview` in one blob update, and the ordinary autosave persists it.
+     Precondition (§14/§15): the row is re-read from the FRESHEST render, never from
+     the closure the entry was recorded in, and the write is refused when the field no
+     longer holds what this entry produced — a collaborator (or the AI extractor) got
+     there first. An outstanding autosave 409 is reported as a persistence failure so
+     the entry is restored to its stack instead of being silently popped.
+     Pending saves need no special handling: both blob stacks are replace-not-queue and
+     serialize their sends, so this updateProject supersedes the pending post-change
+     blob and an older in-flight PUT cannot resurrect the undone value (inv108 §3).
+     Note it calls writeStudy, NOT ArticleWorkspace's setFields/writeValues: those are
+     the RECORDING call sites, and replaying an inverse through them would both destroy
+     the provenance and log the undo as a fresh action (clearing the redo branch). */
+  const live = useRef({});
+  live.current = { studies, saveStatus, canEdit, readOnly };
+  const { registerExecutor } = useProjectHistory();
+  useEffect(() => registerExecutor(EXTRACTION_HISTORY_KIND, async (op) => {
+    const now = live.current;
+    if (now.readOnly || !now.canEdit) return { ok: false, reason: 'refused' };
+    if (now.saveStatus === 'conflict') return { ok: false, reason: 'failed' };
+    const row = findStudyRow(now.studies, op && op.studyId);
+    if (!row) return { ok: false, reason: 'refused' };
+    if (!matchesExpected(row, op.expect)) return { ok: false, reason: 'refused' };
+    writeStudy(op.studyId, op.fields, op.provenance);
+    return true;
+  }), [registerExecutor, writeStudy]);
 
   const addDrafts = useCallback((recs) => { if (!recs || !recs.length) return; updateProject(activeId, (p) => ({ ...p, extractionDrafts: reconcileDrafts(p.extractionDrafts || [], recs, { dismissedIdentities: p.extractionDismissed || [] }).drafts })); }, [updateProject, activeId]);
   const addParked = useCallback((recs) => { if (!recs || !recs.length) return; updateProject(activeId, (p) => ({ ...p, extractionParked: reconcileDrafts(p.extractionParked || [], recs, { dismissedIdentities: p.extractionDismissed || [] }).drafts })); }, [updateProject, activeId]);

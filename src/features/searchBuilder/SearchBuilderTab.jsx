@@ -33,11 +33,19 @@ import {
   recordReorderConcept, recordReorderTerm, recordMergeConcepts, recordSplitConcept,
   // 97.md (workstream B — plan §11): new undo kinds + the pure global-undo guard.
   recordMoveTerm, recordCopyTerm, recordCombineTokens, recordSplitPhrase, recordRegenerate,
-  recordRenameConcept, recordAddConcept, recordDupOverride, shouldHandleGlobalUndo,
+  // 108.md §23 — `shouldHandleGlobalUndo` is no longer imported here: the typing
+  // guard moved into the router's context (ctx.editableTarget), which is computed
+  // by the same canonical predicate this module re-exports.
+  recordRenameConcept, recordAddConcept, recordDupOverride,
   // 97 QA — per-editing-session term-edit undo (M13) + in-session restore undo (M11).
   recordEditTerm, recordRestore,
   undoLast, clear as clearUndo,
 } from "../../research-engine/searchBuilder/undoStack.js";
+// 108.md §23 — the central shortcut router replaces this file's document-level
+// Ctrl/Cmd+Z listener (see the binding below for why the migration is mandatory).
+import { useShortcut, TIER } from "../../frontend/shortcuts/ShortcutProvider.jsx";
+import { isUndoChord, historyShortcutAllowed } from "../../research-engine/interaction/undoChords.js";
+import { SCOPE_SEARCH } from "../../research-engine/interaction/projectScopes.js";
 /* ── 97.md — pure state helpers from workstream B (plan §§8-13, ownership §22):
    the conservative exact-duplicate engine + dupOverride machinery, the term
    move/copy/combine/split ops (each returning ready-made undo info), and the
@@ -1802,27 +1810,36 @@ export default function SearchBuilderTab({projectId,question:questionProp,pico,a
     announce(r.description||'Undone');
   },[]); // eslint-disable-line
 
-  /* ── 97.md Phase 6 — GLOBAL keyboard undo: Ctrl+Z (Windows/Linux) / Cmd+Z (macOS).
-     One document-level keydown handler, mounted only while this builder is the
-     visible workspace surface. The pure `shouldHandleGlobalUndo` predicate (B,
-     undoStack.js) refuses EVERY typing surface — inputs, textareas,
-     contentEditable/rich-text and search-syntax editors — so native text undo is
-     never hijacked. Shift/Alt combos (redo chords) are left alone. */
-  useEffect(()=>{
-    if(!embedded||!visible||readOnly) return;
-    const onKey=(e)=>{
-      if(e.key!=="z"&&e.key!=="Z") return;
-      if(!(e.ctrlKey||e.metaKey)||e.altKey||e.shiftKey) return;
-      const t=e.target||{};
-      let role=null;
-      try{ role=typeof t.getAttribute==="function"?t.getAttribute("role"):null; }catch{/* detached */}
-      if(!shouldHandleGlobalUndo({tagName:t.tagName,isContentEditable:!!t.isContentEditable,role})) return;
-      e.preventDefault();
-      undoLastAction();
-    };
-    document.addEventListener("keydown",onKey);
-    return ()=>document.removeEventListener("keydown",onKey);
-  },[embedded,visible,readOnly,undoLastAction]);
+  /* ── 97.md Phase 6 · 108.md §23 — keyboard undo: Ctrl+Z / Cmd+Z.
+     MIGRATED from a bare `document.addEventListener("keydown")` into the central
+     router (frontend/shortcuts/ShortcutProvider). That migration is mandatory, not
+     cosmetic: document-BUBBLE runs before window-bubble, so the old listener would
+     have permanently shadowed the router's global undo on every search page.
+
+     Same semantics, now declared instead of hand-rolled:
+       · mount gate  → `when`: embedded && visible && !readOnly, plus the page scope
+                       (the router keys history per page — 108.md §3);
+       · typing guard→ ctx.editableTarget, computed by the SAME predicate
+                       `shouldHandleGlobalUndo` delegates to (interaction/
+                       editableTarget.js), read through frontend/shortcuts/
+                       domTarget.js so the role still comes from getAttribute('role');
+       · chord       → isUndoChord rejects Shift and Alt exactly as before;
+       · preventDefault → the adapter calls it only on a truthy `run()` return, so a
+                       press with an empty stack leaves the browser alone (§26).
+
+     REDO IS NOT OFFERED HERE (undoChords.SEARCH_SCOPE_REDO): undoStack.js records
+     inverse patches only and never the forward patch, so there is nothing to
+     replay. No redo binding is registered for this scope, the global one finds an
+     empty redo stack and declines, and Ctrl/Cmd+Shift+Z stays with the browser. */
+  const undoAvailable=undoStack.length>0;
+  useShortcut({
+    id:'searchBuilder.undo',
+    tier:TIER.ENGINE,
+    match:isUndoChord,
+    when:(ctx)=>embedded&&visible&&!readOnly&&undoAvailable
+      &&(!ctx.scope||ctx.scope===SCOPE_SEARCH)&&historyShortcutAllowed(ctx),
+    run:()=>{ undoLastAction(); return true; },
+  },[]);
 
   /* ── 97 QA M13 — TERM-EDIT undo: ONE entry per editing session (the rename
      pattern). The pre-edit term object is snapshotted when the editor popover

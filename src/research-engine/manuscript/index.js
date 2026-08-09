@@ -38,6 +38,10 @@ export * from './exportValidation.js';
 // provenance/revert history layered over it.
 export * from './factTokens.js';
 export * from './factProvenance.js';
+// 108.md §6 — the pure capture/apply/compare primitives the project-wide history
+// uses to reverse the two undoable STRUCTURED manuscript mutations (section lock,
+// fact pin). Prose keeps native undo — see the module header.
+export * from './historyOps.js';
 // 102.md — manual-input placeholders: precise detection (default-deny, so the
 // square brackets of scientific notation are never claimed), counts, grouping and
 // prev/next navigation.

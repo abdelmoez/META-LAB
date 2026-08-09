@@ -49,10 +49,23 @@ export const KEYWORD_DECISION = Object.freeze({
 });
 
 export const KEYWORD_LISTS = Object.freeze(['include', 'exclude']);
-export const KEYWORD_OPS = Object.freeze(['add', 'remove', 'move', 'accept', 'reject']);
+// 108.md §20 — 'clear-decision' is the non-verdict inverse of accept/reject: it
+// returns a suggestion to PENDING (and, with removeTerm, undoes the term an accept
+// added). Without it a decision could only ever be replaced, never withdrawn.
+export const KEYWORD_OPS = Object.freeze(['add', 'remove', 'move', 'accept', 'reject', 'clear-decision']);
 
 /** Longest keyword we will store — mirrors the server-side body validation. */
 export const MAX_KEYWORD_LENGTH = 200;
+
+/**
+ * 108.md §20 — how many ops one transactional batch may carry. A compound inverse is
+ * ONE server round trip and ONE history entry; the worst case is the exact inverse of
+ * a `move` onto a list that ALREADY held the term (drop + re-add the target term at
+ * its prior index + restore its decision, then re-add the source term + restore its
+ * decision = 5). 6 leaves one slot of headroom without turning the endpoint into a
+ * general bulk-write API.
+ */
+export const MAX_KEYWORD_OPS = 6;
 
 const LIST_FIELD = { include: 'inclusion', exclude: 'exclusion' };
 const OTHER_LIST = { include: 'exclude', exclude: 'include' };
@@ -173,6 +186,33 @@ function withSeeded(seeded, list) {
   return next;
 }
 
+/**
+ * 108.md §20 — drop ONE side's marker in place, deleting the key entirely when the
+ * map empties so the meta goes back to its exact pre-edit 3-key byte shape.
+ * Only ever called from `add { clearSeeded: true }`: the reducer must be able to
+ * CLEAR the marker (undoing the remove that set it) but never to set it outside a
+ * real "not on this list" verdict.
+ */
+function clearSeededMarker(meta, list) {
+  if (!isPlainObject(meta.seeded) || meta.seeded[list] !== true) return;
+  const next = {};
+  for (const l of KEYWORD_LISTS) if (l !== list && meta.seeded[l] === true) next[l] = true;
+  if (Object.keys(next).length) meta.seeded = next;
+  else delete meta.seeded;
+}
+
+/**
+ * 108.md §20 — where a restored term goes. An absent index APPENDS (byte-identical
+ * to the pre-108 behaviour); an out-of-range one CLAMPS to [0, length] rather than
+ * failing, mirroring searchBuilder/undoStack.js:381 — a collaborator can legitimately
+ * shrink the list between the delete and the undo, and restoring the term at the edge
+ * beats refusing the undo.
+ */
+function insertAt(index, length) {
+  if (!Number.isInteger(index)) return length;
+  return Math.min(Math.max(index, 0), length);
+}
+
 /** Empty canonical meta (a fresh object every call — callers may mutate their copy). */
 export function emptyKeywordMeta() {
   return normalizeKeywordMeta(null);
@@ -238,6 +278,40 @@ function readList(state, list) {
   return Array.isArray(v) ? v : [];
 }
 
+/**
+ * 108.md §20 — CANONICAL KEY ORDER for the two lookup maps.
+ *
+ * Object keys iterate in insertion order and `JSON.stringify(meta)` is exactly what
+ * lands in `ScreenProject.keywordMeta` (and what the ops endpoint's CAS pre-image
+ * compares), so an op that DELETES a key and an inverse that re-adds it would leave
+ * the meta deep-equal but byte-different — the term's verdict would silently drift to
+ * the end of the map on every undo. Sorting on write makes the serialized meta a
+ * canonical form, so "exact inverse" really does mean byte-identical.
+ *
+ * Deliberately NOT applied on the load path: `normalizeKeywordMeta` must keep
+ * returning an already-canonical stored meta BY REFERENCE (shared-context rule 2), so
+ * a legacy row is only re-ordered by the first op that rewrites it anyway. `seeded`
+ * is excluded — it is emitted in KEYWORD_LISTS order by `withSeeded`.
+ */
+function sortedMap(map) {
+  const keys = Object.keys(map);
+  let ordered = true;
+  for (let i = 1; i < keys.length; i += 1) if (keys[i - 1] > keys[i]) { ordered = false; break; }
+  if (ordered) return map;
+  const out = {};
+  for (const k of keys.sort()) out[k] = map[k];
+  return out;
+}
+
+/** Re-key the freshly cloned maps in canonical order. Mutates the clone in place. */
+function canonicalizeMeta(meta) {
+  for (const list of KEYWORD_LISTS) {
+    meta.decisions[list] = sortedMap(meta.decisions[list]);
+    meta.origins[list] = sortedMap(meta.origins[list]);
+  }
+  return meta;
+}
+
 /** Shallow-clone meta down to the two maps we are about to touch. */
 function cloneMeta(meta) {
   const out = {
@@ -258,12 +332,28 @@ function unchanged(state, reason) {
 }
 
 /**
+ * Coerce a raw keyword state into `{inclusion:[], exclusion:[], meta:canonical}` and
+ * preserve referential identity when the caller already handed us a clean one (the
+ * byte-stability rule: a no-op must return the SAME object).
+ */
+function normalizeKeywordState(state) {
+  const base = {
+    inclusion: Array.isArray(state?.inclusion) ? state.inclusion : [],
+    exclusion: Array.isArray(state?.exclusion) ? state.exclusion : [],
+    meta: normalizeKeywordMeta(state?.meta),
+  };
+  return (state && base.inclusion === state.inclusion && base.exclusion === state.exclusion && base.meta === state.meta)
+    ? state : base;
+}
+
+/**
  * applyKeywordOp — the single reducer for every keyword mutation.
  *
  * @param {{inclusion:string[], exclusion:string[], meta:object|string}} state
- * @param {{type:'add'|'remove'|'move'|'accept'|'reject', list:'include'|'exclude',
- *          term:string, toList?:'include'|'exclude', origin?:string,
- *          reject?:boolean}} op
+ * @param {{type:'add'|'remove'|'move'|'accept'|'reject'|'clear-decision',
+ *          list:'include'|'exclude', term:string, toList?:'include'|'exclude',
+ *          origin?:'manual'|'accepted'|'default'|null, reject?:boolean,
+ *          index?:number, removeTerm?:boolean, clearSeeded?:boolean}} op
  * @returns {{ok:boolean, error:string|null, changed:boolean, reason:string,
  *            state:{inclusion:string[], exclusion:string[], meta:object}}}
  *
@@ -275,6 +365,8 @@ function unchanged(state, reason) {
  *     term is a no-op (`reason: 'not_found'`).
  *   - ATOMIC move: remove + add in one result, carrying the term's origin across.
  *   - MANUAL TERMS ARE NEVER TOUCHED by any op other than one naming them.
+ *   - HARD-400 FLAG DISCIPLINE: every optional flag is valid on a fixed set of op
+ *     types and is rejected everywhere else, so a typo can never silently no-op.
  *
  * `reject: false` (valid on `remove` and `move` only) is the NON-VERDICT variant —
  * the true inverse of `add`/`accept`/`move` used by the snackbar Undo. It deletes
@@ -282,16 +374,20 @@ function unchanged(state, reason) {
  * goes back to being a pending criteria suggestion instead of being permanently
  * rejected. Plain `remove`/`move` (the chip × and → buttons) are unchanged: they
  * ARE a deliberate "not on this list" verdict.
+ *
+ * 108.md §20 added the three pieces an EXACT inverse needs — never guess them by
+ * hand, ask `keywordInverseOps(stateBefore, op)`:
+ *   - `index` (add / move-target): splice the term back where it was. Absent =
+ *     append, i.e. byte-identical to every pre-108 caller.
+ *   - `origin: null` (add): restore the explicit ABSENCE of an origin, exactly as
+ *     `move` already carries it. Without this a restored shared default came back
+ *     permanently badged 'manual'.
+ *   - `clearSeeded: true` (add): drop `meta.seeded[list]` when the remove being
+ *     undone is the op that set it. The reducer can only ever CLEAR the marker here,
+ *     never set it, and only on an add that really re-added the term.
  */
 export function applyKeywordOp(state, op) {
-  const base = {
-    inclusion: Array.isArray(state?.inclusion) ? state.inclusion : [],
-    exclusion: Array.isArray(state?.exclusion) ? state.exclusion : [],
-    meta: normalizeKeywordMeta(state?.meta),
-  };
-  // Preserve referential identity when the caller already handed us a clean state.
-  const start = (state && base.inclusion === state.inclusion && base.exclusion === state.exclusion && base.meta === state.meta)
-    ? state : base;
+  const start = normalizeKeywordState(state);
 
   if (!op || typeof op !== 'object') return fail(start, 'A keyword operation is required');
   const type = op.type;
@@ -310,17 +406,40 @@ export function applyKeywordOp(state, op) {
     toList = op.toList || OTHER_LIST[list];
     if (!KEYWORD_LISTS.includes(toList)) return fail(start, 'toList must be "include" or "exclude"');
     if (toList === list) return fail(start, 'toList must differ from list');
+  } else if (op.toList !== undefined) {
+    return fail(start, 'toList applies only to "move"');
   }
   if (op.reject !== undefined && typeof op.reject !== 'boolean') return fail(start, 'reject must be a boolean');
+  if (op.reject !== undefined && type === 'clear-decision') {
+    return fail(start, 'reject does not apply to "clear-decision"');
+  }
   if (op.reject === false && type !== 'remove' && type !== 'move') {
     return fail(start, 'reject:false applies only to "remove" and "move"');
+  }
+  if (op.index !== undefined) {
+    if (!Number.isInteger(op.index)) return fail(start, 'index must be an integer');
+    if (type !== 'add' && type !== 'move') return fail(start, 'index applies only to "add" and "move"');
+  }
+  if (op.origin !== undefined) {
+    if (op.origin !== null && !ORIGIN_VALUES.has(op.origin)) {
+      return fail(start, 'origin must be "manual", "accepted", "default" or null');
+    }
+    if (type !== 'add') return fail(start, 'origin applies only to "add"');
+  }
+  if (op.removeTerm !== undefined) {
+    if (typeof op.removeTerm !== 'boolean') return fail(start, 'removeTerm must be a boolean');
+    if (type !== 'clear-decision') return fail(start, 'removeTerm applies only to "clear-decision"');
+  }
+  if (op.clearSeeded !== undefined) {
+    if (typeof op.clearSeeded !== 'boolean') return fail(start, 'clearSeeded must be a boolean');
+    if (type !== 'add') return fail(start, 'clearSeeded applies only to "add"');
   }
   // The UNDO variant is not a deliberate edit, so it must not mark the side as
   // edited either — an undone add leaves the meta byte-identical to before it.
   const verdict = op.reject !== false;
 
-  const meta = cloneMeta(base.meta);
-  const lists = { include: [...base.inclusion], exclude: [...base.exclusion] };
+  const meta = cloneMeta(start.meta);
+  const lists = { include: [...start.inclusion], exclude: [...start.exclusion] };
   const hasKey = (l) => lists[l].some(t => normalizeKeywordKey(t) === key);
   const drop = (l) => { lists[l] = lists[l].filter(t => normalizeKeywordKey(t) !== key); };
 
@@ -329,10 +448,14 @@ export function applyKeywordOp(state, op) {
 
   if (type === 'add') {
     if (hasKey(list)) return unchanged(start, 'duplicate');
-    lists[list].push(term);
-    meta.origins[list][key] = ORIGIN_VALUES.has(op.origin) ? op.origin : KEYWORD_ORIGIN.MANUAL;
+    lists[list].splice(insertAt(op.index, lists[list].length), 0, term);
+    // `origin: null` means "this term carried no explicit origin" — the shape a
+    // shared default has. Absent `origin` keeps the historical 'manual' default.
+    if (op.origin === null) delete meta.origins[list][key];
+    else meta.origins[list][key] = ORIGIN_VALUES.has(op.origin) ? op.origin : KEYWORD_ORIGIN.MANUAL;
     delete meta.decisions[list][key];
     if (meta.origins[list][key] === KEYWORD_ORIGIN.ACCEPTED) meta.decisions[list][key] = KEYWORD_DECISION.ACCEPTED;
+    if (op.clearSeeded === true) clearSeededMarker(meta, list);
     changed = true;
     reason = 'added';
   } else if (type === 'remove') {
@@ -354,7 +477,7 @@ export function applyKeywordOp(state, op) {
     // Carry the SOURCE origin verbatim — including its ABSENCE. Stamping 'manual'
     // on a term that carried no explicit origin (i.e. a shared default) made the
     // inverse move un-restorable: the term came back badged 'manual' forever.
-    const carried = base.meta.origins[list][key];
+    const carried = start.meta.origins[list][key];
     const display = lists[list].find(t => normalizeKeywordKey(t) === key) || term;
     drop(list);
     delete meta.origins[list][key];
@@ -364,7 +487,7 @@ export function applyKeywordOp(state, op) {
     } else {
       delete meta.decisions[list][key];
     }
-    if (!hasKey(toList)) lists[toList].push(display);
+    if (!hasKey(toList)) lists[toList].splice(insertAt(op.index, lists[toList].length), 0, display);
     if (carried) meta.origins[toList][key] = carried;
     else delete meta.origins[toList][key];
     delete meta.decisions[toList][key];
@@ -372,7 +495,7 @@ export function applyKeywordOp(state, op) {
     changed = true;
     reason = 'moved';
   } else if (type === 'accept') {
-    const already = base.meta.decisions[list][key] === KEYWORD_DECISION.ACCEPTED;
+    const already = start.meta.decisions[list][key] === KEYWORD_DECISION.ACCEPTED;
     if (already && hasKey(list)) return unchanged(start, 'already');
     meta.decisions[list][key] = KEYWORD_DECISION.ACCEPTED;
     if (!hasKey(list)) {
@@ -382,10 +505,25 @@ export function applyKeywordOp(state, op) {
     changed = true;
     reason = 'accepted';
   } else if (type === 'reject') {
-    if (base.meta.decisions[list][key] === KEYWORD_DECISION.REJECTED) return unchanged(start, 'already');
+    if (start.meta.decisions[list][key] === KEYWORD_DECISION.REJECTED) return unchanged(start, 'already');
     meta.decisions[list][key] = KEYWORD_DECISION.REJECTED;
     changed = true;
     reason = 'rejected';
+  } else if (type === 'clear-decision') {
+    // 108.md §20 — the exact inverse of accept/reject. Withdrawing a verdict is NOT
+    // itself a verdict: the term goes back to PENDING, and the side is never marked
+    // edited. `removeTerm` additionally undoes the term an `accept` ADDED (its origin
+    // goes with it); without it the lists are left completely untouched.
+    const hadDecision = start.meta.decisions[list][key] !== undefined;
+    const removeTerm = op.removeTerm === true && hasKey(list);
+    if (!hadDecision && !removeTerm) return unchanged(start, 'already');
+    delete meta.decisions[list][key];
+    if (removeTerm) {
+      drop(list);
+      delete meta.origins[list][key];
+    }
+    changed = true;
+    reason = 'cleared';
   }
 
   if (!changed) return unchanged(start, reason);
@@ -394,8 +532,178 @@ export function applyKeywordOp(state, op) {
     error: null,
     changed: true,
     reason,
-    state: { inclusion: lists.include, exclusion: lists.exclude, meta },
+    state: { inclusion: lists.include, exclusion: lists.exclude, meta: canonicalizeMeta(meta) },
   };
+}
+
+/**
+ * applyKeywordOps — 108.md §20. Apply a SHORT array of ops as one transaction.
+ *
+ * ALL-OR-NOTHING: the ops are folded in order and the FIRST invalid one discards the
+ * whole batch, returning the untouched start state. A compound inverse (e.g. the
+ * add + clear-decision that undoes an accept) is therefore one server round trip,
+ * one CAS write and one history entry — it can never land half applied.
+ *
+ * @param {{inclusion:string[], exclusion:string[], meta:object|string}} state
+ * @param {Array<object>} ops — 1…MAX_KEYWORD_OPS operations
+ * @returns {{ok:boolean, error:string|null, changed:boolean, reason:string,
+ *            state:object, results:Array<{changed:boolean, reason:string}>}}
+ *   `reason` is the single op's reason for a 1-op batch (so the existing single-op
+ *   response contract is unchanged) and 'batch'/'noop' otherwise; `results` carries
+ *   the per-op outcome in request order.
+ */
+export function applyKeywordOps(state, ops) {
+  const start = normalizeKeywordState(state);
+  if (!Array.isArray(ops) || !ops.length) {
+    return { ...fail(start, 'ops must be a non-empty array'), results: [] };
+  }
+  if (ops.length > MAX_KEYWORD_OPS) {
+    return { ...fail(start, `ops must contain at most ${MAX_KEYWORD_OPS} operations`), results: [] };
+  }
+  let cur = start;
+  const results = [];
+  for (const op of ops) {
+    const out = applyKeywordOp(cur, op);
+    if (!out.ok) return { ...fail(start, out.error), results: [] };
+    results.push({ changed: out.changed, reason: out.reason });
+    cur = out.state;
+  }
+  const changed = results.some(r => r.changed);
+  return {
+    ok: true,
+    error: null,
+    changed,
+    reason: results.length === 1 ? results[0].reason : (changed ? 'batch' : 'noop'),
+    state: cur,
+    results,
+  };
+}
+
+/**
+ * keywordInverseOps — 108.md §20. THE exact inverse of one forward op, derived from
+ * the state that op was applied to. The history layer must never assemble an inverse
+ * by hand: three pieces of it (the term's index, the ABSENCE of an origin, and
+ * whether `meta.seeded[list]` was already set before a verdict remove) exist only in
+ * the pre-image, and guessing any of them silently corrupts the round trip.
+ *
+ * Contract: `applyKeywordOps(applyKeywordOp(before, op).state, keywordInverseOps(before, op)).state`
+ * deep-equals `before` — lists, origins, decisions AND `seeded` — for every op the
+ * reducer accepts, with ONE documented exception (see below).
+ *
+ * Returns `[]` when the forward op was invalid or a no-op: there is nothing to undo,
+ * so the history layer must record no entry.
+ *
+ * NOTE ON `stateBefore`: pass the state the op ACTUALLY ran against. The server runs
+ * `materializeDefaults` first, so when a side's stored list was empty the op saw the
+ * ~28/~50 shared defaults, not `[]`. Call `materializeDefaults(state, defaults,
+ * touched)` before this helper (or snapshot the previous response's post-image, which
+ * is always post-materialization) or the recorded index will be meaningless.
+ *
+ * `move` onto a list that ALREADY holds the term overwrites the target's origin and
+ * decision, so the inverse drops and re-adds the target term at its exact prior index
+ * to restore them — which is why MAX_KEYWORD_OPS is 6 rather than 2.
+ *
+ * ONE ASYMMETRY, by design: the reducer can CLEAR `meta.seeded[list]` (via
+ * `add { clearSeeded:true }`) but never SET it outside a real verdict, so the inverse
+ * of an inverse cannot restore the marker. It never has to: REDO replays the original
+ * FORWARD op, which sets the marker again exactly as it did the first time.
+ *
+ * ONE INEXACT CASE, pinned by a test: restoring an 'accepted' verdict for a term that
+ * is NOT on the list re-ACTIVATES the term (`accept` adds it). No op can write that
+ * decision without the term, and the reducer itself can never produce the state —
+ * only the legacy full-array `PUT /projects/:pid` can, by replacing a list without
+ * touching keywordMeta. Re-activating is the self-healing reading of the stored
+ * verdict, so this is treated as a repair rather than a defect.
+ *
+ * @param {{inclusion:string[], exclusion:string[], meta:object|string}} stateBefore
+ * @param {object} op — the forward op
+ * @returns {Array<object>} ops to feed straight into `applyKeywordOps`
+ */
+export function keywordInverseOps(stateBefore, op) {
+  const before = normalizeKeywordState(stateBefore);
+  const probe = applyKeywordOp(before, op);
+  if (!probe.ok || !probe.changed) return [];
+
+  const { type, list } = op;
+  const term = op.term.trim();
+  const key = normalizeKeywordKey(term);
+  const listOf = (l) => (l === 'include' ? before.inclusion : before.exclusion);
+  const idxOf = (l) => listOf(l).findIndex(t => normalizeKeywordKey(t) === key);
+  const displayOf = (l) => { const i = idxOf(l); return i >= 0 ? listOf(l)[i] : term; };
+  const originOf = (l) => before.meta.origins[l][key];
+  const decisionOf = (l) => before.meta.decisions[l][key];
+  // `origin: null` is the explicit "carried no origin" marker `add` understands.
+  const originArg = (l) => { const o = originOf(l); return o === undefined ? null : o; };
+  // The decision an `add`/`move` leaves behind is derived from the origin it carries.
+  const impliedDecision = (o) => (o === KEYWORD_ORIGIN.ACCEPTED ? KEYWORD_DECISION.ACCEPTED : undefined);
+  /** Ops that turn the decision `got` (what the inverse so far leaves) back into `want`. */
+  const restoreDecision = (l, want, got) => {
+    if (want === got) return [];
+    if (want === KEYWORD_DECISION.ACCEPTED) return [{ type: 'accept', list: l, term }];
+    if (want === KEYWORD_DECISION.REJECTED) return [{ type: 'reject', list: l, term }];
+    return [{ type: 'clear-decision', list: l, term }];
+  };
+  /** Re-add a term exactly where and how it was, undoing the seeded marker it set. */
+  const restoreTerm = (l, verdictRemoved) => {
+    const add = { type: 'add', list: l, term: displayOf(l), index: idxOf(l), origin: originArg(l) };
+    // Only clear the marker when THIS removal is what set it — a side that was
+    // already marked edited before the op must stay marked.
+    if (verdictRemoved && !isSideSeeded(before.meta, l)) add.clearSeeded = true;
+    return [add, ...restoreDecision(l, decisionOf(l), impliedDecision(originOf(l)))];
+  };
+
+  if (type === 'add') {
+    // The add cleared any pending verdict on the term — put it back.
+    return [{ type: 'clear-decision', list, term, removeTerm: true },
+      ...restoreDecision(list, decisionOf(list), undefined)];
+  }
+  if (type === 'remove') {
+    return restoreTerm(list, op.reject !== false);
+  }
+  if (type === 'move') {
+    const toList = op.toList || OTHER_LIST[list];
+    const ops = [];
+    if (idxOf(toList) >= 0) {
+      // The target already held the term, so the move did not push it — but it DID
+      // overwrite the target's origin and decision. Drop and rebuild it in place.
+      ops.push({ type: 'remove', list: toList, term, reject: false });
+      ops.push(...restoreTerm(toList, false));
+    } else {
+      ops.push({ type: 'remove', list: toList, term, reject: false });
+      ops.push(...restoreDecision(toList, decisionOf(toList), undefined));
+    }
+    ops.push(...restoreTerm(list, op.reject !== false));
+    return ops;
+  }
+  if (type === 'accept') {
+    // An accept on a term that was already active only wrote a decision; one on a
+    // pending suggestion also ADDED the term with an 'accepted' origin.
+    if (idxOf(list) >= 0) return restoreDecision(list, decisionOf(list), KEYWORD_DECISION.ACCEPTED);
+    return [{ type: 'clear-decision', list, term, removeTerm: true },
+      ...restoreDecision(list, decisionOf(list), undefined)];
+  }
+  if (type === 'reject') {
+    return restoreDecision(list, decisionOf(list), KEYWORD_DECISION.REJECTED);
+  }
+  if (type === 'clear-decision') {
+    if (op.removeTerm === true && idxOf(list) >= 0) return restoreTerm(list, false);
+    return restoreDecision(list, decisionOf(list), undefined);
+  }
+  return [];
+}
+
+/**
+ * keywordRemoveInverse — 108.md §20's named entry point for the DELETE path (the
+ * context menu's "Delete keyword" and the chip ×). Delegates to `keywordInverseOps`,
+ * which is total over every op type; kept as its own export because the delete path
+ * is the one the history layer must never hand-roll.
+ *
+ * @param {{inclusion:string[], exclusion:string[], meta:object|string}} stateBefore
+ * @param {object} op — the forward `remove` (or any other op)
+ * @returns {Array<object>}
+ */
+export function keywordRemoveInverse(stateBefore, op) {
+  return keywordInverseOps(stateBefore, op);
 }
 
 /**

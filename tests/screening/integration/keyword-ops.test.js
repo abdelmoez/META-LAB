@@ -19,6 +19,10 @@
  *  - a non-leader member gets 403
  *  - validation: unknown op / bad list / empty term / over-long term / bad
  *    `reject` flag → 400
+ *  - 108.md §20: a deleted keyword is restored to the SAME position with its origin
+ *    and `meta.seeded` intact (`index` / `origin:null` / `clearSeeded`), the new
+ *    `clear-decision` op returns a suggestion to PENDING, a `{ ops:[…] }` batch
+ *    undoes a move in one round trip, and an invalid op in a batch writes nothing
  */
 import { describe, it, expect, beforeAll } from 'vitest';
 
@@ -214,9 +218,140 @@ describe('107.md §2 — keyword ops endpoint (integration)', () => {
       { type: 'remove', list: 'include', term: 'x', reject: 'nope' },
       { type: 'add', list: 'include', term: 'x', reject: false },
       {},
+      // 108.md §20 — every new flag is legal on a fixed set of op types only.
+      { type: 'remove', list: 'include', term: 'x', index: 0 },
+      { type: 'add', list: 'include', term: 'x', index: 1.5 },
+      { type: 'accept', list: 'include', term: 'x', origin: 'manual' },
+      { type: 'add', list: 'include', term: 'x', origin: 'from-mars' },
+      { type: 'remove', list: 'include', term: 'x', clearSeeded: true },
+      { type: 'add', list: 'include', term: 'x', removeTerm: true },
+      { type: 'clear-decision', list: 'include', term: 'x', reject: false },
+      { type: 'add', list: 'include', term: 'x', toList: 'exclude' },
+      { ops: [] },
+      { ops: 'add' },
+      { ops: [{ type: 'add', list: 'include', term: 'x' }, { type: 'nuke', list: 'include', term: 'y' }] },
+      { ops: Array.from({ length: 7 }, (_, i) => ({ type: 'add', list: 'include', term: `t${i}` })) },
     ]) {
       const r = await op(a.cookie, pid, body);
       expect(r.status, JSON.stringify(body)).toBe(400);
     }
+  });
+});
+
+/* 108.md §20 — the undo contract over the wire: a deleted keyword comes back to the
+ * same list, the same position, the same display text and the same origin, and a
+ * withdrawn verdict returns the suggestion to PENDING. */
+describe('108.md §20 — keyword undo contract (integration)', () => {
+  it('a deleted keyword is restored to its exact position, origin and meta', async () => {
+    if (!up) return;
+    const a = await register(`kwpos_${rnd()}@t.local`);
+    const pid = await newProject(a.cookie, `KW position ${rnd()}`);
+    const curated = await api(`/screening/projects/${pid}`, {
+      method: 'PUT', cookie: a.cookie, body: { inclusionKeywords: JSON.stringify(['alpha', 'beta', 'gamma']) },
+    });
+    if (curated.status !== 200) return; // precondition, not the thing under test
+
+    const gone = await op(a.cookie, pid, { type: 'remove', list: 'include', term: 'beta' });
+    expect(gone.status).toBe(200);
+    expect(parse(gone.data.inclusionKeywords)).toEqual(['alpha', 'gamma']);
+    expect(JSON.parse(gone.data.keywordMeta).seeded.include).toBe(true);
+    expect(JSON.parse(gone.data.keywordMeta).decisions.include.beta).toBe('rejected');
+
+    // …the exact inverse keywordInverseOps() hands the history layer.
+    const back = await op(a.cookie, pid, {
+      type: 'add', list: 'include', term: 'beta', index: 1, origin: null, clearSeeded: true,
+    });
+    expect(back.status).toBe(200);
+    expect(parse(back.data.inclusionKeywords)).toEqual(['alpha', 'beta', 'gamma']);
+    const meta = JSON.parse(back.data.keywordMeta);
+    expect(meta.seeded).toBeUndefined();
+    expect(meta.decisions.include.beta).toBeUndefined();
+    expect(meta.origins.include.beta).toBeUndefined();   // a shared default stays unbadged
+
+    const fresh = await api(`/screening/projects/${pid}`, { cookie: a.cookie });
+    expect(parse(fresh.data.inclusionKeywords)).toEqual(['alpha', 'beta', 'gamma']);
+  });
+
+  it('clear-decision returns an accepted suggestion to PENDING', async () => {
+    if (!up) return;
+    const a = await register(`kwclr_${rnd()}@t.local`);
+    const pid = await newProject(a.cookie, `KW clear ${rnd()}`);
+
+    const acc = await op(a.cookie, pid, { type: 'accept', list: 'exclude', term: 'animal study' });
+    expect(acc.status).toBe(200);
+    expect(parse(acc.data.exclusionKeywords)).toContain('animal study');
+
+    const undo = await op(a.cookie, pid, {
+      type: 'clear-decision', list: 'exclude', term: 'animal study', removeTerm: true,
+    });
+    expect(undo.status).toBe(200);
+    expect(undo.data.reason).toBe('cleared');
+    expect(parse(undo.data.exclusionKeywords)).not.toContain('animal study');
+    const meta = JSON.parse(undo.data.keywordMeta);
+    // PENDING again — no verdict at all, so the criteria suggestion comes back.
+    expect(meta.decisions.exclude['animal study']).toBeUndefined();
+    expect(meta.origins.exclude['animal study']).toBeUndefined();
+
+    // A plain reject then its inverse leaves the lists untouched.
+    const before = await api(`/screening/projects/${pid}`, { cookie: a.cookie });
+    await op(a.cookie, pid, { type: 'reject', list: 'include', term: 'epilepsy' });
+    const cleared = await op(a.cookie, pid, { type: 'clear-decision', list: 'include', term: 'epilepsy' });
+    expect(cleared.status).toBe(200);
+    expect(parse(cleared.data.inclusionKeywords)).toEqual(parse(before.data.inclusionKeywords));
+    expect(JSON.parse(cleared.data.keywordMeta).decisions.include.epilepsy).toBeUndefined();
+  });
+
+  it('a { ops: [...] } batch undoes a move in ONE round trip', async () => {
+    if (!up) return;
+    const a = await register(`kwbatch_${rnd()}@t.local`);
+    const pid = await newProject(a.cookie, `KW batch ${rnd()}`);
+    const curated = await api(`/screening/projects/${pid}`, {
+      method: 'PUT', cookie: a.cookie, body: { inclusionKeywords: JSON.stringify(['a', 'moved', 'c']) },
+    });
+    if (curated.status !== 200) return;
+    const beforeExcl = parse((await api(`/screening/projects/${pid}`, { cookie: a.cookie })).data.exclusionKeywords);
+
+    const moved = await op(a.cookie, pid, { type: 'move', list: 'include', term: 'moved', toList: 'exclude' });
+    expect(moved.status).toBe(200);
+    expect(parse(moved.data.inclusionKeywords)).toEqual(['a', 'c']);
+    expect(parse(moved.data.exclusionKeywords)).toContain('moved');
+
+    const undo = await op(a.cookie, pid, {
+      ops: [
+        { type: 'remove', list: 'exclude', term: 'moved', reject: false },
+        { type: 'add', list: 'include', term: 'moved', index: 1, origin: null, clearSeeded: true },
+      ],
+    });
+    expect(undo.status).toBe(200);
+    expect(undo.data.reason).toBe('batch');
+    expect(undo.data.results).toEqual([
+      { changed: true, reason: 'removed' },
+      { changed: true, reason: 'added' },
+    ]);
+    expect(parse(undo.data.inclusionKeywords)).toEqual(['a', 'moved', 'c']);
+    expect(parse(undo.data.exclusionKeywords)).toEqual(beforeExcl);
+    expect(JSON.parse(undo.data.keywordMeta).seeded).toBeUndefined();
+
+    const fresh = await api(`/screening/projects/${pid}`, { cookie: a.cookie });
+    expect(parse(fresh.data.inclusionKeywords)).toEqual(['a', 'moved', 'c']);
+  });
+
+  it('an invalid op anywhere in a batch writes NOTHING', async () => {
+    if (!up) return;
+    const a = await register(`kwatom_${rnd()}@t.local`);
+    const pid = await newProject(a.cookie, `KW atomic ${rnd()}`);
+    const before = await api(`/screening/projects/${pid}`, { cookie: a.cookie });
+
+    const r = await op(a.cookie, pid, {
+      ops: [
+        { type: 'add', list: 'include', term: 'first term' },
+        { type: 'add', list: 'include', term: 'second term', origin: 'from-mars' },
+      ],
+    });
+    expect(r.status).toBe(400);
+
+    const after = await api(`/screening/projects/${pid}`, { cookie: a.cookie });
+    expect(parse(after.data.inclusionKeywords)).toEqual(parse(before.data.inclusionKeywords));
+    expect(parse(after.data.inclusionKeywords)).not.toContain('first term');
   });
 });

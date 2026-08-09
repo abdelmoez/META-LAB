@@ -710,17 +710,14 @@ export function undoLast(stack, state) {
  * SELECT elements, contentEditable regions (rich-text editors), and ARIA text
  * widgets (textbox / searchbox / combobox — search-syntax editors). Everything
  * else (chips, buttons, the page body) undoes.
- * @param {{ tagName?:string, isContentEditable?:boolean, role?:string }} target
+ *
+ * 108.md §7/§23 — the IMPLEMENTATION moved to research-engine/interaction/
+ * editableTarget.js, which is now the app's ONE editable-surface predicate (the
+ * project-wide undo router and the screening shortcuts share it). Re-exported here
+ * unchanged so this module's callers and tests keep working and the two copies can
+ * never drift apart.
  */
-export function shouldHandleGlobalUndo(target) {
-  const t = target || {};
-  if (t.isContentEditable === true) return false;
-  const tag = String(t.tagName || '').toUpperCase();
-  if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return false;
-  const role = String(t.role || '').toLowerCase();
-  if (role === 'textbox' || role === 'searchbox' || role === 'combobox') return false;
-  return true;
-}
+export { shouldHandleGlobalUndo } from '../interaction/editableTarget.js';
 
 /** Empty the stack. The UI MUST call this on applyRemote / version restore. */
 export function clear(_stack) {

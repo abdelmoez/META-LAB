@@ -10,6 +10,9 @@ import { C, btnS, inp, tagS } from '../../frontend/workspace/ui/styles.js';
 import { InfoBox, ProgressBar } from '../../frontend/workspace/ui/primitives.jsx';
 import { Icon } from '../../frontend/components/icons.jsx';
 import { alpha } from '../../frontend/theme/tokens.js';
+// 108.md §23 — the ONE keyboard router. Replaces this file's ad-hoc window keydown
+// listener (which also had no dependency array — see the binding below).
+import { useShortcut, TIER } from '../../frontend/shortcuts/ShortcutProvider.jsx';
 import {
   SECTION_TYPES, SECTION_IDS, STATEMENT_TYPES, CITATION_STYLES, JOURNAL_TEMPLATES, sectionStatus,
   collectCitationOrder, draftSectionTexts, studySelectionParagraph,
@@ -1006,19 +1009,27 @@ export function EditorPanel({ m, exporters, sectionRequest }) {
     if (p) goToPlaceholder(p);
   };
 
-  /* §26 — keyboard shortcuts. Ctrl/Cmd+Enter is the next field, with Shift for the
-     previous one. Both are chosen because neither is bound by the editor (which
-     only intercepts B/I) nor by the browser inside a contentEditable, so normal
-     typing, undo and selection (§9) are untouched. */
-  useEffect(() => {
-    const onKey = (e) => {
-      if (!(e.ctrlKey || e.metaKey) || e.key !== 'Enter') return;
-      e.preventDefault();
-      stepToPlaceholder(e.shiftKey ? -1 : 1);
-    };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  });
+  /* 102.md §26 — keyboard shortcuts. Ctrl/Cmd+Enter is the next field, with Shift
+     for the previous one. Both are chosen because neither is bound by the editor
+     (which only intercepts B/I) nor by the browser inside a contentEditable, so
+     normal typing, undo and selection (§9) are untouched.
+
+     108.md §23 — this WAS a bare `window.addEventListener('keydown')` with NO
+     dependency array, so the listener was torn down and re-added on every render
+     (twice per render under StrictMode) and its precedence against anything mounted
+     later was non-deterministic. It is now one declaration in the central router,
+     registered once for the panel's lifetime.
+
+     Deliberately NOT gated on ctx.editableTarget: this chord's whole purpose is to
+     jump between manual-input placeholders WHILE the caret is in the prose editor.
+     It is tier ENGINE, so a modal or a focused component binding still wins, and
+     the adapter skips any event a nearer React handler already cancelled. */
+  useShortcut({
+    id: 'manuscript.stepPlaceholder',
+    tier: TIER.ENGINE,
+    match: (e) => (e.ctrlKey || e.metaKey) && e.key === 'Enter',
+    run: (e) => { stepToPlaceholder(e.shiftKey ? -1 : 1); return true; },
+  }, []);
 
   // 73.md Part 9 — the Overview grid / Consistency card can request a section
   // ({ id, at }); honour every request (`at` changes even for the same id).

@@ -5,7 +5,7 @@
    resolves identically. `uid` and `fmtDate` are verbatim copies of the
    monolith module-local helpers (the monolith keeps its own copies for its
    other consumers; projectHelpers.js does NOT export `uid`). */
-import { useState, useMemo, useEffect, lazy, Suspense } from "react";
+import { useState, useMemo, useEffect, useRef, lazy, Suspense } from "react";
 import { alpha as themeAlpha } from "../../theme/tokens.js";
 // 66.md (P5) — structured-extraction workspace behind the `extractionAssist` flag.
 // Flag helper is eager (tiny); the heavy workspace chunk is lazy so it is only
@@ -37,6 +37,14 @@ import { C, btnS, inp, lbl, th, tagS } from "../ui/styles.js";
 import { SectionHeader, InfoBox, HelpTip } from "../ui/primitives.jsx";
 import { mkStudy } from "../projectHelpers.js";
 import { isCaseRow, caseInfoOf, caseDisplayName, caseVarKey, normalizeCaseVariables } from "../../../research-engine/extraction/caseSeries.js";
+// 108.md §5/§8 — project-wide Undo/Redo for the CLASSIC extraction surface. The engine
+// (PecanExtractionEngine) registers its own executor; only one of the two is mounted at
+// a time, so the `extraction.field` kind always resolves to the surface in view.
+import { useProjectHistory } from "../../history/HistoryContext.jsx";
+import {
+  buildExtractionEntry, canMergeExtractionEdit, applyRowPatch, findStudyRow,
+  matchesExpected, EXTRACTION_HISTORY_KIND, EXTRACTION_SURFACE,
+} from "../../../research-engine/interaction/extractionHistory.js";
 
 /* monolith-local utils (verbatim copies — projectHelpers.js does not export them) */
 const uid = () => Math.random().toString(36).slice(2, 10);
@@ -45,7 +53,7 @@ const fmtDate = (iso) => iso ? new Date(iso).toLocaleDateString("en-US",{month:"
 const SR_ONLY={position:"absolute",width:1,height:1,padding:0,margin:-1,overflow:"hidden",clip:"rect(0 0 0 0)",whiteSpace:"nowrap",border:0};
 
 /* ════════════ ES CALCULATOR ════════════ */
-function ESCalcInline({s,ch}){
+function ESCalcInline({s,ch,chFields}){
   // Pre-seed the calculator type from the study's saved esType
   const[type,setType]=useState(s.esType||"SMD");
   const[res,setRes]=useState(null);
@@ -55,6 +63,10 @@ function ESCalcInline({s,ch}){
   const propPct=formatProportionDisplay(s.events,s.total);
   // Read raw values straight from the study object so they persist & are auditable
   const sp=(k,v)=>ch(k,v);
+  // 108.md §13 — "Calculate & Apply" is ONE user action. Writing its five fields through
+  // one combined patch makes it one project update AND one undo entry (it used to be five
+  // sequential single-key writes, i.e. five blob updates and five Ctrl+Z presses).
+  const applyFields=(fields)=>{ if(chFields) chFields(fields); else Object.keys(fields).forEach(k=>ch(k,fields[k])); };
   const fi=(k,ph,hint)=>(<div><div style={{fontSize:9,color:C.dim,marginBottom:2}} title={hint||""}>{ph}</div>
     <input value={s[k]||""} onChange={e=>sp(k,e.target.value)} placeholder={ph}
       style={{...inp,fontSize:11,fontFamily:"'IBM Plex Mono',monospace",padding:"4px 6px"}}/></div>);
@@ -89,9 +101,8 @@ function ESCalcInline({s,ch}){
     const r=calcES(type,p);
     setRes(r);
     if(r){
-      ch("es",String(+Number(r.es).toFixed(6)));ch("lo",String(+Number(r.lo).toFixed(6)));ch("hi",String(+Number(r.hi).toFixed(6)));
-      ch("esType",type);
-      ch("source","calculated");
+      applyFields({es:String(+Number(r.es).toFixed(6)),lo:String(+Number(r.lo).toFixed(6)),hi:String(+Number(r.hi).toFixed(6)),
+        esType:type,source:"calculated"});
       if(r.continuityCorrectionApplied)
         setNote(`Zero event cell detected — a 0.5 continuity correction (Haldane–Anscombe) was applied for log ${type}.`);
     } else {
@@ -161,7 +172,7 @@ function ESCalcInline({s,ch}){
 }
 
 /* ════════════ CONVERSION PANEL ════════════ */
-function ConversionPanel({s,ch,onClose}){
+function ConversionPanel({s,ch,chFields,onClose}){
   const[convId,setConvId]=useState(CONVERSIONS[0].id);
   const[inp_,setInp_]=useState({});
   const[reason,setReason]=useState("");
@@ -194,14 +205,16 @@ function ConversionPanel({s,ch,onClose}){
     else if(target==="counts"){ if(v.events!=null)patch.events=String(v.events); if(v.total!=null)patch.total=String(v.total); }
     else if(target==="es"){ if(v.es!=null)patch.es=String(v.es); if(v.lo!=null)patch.lo=String(v.lo); if(v.hi!=null)patch.hi=String(v.hi); }
 
-    // write fields + audit
-    Object.keys(patch).forEach(k=>ch(k,patch[k]));
-    ch("converted",true);
-    ch("source","converted");
-    ch("conversions",[...(s.conversions||[]),record]);
-    const flags=s.flags||[]; if(!flags.includes("conv")) ch("flags",[...flags,"conv"]);
+    // write fields + audit. 108.md §13 — applying a conversion is ONE user action, so the
+    // value(s), the audit record, the flag and the note ride in ONE combined patch: one
+    // project update (it was seven sequential ones) and one undo entry.
+    const flags=s.flags||[];
     const note=`Converted (${conv.label}): ${res.detail}${reason?` — ${reason}`:""}.`;
-    ch("notes",s.notes?`${s.notes} | ${note}`:note);
+    const combined={...patch,converted:true,source:"converted",
+      conversions:[...(s.conversions||[]),record],
+      ...(flags.includes("conv")?{}:{flags:[...flags,"conv"]}),
+      notes:s.notes?`${s.notes} | ${note}`:note};
+    if(chFields) chFields(combined); else Object.keys(combined).forEach(k=>ch(k,combined[k]));
     onClose();
   };
 
@@ -391,14 +404,17 @@ function StudyCard({s,idx,updStudy,delStudy,dup,onClone}){
   // 107.md §8A (review fix) — a multi-key write, so a value and the companion field it
   // invalidates land in ONE project update instead of two sequential single-key writes.
   const chFields=(fields)=>updStudy(s.id,fields);
-  const toggleFlag=(f)=>{const cur=s.flags||[];ch("flags",cur.includes(f)?cur.filter(x=>x!==f):[...cur,f]);};
+  // 108.md §13 — a DISCRETE choice (select, checkbox, stamp button, list edit). Routed
+  // through the object form so the history layer never merges it into a typing chain.
+  const chOnce=(k,v)=>updStudy(s.id,{[k]:v});
+  const toggleFlag=(f)=>{const cur=s.flags||[];chOnce("flags",cur.includes(f)?cur.filter(x=>x!==f):[...cur,f]);};
   const issues=validateStudy(s);
   const errors=issues.filter(i=>i.sev==="error");
   const warns=issues.filter(i=>i.sev==="warn");
   const esTypeLabel=s.esType?ES_TYPES[s.esType]?.scale||s.esType:null;
   const nonPrimary=isNonPrimary(s);
   return(<div style={{background:C.card,border:`1px solid ${dup?themeAlpha(C.red,'66'):errors.length?themeAlpha(C.red,'44'):C.brd}`,borderRadius:8,overflow:"hidden"}}>
-    {showConv&&<ConversionPanel s={s} ch={ch} onClose={()=>setShowConv(false)}/>}
+    {showConv&&<ConversionPanel s={s} ch={ch} chFields={chFields} onClose={()=>setShowConv(false)}/>}
     <div onClick={()=>setOpen(!open)} style={{display:"flex",alignItems:"center",padding:"10px 16px",cursor:"pointer",gap:10,userSelect:"none",flexWrap:"wrap"}}>
       <span style={{color:C.dim,fontSize:11,fontFamily:"'IBM Plex Mono',monospace",minWidth:22}}>#{idx+1}</span>
       <div style={{flex:1,minWidth:120}}>
@@ -465,7 +481,7 @@ function StudyCard({s,idx,updStudy,delStudy,dup,onClone}){
           <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginTop:10}}>
             <div><label style={lbl}>Extracted by (initials)</label><input value={s.extractedBy||""} onChange={e=>ch("extractedBy",e.target.value)} placeholder="e.g. AB" style={{...inp,fontSize:12}}/></div>
             <div style={{display:"flex",alignItems:"flex-end",paddingBottom:4}}>
-              <button onClick={()=>ch("extractedAt",new Date().toISOString())} style={{...btnS("ghost"),fontSize:11}}>
+              <button onClick={()=>chOnce("extractedAt",new Date().toISOString())} style={{...btnS("ghost"),fontSize:11}}>
                 {s.extractedAt?`Extracted ${fmtDate(s.extractedAt)} ✓`:"Stamp extraction date"}
               </button>
             </div>
@@ -475,13 +491,13 @@ function StudyCard({s,idx,updStudy,delStudy,dup,onClone}){
 
       <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr 1fr",gap:10,marginBottom:12}}>
         <div><label style={lbl}>Study Design</label>
-          <select value={s.design||"RCT"} onChange={e=>ch("design",e.target.value)} style={inp}>
+          <select value={s.design||"RCT"} onChange={e=>chOnce("design",e.target.value)} style={inp}>
             {["RCT","Quasi-RCT","Cohort","Case-Control","Cross-Sectional","Case Series","Diagnostic"].map(d=><option key={d}>{d}</option>)}
           </select></div>
         <div><label style={lbl}>Outcome <HelpTip text="Name the exact outcome (e.g. 'HbA1c change'). Studies must measure the same construct to be pooled."/></label><input value={s.outcome||""} onChange={e=>ch("outcome",e.target.value)} placeholder="e.g. HbA1c reduction" style={{...inp,fontSize:12}}/></div>
         <div><label style={lbl}>Time Point <HelpTip text="The follow-up at which this outcome was measured (e.g. '12 weeks'). Don't pool different time points together."/></label><input value={s.timepoint||""} onChange={e=>ch("timepoint",e.target.value)} placeholder="e.g. 12 weeks" style={{...inp,fontSize:12}}/></div>
         <div><label style={lbl}>Adjustment <HelpTip text="How the estimate was adjusted. Don't silently mix unadjusted with adjusted/multivariable/propensity/IPTW estimates."/></label>
-          <select value={s.adjusted||"unadjusted"} onChange={e=>ch("adjusted",e.target.value)} style={inp}>
+          <select value={s.adjusted||"unadjusted"} onChange={e=>chOnce("adjusted",e.target.value)} style={inp}>
             {ADJUST_OPTIONS.map(([k,l])=><option key={k} value={k}>{l}</option>)}
           </select></div>
       </div>
@@ -489,11 +505,11 @@ function StudyCard({s,idx,updStudy,delStudy,dup,onClone}){
       {/* Data provenance row */}
       <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:12}}>
         <div><label style={lbl}>Data Role <HelpTip text="Whether this is the primary directly-reported outcome or a secondary/subgroup/post-hoc/sensitivity estimate. Non-primary data is flagged before pooling."/></label>
-          <select value={s.dataNature||"primary"} onChange={e=>ch("dataNature",e.target.value)} style={inp}>
+          <select value={s.dataNature||"primary"} onChange={e=>chOnce("dataNature",e.target.value)} style={inp}>
             {DATA_NATURE.map(([k,l])=><option key={k} value={k}>{l}</option>)}
           </select></div>
         <div><label style={lbl}>Data Source <HelpTip text="Where the number physically came from in the paper."/></label>
-          <select value={s.source||""} onChange={e=>ch("source",e.target.value)} style={inp}>
+          <select value={s.source||""} onChange={e=>chOnce("source",e.target.value)} style={inp}>
             {SOURCE_OPTIONS.map(([k,l])=><option key={k} value={k}>{l}</option>)}
           </select></div>
       </div>
@@ -512,7 +528,7 @@ function StudyCard({s,idx,updStudy,delStudy,dup,onClone}){
             {DENOMINATOR_POPULATIONS.map(([k,l])=><option key={k} value={k}>{l}</option>)}
           </select></div>
         <div><label style={lbl}>Action status <HelpTip text="What actually happened as a result. 'Unclear' means the ARTICLE reports it as unclear — leave it unclassified if the field was simply never collected."/></label>
-          <select value={effectiveActionStatus(s)} onChange={e=>ch("actionStatus",e.target.value)} style={inp}>
+          <select value={effectiveActionStatus(s)} onChange={e=>chOnce("actionStatus",e.target.value)} style={inp}>
             <option value="">{UNCLASSIFIED_LABEL}</option>
             {ACTION_STATUSES.map(([k,l])=><option key={k} value={k}>{l}</option>)}
           </select></div>
@@ -529,7 +545,7 @@ function StudyCard({s,idx,updStudy,delStudy,dup,onClone}){
           <div style={{display:"flex",alignItems:"center",gap:8}}>
             <button onClick={()=>setShowConv(true)} style={{...btnS("ghost"),fontSize:11,color:C.purp,borderColor:themeAlpha(C.purp,'55')}}>🔄 Convert data</button>
             <label style={{...lbl,marginBottom:0}}>Measure</label>
-            <select value={s.esType||""} onChange={e=>ch("esType",e.target.value)} style={{...inp,width:"auto",fontSize:11,padding:"3px 6px"}}>
+            <select value={s.esType||""} onChange={e=>chOnce("esType",e.target.value)} style={{...inp,width:"auto",fontSize:11,padding:"3px 6px"}}>
               <option value="">— set —</option>
               {Object.keys(ES_TYPES).map(t=><option key={t} value={t}>{ES_TYPES[t].scale}</option>)}
             </select>
@@ -542,7 +558,7 @@ function StudyCard({s,idx,updStudy,delStudy,dup,onClone}){
               <input value={s[k]||""} onChange={e=>ch(k,e.target.value)} placeholder={ph} style={{...inp,fontSize:12,fontFamily:"'IBM Plex Mono',monospace"}}/></div>
           ))}
         </div>
-        <ESCalcInline s={s} ch={ch}/>
+        <ESCalcInline s={s} ch={ch} chFields={chFields}/>
       </div>
 
       {/* Reliability flags */}
@@ -572,7 +588,7 @@ function StudyCard({s,idx,updStudy,delStudy,dup,onClone}){
             </div>
             <div style={{display:"flex",flexDirection:"column",alignItems:"flex-end",gap:4}}>
               <span style={{fontSize:9,color:C.dim}}>{cv.at?fmtDate(cv.at):""}</span>
-              <button onClick={()=>{ch("conversions",s.conversions.filter((_,j)=>j!==i));}} style={{background:"none",border:"none",color:C.dim,cursor:"pointer",fontSize:13}}>×</button>
+              <button onClick={()=>{chOnce("conversions",s.conversions.filter((_,j)=>j!==i));}} style={{background:"none",border:"none",color:C.dim,cursor:"pointer",fontSize:13}}>×</button>
             </div>
           </div>);
         })}
@@ -581,7 +597,7 @@ function StudyCard({s,idx,updStudy,delStudy,dup,onClone}){
       <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginTop:12}}>
         <div style={{display:"flex",alignItems:"flex-end",paddingBottom:4}}>
           <label style={{display:"flex",alignItems:"center",gap:8,cursor:"pointer"}}>
-            <input type="checkbox" checked={!!s.needsReview} onChange={e=>ch("needsReview",e.target.checked)} style={{accentColor:C.yel,width:15,height:15}}/>
+            <input type="checkbox" checked={!!s.needsReview} onChange={e=>chOnce("needsReview",e.target.checked)} style={{accentColor:C.yel,width:15,height:15}}/>
             <span style={{fontSize:12,color:s.needsReview?C.yel:C.muted,fontWeight:600}}>👁 Needs second-reviewer confirmation</span>
           </label>
         </div>
@@ -695,11 +711,48 @@ function ClassicExtractionTab({project,updateProject,activeId,setTab}){
   useEffect(()=>{let dead=false;extractionAssistFlagEnabled().then(on=>{if(!dead)setExtractionAssistOn(on);});return()=>{dead=true;};},[]);
   const addStudy=()=>updateProject(activeId,p=>({...p,studies:[...p.studies,mkStudy()]}));
   const addStudyObj=(st)=>updateProject(activeId,p=>({...p,studies:[...p.studies,st]}));
+  /* ── 108.md §5/§12 — history recording rides the ONE classic write choke point ──
+     The card's `ch(k,v)` is per-keystroke, so a single-key write COALESCES per (study,
+     field) — 42 keystrokes cost one Ctrl+Z (§13). The OBJECT form `ch(id,{…})` is only
+     ever used for a deliberate one-shot (a select's combined patch, "Calculate & Apply",
+     a conversion apply), so it always gets its own entry. A select written through the
+     single-key form is still separated by the typing-shape guard in
+     canMergeExtractionEdit. Autosave records nothing — this is the only call site. */
+  const live=useRef({});
+  live.current={studies,readOnly};
+  const{record:recordHistory,coalesce:coalesceHistory,registerExecutor}=useProjectHistory();
   // (id, key, value) for a single field, or (id, {k:v,…}) for a COMBINED write — one
   // project update, so a value and the companion field it invalidates can never be
   // persisted apart (107.md §8A review fix).
-  const updStudy=(id,k,v)=>{const fields=(k&&typeof k==="object")?k:{[k]:v};
-    return updateProject(activeId,p=>({...p,studies:p.studies.map(s=>s.id===id?{...s,...fields,updatedAt:new Date().toISOString()}:s)}));};
+  const updStudy=(id,k,v)=>{
+    const discrete=!!(k&&typeof k==="object");
+    const fields=discrete?k:{[k]:v};
+    const row=findStudyRow(live.current.studies,id);
+    if(row&&!live.current.readOnly){
+      // Ids/timestamps are seeded OUTSIDE the state updater (StrictMode double-invoke).
+      const entry=buildExtractionEntry({study:row,patch:fields,surface:EXTRACTION_SURFACE.CLASSIC,discrete});
+      if(entry){ if(discrete) recordHistory(entry); else coalesceHistory(entry,canMergeExtractionEdit); }
+    }
+    const at=new Date().toISOString();
+    return updateProject(activeId,p=>({...p,studies:applyRowPatch(p.studies,id,fields,{at})}));
+  };
+  /* 108.md §8 — the classic surface's undo executor. No engine is mounted here, so the
+     inverse is a plain row patch through the SAME pure applier (applyRowPatch) and the
+     SAME updateProject choke point as the forward write; the classic card never wrote
+     per-value provenance, so there is none to restore. It deliberately does NOT call
+     updStudy: that would RECORD the inverse as a fresh user action, clear the redo
+     branch and make Ctrl+Shift+Z impossible. Precondition read from the freshest render
+     (§14/§15), refusal when a collaborator moved the value. */
+  useEffect(()=>registerExecutor(EXTRACTION_HISTORY_KIND,async(op)=>{
+    const now=live.current;
+    if(now.readOnly) return {ok:false,reason:"refused"};
+    const row=findStudyRow(now.studies,op&&op.studyId);
+    if(!row) return {ok:false,reason:"refused"};
+    if(!matchesExpected(row,op.expect)) return {ok:false,reason:"refused"};
+    const at=new Date().toISOString();
+    updateProject(activeId,p=>({...p,studies:applyRowPatch(p.studies,op.studyId,op.fields,{at})}));
+    return true;
+  }),[registerExecutor,updateProject,activeId]);
   const delStudy=id=>updateProject(activeId,p=>({...p,studies:p.studies.filter(s=>s.id!==id)}));
   // Clone study-level metadata into a new row for another outcome / time point / arm.
   // 83.md §2 — the PDF linkage (screening ids + study-document pointer) is STUDY-level
@@ -1276,24 +1329,24 @@ ${paperText.slice(0,15000)}`;
               <td style={{padding:"3px 4px",color:C.dim,fontFamily:"'IBM Plex Mono',monospace",borderBottom:`1px solid ${C.brd}`}}>{idx+1}</td>
               {TC(s,"author",100,"Smith J")}{TC(s,"year",50,"2024")}
               <td style={{padding:"3px 4px",borderBottom:`1px solid ${C.brd}`}}>
-                <select value={s.design||"RCT"} onChange={e=>updStudy(s.id,"design",e.target.value)} style={{...inp,fontSize:11,padding:"3px 4px"}}>
+                <select value={s.design||"RCT"} onChange={e=>updStudy(s.id,{design:e.target.value})} style={{...inp,fontSize:11,padding:"3px 4px"}}>
                   {["RCT","Quasi-RCT","Cohort","Case-Control","Cross-Sectional","Case Series","Diagnostic"].map(d=><option key={d}>{d}</option>)}
                 </select></td>
               {TC(s,"outcome",110,"HbA1c")}{TC(s,"timepoint",64,"12 wk")}
               <td style={{padding:"3px 4px",borderBottom:`1px solid ${C.brd}`}}>
-                <select value={s.dataNature||"primary"} onChange={e=>updStudy(s.id,"dataNature",e.target.value)} style={{...inp,fontSize:11,padding:"3px 4px"}}>
+                <select value={s.dataNature||"primary"} onChange={e=>updStudy(s.id,{dataNature:e.target.value})} style={{...inp,fontSize:11,padding:"3px 4px"}}>
                   {DATA_NATURE.map(([k,l])=><option key={k} value={k}>{l.split(" ")[0]}</option>)}
                 </select></td>
               <td style={{padding:"3px 4px",borderBottom:`1px solid ${C.brd}`}}>
-                <select value={s.adjusted||"unadjusted"} onChange={e=>updStudy(s.id,"adjusted",e.target.value)} style={{...inp,fontSize:11,padding:"3px 4px"}}>
+                <select value={s.adjusted||"unadjusted"} onChange={e=>updStudy(s.id,{adjusted:e.target.value})} style={{...inp,fontSize:11,padding:"3px 4px"}}>
                   {ADJUST_OPTIONS.map(([k,l])=><option key={k} value={k}>{l.split(" ")[0]}</option>)}
                 </select></td>
               <td style={{padding:"3px 4px",borderBottom:`1px solid ${C.brd}`}}>
-                <select value={s.source||""} onChange={e=>updStudy(s.id,"source",e.target.value)} style={{...inp,fontSize:11,padding:"3px 4px"}}>
+                <select value={s.source||""} onChange={e=>updStudy(s.id,{source:e.target.value})} style={{...inp,fontSize:11,padding:"3px 4px"}}>
                   {SOURCE_OPTIONS.map(([k,l])=><option key={k} value={k}>{k?l.split(" ").slice(0,2).join(" "):"—"}</option>)}
                 </select></td>
               <td style={{padding:"3px 4px",borderBottom:`1px solid ${C.brd}`}}>
-                <select value={s.esType||""} onChange={e=>updStudy(s.id,"esType",e.target.value)} style={{...inp,fontSize:11,padding:"3px 4px"}}>
+                <select value={s.esType||""} onChange={e=>updStudy(s.id,{esType:e.target.value})} style={{...inp,fontSize:11,padding:"3px 4px"}}>
                   <option value="">—</option>{Object.keys(ES_TYPES).map(t=><option key={t} value={t}>{ES_TYPES[t].scale}</option>)}
                 </select></td>
               {TC(s,"n",46,"")}{TC(s,"es",60,"")}{TC(s,"lo",60,"")}{TC(s,"hi",60,"")}

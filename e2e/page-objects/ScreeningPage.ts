@@ -130,6 +130,75 @@ export class ScreeningPage {
   get undoButton(): Locator { return this.main.getByRole('button', { name: /Undo/i }); }
   get notesTextarea(): Locator { return this.main.getByPlaceholder('Optional screening notes…'); }
 
+  /* ── Keywords (107.md §2, 108.md §§18-21) ──────────────────────────────────────
+   *  TWO surfaces show the same keyword and share one context menu:
+   *    · `keywordRow`  — the ALWAYS-VISIBLE checkbox list in the right-hand filter
+   *      panel. This is what a user means by "my keywords"; prefer it.
+   *    · `keywordChip` — the editor chip, behind the leader-gated "✎ Edit keyword
+   *      lists" accordion (`openKeywordEditor()` opens it).
+   *  Both carry data-term / data-origin / data-list. */
+
+  /** A keyword row in the right-column filter list (always visible). */
+  keywordRow(term: string): Locator {
+    return this.main.locator(`[data-testid="screening-keyword-row"][data-term="${term}"]`);
+  }
+
+  /** Every keyword row currently rendered (the list is collapsed to 8 + "Show more"). */
+  get keywordRows(): Locator { return this.main.locator('[data-testid="screening-keyword-row"]'); }
+
+  /** An editor chip (inside the leader-only keyword editor accordion). */
+  keywordChip(term: string): Locator {
+    return this.main.locator(`[data-testid="screening-keyword-chip"][data-term="${term}"]`);
+  }
+
+  get keywordChips(): Locator { return this.main.locator('[data-testid="screening-keyword-chip"]'); }
+
+  /** The chip's × (the visible, non-right-click deletion route — 108.md §21/§25). */
+  keywordChipRemove(term: string): Locator {
+    return this.keywordChip(term).getByTestId('screening-keyword-chip-remove');
+  }
+
+  /** Expand the leader-only chip editor if it is not already open. */
+  async openKeywordEditor(): Promise<void> {
+    const toggle = this.main.getByRole('button', { name: /Edit keyword lists/ });
+    if (await toggle.isVisible()) await toggle.click();
+    await expect(this.main.getByRole('button', { name: /Hide keyword editor/ })).toBeVisible();
+  }
+
+  /** Expand EVERY keyword group — each previews only its first 8 terms, and a newly
+   *  added term lands at the end of a ~28-item default list. */
+  async expandKeywordGroups(): Promise<void> {
+    const more = this.main.getByRole('button', { name: /Show more \(/ });
+    // Re-query each round: clicking one swaps its own label to "Show less".
+    for (let i = 0; i < 4 && await more.count() > 0; i += 1) await more.first().click();
+  }
+
+  /** The pointer-anchored context menu (108.md §18). */
+  get keywordMenu(): Locator { return this.page.getByTestId('screening-keyword-menu'); }
+  /** Prefer the role over the testid — e2e/README.md §"selectors". */
+  get keywordMenuDelete(): Locator {
+    return this.page.getByRole('menuitem', { name: /^Delete keyword/ });
+  }
+
+  /** Right-click a keyword and wait for PecanRev's own menu (never the browser's). */
+  async openKeywordMenu(target: Locator): Promise<void> {
+    await target.click({ button: 'right' });
+    await expect(this.keywordMenu).toBeVisible();
+  }
+
+  /* ── Undo feedback (108.md §17) — the shared queued snackbar ──────────────────── */
+
+  /** The single visible note. Rendered by the app-wide UndoFeedbackProvider. */
+  get feedback(): Locator { return this.page.getByTestId('history-feedback'); }
+  get snackbar(): Locator { return this.page.getByTestId('screening-keyword-snackbar'); }
+  /** The snackbar's Undo button — the same history entry Ctrl+Z would run. */
+  get snackbarUndo(): Locator { return this.page.getByTestId('screening-keyword-undo'); }
+
+  /** Ctrl/Cmd+Z — page-scoped application undo. */
+  async undo(): Promise<void> { await this.page.keyboard.press('ControlOrMeta+z'); }
+  /** Ctrl/Cmd+Shift+Z — redo. */
+  async redo(): Promise<void> { await this.page.keyboard.press('ControlOrMeta+Shift+z'); }
+
   /* ── Record navigation footer (107.md §7) ──────────────────────────────────── */
 
   get recordNav(): Locator { return this.main.getByTestId('screening-record-nav'); }

@@ -48,6 +48,12 @@ import { api } from "../api-client/apiClient.js"; // prompt32 Task 10 — owner 
 import { ProtocolModulePanel, TIMEFRAME_OPTIONS, timeframeComplete, STUDY_DESIGNS } from "../../features/protocol/index.js";
 import { workflowStateFlagEnabled } from "../../services/workflowState/api.js";
 import { makeWorkflowMenuRules } from "../pages/workflowMenu.js"; // prompt39 Task 6
+// 108.md §§2-3 — the legacy monolith keeps its stage in React state rather than the
+// URL, so it is the one shell that needs an ADAPTER: `legacyTabScope(tab)` maps its
+// tab id onto the same scope keys the Stitch shell derives from `?tab=`, and both
+// shells therefore address one history model instead of two.
+import ProjectInteractionProvider from "../history/ProjectInteractionProvider.jsx";
+import { legacyTabScope } from "../../research-engine/interaction/projectScopes.js";
 // SearchEngine — the Search tab renders via SearchWizardDispatcher (protocolTabs.jsx),
 // which owns the searchEngine flag check and the SearchWorkspace/SearchTab split;
 // nothing from features/searchBuilder is consumed here any more (96.md dead-code sweep).
@@ -997,7 +1003,11 @@ export default function MetaLab({ initialProjectId = null, initialTab = null, on
     if(next==="pinned") setNavCollapsed(false);
     try{ api.profile.update({workflowMenuMode:next}); }catch{ /* best-effort persist */ }
   };
-  return(<div style={{display:"flex",minHeight:"100vh",background:C.bg,fontFamily:"'IBM Plex Sans',sans-serif",color:C.txt}}>
+  // 108.md §16 — one history per project; the scope follows the active tab. The
+  // legacy autosave announces a refused CAS with the `metalab:autosave-conflict`
+  // window event, which the provider already listens for (no saveStatus prop here).
+  return(<ProjectInteractionProvider projectId={activeId} scope={legacyTabScope(tab)}>
+    <div style={{display:"flex",minHeight:"100vh",background:C.bg,fontFamily:"'IBM Plex Sans',sans-serif",color:C.txt}}>
     <style>{`
       @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:ital,wght@0,300;0,400;0,500;0,600;0,700;1,400&family=IBM+Plex+Mono:wght@400;500;700&display=swap');
 
@@ -1664,5 +1674,6 @@ export default function MetaLab({ initialProjectId = null, initialTab = null, on
         monolith download trigger; portals itself to document.body, so the
         transformed .tab-content ancestor can't hijack its position:fixed. */}
     <ExportDialog open={!!expItem} onClose={()=>setExpItem(null)} item={expItem} precision={(project&&project.analysisPrecision)||undefined}/>
-  </div>);
+    </div>
+  </ProjectInteractionProvider>);
 }

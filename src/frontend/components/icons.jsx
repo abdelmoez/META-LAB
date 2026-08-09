@@ -197,6 +197,21 @@ const ICON_PATHS = {
       <path d="M5.5 14.5H4.8A1.8 1.8 0 0 1 3 12.7V4.8A1.8 1.8 0 0 1 4.8 3h7.9a1.8 1.8 0 0 1 1.8 1.8v.7" />
     </>
   ),
+  /* 108.md §22 — the Undo/Redo pair. The universally-recognised curved arrow
+     doubling back on itself, mirrored for redo; drawn as one arc + one arrowhead so
+     it stays readable at the 16px the small icon button renders. */
+  undo: (
+    <>
+      <path d="M4 10h9.5a5.5 5.5 0 0 1 0 11H8" />
+      <path d="M8 5.5 3.5 10 8 14.5" />
+    </>
+  ),
+  redo: (
+    <>
+      <path d="M20 10h-9.5a5.5 5.5 0 0 0 0 11H16" />
+      <path d="M16 5.5 20.5 10 16 14.5" />
+    </>
+  ),
   chevronRight: <path d="M9 5.5l6.5 6.5L9 18.5" />,
   chevronLeft: <path d="M15 5.5 8.5 12 15 18.5" />,
   chevronDown: <path d="M5.5 9 12 15.5 18.5 9" />,

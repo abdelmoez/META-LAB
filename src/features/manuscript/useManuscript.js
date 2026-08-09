@@ -51,11 +51,18 @@ import {
   resolveFacts, findFactTokens, renderFacts,
   reconcileFacts, groupChanges, overrideFact, clearFactOverride,
   factDiscrepancies, markChangeReverted,
+  // 108.md §6 — pure capture/apply/compare for the two undoable structured
+  // mutations (section lock, fact pin). See manuscript/historyOps.js.
+  sectionLockOf, sectionLockMatches, captureFactPin, applyFactPin, factPinMatches,
   // 102.md — manual-input placeholder detection, counts, grouping and navigation.
   collectPlaceholders, placeholderCounts, groupPlaceholders, stepPlaceholder,
 } from '../../research-engine/manuscript/index.js';
 import { generateDraft } from '../../research-engine/manuscript/draft.js';
 import { gradeCertaintyEnabled, sofCertaintyMap } from '../../frontend/workspace/gradeApi.js';
+// 108.md §§2/§6 — the project-wide history. Inert outside a provider (the hook
+// returns a no-op shape), so the manuscript keeps working in any shell that has not
+// mounted one yet.
+import { useProjectHistory } from '../../frontend/history/HistoryContext.jsx';
 import * as MS from './manuscriptState.js';
 import {
   emptyManuscriptSources, fetchManuscriptSources, linkedScreenProjectId, composeGenOpts,
@@ -76,6 +83,14 @@ export function useManuscript(project, upd) {
   const activeIdRef = useRef(activeId);
   useEffect(() => { projectRef.current = project; });
   useEffect(() => { activeIdRef.current = activeId; });
+
+  // 108.md §§2/§6 — the page-scoped history. Read through a render-assigned ref so
+  // the mutation callbacks below stay referentially stable (they are dependencies of
+  // half the panels). Outside a provider this is the inert no-op shape, so nothing
+  // here changes behaviour in a shell that has not mounted one.
+  const history = useProjectHistory();
+  const historyRef = useRef(history);
+  historyRef.current = history;
 
   // Pending debounced field patches for ONE draft at a time: { draftId, fields:Map }.
   const pending = useRef(null);
@@ -188,6 +203,48 @@ export function useManuscript(project, upd) {
     persist(MS.upsertDraft(list, next));
     return next;
   }, [flushPending, persist]);
+
+  /** The freshest committed draft a history entry/executor should act on. */
+  const freshestDraft = useCallback(() => {
+    const list = readManuscripts(projectRef.current);
+    return list.find((d) => d && d.id === activeIdRef.current) || list[0] || null;
+  }, []);
+
+  /* ── 108.md §§6/§8/§14 — undo/redo executors for the two structured mutations.
+     Both go through `mutateActive`, i.e. the SAME write path as the forward action
+     (§8: never a local-state rollback) — which also means both flush pending typing
+     first, so an undo can never resurrect text the debounce had not committed.
+     Both RE-VALIDATE against the freshest committed draft rather than the state at
+     record time, and refuse when it moved (§14/§15); the provider then puts the
+     entry back on its stack and says "changed by a collaborator".
+
+     Honest limitation: `persist` reports failure asynchronously through `saveState`
+     and the autosave layer behind `upd` can swallow a network error entirely (see
+     this file's header), so a refusal here is a PRECONDITION failure, not a
+     persistence one. The persistence safety net is the shell's blob-conflict
+     handler, which clears every blob-backed scope on an autosave 409. */
+  const registerExecutor = history.registerExecutor;
+  useEffect(() => {
+    const offLock = registerExecutor('manuscript.sectionLock', (op) => {
+      const d = freshestDraft();
+      if (!d || d.id !== op.draftId) return { ok: false, reason: 'refused' };
+      if (!sectionLockMatches(d, op.sectionId, op.expect)) return { ok: false, reason: 'refused' };
+      const applied = mutateActive((cur) => (
+        cur && cur.id === op.draftId ? MS.setSectionLocked(cur, op.sectionId, op.locked) : null
+      ));
+      return applied ? true : { ok: false, reason: 'refused' };
+    });
+    const offFact = registerExecutor('manuscript.factPin', (op) => {
+      const d = freshestDraft();
+      if (!d || d.id !== op.draftId) return { ok: false, reason: 'refused' };
+      if (!factPinMatches(d, op.expect)) return { ok: false, reason: 'refused' };
+      const applied = mutateActive((cur) => (
+        cur && cur.id === op.draftId ? applyFactPin(cur, op.snapshot) : null
+      ));
+      return applied ? true : { ok: false, reason: 'refused' };
+    });
+    return () => { offLock(); offFact(); };
+  }, [registerExecutor, mutateActive, freshestDraft]);
 
   // Ensure ≥1 draft (seed from legacy on first use); keep activeId valid. Holds a
   // local seed for read-only projects where upd is a no-op so viewers still see it.
@@ -682,9 +739,23 @@ export function useManuscript(project, upd) {
   }, [activeDraft, queueEdit]);
 
   // 73.md Part 9 — per-section lock toggle (persisted through the same path).
+  // 108.md §6 — recorded as a history entry: the prior boolean IS the exact inverse,
+  // captured from the freshest committed draft BEFORE the write (the lock flag is
+  // untouched by pending typing, which only queues section/statement/meta patches).
   const setSectionLocked = useCallback((id, locked) => {
-    mutateActive((d) => MS.setSectionLocked(d, id, locked));
-  }, [mutateActive]);
+    const before = freshestDraft();
+    const draftId = before ? before.id : null;
+    const prev = sectionLockOf(before, id);
+    const next = mutateActive((d) => MS.setSectionLocked(d, id, locked));
+    if (!next || !draftId || prev === !!locked) return;
+    historyRef.current.record({
+      kind: 'manuscript.sectionLock',
+      label: locked ? 'Section lock' : 'Section unlock',
+      entityKey: `${draftId}:${id}`,
+      undoOp: { draftId, sectionId: id, locked: prev, expect: !!locked },
+      redoOp: { draftId, sectionId: id, locked: !!locked, expect: prev },
+    });
+  }, [mutateActive, freshestDraft]);
 
   // 85.md B2 — per-asset override (draft.assets[id]): include toggle is an
   // IMMEDIATE structural write; title/caption/legend text edits go through the
@@ -983,10 +1054,39 @@ export function useManuscript(project, upd) {
    * communicated rather than hidden.
    */
 
+  /**
+   * recordFactPin — 108.md §6. Both fact actions are the same undoable thing: "the
+   * pin on this fact moved". The entry carries the COMPLETE pre- and post-image
+   * snapshots (pin + the originating change's revert flags), because `revertFact`
+   * writes both halves and only restoring both is a true inverse — see
+   * research-engine/manuscript/historyOps.js.
+   */
+  const recordFactPin = useCallback((draftId, key, changeId, before, nextDraft) => {
+    if (!draftId || !nextDraft) return;
+    const after = captureFactPin(nextDraft, key, changeId);
+    const pinSame = (!before.override && !after.override)
+      || (!!before.override && !!after.override
+        && String(before.override.value) === String(after.override.value));
+    const flagSame = (!before.change === !after.change)
+      && (!before.change || before.change.reverted === after.change.reverted);
+    if (pinSame && flagSame) return;                 // nothing actually moved
+    historyRef.current.record({
+      kind: 'manuscript.factPin',
+      label: 'Manuscript wording',
+      entityKey: `${draftId}:${key}`,
+      undoOp: { draftId, snapshot: before, expect: after },
+      redoOp: { draftId, snapshot: after, expect: before },
+    });
+  }, []);
+
   /** Restore the previous wording of one fact (§10 "Restore previous wording"). */
   const revertFact = useCallback((key, change, opts = {}) => {
     if (!key) return;
-    mutateActive((d) => {
+    const beforeDraft = freshestDraft();
+    const draftId = beforeDraft ? beforeDraft.id : null;
+    const changeId = (change && change.id) ? change.id : null;
+    const before = captureFactPin(beforeDraft, key, changeId);
+    const nextDraft = mutateActive((d) => {
       const projectValue = resolvedFacts[key] ? resolvedFacts[key].raw : null;
       const value = opts.value != null ? opts.value : (change && change.from);
       if (value == null) return d;
@@ -1006,13 +1106,18 @@ export function useManuscript(project, upd) {
       }
       return draft;
     });
-  }, [mutateActive, resolvedFacts]);
+    recordFactPin(draftId, key, changeId, before, nextDraft);
+  }, [mutateActive, resolvedFacts, freshestDraft, recordFactPin]);
 
   /** Drop a pin so the fact tracks project data again (§10 "Keep current wording"). */
   const keepCurrentFact = useCallback((key) => {
     if (!key) return;
-    mutateActive((d) => clearFactOverride(d, key).draft);
-  }, [mutateActive]);
+    const beforeDraft = freshestDraft();
+    const draftId = beforeDraft ? beforeDraft.id : null;
+    const before = captureFactPin(beforeDraft, key, null);
+    const nextDraft = mutateActive((d) => clearFactOverride(d, key).draft);
+    recordFactPin(draftId, key, null, before, nextDraft);
+  }, [mutateActive, freshestDraft, recordFactPin]);
 
   /* ══════════ 101.md §6/§34 — Show Changes ══════════
    *

@@ -11,8 +11,11 @@
    from projectHelpers.js; the precision formatters; ForestPlot/FunnelPlot from
    charts.jsx; the SVG string builders from svgBuilders.js; exportCore +
    exportDialogBridge for the download/export plumbing. */
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect, useMemo, useRef, useCallback } from "react";
 import { alpha as themeAlpha } from "../../theme/tokens.js";
+// 108.md §6 — the page-scoped Undo/Redo history. Inert outside a provider, so the
+// analysis builder behaves identically in any shell that has not mounted one.
+import { useProjectHistory } from "../../history/HistoryContext.jsx";
 import { useTheme } from "../../theme/ThemeContext.jsx";
 import { rasterizeSvg, downloadBlob, downloadText } from "../../components/exportCore.js";
 import { fmtNum, fmtES, fmtP, fmtPct, fmtI2, fmtWeight, normalizePrecision, DECIMAL_OPTIONS } from "../../../research-engine/format/precision.js";
@@ -236,6 +239,114 @@ export function overrideActorName(user){
   return n||null;
 }
 
+/* ── 108.md §6 — the analysis-builder history ops ─────────────────────────────
+   Four configuration writes participate in the project-wide Undo/Redo. Each one is
+   already a pure function of the current project (the values are trivially
+   available at the call site), so the entry carries the PRIOR value rather than a
+   snapshot of anything — 108.md §§9-10.
+
+   `readAnalysisConfig` / `applyAnalysisConfig` / `analysisConfigMatches` are pure
+   and exported so the executor's whole decision surface is unit-testable without a
+   DOM. `applyAnalysisConfig` restores ABSENCE as absence (deleting the key, and the
+   container when it empties) so undoing a setting on a project that never used it
+   leaves a byte-identical blob.
+
+   EXCLUDED, deliberately: `onApplyPrecisionToAll`. It fans one value out to EVERY
+   project the user can edit through N separate blob writes (Workspace.jsx /
+   StitchProjectWorkspace), so one entry cannot describe it and one undo cannot
+   reverse it. 108.md §6 says not to make an action undoable without understanding
+   it; this is that case. */
+
+export const ANALYSIS_CONFIG_TARGETS=Object.freeze({
+  TAU2:"tau2Method",
+  PRECISION:"analysisPrecision",
+  PROP_FILTER:"proportionFilter",
+  PROP_OVERRIDE:"proportionOverride",
+});
+
+/** Write (or delete) analysisSettings.tau2Method, dropping an emptied container. */
+function writeTau2Method(project,value){
+  const as={...((project&&project.analysisSettings)||{})};
+  if(value==null||value==="") delete as.tau2Method; else as.tau2Method=value;
+  const out={...project};
+  if(Object.keys(as).length) out.analysisSettings=as; else delete out.analysisSettings;
+  return out;
+}
+
+/** Write (or delete) the whole analysisPrecision object. */
+function writeAnalysisPrecision(project,value){
+  const out={...project};
+  if(value==null) delete out.analysisPrecision; else out.analysisPrecision={...value};
+  return out;
+}
+
+/** The value an op currently addresses — `null` means "not set". */
+export function readAnalysisConfig(project,op){
+  const as=(project&&project.analysisSettings)||{};
+  const t=op&&op.target;
+  if(t===ANALYSIS_CONFIG_TARGETS.TAU2) return as.tau2Method==null?null:as.tau2Method;
+  if(t===ANALYSIS_CONFIG_TARGETS.PRECISION) return (project&&project.analysisPrecision)||null;
+  if(t===ANALYSIS_CONFIG_TARGETS.PROP_FILTER){
+    const cur=(as.proportionFilters||{})[op.outcomeKey]||{};
+    const v=cur[op.field];
+    return v==null||v===""?null:v;
+  }
+  if(t===ANALYSIS_CONFIG_TARGETS.PROP_OVERRIDE) return (as.proportionOverrides||{})[op.outcomeKey]||null;
+  return null;
+}
+
+/** Apply one op to a project. Pure; the SAME writers the forward actions use. */
+export function applyAnalysisConfig(project,op){
+  const t=op&&op.target;
+  if(t===ANALYSIS_CONFIG_TARGETS.TAU2) return writeTau2Method(project,op.value);
+  if(t===ANALYSIS_CONFIG_TARGETS.PRECISION) return writeAnalysisPrecision(project,op.value);
+  if(t===ANALYSIS_CONFIG_TARGETS.PROP_FILTER) return writeProportionFilter(project,op.outcomeKey,op.field,op.value);
+  // 107.md §12 / 108.md §6 — a redo re-instates the SAME consent record, including
+  // its ORIGINAL `at` and `by`. That is deliberate: redo restores the state the user
+  // just undid, it does not manufacture a fresh act of consent with a new timestamp.
+  // The stale-signature logic (proportionOverrideStale) still governs whether that
+  // restored record is honoured, so a redo can never silently re-bless data that
+  // changed underneath it.
+  if(t===ANALYSIS_CONFIG_TARGETS.PROP_OVERRIDE) return writeProportionOverride(project,op.outcomeKey,op.record||null);
+  return project;
+}
+
+/** Stable comparison for the §14 precondition (values are strings or plain data). */
+function sameConfigValue(a,b){
+  if(a===b) return true;
+  if(a==null||b==null) return a==null&&b==null;
+  try{ return JSON.stringify(a)===JSON.stringify(b); }catch{ return false; }
+}
+
+/**
+ * analysisConfigMatches(project, op) — 108.md §14/§15. True when the setting still
+ * holds the value the entry expects, i.e. nobody (a collaborator, another tab, a
+ * server-side module writer) moved it since the action was recorded. The executor
+ * refuses otherwise instead of clobbering.
+ */
+export function analysisConfigMatches(project,op){
+  if(!op||!op.target) return false;
+  return sameConfigValue(readAnalysisConfig(project,op),op.expect===undefined?null:op.expect);
+}
+
+/** Feedback label (108.md §17) — reads as "<label> undone" / "<label> redone". */
+export function analysisConfigLabel(op){
+  const t=op&&op.target;
+  if(t===ANALYSIS_CONFIG_TARGETS.TAU2) return "τ² estimator change";
+  if(t===ANALYSIS_CONFIG_TARGETS.PRECISION) return "Decimal places change";
+  if(t===ANALYSIS_CONFIG_TARGETS.PROP_FILTER) return "Proportion filter change";
+  if(t===ANALYSIS_CONFIG_TARGETS.PROP_OVERRIDE) return "Compatibility override change";
+  return "Analysis setting change";
+}
+
+/** Coalescing/diagnostic key — one logical setting per outcome. */
+export function analysisConfigKey(op){
+  const t=(op&&op.target)||"";
+  const k=(op&&op.outcomeKey)||"";
+  const f=(op&&op.field)||"";
+  return [t,k,f].filter(Boolean).join(":");
+}
+
 /* ════════════ PROPORTION COMPATIBILITY PANEL (107.md §11/§12) ════════════
    Renders, in this order: the active filter chips (always, so a filter set in an
    earlier session can always be cleared), a stale-override notice, an honoured
@@ -421,7 +532,61 @@ export function AnalysisTab({project,updateProject,onApplyPrecisionToAll,current
   // write-up) uses the SAME estimator — otherwise tabs would show contradicting CIs.
   const[localTau2,setLocalTau2]=useState("DL");
   const tau2Method=(project&&project.analysisSettings&&project.analysisSettings.tau2Method)||localTau2;
-  const setTau2Method=(v)=>{ setLocalTau2(v); if(updateProject) updateProject(ap=>({...ap,analysisSettings:{...(ap.analysisSettings||{}),tau2Method:v}})); };
+
+  /* ── 108.md §6 — history plumbing for the four undoable config writes ──────
+     Everything the executor reads goes through render-assigned refs: `project` and
+     `updateProject` are recreated by both shells on every render, and the executor
+     runs LATER (an undo is asynchronous), so a closure over either would be stale by
+     the time it matters — exactly the §14 hazard. */
+  const history=useProjectHistory();
+  const historyRef=useRef(history); historyRef.current=history;
+  const projectRef=useRef(project); projectRef.current=project;
+  const updateProjectRef=useRef(updateProject); updateProjectRef.current=updateProject;
+  const registerExecutor=history.registerExecutor;
+  useEffect(()=>registerExecutor("analysis.config",(op)=>{
+    const cur=projectRef.current;
+    const write=updateProjectRef.current;
+    if(!cur||typeof write!=="function") return {ok:false,reason:"refused"};
+    // Re-validate against the CURRENT project, never the one at record time.
+    if(!analysisConfigMatches(cur,op)) return {ok:false,reason:"refused"};
+    write(ap=>applyAnalysisConfig(ap,op));
+    // The τ² select prefers the persisted value and falls back to this local mirror,
+    // so restoring an ABSENT persisted value without restoring the mirror would leave
+    // the control showing the post-action estimator.
+    if(op.target===ANALYSIS_CONFIG_TARGETS.TAU2&&typeof op.localTau2==="string") setLocalTau2(op.localTau2);
+    return true;
+  }),[registerExecutor]);
+  const recordConfig=useCallback((undoOp,redoOp)=>{
+    historyRef.current.record({
+      kind:"analysis.config",
+      label:analysisConfigLabel(redoOp),
+      entityKey:analysisConfigKey(redoOp),
+      undoOp,redoOp,
+    });
+  },[]);
+
+  const setTau2Method=(v)=>{
+    const prev=readAnalysisConfig(projectRef.current,{target:ANALYSIS_CONFIG_TARGETS.TAU2});
+    const prevLocal=localTau2;
+    setLocalTau2(v);
+    if(!updateProject) return;
+    updateProject(ap=>({...ap,analysisSettings:{...(ap.analysisSettings||{}),tau2Method:v}}));
+    if(prev===v) return;
+    recordConfig(
+      {target:ANALYSIS_CONFIG_TARGETS.TAU2,value:prev,localTau2:prevLocal,expect:v},
+      {target:ANALYSIS_CONFIG_TARGETS.TAU2,value:v,localTau2:v,expect:prev},
+    );
+  };
+  /** Decimal places / trailing zeros — ONE entry per change, whole-object inverse. */
+  const setAnalysisPrecision=(next)=>{
+    if(!updateProject) return;
+    const prev=readAnalysisConfig(projectRef.current,{target:ANALYSIS_CONFIG_TARGETS.PRECISION});
+    updateProject(ap=>({...ap,analysisPrecision:next}));
+    recordConfig(
+      {target:ANALYSIS_CONFIG_TARGETS.PRECISION,value:prev,expect:next},
+      {target:ANALYSIS_CONFIG_TARGETS.PRECISION,value:next,expect:prev},
+    );
+  };
   const[showAudit,setShowAudit]=useState(false);
   const[forceShow,setForceShow]=useState(false);
   const[selectedKey,setSelectedKey]=useState("");
@@ -475,18 +640,30 @@ export function AnalysisTab({project,updateProject,onApplyPrecisionToAll,current
   const outcomeKey=activeOutcome?activeOutcome.key:"";
   const setProportionFilter=(field,value)=>{
     if(!updateProject||!outcomeKey) return;
+    const addr={target:ANALYSIS_CONFIG_TARGETS.PROP_FILTER,outcomeKey,field};
+    const prev=readAnalysisConfig(projectRef.current,addr);
+    const next=(value==null||value==="")?null:value;   // writeProportionFilter deletes these
     updateProject(ap=>writeProportionFilter(ap,outcomeKey,field,value));
+    if(prev===next) return;
+    recordConfig({...addr,value:prev,expect:next},{...addr,value:next,expect:prev});
   };
   const recordProportionOverride=(note)=>{
     if(!updateProject||!outcomeKey) return;
     // The timestamp is seeded HERE, at the event-handler call site — never inside the
     // updater, which StrictMode double-invokes and the blob CAS retries re-run.
     const rec=buildProportionOverride(propCheck,{at:new Date().toISOString(),by:overrideActorName(currentUser),note});
+    const addr={target:ANALYSIS_CONFIG_TARGETS.PROP_OVERRIDE,outcomeKey};
+    const prev=readAnalysisConfig(projectRef.current,addr);
     updateProject(ap=>writeProportionOverride(ap,outcomeKey,rec));
+    recordConfig({...addr,record:prev,expect:rec},{...addr,record:rec,expect:prev});
   };
   const clearProportionOverride=()=>{
     if(!updateProject||!outcomeKey) return;
+    const addr={target:ANALYSIS_CONFIG_TARGETS.PROP_OVERRIDE,outcomeKey};
+    const prev=readAnalysisConfig(projectRef.current,addr);
     updateProject(ap=>writeProportionOverride(ap,outcomeKey,null));
+    if(!prev) return;                                  // nothing was documented
+    recordConfig({...addr,record:prev,expect:null},{...addr,record:null,expect:prev});
   };
 
   return(<div>
@@ -628,12 +805,15 @@ export function AnalysisTab({project,updateProject,onApplyPrecisionToAll,current
       <span style={{marginLeft:"auto",fontSize:11,color:C.muted}}>{valid.length} of {studies.length} studies usable</span>
       {updateProject&&(()=>{const np=normalizePrecision(prec);return(<div style={{display:"flex",alignItems:"center",gap:8,marginLeft:8,paddingLeft:8,borderLeft:`1px solid ${themeAlpha(C.brd,'88')}`}}>
         <span style={{fontSize:11,color:C.muted,whiteSpace:"nowrap"}}>Decimal places:</span>
-        <select value={np.decimals} onChange={e=>updateProject(ap=>({...ap,analysisPrecision:{...np,decimals:Number(e.target.value)}}))} style={{...inp,width:"auto",fontSize:11,padding:"3px 6px"}}>
+        <select value={np.decimals} onChange={e=>setAnalysisPrecision({...np,decimals:Number(e.target.value)})} style={{...inp,width:"auto",fontSize:11,padding:"3px 6px"}}>
           {DECIMAL_OPTIONS.map(d=><option key={d} value={d}>{d}</option>)}
         </select>
         <label style={{display:"flex",alignItems:"center",gap:4,fontSize:11,color:C.muted,cursor:"pointer",whiteSpace:"nowrap"}}>
-          <input type="checkbox" checked={np.trailingZeros} onChange={e=>updateProject(ap=>({...ap,analysisPrecision:{...np,trailingZeros:e.target.checked}}))} style={{accentColor:C.acc}}/>trailing zeros
+          <input type="checkbox" checked={np.trailingZeros} onChange={e=>setAnalysisPrecision({...np,trailingZeros:e.target.checked})} style={{accentColor:C.acc}}/>trailing zeros
         </label>
+        {/* 108.md §6 — "Apply to all" is deliberately NOT recorded: it fans out to
+            every project the user can edit, so one entry cannot describe it and one
+            undo cannot reverse it (see applyAnalysisConfig's header). */}
         {onApplyPrecisionToAll&&<button onClick={()=>onApplyPrecisionToAll({decimals:np.decimals,trailingZeros:np.trailingZeros})} title="Apply this decimal-places setting to every project you can edit" style={{...btnS("ghost"),fontSize:10,padding:"3px 8px",whiteSpace:"nowrap"}}>Apply to all</button>}
       </div>);})()}
     </div>

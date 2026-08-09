@@ -349,7 +349,7 @@ All commands run on the final tree:
 Key new test files: `duplicateJobState.test.js` (13), `screeningSteps.test.js` (+10, incl. the
 zero-duplicates "Pending" regression), `suggestKeywords.test.js` (17, incl. the epilepsy
 fixtures), `keywordModel.test.js` (25), `keywordNormalize.test.js` (11),
-`selectionShortcut.test.js` (14), `abstractSegments.test.js` (16), `abstractRender.test.jsx` (8),
+`selectionShortcut.test.js` (14; extended to 35 in the 108 round), `abstractSegments.test.js` (16), `abstractRender.test.jsx` (8),
 `keywordSuggestionsUi.test.jsx` (9), `criteriaKeywords.test.js` (rewritten, 20),
 `proportionMeta.test.js` (35), `proportionMetaDownstream.test.jsx` (34),
 `proportionCompatibility.test.js` (39), `proportionAnalysisBuilder.test.jsx` (42),

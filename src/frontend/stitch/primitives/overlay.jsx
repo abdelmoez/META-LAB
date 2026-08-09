@@ -12,6 +12,9 @@ import {
 import { createPortal } from 'react-dom';
 import { Icon } from '../../components/icons.jsx';
 import { S, salpha } from '../theme/stitchTokens.js';
+// 108.md §24 — the neutral (design-system-free) modal marker every dialog family
+// stamps, so the shortcut router's tier-1 gate can see Stitch dialogs too.
+import { STITCH_MODAL_ATTR } from '../../../research-engine/interaction/modalSignal.js';
 
 /* ─── Focus trap helper ───────────────────────────────────────────────────── */
 function useFocusTrap(active, onClose) {
@@ -38,11 +41,14 @@ function useFocusTrap(active, onClose) {
       else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
     };
     document.addEventListener('keydown', onKey, true);
+    // 108.md §24 — mark this dialog while it is up (mirrors SCREENING_MODAL_ATTR).
+    node?.setAttribute?.(STITCH_MODAL_ATTR, 'true');
     const prevOverflow = document.body.style.overflow;
     document.body.style.overflow = 'hidden';
     return () => {
       clearTimeout(t);
       document.removeEventListener('keydown', onKey, true);
+      node?.removeAttribute?.(STITCH_MODAL_ATTR);
       document.body.style.overflow = prevOverflow;
       try { prevFocus.current?.focus?.(); } catch { /* ignore */ }
     };

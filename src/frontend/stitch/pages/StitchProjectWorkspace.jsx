@@ -53,6 +53,11 @@ import {
 import {
   StitchLoadingState, StitchErrorState, StitchButton, StitchBadge, S, salpha,
 } from '../primitives';
+// 108.md §§2-3, §22 — the project-wide interaction layer (history stacks + the ONE
+// shortcut router + the undo-feedback snackbar) and its header Undo/Redo pair.
+import ProjectInteractionProvider from '../../history/ProjectInteractionProvider.jsx';
+import StitchHistoryControls from '../shell/StitchHistoryControls.jsx';
+import { historyScopeForStage } from '../../../research-engine/interaction/projectScopes.js';
 // 77.md §9 — isolate a stage/engine crash to its own card instead of blanking the whole
 // workspace (which showed the generic "Something went wrong" panel).
 import ScopedErrorBoundary from '../../components/ScopedErrorBoundary.jsx';
@@ -331,6 +336,9 @@ function DeepToolPage({ stage }) {
       </div>
       <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
         {/* Presence now lives in the top bar (55.md #14) — not duplicated here. */}
+        {/* 108.md §22 — page-scoped Undo/Redo, disabled from THIS stage's stacks.
+            This whole row is null in Focus Mode; the shortcuts still work there. */}
+        <StitchHistoryControls />
         {nextId ? (
           <StitchButton iconRight="arrowRight" onClick={() => goStage(nextId)}>
             {nextId === 'screening' ? 'Continue to Screening' : `Next: ${STAGE_LABEL[nextId] || 'Continue'}`}
@@ -457,6 +465,12 @@ function DeepToolPage({ stage }) {
       : { background: S.card, borderRadius: 16, border: `1px solid ${salpha(S.outlineVariant, 0.45)}`, padding: 20, minHeight: 400 };
 
   return (
+    // 108.md §3 — ONE history object for the project; `scope` only selects which
+    // stage's stack Ctrl+Z reads, so leaving Extraction for Screening and coming
+    // back continues where it left off (§16). `saveStatus === 'conflict'` means the
+    // blob CAS refused our write and this page reloaded the server's copy, which
+    // invalidates every blob-backed stack (§15).
+    <ProjectInteractionProvider projectId={projectId} scope={historyScopeForStage(stage)} saveStatus={doc.saveStatus}>
     <StitchAppShell {...shellProps} breadcrumb={breadcrumb}
       docTitle={[STAGE_LABEL[stage] || 'Workspace', project.name]}>
       <div style={wrapperStyle}>
@@ -484,5 +498,6 @@ function DeepToolPage({ stage }) {
           precision={(project && project.analysisPrecision) || undefined} />
       </Suspense>
     </StitchAppShell>
+    </ProjectInteractionProvider>
   );
 }
