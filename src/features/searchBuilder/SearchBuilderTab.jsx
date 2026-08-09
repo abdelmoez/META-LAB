@@ -46,6 +46,9 @@ import {
 import { useShortcut, TIER } from "../../frontend/shortcuts/ShortcutProvider.jsx";
 import { isUndoChord, historyShortcutAllowed } from "../../research-engine/interaction/undoChords.js";
 import { SCOPE_SEARCH } from "../../research-engine/interaction/projectScopes.js";
+// 108 review §25 — this tab owns its own undo stack, so it must TELL the shared
+// history provider that the 'search' scope is undoable (see the delegate below).
+import { useProjectHistory } from "../../frontend/history/HistoryContext.jsx";
 /* ── 97.md — pure state helpers from workstream B (plan §§8-13, ownership §22):
    the conservative exact-duplicate engine + dupOverride machinery, the term
    move/copy/combine/split ops (each returning ready-made undo info), and the
@@ -1840,6 +1843,26 @@ export default function SearchBuilderTab({projectId,question:questionProp,pico,a
       &&(!ctx.scope||ctx.scope===SCOPE_SEARCH)&&historyShortcutAllowed(ctx),
     run:()=>{ undoLastAction(); return true; },
   },[]);
+
+  /* 108 review §25 — …and the SAME availability, published to the shared history
+     provider so the header's Undo/Redo pair is not the one visible control that
+     lies. Nothing is ever recorded into the provider's 'search' stack (this stack
+     is the source of truth), so `counts()` said canUndo:false and the button sat
+     permanently greyed out while Ctrl+Z worked — 108.md §25 forbids exactly that
+     ("do not make important functionality exclusively dependent on keyboard").
+
+     The delegate is a VALUE: re-registered whenever the gate flips, which is what
+     re-renders the header. It carries no `redo` on purpose — undoStack.js records
+     inverse patches only, so there is nothing to replay (see the note above), and
+     the header's Redo stays honestly disabled. The keyboard path is unchanged: the
+     ENGINE binding above outranks the provider's GLOBAL one, so Ctrl+Z still lands
+     here directly and never round-trips through the delegate. */
+  const searchUndoDelegate=embedded&&visible&&!readOnly&&undoAvailable;
+  const registerScopeDelegate=useProjectHistory().registerScopeDelegate;
+  useEffect(()=>registerScopeDelegate(SCOPE_SEARCH,{
+    canUndo:searchUndoDelegate,
+    undo:()=>{ undoLastAction(); },
+  }),[registerScopeDelegate,searchUndoDelegate,undoLastAction]);
 
   /* ── 97 QA M13 — TERM-EDIT undo: ONE entry per editing session (the rename
      pattern). The pre-edit term object is snapshotted when the editor popover

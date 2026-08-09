@@ -14,13 +14,16 @@ import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { createElement as h } from 'react';
 import { renderToStaticMarkup as r } from 'react-dom/server';
-import ProjectInteractionProvider from '../../../src/frontend/history/ProjectInteractionProvider.jsx';
-import { useProjectHistory } from '../../../src/frontend/history/HistoryContext.jsx';
+import ProjectInteractionProvider, {
+  conflictTargetsProject,
+} from '../../../src/frontend/history/ProjectInteractionProvider.jsx';
+import { HistoryProvider, useProjectHistory } from '../../../src/frontend/history/HistoryContext.jsx';
 import { useUndoFeedback } from '../../../src/frontend/history/useUndoFeedback.jsx';
-import { useShortcuts } from '../../../src/frontend/shortcuts/ShortcutProvider.jsx';
+import { useShortcuts, shouldRouteEvent } from '../../../src/frontend/shortcuts/ShortcutProvider.jsx';
 import {
-  HistoryControlsView, StitchHistoryControls,
+  HistoryControlsView, StitchHistoryControls, historyControlLabel,
 } from '../../../src/frontend/stitch/shell/StitchHistoryControls.jsx';
+import { emptyHistory, recordAction } from '../../../src/research-engine/interaction/historyStacks.js';
 import { STITCH_MODAL_ATTR } from '../../../src/research-engine/interaction/modalSignal.js';
 
 const src = (p) => readFileSync(new URL(`../../../${p}`, import.meta.url), 'utf8');
@@ -135,10 +138,37 @@ describe('§22 — the header Undo/Redo pair', () => {
 describe('the shells mount the provider (source pins)', () => {
   it('StitchProjectWorkspace wraps its workspace and derives the scope from the stage', () => {
     const s = src('src/frontend/stitch/pages/StitchProjectWorkspace.jsx');
-    expect(s).toContain("import ProjectInteractionProvider from '../../history/ProjectInteractionProvider.jsx'");
-    expect(s).toContain('<ProjectInteractionProvider projectId={projectId} scope={historyScopeForStage(stage)} saveStatus={doc.saveStatus}>');
+    expect(s).toContain("import ProjectInteractionProvider, { HistorySaveStatusWatch } from '../../history/ProjectInteractionProvider.jsx'");
+    expect(s).toContain('<ProjectInteractionProvider projectId={projectId} scope={historyScopeForStage(stage)}>');
     expect(s).toContain('</ProjectInteractionProvider>');
     expect(s).toContain('<StitchHistoryControls />');
+  });
+
+  it('108 review — the provider is ABOVE the overview↔deep-tool branch, so the '
+    + 'overview round trip cannot destroy the stacks', () => {
+    const s = src('src/frontend/stitch/pages/StitchProjectWorkspace.jsx');
+    // ONE mount, and it is in the router component — not in DeepToolPage, where a
+    // stage outside SCOPE unmounted it (different element type at the same position).
+    expect((s.match(/<ProjectInteractionProvider/g) || []).length).toBe(1);
+    const router = s.slice(s.indexOf('export default function StitchProjectWorkspace'), s.indexOf('function DeepToolPage'));
+    expect(router).toContain('<ProjectInteractionProvider');
+    expect(router).toContain('{SCOPE.has(stage) ? <DeepToolPage stage={stage} /> : <StitchProjectOverview />}');
+    // Both branches are children of the SAME provider element (one JSX position).
+    expect(router.indexOf('<ProjectInteractionProvider')).toBeLessThan(router.indexOf('<StitchProjectOverview />'));
+    // …and the deep tool reports its autosave state INTO the provider instead.
+    expect(s).toContain('<HistorySaveStatusWatch saveStatus={doc.saveStatus} />');
+  });
+
+  it('108.md §16 — only a projectId change clears; a SCOPE change never does', () => {
+    // The other half of the same defect: with one provider spanning every stage, a
+    // stage switch must be a prop change and nothing more. The provider's ONLY
+    // clearing effect is keyed on projectId (`scope` is a lookup key, not storage).
+    const s = src('src/frontend/history/HistoryContext.jsx');
+    expect(s).toContain('}, [projectId, applyHist]);');
+    const clears = s.match(/applyHist\(clearAllPure\(histRef\.current\)\);/g) || [];
+    expect(clears.length).toBe(2);                       // the effect + clearAll()
+    // No effect anywhere keys a clear on the scope prop.
+    expect(s).not.toMatch(/\}, \[scope[,\]]/);
   });
 
   it('the standalone /sift-beta route mounts its own, and the EMBEDDED branch does not', () => {
@@ -201,6 +231,107 @@ describe('§23 — the migrated listeners', () => {
     // 108.md §15 — the blob-conflict handler, both channels.
     expect(s).toContain("window.addEventListener('metalab:autosave-conflict', onConflict)");
     expect(s).toContain("if (saveStatus === 'conflict') clearScopes(isBlobScope)");
+    // 108 review — …and the window channel is filtered by the event's project id.
+    expect(s).toContain('if (!conflictTargetsProject(e && e.detail, pid.current)) return;');
+  });
+});
+
+describe('108 review §15 — an autosave 409 clears only the AFFECTED project', () => {
+  it('conflictTargetsProject matches the event id against the mounted project', () => {
+    // serverStorage dispatches `{detail:{id,name}}` per 409'd project across a batch
+    // PUT of every writable project — a conflict on another project is not ours.
+    expect(conflictTargetsProject({ id: 'p1', name: 'A' }, 'p1')).toBe(true);
+    expect(conflictTargetsProject({ id: 'p2', name: 'B' }, 'p1')).toBe(false);
+    expect(conflictTargetsProject({ id: 7 }, '7')).toBe(true);       // coerced, both ways
+    expect(conflictTargetsProject({ id: '7' }, 7)).toBe(true);
+  });
+
+  it('falls back to clearing when either side is unidentified (never keep a lie)', () => {
+    for (const d of [null, undefined, {}, { name: 'no id' }, { id: null }]) {
+      expect(conflictTargetsProject(d, 'p1')).toBe(true);
+    }
+    expect(conflictTargetsProject({ id: 'p2' }, null)).toBe(true);
+    expect(conflictTargetsProject({ id: 'p2' }, '')).toBe(true);
+  });
+
+  it('the legacy monolith and the history watcher now filter the SAME event alike', () => {
+    // Workspace.jsx has always filtered its banner by `e.detail.id`; the history
+    // watcher dropped the detail entirely, which is the defect this pins shut.
+    const w = src('src/frontend/workspace/Workspace.jsx');
+    expect(w).toContain('const d=e&&e.detail;');
+    const p = src('src/frontend/history/ProjectInteractionProvider.jsx');
+    expect(p).not.toContain('const onConflict = () => clearScopes(isBlobScope);');
+  });
+});
+
+describe('108 review §22/§25 — the header pair tells the truth about WHY it is off', () => {
+  it('labels a blocked control with the page it belongs to, and a plain one plainly', () => {
+    expect(historyControlLabel('undo', false)).toBe('Undo');
+    expect(historyControlLabel('redo', false)).toBe('Redo');
+    expect(historyControlLabel('undo', true)).toBe('Undo — return to the page where the change was made');
+    expect(historyControlLabel('redo', true)).toBe('Redo — return to the page where the change was made');
+  });
+
+  it('renders the reason as the button title when the stack is non-empty but unrunnable', () => {
+    const html = r(h(HistoryControlsView, { canUndo: false, canRedo: false, undoBlocked: true }));
+    expect(html).toContain('title="Undo — return to the page where the change was made"');
+    expect(html).toContain('title="Redo"');            // nothing to redo → stays plain
+    expect(html).toContain('aria-label="Undo"');       // the accessible NAME is stable
+  });
+
+  it('a page with a real entry but no mounted executor renders the blocked reason', () => {
+    const seeded = recordAction(emptyHistory(), {
+      id: 'A', kind: 'screening.decision', scope: 'screening', projectId: 'p1',
+      label: 'Screening decision', undoOp: { decision: '' }, redoOp: null,
+    });
+    const html = r(h(ProjectInteractionProvider, { projectId: 'p1', scope: 'screening' },
+      h(HistoryProvider, { projectId: 'p1', scope: 'screening', initialHistory: seeded },
+        h(StitchHistoryControls))));
+    expect(html).toContain('title="Undo — return to the page where the change was made"');
+  });
+
+  it('the SEARCH stage: a registered scope delegate ENABLES the shared Undo button', () => {
+    const off = r(h(HistoryProvider, { projectId: 'p1', scope: 'search' }, h(StitchHistoryControls)));
+    expect((off.match(/disabled=""/g) || []).length).toBe(2);
+
+    const on = r(h(HistoryProvider, {
+      projectId: 'p1',
+      scope: 'search',
+      initialDelegates: { search: { canUndo: true, undo: () => {} } },
+    }, h(StitchHistoryControls)));
+    // Undo enabled, Redo still disabled — undoStack.js records no forward patch.
+    expect((on.match(/disabled=""/g) || []).length).toBe(1);
+    expect(on.slice(0, on.indexOf('stitch-history-redo'))).not.toContain('disabled=""');
+  });
+
+  it('SearchBuilderTab publishes its own availability into the shared provider', () => {
+    const s = src('src/features/searchBuilder/SearchBuilderTab.jsx');
+    expect(s).toContain('registerScopeDelegate(SCOPE_SEARCH,{');
+    expect(s).toContain('canUndo:searchUndoDelegate,');
+    expect(s).toContain('const searchUndoDelegate=embedded&&visible&&!readOnly&&undoAvailable;');
+    // The chord stays on the ENGINE binding (tier 4 beats the provider's tier 5), so
+    // Ctrl+Z never round-trips through the delegate.
+    expect(s).toContain("id:'searchBuilder.undo'");
+  });
+});
+
+describe('108 review §23 — Ctrl/Cmd+Enter placeholder stepping survives a focused chip', () => {
+  it('the chip handler claims the PLAIN chord only, so the router still sees Ctrl+Enter', () => {
+    const s = src('src/features/manuscript/richEditor/RichSectionEditor.jsx');
+    expect(s).toContain("if (e.key !== 'Enter' && e.key !== ' ' && e.key !== 'Spacebar') return false;");
+    expect(s).toContain('if (e.ctrlKey || e.metaKey || e.altKey) return false;');
+    // The guard must come BEFORE the preventDefault that sets defaultPrevented.
+    const fn = s.slice(s.indexOf('const onPlaceholderKeyDown'), s.indexOf('const onPlaceholderMouseDown'));
+    expect(fn.indexOf('e.ctrlKey || e.metaKey || e.altKey')).toBeLessThan(fn.indexOf('e.preventDefault()'));
+  });
+
+  it('…and the shortcut adapter is still the thing that would have been skipped', () => {
+    // The whole mechanism: preventDefault on the chip ⇒ shouldRouteEvent === false.
+    expect(shouldRouteEvent({ key: 'Enter', ctrlKey: true })).toBe(true);
+    expect(shouldRouteEvent({ key: 'Enter', ctrlKey: true, defaultPrevented: true })).toBe(false);
+    const s = src('src/features/manuscript/manuscriptPanels.jsx');
+    expect(s).toContain("id: 'manuscript.stepPlaceholder'");
+    expect(s).toContain("(e.ctrlKey || e.metaKey) && e.key === 'Enter'");
   });
 });
 

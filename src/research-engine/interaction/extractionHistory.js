@@ -258,7 +258,9 @@ export function buildExtractionEntry({
  *
  * coalesceOrRecord keeps the TOP entry's undoOp (the first prev — where Ctrl+Z must
  * land) and the NEW entry's redoOp (the last next), which is exactly the semantics
- * this predicate is designed for.
+ * this predicate is designed for. The PRECONDITIONS inside those ops point the other
+ * way and are crossed over by `mergeExtractionOps` below, which every coalescing call
+ * site must pass as coalesceOrRecord's `mergeOps` argument.
  */
 export function canMergeExtractionEdit(top, next, opts = {}) {
   if (!isObj(top) || !isObj(next)) return false;
@@ -286,6 +288,69 @@ export function canMergeExtractionEdit(top, next, opts = {}) {
   const na = Number(next.at);
   if (Number.isFinite(ta) && Number.isFinite(na) && na - ta > win) return false;
   return true;
+}
+
+/**
+ * mergeExtractionOps(top, next) → { undoOp, redoOp } — the `mergeOps` hook for
+ * historyStacks.coalesceOrRecord (108 review, [critical] "a coalesced typed edit can
+ * never be undone").
+ *
+ * coalesceOrRecord's DEFAULT merge keeps the top entry's whole `undoOp` and the new
+ * entry's whole `redoOp`. That is right for the PAYLOADS — undo must land on the FIRST
+ * prev, redo on the LAST next — and wrong for the PRECONDITIONS that ride inside the
+ * same ops, because they point the other way:
+ *
+ *   undoOp.expect = "the row still holds what we wrote"  → the LAST keystroke's value
+ *   redoOp.expect = "the row still holds what undo restored" → the FIRST keystroke's prev
+ *
+ * Keeping the defaults there pins `undoOp.expect` to the value after the FIRST
+ * keystroke, so `matchesExpected` (which both executors gate on) is false for every
+ * multi-keystroke edit and the entry can never run. The two halves are therefore
+ * CROSSED here: each op keeps its own payload and adopts the other end's expectation.
+ *
+ * Defensive by contract: an unusable half is returned as `undefined`, which makes
+ * coalesceOrRecord fall back to its default for that half rather than lose the entry.
+ */
+export function mergeExtractionOps(top, next) {
+  const t = isObj(top) ? top : {};
+  const n = isObj(next) ? next : {};
+  const topUndo = isObj(t.undoOp) ? t.undoOp : null;
+  const topRedo = isObj(t.redoOp) ? t.redoOp : null;
+  const nextUndo = isObj(n.undoOp) ? n.undoOp : null;
+  const nextRedo = isObj(n.redoOp) ? n.redoOp : null;
+  // `expect` is only carried when the other end actually has one — a missing
+  // expectation must not silently DISABLE the precondition (matchesExpected treats an
+  // absent expect as "always applicable").
+  const withExpect = (op, from) => (op && from && isObj(from.expect) ? { ...op, expect: from.expect } : (op || undefined));
+  return {
+    undoOp: withExpect(topUndo, nextUndo),    // oldest payload, newest precondition
+    redoOp: withExpect(nextRedo, topRedo),    // newest payload, oldest precondition
+  };
+}
+
+/**
+ * The refusal an executor reports when the target article has been completed or
+ * locked. 108 review, [major] "extraction undo writes to completed/locked articles":
+ * every forward write in ArticleWorkspace is gated on `editable = !readOnly &&
+ * !completed`, so the inverse must be gated the same way or an undo silently edits an
+ * article the UI has closed for editing (and the server's completion validation has
+ * already signed off on).
+ */
+export const EXTRACTION_LOCKED_REFUSAL = 'This article is completed/locked — reopen it to undo.';
+
+/**
+ * isExtractionRowLocked(study) → boolean
+ *
+ * The completed-or-locked half of `articleStatusOf` (extraction/engine/articleStatus.js
+ * — `meta.locked` → 'locked', `meta.completedAt` → 'complete', both ahead of every
+ * value-derived status), restated here as a dependency-free predicate so the classic
+ * surface can share it without pulling the validator in. The equivalence with
+ * `articleStatusOf` is pinned by a test, so the two cannot drift.
+ */
+export function isExtractionRowLocked(study) {
+  const meta = isObj(study) && isObj(study.extractionMeta) ? study.extractionMeta : null;
+  if (!meta) return false;
+  return !!meta.locked || !!meta.completedAt;
 }
 
 /**

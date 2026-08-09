@@ -7,7 +7,8 @@ import { describe, it, expect } from 'vitest';
 import {
   HISTORY_CAP, TAKE_REASON, emptyHistory, isValidEntry, recordAction,
   coalesceOrRecord, peekUndo, peekRedo, takeUndo, takeRedo, completeUndo,
-  completeRedo, restoreFailed, clearScope, clearScopes, clearAll, counts,
+  completeRedo, restoreFailed, dropPending, isPendingEntry, scopeOfUndoTop,
+  clearScope, clearScopes, clearAll, counts,
 } from '../../../src/research-engine/interaction/historyStacks.js';
 
 const entry = (over = {}) => ({
@@ -212,6 +213,92 @@ describe('108.md §13 — coalesceOrRecord', () => {
   });
 });
 
+describe('108 review — the mergeOps hook keeps a coalesced PRECONDITION honest', () => {
+  // The extraction shape: undoOp.expect asserts what the row holds NOW (so it must
+  // track the LAST keystroke) while redoOp.expect asserts what undo restored (so it
+  // must track the FIRST) — the mirror image of the fields halves.
+  const typed = (id, prev, next, at) => entry({
+    id,
+    kind: 'extraction.field',
+    scope: 'extraction',
+    entityKey: 's1:denominatorCustom',
+    label: 'Extraction change',
+    undoOp: { fields: { denominatorCustom: prev }, expect: { denominatorCustom: next } },
+    redoOp: { fields: { denominatorCustom: next }, expect: { denominatorCustom: prev } },
+    at,
+  });
+  const sameField = (a, b) => a.kind === b.kind && a.entityKey === b.entityKey;
+  // The EXACT hook the extraction surface supplies.
+  const mergeOps = (top, next) => ({
+    undoOp: { ...top.undoOp, expect: next.undoOp.expect },
+    redoOp: { ...next.redoOp, expect: top.redoOp.expect },
+  });
+
+  const typeWord = (word, hook) => {
+    let h = emptyHistory();
+    for (let i = 0; i < word.length; i += 1) {
+      h = coalesceOrRecord(h, typed(`k${i}`, word.slice(0, i), word.slice(0, i + 1), 1000 + i), sameField, hook);
+    }
+    return h;
+  };
+
+  it('produces {...top.undoOp, expect:last} / {...entry.redoOp, expect:first}', () => {
+    const h = typeWord('Pati', mergeOps);
+    expect(counts(h, 'extraction').undo).toBe(1);
+    const top = peekUndo(h, 'extraction');
+    expect(top.id).toBe('k0');                                   // the original id survives
+    expect(top.meta.coalesced).toBe(4);
+    // Payloads: unchanged semantics — undo lands on the FIRST prev, redo on the LAST next.
+    expect(top.undoOp.fields).toEqual({ denominatorCustom: '' });
+    expect(top.redoOp.fields).toEqual({ denominatorCustom: 'Pati' });
+    // Preconditions: the halves the hook exists for.
+    expect(top.undoOp.expect).toEqual({ denominatorCustom: 'Pati' });   // what the row holds now
+    expect(top.redoOp.expect).toEqual({ denominatorCustom: '' });       // what undo restored
+  });
+
+  it('WITHOUT the hook the merged expects are stale (the bug this pins shut)', () => {
+    const top = peekUndo(typeWord('Pati', undefined), 'extraction');
+    expect(top.undoOp.expect).toEqual({ denominatorCustom: 'P' });      // first keystroke
+    expect(top.redoOp.expect).toEqual({ denominatorCustom: 'Pat' });    // second-to-last
+  });
+
+  it('leaves every other merged field exactly as the default merge does', () => {
+    const withHook = peekUndo(typeWord('ab', mergeOps), 'extraction');
+    const plain = peekUndo(typeWord('ab', undefined), 'extraction');
+    expect(withHook.at).toBe(plain.at);
+    expect(withHook.label).toBe(plain.label);
+    expect(withHook.entityKey).toBe(plain.entityKey);
+    expect(withHook.meta).toEqual(plain.meta);
+  });
+
+  it('falls back to the default merge for a throwing / junk / partial hook', () => {
+    const plain = peekUndo(typeWord('ab', undefined), 'extraction');
+    for (const bad of [() => { throw new Error('boom'); }, () => null, () => 'nope', () => ({})]) {
+      expect(peekUndo(typeWord('ab', bad), 'extraction').undoOp).toEqual(plain.undoOp);
+      expect(peekUndo(typeWord('ab', bad), 'extraction').redoOp).toEqual(plain.redoOp);
+    }
+    // A hook that supplies only one half keeps the default for the other.
+    const halfway = peekUndo(typeWord('ab', (t, n) => ({ undoOp: { ...t.undoOp, expect: n.undoOp.expect } })), 'extraction');
+    expect(halfway.undoOp.expect).toEqual({ denominatorCustom: 'ab' });
+    expect(halfway.redoOp).toEqual(plain.redoOp);
+  });
+
+  it('an explicit redoOp:null makes the merged entry one-way; junk does not', () => {
+    const oneWay = peekUndo(typeWord('ab', (t, n) => ({ undoOp: n.undoOp, redoOp: null })), 'extraction');
+    expect(oneWay.redoOp).toBeNull();
+    const junkRedo = peekUndo(typeWord('ab', () => ({ redoOp: 'patch' })), 'extraction');
+    expect(junkRedo.redoOp).toEqual({ fields: { denominatorCustom: 'ab' }, expect: { denominatorCustom: 'a' } });
+  });
+
+  it('is never consulted when the matcher declines (no merge, no hook)', () => {
+    let calls = 0;
+    let h = coalesceOrRecord(emptyHistory(), typed('k0', '', 'a', 1), sameField, () => { calls += 1; return {}; });
+    h = coalesceOrRecord(h, typed('k1', '', 'z', 2), () => false, () => { calls += 1; return {}; });
+    expect(counts(h, 'extraction').undo).toBe(2);
+    expect(calls).toBe(0);
+  });
+});
+
 describe('take / complete / restoreFailed — the in-flight slot', () => {
   it('a taken entry sits on NEITHER stack until it completes', () => {
     const h0 = recordAction(emptyHistory(), entry({ id: 'A' }));
@@ -287,6 +374,114 @@ describe('take / complete / restoreFailed — the in-flight slot', () => {
       expect(counts(h, 'screening')).toMatchObject({ undo: 1, redo: 0 });
     }
     expect(peekUndo(h, 'screening').id).toBe('A');
+  });
+});
+
+describe('108 review — a scope cleared mid-flight is never resurrected', () => {
+  // takeUndo → (the executor is a real network round trip) → the project changes /
+  // an autosave 409 lands → the executor resolves. Completing must DROP the entry:
+  // pushing it would re-create a scope belonging to a project the user has left,
+  // and its redoOp would then run against the WRONG project's data.
+  const inFlight = () => {
+    const h0 = recordAction(emptyHistory(), entry({ id: 'A' }));
+    const t = takeUndo(h0, 'screening');
+    expect(t.entry.id).toBe('A');
+    return t;
+  };
+
+  it('completeUndo after clearScope leaves the scope absent', () => {
+    const t = inFlight();
+    const cleared = clearScope(t.hist, 'screening');
+    const after = completeUndo(cleared, 'screening', t.entry);
+    expect(after).toBe(cleared);                       // unchanged, same reference
+    expect('screening' in after).toBe(false);
+    expect(counts(after, 'screening')).toMatchObject({ undo: 0, redo: 0, canRedo: false });
+  });
+
+  it('completeRedo after clearAll leaves the history empty', () => {
+    let h = recordAction(emptyHistory(), entry({ id: 'A' }));
+    h = doUndo(h, 'screening');                        // A is now redoable
+    const t = takeRedo(h, 'screening');
+    const cleared = clearAll(t.hist);
+    const after = completeRedo(cleared, 'screening', t.entry);
+    expect(Object.keys(after)).toHaveLength(0);
+  });
+
+  it('restoreFailed after clearScopes drops the entry instead of re-creating the scope', () => {
+    const t = inFlight();
+    const cleared = clearScopes(t.hist, (s) => s === 'screening');
+    for (const dir of ['undo', 'redo']) {
+      const after = restoreFailed(cleared, 'screening', t.entry, dir);
+      expect(after).toBe(cleared);
+      expect('screening' in after).toBe(false);
+    }
+  });
+
+  it('an entry the pending slot does not own is dropped, other scopes untouched', () => {
+    let h = recordAction(emptyHistory(), entry({ id: 'A' }));
+    h = recordAction(h, entry({ id: 'X', scope: 'extraction', kind: 'extraction.field' }));
+    const t = takeUndo(h, 'screening');
+    // A stale completion for a DIFFERENT entry must not push anything.
+    const after = completeUndo(t.hist, 'screening', entry({ id: 'ghost' }));
+    expect(after).toBe(t.hist);
+    expect(counts(after, 'screening')).toMatchObject({ pending: true, undo: 0, redo: 0 });
+    expect(counts(after, 'extraction').undo).toBe(1);
+  });
+
+  it('the normal (un-cleared) completion path is unchanged', () => {
+    const t = inFlight();
+    expect(counts(completeUndo(t.hist, 'screening', t.entry), 'screening'))
+      .toMatchObject({ undo: 0, redo: 1, pending: false });
+    expect(counts(restoreFailed(t.hist, 'screening', t.entry, 'undo'), 'screening'))
+      .toMatchObject({ undo: 1, redo: 0, pending: false });
+  });
+});
+
+describe('108 review — dropPending / isPendingEntry / scopeOfUndoTop', () => {
+  it('dropPending frees the slot WITHOUT pushing the entry back', () => {
+    let h = recordAction(emptyHistory(), entry({ id: 'A' }));
+    h = recordAction(h, entry({ id: 'B' }));
+    const t = takeUndo(h, 'screening');                // B is in flight
+    const after = dropPending(t.hist, 'screening', t.entry);
+    expect(counts(after, 'screening')).toEqual({
+      undo: 1, redo: 0, pending: false, canUndo: true, canRedo: false,
+    });
+    // …and the older, still-valid entry underneath becomes reachable again.
+    expect(peekUndo(after, 'screening').id).toBe('A');
+  });
+
+  it('dropPending is a no-op (same reference) when the slot is empty or foreign', () => {
+    const h = recordAction(emptyHistory(), entry({ id: 'A' }));
+    expect(dropPending(h, 'screening', entry({ id: 'A' }))).toBe(h);
+    const t = takeUndo(h, 'screening');
+    expect(dropPending(t.hist, 'screening', entry({ id: 'ghost' }))).toBe(t.hist);
+    expect(dropPending(t.hist, 'nope', t.entry)).toBe(t.hist);
+  });
+
+  it('isPendingEntry answers the in-flight ownership question', () => {
+    const h = recordAction(emptyHistory(), entry({ id: 'A' }));
+    expect(isPendingEntry(h, 'screening', 'A')).toBe(false);
+    const t = takeUndo(h, 'screening');
+    expect(isPendingEntry(t.hist, 'screening', 'A')).toBe(true);
+    expect(isPendingEntry(t.hist, 'screening', 'B')).toBe(false);
+    expect(isPendingEntry(t.hist, 'screening', '')).toBe(false);
+    expect(isPendingEntry(t.hist, 'screening', null)).toBe(false);
+    expect(isPendingEntry(clearAll(t.hist), 'screening', 'A')).toBe(false);
+  });
+
+  it('scopeOfUndoTop finds the scope only while the entry is still on top', () => {
+    let h = recordAction(emptyHistory(), entry({ id: 'A' }));
+    h = recordAction(h, entry({ id: 'X', scope: 'extraction', kind: 'extraction.field' }));
+    expect(scopeOfUndoTop(h, 'A')).toBe('screening');
+    expect(scopeOfUndoTop(h, 'X')).toBe('extraction');
+    // A newer action in the same scope buries A → no longer directly undoable.
+    h = recordAction(h, entry({ id: 'B' }));
+    expect(scopeOfUndoTop(h, 'A')).toBe('');
+    expect(scopeOfUndoTop(h, 'nope')).toBe('');
+    expect(scopeOfUndoTop(h, '')).toBe('');
+    expect(scopeOfUndoTop(null, 'A')).toBe('');
+    // An entry that has been undone is on the REDO stack, not the undo stack.
+    expect(scopeOfUndoTop(doUndo(h, 'screening'), 'B')).toBe('');
   });
 });
 

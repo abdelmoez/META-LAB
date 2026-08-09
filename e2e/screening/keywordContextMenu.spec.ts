@@ -20,6 +20,8 @@ import { ScreeningPage } from '../page-objects/ScreeningPage';
 
 /** A phrase that is not in defaultKeywords.js, so adding it is a real add. */
 const TERM = 'drug-resistant epilepsy';
+/** A second one, for the two-notes-in-one-window case (108 review). */
+const TERM2 = 'vagus nerve stimulation';
 /** A shared DEFAULT keyword — 108.md §19 says these keep the browser's own menu. */
 const DEFAULT_TERM = 'randomized controlled trial';
 
@@ -162,6 +164,42 @@ test.describe('Screening — right-click a keyword (108.md §§18-21)', () => {
     // button went through the history rather than firing a second ad-hoc op.
     await sift.redo();
     await expect(sift.keywordRow(TERM)).toHaveCount(0);
+  });
+
+  test("an older note's Undo reverses ITS action or nothing — never the newer one", async ({ page, screeningProject }) => {
+    // 108 review, [major]. Undo-carrying notes QUEUE for their full 8 s, so the button on
+    // screen routinely belongs to an action that is no longer top-of-stack. It used to
+    // call a bare `history.undo()` and reverse whatever had landed since; it now targets
+    // its own entry and refuses when that entry has been buried.
+    await seedManualKeyword(page, screeningProject.siftId, TERM);
+    await seedManualKeyword(page, screeningProject.siftId, TERM2);
+    const sift = await openWorkbench(page, screeningProject.project.id);
+
+    await sift.openKeywordMenu(sift.keywordRow(TERM));
+    await sift.keywordMenuDelete.click();
+    await expect(sift.keywordRow(TERM)).toHaveCount(0);
+    const firstEntry = await sift.feedback.getAttribute('data-entry-id');
+    expect(firstEntry, 'the note must name the entry it describes').toBeTruthy();
+
+    // A second deletion inside the same window: its note queues BEHIND the visible one.
+    await sift.openKeywordMenu(sift.keywordRow(TERM2));
+    await sift.keywordMenuDelete.click();
+    await expect(sift.keywordRow(TERM2)).toHaveCount(0);
+    await expect(sift.feedback).toHaveAttribute('data-entry-id', firstEntry!);
+    await expect(sift.feedback).toHaveAttribute('data-queued', '2');
+
+    // The visible button belongs to the FIRST deletion, which is now buried.
+    await sift.snackbarUndo.click();
+    await expect(sift.keywordRow(TERM2)).toHaveCount(0);   // the newer deletion stands…
+    await expect(sift.keywordRow(TERM)).toHaveCount(0);    // …and so does the one it named
+    await expect.poll(async () => (await readKeywords(page, screeningProject.siftId)).include)
+      .not.toContain(TERM2);
+
+    // Nothing was taken off the stack, so Ctrl+Z still walks it newest-first.
+    await sift.undo();
+    await expect(sift.keywordRow(TERM2)).toBeVisible();
+    await sift.undo();
+    await expect(sift.keywordRow(TERM)).toBeVisible();
   });
 
   test('@smoke a generated (default) keyword gets NO PecanRev menu — §19', async ({ page, screeningProject }) => {

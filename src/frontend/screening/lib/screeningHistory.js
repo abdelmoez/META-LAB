@@ -37,7 +37,7 @@
  * first time.
  */
 import {
-  keywordInverseOps, materializeDefaults, normalizeKeywordMeta,
+  applyKeywordOp, keywordInverseOps, materializeDefaults, normalizeKeywordMeta,
 } from '../../../research-engine/screening/keywordModel.js';
 import { normalizeKeywordKey } from '../../../research-engine/screening/keywordNormalize.js';
 import {
@@ -68,6 +68,11 @@ export const DECISION_REFUSE = Object.freeze({
   MISSING: 'record-missing',      // the row is not in the loaded window any more
   STAGE: 'stage-moved',           // promoted (or demoted) since the action
   DECISION: 'decision-changed',   // a collaborator (or another tab) rewrote it
+});
+
+/** Why a keyword undo/redo was refused. Surfaced as `detail` on the outcome. */
+export const KEYWORD_REFUSE = Object.freeze({
+  TERM: 'keyword-changed',        // the term's list membership / verdict moved on
 });
 
 export const UNDECIDED = 'undecided';
@@ -199,6 +204,19 @@ export function decisionPrecondition(record, op) {
   if (expect.currentStage && record.currentStage && record.currentStage !== expect.currentStage) {
     return DECISION_REFUSE.STAGE;
   }
+  // 108 review [split-major] — THE RATCHET, CHECKED ABSOLUTELY.
+  //
+  // The rule above compares the live row against the stage the entry PINNED when it was
+  // recorded, so it can only fire once the promotion is visible locally. The promotion is
+  // normally caused by a TEAMMATE's decision (the server needs `distinctDecisions >=
+  // effectiveRequired`), and until that reviewer's `decision.saved` reload lands their
+  // cached row still reads 'title_abstract' — the pinned value — so the comparison passes.
+  // This second rule does not depend on the pin at all: writing a decision at a stage the
+  // record has already LEFT is never valid, and there is no demotion path to repair it
+  // with. It is cheap; it is not a cure for a stale cache (see docs §11).
+  if (op && op.stage && record.currentStage && record.currentStage !== op.stage) {
+    return DECISION_REFUSE.STAGE;
+  }
   const current = previousDecision(record, op && op.stage).decision;
   if ((expect.decision || UNDECIDED) !== current) return DECISION_REFUSE.DECISION;
   return null;
@@ -256,6 +274,71 @@ export function keywordStateBefore(raw, ops) {
   return materializeDefaults(base, KEYWORD_DEFAULTS, touchedLists(ops));
 }
 
+/**
+ * keywordTermState — presence + verdict for ONE normalized key on ONE list.
+ *
+ * This pair is the whole of what a keyword inverse depends on: `keywordInverseOps`
+ * derives the term's index, its origin and the seeded marker from the pre-image, but the
+ * op it produces is only meaningful while the term is still where the forward op left it,
+ * carrying the verdict the forward op left on it.
+ */
+function keywordTermState(state, list, key) {
+  const s = state && typeof state === 'object' ? state : {};
+  const terms = list === 'include' ? s.inclusion : s.exclusion;
+  const meta = normalizeKeywordMeta(s.meta);
+  const d = meta.decisions[list] ? meta.decisions[list][key] : undefined;
+  return {
+    present: (Array.isArray(terms) ? terms : []).some(t => normalizeKeywordKey(t) === key),
+    decision: typeof d === 'string' ? d : '',
+  };
+}
+
+/**
+ * keywordExpect — the precondition a keyword entry carries, per direction.
+ *
+ * 108 review, [major] "undo of a keyword add deletes a collaborator's rejected verdict":
+ * the inverse of an `add` is `clear-decision {removeTerm:true}`, and the reducer degrades
+ * `removeTerm` to false when the term is gone while STILL deleting whatever decision it
+ * finds — so a teammate's deliberate `rejected` verdict is wiped and the executor is told
+ * `changed:true`. The reducer cannot tell the difference (a dangling decision is a real
+ * thing to clear); the HISTORY can, because it knows what its own forward op produced.
+ *
+ * Only the lists the op TOUCHED are snapshotted, and the check re-materialises exactly
+ * those lists (`keywordExpectState`), so a side the server never materialised is never
+ * compared against a phantom default list.
+ */
+export function keywordExpect(state, ops, term) {
+  const key = normalizeKeywordKey(typeof term === 'string' ? term : '');
+  const terms = {};
+  for (const list of touchedLists(ops)) terms[list] = keywordTermState(state, list, key);
+  return { key, terms };
+}
+
+/** The CURRENT state to check an `expect` against — materialised over the same lists. */
+export function keywordExpectState(raw, expect) {
+  const lists = expect && expect.terms && typeof expect.terms === 'object'
+    ? Object.keys(expect.terms) : [];
+  return keywordStateBefore(raw, lists.map(list => ({ list })));
+}
+
+/**
+ * keywordPrecondition — may this keyword op still be applied?
+ * Returns null when it may, else a KEYWORD_REFUSE reason. An entry recorded before this
+ * shipped carries no `expect` and is allowed through (the pre-108-review behaviour).
+ */
+export function keywordPrecondition(state, expect) {
+  const terms = expect && expect.terms && typeof expect.terms === 'object' ? expect.terms : null;
+  if (!terms) return null;
+  const key = typeof expect.key === 'string' ? expect.key : '';
+  for (const list of Object.keys(terms)) {
+    const want = terms[list] || {};
+    const got = keywordTermState(state, list, key);
+    if (!!want.present !== got.present) return KEYWORD_REFUSE.TERM;
+    if ((want.decision || '') !== got.decision) return KEYWORD_REFUSE.TERM;
+  }
+  return null;
+}
+
 /** Which label a forward keyword op wears in the history feedback line. */
 export function keywordLabelFor(op) {
   const type = op && op.type;
@@ -273,18 +356,28 @@ export function keywordLabelFor(op) {
  *
  * The undo side is a BATCH (`{ ops }`) because a compound inverse must land as one
  * transaction and one CAS write; the redo side replays the single forward op.
+ *
+ * BOTH sides also carry an `expect` (see keywordExpect): undo expects the term to still
+ * look the way the forward op left it, redo expects it to look the way the undo restored
+ * it. Without them the reducer's own `changed` flag is the only gate, and it happily
+ * reports success for an inverse that destroyed a collaborator's verdict instead.
  */
 export function keywordEntry(stateBefore, forwardOp, label) {
   if (!forwardOp || typeof forwardOp !== 'object') return null;
   const inverse = keywordInverseOps(stateBefore, forwardOp);
   if (!inverse.length) return null;
   const key = normalizeKeywordKey(typeof forwardOp.term === 'string' ? forwardOp.term : '');
+  const forward = [forwardOp];
+  // The post-image the forward op produces. `keywordInverseOps` ran the same probe to
+  // decide there was anything to invert, so this cannot be a no-op result here.
+  const probe = applyKeywordOp(stateBefore, forwardOp);
+  const after = (probe && probe.ok && probe.changed) ? probe.state : stateBefore;
   return {
     kind: SCREENING_KIND.KEYWORD,
     label: label || keywordLabelFor(forwardOp),
     entityKey: `keyword:${forwardOp.list}:${key}`,
-    undoOp: { ops: inverse },
-    redoOp: { ops: [forwardOp] },
+    undoOp: { ops: inverse, expect: keywordExpect(after, forward, forwardOp.term) },
+    redoOp: { ops: forward, expect: keywordExpect(stateBefore, forward, forwardOp.term) },
     meta: { term: forwardOp.term, list: forwardOp.list, type: forwardOp.type },
   };
 }

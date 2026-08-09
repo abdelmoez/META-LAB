@@ -16,6 +16,27 @@
  *   • A note WITHOUT an undo action supersedes the visible note when that one is
  *     also plain. Consecutive confirmations read as one live status line.
  *
+ * WHAT AN UNDO-CARRYING NOTE MUST CARRY (108 review). Because undo-carrying notes
+ * QUEUE, the note on screen is frequently NOT the newest recorded action — so its
+ * button may not be pressed for several seconds, by which time the scope's stack
+ * has moved on. A bare `history.undo()` would then reverse a different action than
+ * the note names. The contract:
+ *
+ *     const stamped = history.record(entry);            // or history.coalesce(…)
+ *     feedback.notify({
+ *       message: 'Keyword deleted', scope: 'screening',
+ *       entryId: stamped.id,                            // ← the action this note names
+ *       undo: () => history.undoEntry(stamped.id),      // ← NOT history.undo()
+ *     });
+ *
+ * `undoEntry(id)` runs that entry only while it is still the top of its scope's undo
+ * stack; otherwise it resolves `{ ok:false, reason:'superseded' }` without touching
+ * the stack and the provider posts "That action can no longer be undone directly —
+ * press Ctrl+Z to step back." So the caller does not have to handle the failure: it
+ * just must not fall back to an untargeted undo. `entryId` itself is carried on the
+ * note (and rendered as `data-entry-id`) so the surface can be asserted and so a
+ * future dismiss-on-supersede can find the note.
+ *
  * WHY IT REUSES KeywordSnackbar. 108.md §17 says reuse the existing surface, and
  * screening/components/KeywordSnackbar.jsx already is one: fixed bottom-left,
  * role=status aria-live=polite, an optional Undo button, an 8 s auto-dismiss, and
@@ -53,8 +74,12 @@ function trimQueue(queue) {
 }
 
 /**
- * stampNote — fill id/scope/tone. Pure, and called OUTSIDE the state updater so
- * StrictMode's double-invoke cannot mint two ids for one note.
+ * stampNote — fill id/scope/tone/entryId. Pure, and called OUTSIDE the state
+ * updater so StrictMode's double-invoke cannot mint two ids for one note.
+ *
+ * `entryId` is the history entry this note describes (see the header contract) —
+ * '' for the provider's own undo/redo confirmations, which describe an operation
+ * that has already happened and offer no button.
  */
 export function stampNote(note, { idFn } = {}) {
   const n = note && typeof note === 'object' && !Array.isArray(note) ? note : null;
@@ -65,6 +90,7 @@ export function stampNote(note, { idFn } = {}) {
     ...n,
     id: typeof n.id === 'string' && n.id ? n.id : String(mkId() || ''),
     scope: n.scope == null ? '' : String(n.scope),
+    entryId: typeof n.entryId === 'string' ? n.entryId : '',
     message: typeof n.message === 'string' ? n.message : '',
     tone,
   };
@@ -117,7 +143,11 @@ export function UndoFeedbackProvider({ children, idFn, initialNotes }) {
   const headRef = useRef(null);
   headRef.current = head;
 
-  /** notify(note) → the note id. `note.undo` is an optional callback. */
+  /**
+   * notify(note) → the note id. `note.undo` is an optional callback; when present
+   * it MUST be entry-targeted (`() => history.undoEntry(note.entryId)`), never a
+   * bare `history.undo()` — see the header contract.
+   */
   const notify = useCallback((note) => {
     const stamped = stampNote(note, { idFn: live.current.idFn });
     if (!stamped || !stamped.message) return '';
@@ -164,7 +194,12 @@ export function UndoFeedbackProvider({ children, idFn, initialNotes }) {
     <UndoFeedbackContext.Provider value={value}>
       {children}
       {head && (
-        <div data-testid="history-feedback" data-scope={head.scope || ''} data-queued={queue.length}>
+        <div
+          data-testid="history-feedback"
+          data-scope={head.scope || ''}
+          data-entry-id={head.entryId || undefined}
+          data-queued={queue.length}
+        >
           <KeywordSnackbar
             key={head.id}
             message={head.message}

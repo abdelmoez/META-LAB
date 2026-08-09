@@ -26,9 +26,11 @@ import {
   EXTRACTION_HISTORY_KIND, EXTRACTION_ENTRY_LABEL, EXTRACTION_COALESCE_WINDOW_MS,
   EXTRACTION_SURFACE, normalizeFieldValue, sameFieldValue, matchesExpected,
   isTypingContinuation, entityKeyFor, buildExtractionEntry, canMergeExtractionEdit,
+  mergeExtractionOps, isExtractionRowLocked, EXTRACTION_LOCKED_REFUSAL,
   splitProvenanceEntries, removeProvenanceFields, applyExtractionWrite, applyRowPatch,
   findStudyRow,
 } from '../../../src/research-engine/interaction/extractionHistory.js';
+import { articleStatusOf } from '../../../src/research-engine/extraction/engine/articleStatus.js';
 import {
   emptyHistory, coalesceOrRecord, recordAction, peekUndo,
 } from '../../../src/research-engine/interaction/historyStacks.js';
@@ -222,8 +224,14 @@ describe('buildExtractionEntry — one entry per user intent (108.md §12)', () 
 /* ══════════════════ coalescing (108.md §13) ══════════════════ */
 
 describe('typed edits coalesce into ONE entry (108.md §13 — not 42 Ctrl+Z presses)', () => {
-  /** Type `text` one character at a time through the real record path. */
-  function type(startRow, field, text, { start = 1000, step = 100, discrete = false } = {}) {
+  /**
+   * Type `text` one character at a time through the real record path.
+   * `mergeOps` defaults to the hook the production call sites pass; pass `null` to
+   * reproduce the pre-fix default merge (see the [critical] pin below).
+   */
+  function type(startRow, field, text, {
+    start = 1000, step = 100, discrete = false, mergeOps = mergeExtractionOps,
+  } = {}) {
     let hist = emptyHistory();
     let row = startRow;
     let t = start;
@@ -235,7 +243,7 @@ describe('typed edits coalesce into ONE entry (108.md §13 — not 42 Ctrl+Z pre
         const stamped = stamp(entry, t);
         hist = discrete
           ? recordAction(hist, stamped)
-          : coalesceOrRecord(hist, stamped, canMergeExtractionEdit);
+          : coalesceOrRecord(hist, stamped, canMergeExtractionEdit, mergeOps || undefined);
       }
       row = { ...row, ...patch };
       t += step;
@@ -255,6 +263,83 @@ describe('typed edits coalesce into ONE entry (108.md §13 — not 42 Ctrl+Z pre
     expect(top.redoOp.fields.denominatorCustom).toBe(PHRASE);    // where Ctrl+Shift+Z lands
     expect(top.meta.coalesced).toBe(PHRASE.length);
     expect(top.id).toBe(peekUndo(hist, 'extraction').id);        // the merged entry keeps its id
+  });
+
+  it('WITHOUT mergeExtractionOps the merged precondition is stale — the bug the hook exists to fix', () => {
+    // 108 review, [critical]. coalesceOrRecord's DEFAULT merge keeps the top entry's
+    // whole undoOp, so `expect` still names the value after the FIRST keystroke while
+    // the row holds the last one. matchesExpected is what both executors gate on, so
+    // the entry could never run — and, being restored on every refusal, it buried every
+    // older entry behind it.
+    const { hist, row } = type(base, 'denominatorCustom', 'Pati', { mergeOps: null });
+    const top = peekUndo(hist, 'extraction');
+    expect(top.undoOp.expect).toEqual({ denominatorCustom: 'P' });
+    expect(row.denominatorCustom).toBe('Pati');
+    expect(matchesExpected(row, top.undoOp.expect)).toBe(false);
+  });
+
+  it('WITH the hook the merged entry round-trips undo→redo through the REAL appliers', () => {
+    // The end-to-end shape of the fix: type the whole phrase through the production
+    // record path AND the production write path (applyExtractionWrite — what
+    // PecanExtractionEngine.writeStudy calls), then replay the executor's own steps:
+    // findStudyRow → matchesExpected → write. Both directions must actually land.
+    let studies = [base];
+    let hist = emptyHistory();
+    let t = 1000;
+    for (let i = 1; i <= PHRASE.length; i++) {
+      const row = findStudyRow(studies, 's1');
+      const patch = { denominatorCustom: PHRASE.slice(0, i), needsReview: true };
+      const entry = buildExtractionEntry({ study: row, patch, primaryFields: ['denominatorCustom'] });
+      hist = coalesceOrRecord(hist, stamp(entry, t), canMergeExtractionEdit, mergeExtractionOps);
+      studies = write(studies, 's1', patch);
+      t += 100;
+    }
+    expect(hist.extraction.undo).toHaveLength(1);
+    const top = peekUndo(hist, 'extraction');
+
+    // the PAYLOAD halves are unchanged (first prev / last next)…
+    expect(top.undoOp.fields).toEqual({ denominatorCustom: '', needsReview: false });
+    expect(top.redoOp.fields).toEqual({ denominatorCustom: PHRASE, needsReview: true });
+    // …and the PRECONDITIONS are crossed over: undo expects the LAST value written,
+    // redo expects the value the undo restores.
+    expect(top.undoOp.expect).toEqual({ denominatorCustom: PHRASE });
+    expect(top.redoOp.expect).toEqual({ denominatorCustom: '' });
+
+    const liveRow = findStudyRow(studies, 's1');
+    expect(liveRow.denominatorCustom).toBe(PHRASE);
+    expect(matchesExpected(liveRow, top.undoOp.expect)).toBe(true);
+    const undone = write(studies, 's1', top.undoOp.fields, top.undoOp.provenance);
+    expect(findStudyRow(undone, 's1').denominatorCustom).toBe('');
+    expect(findStudyRow(undone, 's1').needsReview).toBe(false);
+
+    expect(matchesExpected(findStudyRow(undone, 's1'), top.redoOp.expect)).toBe(true);
+    const redone = write(undone, 's1', top.redoOp.fields, top.redoOp.provenance);
+    expect(findStudyRow(redone, 's1').denominatorCustom).toBe(PHRASE);
+    expect(findStudyRow(redone, 's1').needsReview).toBe(true);
+  });
+
+  it('the CLASSIC surface coalesces and round-trips the same way (applyRowPatch)', () => {
+    const row = { ...mkStudy(), id: 's1', author: '', notes: '' };
+    let studies = [row];
+    let hist = emptyHistory();
+    let t = 1000;
+    for (const v of ['S', 'Sm', 'Smi', 'Smit', 'Smith']) {
+      const cur = findStudyRow(studies, 's1');
+      const entry = buildExtractionEntry({
+        study: cur, patch: { author: v }, surface: EXTRACTION_SURFACE.CLASSIC,
+      });
+      hist = coalesceOrRecord(hist, stamp(entry, t), canMergeExtractionEdit, mergeExtractionOps);
+      studies = applyRowPatch(studies, 's1', { author: v }, { at: AT });
+      t += 60;
+    }
+    expect(hist.extraction.undo).toHaveLength(1);
+    const top = peekUndo(hist, 'extraction');
+    expect(matchesExpected(findStudyRow(studies, 's1'), top.undoOp.expect)).toBe(true);
+    const undone = applyRowPatch(studies, 's1', top.undoOp.fields, { at: AT });
+    expect(findStudyRow(undone, 's1').author).toBe('');
+    expect(matchesExpected(findStudyRow(undone, 's1'), top.redoOp.expect)).toBe(true);
+    const redone = applyRowPatch(undone, 's1', top.redoOp.fields, { at: AT });
+    expect(findStudyRow(redone, 's1').author).toBe('Smith');
   });
 
   it('backspacing stays in the same entry (it is still one edit)', () => {
@@ -366,6 +451,67 @@ describe('isTypingContinuation', () => {
     expect(isTypingContinuation(true, false)).toBe(false);
     expect(isTypingContinuation(['a'], ['a', 'b'])).toBe(false);
     expect(isTypingContinuation({}, { a: 1 })).toBe(false);
+  });
+});
+
+describe('mergeExtractionOps — the coalesceOrRecord `mergeOps` hook (108 review, [critical])', () => {
+  const top = {
+    undoOp: { studyId: 's1', fields: { f: 'a' }, expect: { f: 'b' } },
+    redoOp: { studyId: 's1', fields: { f: 'b' }, expect: { f: 'a' } },
+  };
+  const next = {
+    undoOp: { studyId: 's1', fields: { f: 'b' }, expect: { f: 'c' } },
+    redoOp: { studyId: 's1', fields: { f: 'c' }, expect: { f: 'b' } },
+  };
+
+  it('keeps each op\'s own payload and adopts the OTHER end\'s precondition', () => {
+    const m = mergeExtractionOps(top, next);
+    expect(m.undoOp).toEqual({ studyId: 's1', fields: { f: 'a' }, expect: { f: 'c' } });
+    expect(m.redoOp).toEqual({ studyId: 's1', fields: { f: 'c' }, expect: { f: 'a' } });
+  });
+
+  it('does not mutate either input', () => {
+    mergeExtractionOps(top, next);
+    expect(top.undoOp.expect).toEqual({ f: 'b' });
+    expect(next.redoOp.expect).toEqual({ f: 'b' });
+  });
+
+  it('never DISABLES a precondition: a missing expect leaves the op\'s own one in place', () => {
+    const bare = { undoOp: { fields: { f: 'b' } }, redoOp: { fields: { f: 'c' } } };
+    const m = mergeExtractionOps(top, bare);
+    expect(m.undoOp.expect).toEqual({ f: 'b' });      // top's own, not undefined
+    expect(m.redoOp).toEqual({ fields: { f: 'c' }, expect: { f: 'a' } });
+  });
+
+  it('returns undefined halves for junk so coalesceOrRecord falls back to its default', () => {
+    expect(mergeExtractionOps(null, null)).toEqual({ undoOp: undefined, redoOp: undefined });
+    expect(mergeExtractionOps(top, { undoOp: null, redoOp: null }).undoOp).toBe(top.undoOp);
+    expect(mergeExtractionOps(top, { undoOp: null, redoOp: null }).redoOp).toBeUndefined();
+  });
+});
+
+describe('isExtractionRowLocked — the completed/locked gate (108 review, [major])', () => {
+  it('is true for a locked or completed article and false otherwise', () => {
+    expect(isExtractionRowLocked(pickedRow())).toBe(false);
+    expect(isExtractionRowLocked(pickedRow({ extractionMeta: { locked: true } }))).toBe(true);
+    expect(isExtractionRowLocked(pickedRow({ extractionMeta: { completedAt: AT } }))).toBe(true);
+    expect(isExtractionRowLocked(pickedRow({ extractionMeta: { readyForReview: true } }))).toBe(false);
+    expect(isExtractionRowLocked(null)).toBe(false);
+    expect(isExtractionRowLocked({})).toBe(false);
+  });
+
+  it('agrees with articleStatusOf — the derivation ArticleWorkspace\'s `editable` uses', () => {
+    // ArticleWorkspace: completed = status === 'complete' || status === 'locked'.
+    // If articleStatusOf ever grows another completed-ish status, this fails loudly.
+    for (const meta of [undefined, {}, { locked: true }, { completedAt: AT }, { completedAt: AT, locked: true }, { readyForReview: true }]) {
+      const row = pickedRow(meta === undefined ? {} : { extractionMeta: meta });
+      const st = articleStatusOf(row);
+      expect(isExtractionRowLocked(row)).toBe(st === 'complete' || st === 'locked');
+    }
+  });
+
+  it('names the remedy instead of blaming a collaborator', () => {
+    expect(EXTRACTION_LOCKED_REFUSAL).toBe('This article is completed/locked — reopen it to undo.');
   });
 });
 
@@ -586,7 +732,9 @@ describe('ArticleWorkspace wiring (source pin)', () => {
 
   it('coalesces typed edits and never coalesces discrete ones', () => {
     expect(WORKSPACE).toContain('if (spec.discrete) recordHistory(entry);');
-    expect(WORKSPACE).toContain('else coalesceHistory(entry, canMergeExtractionEdit);');
+    // 108 review, [critical] — the mergeOps hook is part of the call, not optional.
+    expect(WORKSPACE).toContain('else coalesceHistory(entry, canMergeExtractionEdit, mergeExtractionOps);');
+    expect(WORKSPACE).toContain('canMergeExtractionEdit, mergeExtractionOps, EXTRACTION_SURFACE,');
   });
 
   it('every select is DISCRETE — including the combined denominator patch', () => {
@@ -630,6 +778,16 @@ describe('PecanExtractionEngine executor (source pin)', () => {
     expect(ENGINE).toContain('if (now.readOnly || !now.canEdit) return { ok: false, reason: \'refused\' };');
   });
 
+  it('refuses a COMPLETED/LOCKED article, per row (108 review, [major])', () => {
+    // The gate must read the TARGET ROW, not the open article and not the project-level
+    // canEdit: the entry may name a study the user has navigated away from.
+    expect(ENGINE).toContain('if (isExtractionRowLocked(row)) {');
+    expect(ENGINE).toContain("return { ok: false, reason: 'refused', detail: EXTRACTION_LOCKED_REFUSAL };");
+    expect(ENGINE).toContain('setBanner(EXTRACTION_LOCKED_REFUSAL);');
+    // …and it is checked BEFORE the write, ahead of the value precondition.
+    expect(ENGINE.indexOf('isExtractionRowLocked(row)')).toBeLessThan(ENGINE.indexOf('writeStudy(op.studyId, op.fields, op.provenance);'));
+  });
+
   it('seeds the write timestamp OUTSIDE the state updater (the repo purity rule)', () => {
     const body = ENGINE.slice(ENGINE.indexOf('const writeStudy = useCallback'), ENGINE.indexOf('/* ── 108.md §8'));
     expect(body).toContain('const at = new Date().toISOString();');
@@ -640,9 +798,14 @@ describe('PecanExtractionEngine executor (source pin)', () => {
 describe('classic extractionTabs wiring (source pin)', () => {
   it('records on the single write choke point and registers an executor', () => {
     expect(CLASSIC).toContain('const entry=buildExtractionEntry({study:row,patch:fields,surface:EXTRACTION_SURFACE.CLASSIC,discrete});');
-    expect(CLASSIC).toContain('if(entry){ if(discrete) recordHistory(entry); else coalesceHistory(entry,canMergeExtractionEdit); }');
+    expect(CLASSIC).toContain('if(entry){ if(discrete) recordHistory(entry); else coalesceHistory(entry,canMergeExtractionEdit,mergeExtractionOps); }');
     expect(CLASSIC).toContain('registerExecutor(EXTRACTION_HISTORY_KIND,async(op)=>{');
     expect(CLASSIC).toContain('if(!matchesExpected(row,op.expect)) return {ok:false,reason:"refused"};');
+  });
+
+  it('refuses a COMPLETED/LOCKED article too — both surfaces write the same blob', () => {
+    expect(CLASSIC).toContain('if(isExtractionRowLocked(row)) return {ok:false,reason:"refused",detail:EXTRACTION_LOCKED_REFUSAL};');
+    expect(CLASSIC.indexOf('isExtractionRowLocked(row)')).toBeLessThan(CLASSIC.indexOf('studies:applyRowPatch(p.studies,op.studyId,op.fields,{at})'));
   });
 
   it('the object form of updStudy marks a write DISCRETE', () => {

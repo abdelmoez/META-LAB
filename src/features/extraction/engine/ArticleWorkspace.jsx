@@ -52,7 +52,7 @@ import { studyDocApi } from '../unified/studyDocApi.js';
 // the server's ack are not user actions (§12). The hook is inert outside a provider.
 import { useProjectHistory } from '../../../frontend/history/HistoryContext.jsx';
 import {
-  buildExtractionEntry, canMergeExtractionEdit, EXTRACTION_SURFACE,
+  buildExtractionEntry, canMergeExtractionEdit, mergeExtractionOps, EXTRACTION_SURFACE,
 } from '../../../research-engine/interaction/extractionHistory.js';
 import ConverterPanel from './ConverterPanel.jsx';
 import CaseFieldsPanel from './CaseFieldsPanel.jsx';
@@ -277,8 +277,12 @@ export default function ArticleWorkspace({
       ...spec,
     });
     if (!entry) return;                       // no real change → no entry (§12)
+    // 108 review, [critical] — `mergeExtractionOps` is not optional. Without it the
+    // merged entry keeps the FIRST keystroke's undoOp.expect, so the executor's
+    // precondition can never hold again and every multi-keystroke edit becomes
+    // permanently un-undoable.
     if (spec.discrete) recordHistory(entry);
-    else coalesceHistory(entry, canMergeExtractionEdit);
+    else coalesceHistory(entry, canMergeExtractionEdit, mergeExtractionOps);
   }, [study, labelFor, recordHistory, coalesceHistory]);
 
   const locked = !!(article && article.status === 'locked');

@@ -29,30 +29,47 @@ import { useProjectHistory } from '../../history/HistoryContext.jsx';
 import { StitchIconButton } from '../primitives/core.jsx';
 import { StitchTooltip } from '../primitives/overlay.jsx';
 
+/**
+ * 108 review §22 — the two DISABLED states are not the same thing and must not read
+ * the same. "Nothing to undo" is silence; "there are entries, but the page that knows
+ * how to reverse them is not mounted" (every screening sub-tab except Title &
+ * Abstract, an extraction article the user navigated away from) needs to say so, or
+ * the control looks broken. Same copy as the provider's NO_EXECUTOR note.
+ */
+export function historyControlLabel(direction, blocked) {
+  const dir = direction === 'redo' ? 'Redo' : 'Undo';
+  if (!blocked) return dir;
+  return `${dir} — return to the page where the change was made`;
+}
+
 /** Pure presentation — no context, no state. */
-export function HistoryControlsView({ canUndo, canRedo, onUndo, onRedo }) {
+export function HistoryControlsView({ canUndo, canRedo, onUndo, onRedo, undoBlocked, redoBlocked }) {
   const btn = (on) => ({
     opacity: on ? 1 : 0.38,
     cursor: on ? 'pointer' : 'not-allowed',
   });
+  const undoLabel = historyControlLabel('undo', !canUndo && undoBlocked);
+  const redoLabel = historyControlLabel('redo', !canRedo && redoBlocked);
   return (
     <div data-testid="stitch-history-controls" style={{ display: 'inline-flex', alignItems: 'center', gap: 2 }}>
-      <StitchTooltip label="Undo" hint="Ctrl+Z">
+      <StitchTooltip label={undoLabel} hint="Ctrl+Z">
         <StitchIconButton
           icon="undo" label="Undo" size="sm"
           data-testid="stitch-history-undo"
           disabled={!canUndo}
           aria-disabled={!canUndo}
+          title={undoLabel}
           onClick={canUndo ? onUndo : undefined}
           style={btn(canUndo)}
         />
       </StitchTooltip>
-      <StitchTooltip label="Redo" hint="Ctrl+Shift+Z">
+      <StitchTooltip label={redoLabel} hint="Ctrl+Shift+Z">
         <StitchIconButton
           icon="redo" label="Redo" size="sm"
           data-testid="stitch-history-redo"
           disabled={!canRedo}
           aria-disabled={!canRedo}
+          title={redoLabel}
           onClick={canRedo ? onRedo : undefined}
           style={btn(canRedo)}
         />
@@ -61,12 +78,23 @@ export function HistoryControlsView({ canUndo, canRedo, onUndo, onRedo }) {
   );
 }
 
-/** The mounted control pair. Inert (and correctly disabled) outside a provider. */
+/**
+ * The mounted control pair. Inert (and correctly disabled) outside a provider.
+ *
+ * `canUndo`/`canRedo` come straight from the provider, which is where BOTH extra
+ * rules live: availability is executor-aware (a non-empty stack whose page is
+ * unmounted is not available), and a scope may delegate its undo to the page itself
+ * (the Search Builder's own stack — without that, this pair was permanently greyed
+ * out on the Search stage while Ctrl+Z undid perfectly well, §25).
+ */
 export function StitchHistoryControls() {
-  const { canUndo, canRedo, undo, redo } = useProjectHistory();
+  const {
+    canUndo, canRedo, undo, redo, undoBlocked, redoBlocked,
+  } = useProjectHistory();
   return (
     <HistoryControlsView
       canUndo={canUndo} canRedo={canRedo}
+      undoBlocked={undoBlocked} redoBlocked={redoBlocked}
       onUndo={() => { undo(); }} onRedo={() => { redo(); }}
     />
   );

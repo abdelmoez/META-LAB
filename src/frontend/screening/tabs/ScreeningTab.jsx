@@ -34,6 +34,7 @@ import {
   SCREENING_KIND,
   previousDecision, decisionEntry, decisionPrecondition, decisionAlreadyApplied,
   keywordStateBefore, keywordEntry, keywordLabelFor, keywordOpBody,
+  keywordExpectState, keywordPrecondition,
 } from '../lib/screeningHistory.js';
 import PdfViewer from '../components/PdfViewer.jsx';
 // 96.md 5D — collapsible article-level "Import provenance" (lazy; 404 soft-fail).
@@ -83,6 +84,11 @@ const LIMIT = 50;
 // SecondReviewTab. Resume progress is kept per user + project + STAGE, so the stage id
 // is explicit rather than implied.
 const SCREENING_STAGE = 'title_abstract';
+
+// 108 review — shown when a decision write fails. It has to say what SURVIVED, because
+// the whole point of the fix is that the reviewer's unsaved input is still there to retry
+// with (the banner above the buttons only reports the error itself).
+const DECISION_SAVE_FAILED_NOTE = 'Decision not saved — your reason, notes, rating and labels were kept';
 
 // Filter options for the left-column selector. `value` is sent as params.filter.
 // Per-member "new/viewed" wording (Task 7) so reviewers track their own progress.
@@ -158,10 +164,20 @@ export default function ScreeningTab({ pid, project, access, refreshProject, use
   /**
    * A note whose Undo button IS the history undo, so the button and Ctrl+Z are one
    * code path (108.md §20: "not a one-off keyword-specific undo hack").
+   *
+   * 108 review, [major] "the snackbar's Undo button undoes the top of the stack, not the
+   * action the note names": it is ENTRY-TARGETED. An undo-carrying note stays on screen
+   * for its full 8 s and later notes QUEUE BEHIND it (useUndoFeedback.feedbackPush), so
+   * the note the user finally clicks is routinely NOT the newest recorded action — a bare
+   * `undo()` would reverse whatever landed since. `undoEntry(id)` runs that one entry
+   * while it is still the top of its scope's stack and otherwise resolves 'superseded'
+   * WITHOUT touching the stack; the provider posts its own SUPERSEDED_MESSAGE for that,
+   * so there is deliberately no fallback here.
    */
-  const notifyUndoable = useCallback((message, tone = 'info') => fbRef.current.notify({
+  const notifyUndoable = useCallback((message, entryId, tone = 'info') => fbRef.current.notify({
     scope: histRef.current.scope || SCOPE_SCREENING,
-    message, tone, undo: () => { histRef.current.undo(); },
+    message, tone, entryId,
+    undo: () => { histRef.current.undoEntry(entryId); },
   }), []);
 
   // The RAW keyword columns behind a ref: an inverse must be derived from the state the
@@ -298,6 +314,27 @@ export default function ScreeningTab({ pid, project, access, refreshProject, use
   // realtime poke). Only the latest request may write `kwLocal`.
   const kwSeqRef = useRef(0);
 
+  /**
+   * 108 review, [minor ×2] "overlapping keyword ops derive inverses from a stale
+   * pre-image / a stale index" — THE SEND CHAIN.
+   *
+   * `kwSeqRef` only decides which RESPONSE may be adopted; it does nothing about two ops
+   * being issued from the same pre-image. That was cosmetic in 107 (a term restored one
+   * slot late) and is load-bearing now: the pre-image is what `keywordInverseOps` derives
+   * the whole inverse from, and it is also what the entry's `expect` is measured against.
+   * So keyword mutations are serialized per project the way decisions already are
+   * (`decChainRef`): the op AND its entry recording run to completion before the next
+   * task starts, and every task reads a pre-image that includes its predecessor's result.
+   */
+  const kwChainRef = useRef(null);
+  if (kwChainRef.current === null) kwChainRef.current = Promise.resolve();
+  const enqueueKeywordOp = useCallback((task) => {
+    const run = kwChainRef.current.then(task);
+    // The chain must survive a rejection, or one failed op would wedge every later one.
+    kwChainRef.current = run.then(() => {}, () => {});
+    return run;
+  }, []);
+
   // The low-level client. `body` is either a single op or a `{ ops }` batch (108.md
   // §20 — a compound inverse must be ONE transaction, so it is ONE round trip).
   const runKeywordOp = useCallback(async (body) => {
@@ -306,11 +343,17 @@ export default function ScreeningTab({ pid, project, access, refreshProject, use
     try {
       const r = await screeningApi.keywordOp(pid, body);
       if (seq !== kwSeqRef.current) return r;   // superseded — its state is stale
-      setKwLocal({
+      const adopted = {
         inclusionKeywords: r.inclusionKeywords,
         exclusionKeywords: r.exclusionKeywords,
         keywordMeta: r.keywordMeta,
-      });
+      };
+      // Assigned to the ref as well as to state: the NEXT task on the send chain is a
+      // microtask and runs long before React commits `kwLocal`, so the ref is the only
+      // thing that can hand it a pre-image containing this op's result. The render
+      // assignment below writes the identical values back on the next commit.
+      kwRawRef.current = adopted;
+      setKwLocal(adopted);
       return r;
     } catch (e) {
       const message = e.message || 'Could not update keywords';
@@ -334,32 +377,75 @@ export default function ScreeningTab({ pid, project, access, refreshProject, use
    *
    * Nothing is recorded until the server says `changed` (108.md §12: a duplicate add or
    * a remove of a term someone else already deleted is not a user action to undo).
+   *
+   * The whole body runs as ONE task on the send chain, so the pre-image, the write and
+   * the recording are atomic with respect to every other keyword mutation.
    */
-  const runKeywordOpTracked = useCallback(async (op, opts = {}) => {
+  const runKeywordOpTracked = useCallback((op, opts = {}) => enqueueKeywordOp(async () => {
     const before = keywordStateBefore(kwRawRef.current, [op]);
     const entry = keywordEntry(before, op, keywordLabelFor(op));
     const r = await runKeywordOp(op);
     if (!r || !r.changed) return r;
-    if (entry) histRef.current.record(entry);
+    // record() hands back the STAMPED entry — the note's Undo button needs its id.
+    const stamped = entry ? histRef.current.record(entry) : null;
     if (opts.note) {
-      if (entry) notifyUndoable(opts.note);
+      if (stamped) notifyUndoable(opts.note, stamped.id);
       else notify({ message: opts.note, tone: 'info' });
     }
     return r;
-  }, [runKeywordOp, notify, notifyUndoable]);
+  }), [enqueueKeywordOp, runKeywordOp, notify, notifyUndoable]);
 
-  // 108.md §8 — undo/redo of a keyword action replays real ops through the SAME
-  // endpoint as the forward action. `changed:false` means the world already looks like
-  // the op's result, i.e. a collaborator got there first: refuse rather than pretend.
-  const keywordExecutor = useCallback(async (op) => {
+  /**
+   * 108.md §8 — undo/redo of a keyword action replays real ops through the SAME endpoint
+   * as the forward action. `changed:false` means the world already looks like the op's
+   * result, i.e. a collaborator got there first: refuse rather than pretend.
+   *
+   * 108 review, [major] — `changed` is NOT a sufficient gate. The inverse of an `add` is
+   * `clear-decision {removeTerm:true}`; when a collaborator has since deleted the term
+   * with a verdict, the reducer degrades `removeTerm` to false, deletes their `rejected`
+   * decision anyway and reports `changed:true`. So the entry's own precondition is
+   * checked FIRST, against the current keyword columns (kwLocal/project via kwRawRef —
+   * never a refetch, which would race the send chain), and a mismatch refuses with the
+   * collaborator note instead of destroying their verdict.
+   *
+   * Runs on the same send chain as the forward ops so it can never read a pre-image from
+   * the middle of one.
+   */
+  const keywordExecutor = useCallback((op) => enqueueKeywordOp(async () => {
     const body = keywordOpBody(op && op.ops);
     if (!body) return { ok: false, reason: 'no-executor' };
+    const refuse = keywordPrecondition(keywordExpectState(kwRawRef.current, op.expect), op.expect);
+    if (refuse) return { ok: false, reason: 'refused', detail: refuse };
     const r = await runKeywordOp(body);
     if (!r) return { ok: false, reason: 'failed' };
     if (!r.changed) return { ok: false, reason: 'refused' };
     return true;
-  }, [runKeywordOp]);
+  }), [enqueueKeywordOp, runKeywordOp]);
 
+  /**
+   * 108 review, [major] "every screening sub-tab shares the 'screening' scope but unmounts
+   * the executors" — WHY BOTH REGISTRATIONS STAY HERE, in the sub-tab.
+   *
+   * The eight sub-tabs (Title & Abstract, Conflicts, Final Review, Duplicates, Settings …)
+   * are one `ActiveComp` at a time inside SiftProject, and they all share the constant
+   * `'screening'` scope, so leaving this tab unregisters both executors while the stack
+   * keeps its entries. Hoisting the registrations to SiftProject was evaluated and
+   * rejected: an executor is not a function that can be lifted on its own, it is the tail
+   * of this component's write path — `recordsRef` (the paginated, optimistically-patched
+   * record window), `postDecision`'s per-record chain + intent counters, the decision form
+   * state, `kwRawRef` and the keyword send chain all live here, and every one of them is
+   * fed by state SiftProject does not have. Publishing them upward through a ref would
+   * register an executor that exists but is null-backed the moment this tab unmounts —
+   * strictly worse than not registering, because the header control would light up and the
+   * chord would be claimed for something that cannot run.
+   *
+   * The provider's executor-aware availability is the answer instead: `canUndo/canRedo`
+   * are false when the top entry's kind has no registered executor, so on the other
+   * sub-tabs the header buttons are disabled and Ctrl+Z falls through to the browser
+   * rather than erroring; calling undo() anyway refuses with 'no-executor' WITHOUT taking
+   * the entry, so the stack is intact when the reviewer comes back here. Documented as a
+   * limitation in docs/interaction-history-108.md §11.
+   */
   useEffect(
     () => registerExecutor(SCREENING_KIND.KEYWORD, keywordExecutor),
     [registerExecutor, keywordExecutor],
@@ -1061,6 +1147,14 @@ export default function ScreeningTab({ pid, project, access, refreshProject, use
       // write lands a phantom full-text decision and leaves this one standing.
       stage: SCREENING_STAGE,
     };
+    // 108 review, [major] "a failed decision save silently destroys the reviewer's unsaved
+    // notes / rating / labels / exclusion reason". The failure path has to retract the
+    // optimistic ROW patch — that patch is a lie once the write is refused — but the FORM
+    // is not part of the lie: it holds text the reviewer typed and has never been able to
+    // get back any other way. Snapshotting it next to the row snapshot is what lets the
+    // catch restore BOTH without confusing the two. (`body` is exactly the form's content
+    // at issue time, `extra` overrides included, so this is "what the user meant to save".)
+    const formBefore = { ...body };
     // 108.md §8.2 + §26 — the optimistic row patch AND the history entry are applied at
     // ISSUE time, not on resolve. "Include → Ctrl+Z before the first save returns" is a
     // required scenario, and it needs both: an entry to undo, and a row whose state the
@@ -1118,7 +1212,12 @@ export default function ScreeningTab({ pid, project, access, refreshProject, use
       // state the undo wanted, which beats telling the user a collaborator moved it.
       if (decSeqRef.current.get(rid) === mySeq) {
         applyDecisionRow(rid, prev);
-        syncDecisionForm(rid, prev);
+        // …but the FORM goes back to what the reviewer had typed, NOT to `prev`. Syncing
+        // the server's last-persisted values here blanked the notes textarea, the rating,
+        // the labels and the exclusion reason on every failed save — unrecoverable work,
+        // and nothing left to press "Save" on. (108 review, [major].)
+        syncDecisionForm(rid, formBefore);
+        notify({ message: DECISION_SAVE_FAILED_NOTE, tone: 'error' });
       }
       return null;
     } finally {

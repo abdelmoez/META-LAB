@@ -7,6 +7,7 @@
  * renderToStaticMarkup.
  */
 import { describe, it, expect } from 'vitest';
+import { readFileSync } from 'node:fs';
 import { createElement as h } from 'react';
 import { renderToStaticMarkup as r } from 'react-dom/server';
 import {
@@ -82,9 +83,9 @@ describe('useUndoFeedback outside a provider', () => {
 });
 
 describe('stampNote', () => {
-  it('seeds a note id from the injected source and defaults scope/tone', () => {
+  it('seeds a note id from the injected source and defaults scope/tone/entryId', () => {
     const n = stampNote({ message: 'hi' }, { idFn: () => 'zz' });
-    expect(n).toEqual({ id: 'zz', scope: '', message: 'hi', tone: 'info' });
+    expect(n).toEqual({ id: 'zz', scope: '', entryId: '', message: 'hi', tone: 'info' });
   });
 
   it('keeps a supplied id, coerces scope, and only allows known tones', () => {
@@ -93,6 +94,41 @@ describe('stampNote', () => {
     expect(stampNote({ message: 'hi', tone: 'error' }, {}).tone).toBe('error');
     expect(stampNote({ message: 'hi', tone: 'chartreuse' }, {}).tone).toBe('info');
     expect(stampNote(null)).toBeNull();
+  });
+
+  it('carries the history entry id an Undo-carrying note must name (108 review)', () => {
+    expect(stampNote({ message: 'Keyword deleted', entryId: 'h_7', undo: noop }, {}).entryId).toBe('h_7');
+    // Anything that is not a string is NOT an entry id — a bad one would send
+    // undoEntry() hunting for a stack top that can never match.
+    expect(stampNote({ message: 'x', entryId: 7 }, {}).entryId).toBe('');
+    expect(stampNote({ message: 'x' }, {}).entryId).toBe('');
+  });
+});
+
+describe('108 review — an Undo-carrying note is bound to ONE history entry', () => {
+  it('exposes the entry id on the rendered surface, and omits it when there is none', () => {
+    const bound = r(h(UndoFeedbackProvider, {
+      initialNotes: [note({ entryId: 'h_7', undo: noop })],
+    }));
+    expect(bound).toContain('data-entry-id="h_7"');
+    expect(bound).toContain('data-testid="screening-keyword-undo"');
+    // The provider's own "…undone" confirmations describe a finished operation.
+    const plain = r(h(UndoFeedbackProvider, { initialNotes: [note({ message: 'Screening decision undone' })] }));
+    expect(plain).not.toContain('data-entry-id');
+  });
+
+  it('hands the entry id back through context so a call site can target it', () => {
+    let ctx = null;
+    function Capture() { ctx = useUndoFeedback(); return null; }
+    r(h(UndoFeedbackProvider, { initialNotes: [note({ entryId: 'h_7', undo: noop })] }, h(Capture)));
+    expect(ctx.current).toMatchObject({ entryId: 'h_7' });
+    expect(typeof ctx.current.undo).toBe('function');
+  });
+
+  it('documents the entry-targeted contract next to the queue rule that needs it', () => {
+    const s = readFileSync(new URL('../../../src/frontend/history/useUndoFeedback.jsx', import.meta.url), 'utf8');
+    expect(s).toContain('undo: () => history.undoEntry(stamped.id),      // ← NOT history.undo()');
+    expect(s).toContain("reason:'superseded'");
   });
 });
 

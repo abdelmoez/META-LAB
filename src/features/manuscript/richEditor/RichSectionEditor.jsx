@@ -237,6 +237,14 @@ export const RichSectionEditor = forwardRef(function RichSectionEditor({
    */
   const onPlaceholderKeyDown = (e) => {
     if (e.key !== 'Enter' && e.key !== ' ' && e.key !== 'Spacebar') return false;
+    // 108 review — the PLAIN chord only. Ctrl/Cmd+Enter is the manuscript's
+    // placeholder-STEPPING chord (102.md §26, now `manuscript.stepPlaceholder` in the
+    // 108.md §23 router). This handler runs on React's root bubble, i.e. before the
+    // window-bubble router, and its preventDefault() sets `defaultPrevented` — which
+    // the adapter treats as "a nearer handler already claimed this event"
+    // (ShortcutProvider.shouldRouteEvent). Cancelling a modified Enter here therefore
+    // killed stepping outright whenever a chip happened to hold focus.
+    if (e.ctrlKey || e.metaKey || e.altKey) return false;
     const chip = placeholderFrom(e.target);
     if (!chip) return false;
     e.preventDefault();

@@ -151,14 +151,33 @@ export function recordAction(hist, entry) {
 }
 
 /**
- * coalesceOrRecord(hist, entry, canMerge) → hist
+ * coalesceOrRecord(hist, entry, canMerge, mergeOps) → hist
  *
  * 108.md §13 "group related changes intelligently". When `canMerge(top, entry)`
  * accepts the scope's current top-of-undo, the two become ONE entry instead of
- * two: it keeps the top's `undoOp` (the FIRST prev value — where undo must land)
- * and takes the new entry's `redoOp` (the LAST next value — where redo must land),
- * so typing "Patients with confirmed molecular diagnosis" into a field is one
- * Ctrl+Z, not 42.
+ * two: by default it keeps the top's `undoOp` (the FIRST prev value — where undo
+ * must land) and takes the new entry's `redoOp` (the LAST next value — where redo
+ * must land), so typing "Patients with confirmed molecular diagnosis" into a field
+ * is one Ctrl+Z, not 42.
+ *
+ * THE `mergeOps` HOOK (108 review, [critical] "coalesced entries keep the FIRST
+ * keystroke's undoOp.expect"). The default halves are right for a PAYLOAD (the
+ * value to write) but wrong for a PRECONDITION carried inside the same op: an
+ * extraction `undoOp.expect` asserts what the row holds NOW, so it must track the
+ * LAST keystroke, while `redoOp.expect` asserts what undo restored, so it must
+ * track the FIRST. This module is domain-blind and may not know that, so the
+ * DOMAIN supplies the rule:
+ *
+ *     coalesceOrRecord(hist, entry, canMergeExtractionEdit, (top, entry) => ({
+ *       undoOp: { ...top.undoOp,   expect: entry.undoOp.expect },
+ *       redoOp: { ...entry.redoOp, expect: top.redoOp.expect },
+ *     }))
+ *
+ * Contract: `mergeOps(top, entry)` returns `{ undoOp, redoOp }`. A missing
+ * (`undefined`) or unusable half falls back to the default for that half;
+ * `redoOp: null` explicitly makes the merged entry one-way. A throwing or
+ * non-object return, or a result that would produce an invalid entry, degrades to
+ * the default merge — a bad hook must never lose the user's history.
  *
  * `label`, `at` and `meta` come from the newer entry (the merged action is
  * described by its latest state); `meta.coalesced` counts how many user events the
@@ -167,7 +186,7 @@ export function recordAction(hist, entry) {
  *
  * Merging is still a new user action: it clears the scope's redo branch (§11).
  */
-export function coalesceOrRecord(hist, entry, canMerge) {
+export function coalesceOrRecord(hist, entry, canMerge, mergeOps) {
   if (!isValidEntry(entry)) return asObj(hist) || {};
   if (typeof canMerge !== 'function') return recordAction(hist, entry);
   const s = scopeState(hist, entry.scope);
@@ -180,10 +199,13 @@ export function coalesceOrRecord(hist, entry, canMerge) {
     ok = false;                                        // a throwing matcher never merges
   }
   if (!ok) return recordAction(hist, entry);
-  const merged = {
+  const fallback = {
+    undoOp: top.undoOp,
+    redoOp: entry.redoOp != null ? entry.redoOp : null,
+  };
+  const rest = {
     ...top,
     label: entry.label != null ? entry.label : top.label,
-    redoOp: entry.redoOp != null ? entry.redoOp : null,
     at: entry.at !== undefined ? entry.at : top.at,
     meta: {
       ...(asObj(top.meta) || {}),
@@ -191,6 +213,23 @@ export function coalesceOrRecord(hist, entry, canMerge) {
       coalesced: (Number(asObj(top.meta)?.coalesced) || 1) + 1,
     },
   };
+  let merged = { ...rest, ...fallback };
+  if (typeof mergeOps === 'function') {
+    let custom = null;
+    try {
+      custom = asObj(mergeOps(top, entry));
+    } catch {
+      custom = null;                                   // a throwing hook merges the default way
+    }
+    if (custom) {
+      const undoOp = asObj(custom.undoOp) || fallback.undoOp;
+      let redoOp = fallback.redoOp;
+      if (custom.redoOp === null) redoOp = null;
+      else if (custom.redoOp !== undefined) redoOp = asObj(custom.redoOp) || fallback.redoOp;
+      const candidate = { ...rest, undoOp, redoOp };
+      if (isValidEntry(candidate)) merged = candidate;
+    }
+  }
   return withScope(hist, entry.scope, {
     undo: [...s.undo.slice(0, -1), merged],
     redo: [],
@@ -247,13 +286,53 @@ export function takeRedo(hist, scope) {
   return take(hist, scope, 'redo');
 }
 
+/**
+ * ownsPending — does this scope's in-flight slot still hold exactly this entry?
+ *
+ * 108 review, [major] "completeUndo/restoreFailed re-create a cleared scope": the
+ * answer is NO when clearScope / clearScopes / clearAll ran between takeUndo and
+ * the executor resolving. `scopeState` hands back the frozen EMPTY_SCOPE for a
+ * scope key that no longer exists, so completing blindly would make `withScope`
+ * RE-CREATE the scope — resurrecting an entry that belongs to a project the user
+ * has already left. The entry is dropped instead: the clear invalidated it.
+ */
+function ownsPending(s, entry) {
+  return !!(s.pending && entry && s.pending.entry && s.pending.entry.id === entry.id);
+}
+
+/**
+ * isPendingEntry(hist, scope, entryId) → boolean
+ * The same question, asked from outside (HistoryProvider.run re-checks it after
+ * its await so a cleared scope also suppresses the feedback note).
+ */
+export function isPendingEntry(hist, scope, entryId) {
+  if (typeof entryId !== 'string' || !entryId) return false;
+  const s = scopeState(hist, scope);
+  return !!(s.pending && s.pending.entry && s.pending.entry.id === entryId);
+}
+
+/**
+ * scopeOfUndoTop(hist, entryId) → scope | ''
+ * Which scope has this entry as the top of its undo stack? '' when the entry is
+ * gone or has been buried by a newer action — the test behind the entry-targeted
+ * `undoEntry(id)` (a snackbar's Undo button must reverse the action its text
+ * names, or nothing at all).
+ */
+export function scopeOfUndoTop(hist, entryId) {
+  const h = asObj(hist);
+  if (!h || typeof entryId !== 'string' || !entryId) return '';
+  for (const scope of Object.keys(h)) {
+    const top = peekUndo(h, scope);
+    if (top && top.id === entryId) return scope;
+  }
+  return '';
+}
+
 function complete(hist, scope, entry, direction) {
   const s = scopeState(hist, scope);
-  const cleared = s.pending && entry && s.pending.entry && s.pending.entry.id === entry.id
-    ? null
-    : s.pending;
+  if (!ownsPending(s, entry)) return asObj(hist) || {};   // cleared mid-flight → drop
   if (!isValidEntry(entry)) {
-    return withScope(hist, scope, { undo: s.undo, redo: s.redo, pending: cleared });
+    return withScope(hist, scope, { undo: s.undo, redo: s.redo, pending: null });
   }
   if (direction === 'undo') {
     // 108.md §11: an undone action becomes redoable — unless it is one-way
@@ -261,13 +340,13 @@ function complete(hist, scope, entry, direction) {
     return withScope(hist, scope, {
       undo: s.undo,
       redo: entry.redoOp ? pushCapped(s.redo, entry) : s.redo,
-      pending: cleared,
+      pending: null,
     });
   }
   return withScope(hist, scope, {
     undo: pushCapped(s.undo, entry),
     redo: s.redo,
-    pending: cleared,
+    pending: null,
   });
 }
 
@@ -290,19 +369,40 @@ export function completeRedo(hist, scope, entry) {
  * back on the stack it came from, at the top, so the user can retry; it is NEVER
  * silently dropped, because a dropped entry looks to the user like a successful
  * undo that did nothing.
+ *
+ * TWO EXCEPTIONS, both of which would otherwise JAM the scope forever:
+ *   • the scope was cleared while the operation was in flight (see ownsPending) —
+ *     the entry is dropped, never resurrected into a scope the clear invalidated;
+ *   • an entry whose precondition can never become true again would sit at the top
+ *     refusing every Ctrl+Z and burying every older valid entry behind it. That one
+ *     is a POLICY, not a stack rule, so it lives in HistoryProvider (which counts
+ *     consecutive refusals) and lands here as `dropPending`.
  */
 export function restoreFailed(hist, scope, entry, direction) {
   const s = scopeState(hist, scope);
-  const cleared = s.pending && entry && s.pending.entry && s.pending.entry.id === entry.id
-    ? null
-    : s.pending;
+  if (!ownsPending(s, entry)) return asObj(hist) || {};   // cleared mid-flight → drop
   if (!isValidEntry(entry)) {
-    return withScope(hist, scope, { undo: s.undo, redo: s.redo, pending: cleared });
+    return withScope(hist, scope, { undo: s.undo, redo: s.redo, pending: null });
   }
   if (direction === 'undo') {
-    return withScope(hist, scope, { undo: pushCapped(s.undo, entry), redo: s.redo, pending: cleared });
+    return withScope(hist, scope, { undo: pushCapped(s.undo, entry), redo: s.redo, pending: null });
   }
-  return withScope(hist, scope, { undo: s.undo, redo: pushCapped(s.redo, entry), pending: cleared });
+  return withScope(hist, scope, { undo: s.undo, redo: pushCapped(s.redo, entry), pending: null });
+}
+
+/**
+ * dropPending(hist, scope, entry) → hist
+ *
+ * Free the in-flight slot WITHOUT putting the entry back on either stack. The
+ * escape hatch for a poisoned entry (the provider's refusal-drop policy): the
+ * entry is abandoned so the older, still-valid entries underneath become reachable
+ * again. The user is told — a silent drop is the failure mode restoreFailed exists
+ * to avoid. A no-op (same history) when this scope is not holding this entry.
+ */
+export function dropPending(hist, scope, entry) {
+  const s = scopeState(hist, scope);
+  if (!ownsPending(s, entry)) return asObj(hist) || {};
+  return withScope(hist, scope, { undo: s.undo, redo: s.redo, pending: null });
 }
 
 /** Drop one scope's stacks (project page reset, engine-local conflict). */

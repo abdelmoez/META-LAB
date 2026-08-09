@@ -124,6 +124,15 @@ server jobs (duplicate detection), promotion side effects (below), apply-to-all 
   the seeded marker, and list position via the new `index` op flag). Redo replays the original
   forward op. Batch ops (`{ops:[...]}`, all-or-nothing, one CAS write) make compound inverses
   one round trip. The 107 "seeded residue on move-undo" limitation is now fixed.
+  Client mutations are **serialized on one per-project promise chain** (`kwChainRef`, the
+  `decChainRef` pattern): the pre-image, the write and the entry recording are one task, so two
+  overlapping ops can no longer derive their inverses — or their `index` — from the same stale
+  snapshot. The adopted response is written to `kwRawRef` synchronously (a chained microtask
+  runs long before React commits `kwLocal`). Each entry also carries an **`expect`** — the
+  term's presence + verdict on the lists the op touched, post-image for undo and pre-image for
+  redo — checked by the executor before it replays anything: the reducer's `changed` flag alone
+  reports success for an `add`-inverse (`clear-decision {removeTerm:true}`) that has silently
+  deleted a collaborator's `rejected` verdict instead.
 - **Screening decisions** (the one surface with a genuinely reachable stale-response race):
   per-record POST serialization (`decChainRef`) + per-record response sequencing
   (`decSeqRef`); entries recorded at issue time so "mutation → Ctrl+Z before the first save
@@ -131,7 +140,11 @@ server jobs (duplicate detection), promotion side effects (below), apply-to-all 
   explicit `stage` (the upsert otherwise resolves to `currentStage`, which after promotion is
   full_text — the stage trap). **Promotion is a one-way ratchet** (no demotion path exists
   server-side): a promoting decision's entry is disarmed by its precondition and the user is
-  told the decision can no longer be undone.
+  told the decision can no longer be undone. `decisionPrecondition` enforces the ratchet
+  twice — against the stage the entry PINNED, and absolutely (a decision may never be written
+  at a stage the live row has already left, whatever the entry pinned). A **failed** decision
+  save rolls the optimistic ROW back but keeps the reviewer's unsaved form input (reason,
+  notes, rating, labels) so "Save" can be retried.
 - **Blob surfaces**: both autosave stacks are replace-not-queue with serialized sends, so an
   undo's write supersedes any pending save and an older PUT cannot resurrect the undone value;
   a 409 surfaces as a conflict that clears the blob scopes (never a silent pop).
@@ -237,9 +250,84 @@ undoChords 22, shellHistory 19, extractionHistory 59), `analysisHistoryEntries` 
 7. Undoing the first decision on a record also clears notes/rating saved in that same write
    (the faithful pre-action state — no row existed).
 8. Focus Mode hides the header Undo/Redo buttons (keyboard unaffected).
+9. **Screening undo/redo only works on the Title & Abstract sub-tab.** All eight sub-tabs share
+   the constant `'screening'` scope, but the decision/keyword executors are the tail of
+   ScreeningTab's write path (`recordsRef`, `postDecision`'s per-record chains, the decision
+   form, `kwRawRef` + the keyword send chain) and unmount with it. Hoisting them to SiftProject
+   was evaluated and rejected — publishing them upward through a ref would register an executor
+   that is null-backed the moment the tab unmounts, which is worse than none. It degrades
+   gracefully instead: executor-aware `canUndo/canRedo` disable the header buttons and let
+   Ctrl+Z fall through on the other sub-tabs, undo() called anyway refuses with 'no-executor'
+   WITHOUT taking the entry ("Return to the page where the change was made to undo it"), and
+   the stack is intact on return.
+10. **A teammate's quorum promotion is only seen once the reviewer's `decision.saved` reload
+    lands.** `decisionPrecondition`'s absolute stage rule reads the cached row, so during that
+    window an undo can still write a title/abstract decision into a record the server has
+    already moved to Final Review. Closing it needs an authoritative guard — a server-side 409
+    on a `stage:'title_abstract'` write when `rec.currentStage === 'full_text'`, or a
+    single-record re-read in the executor (rejected here: it adds a round trip to every undo
+    and races the §26 in-flight-save scenario).
+11. **An older snackbar note's Undo button refuses rather than acting.** Undo-carrying notes
+    queue for 8 s, so the visible note is often no longer top-of-stack; its button now targets
+    its own entry and resolves 'superseded' ("press Ctrl+Z to step back") instead of reversing
+    a different action. The note is not auto-dismissed when it is superseded.
+12. **A keyword undo refused by its `expect` shows the generic "changed by a collaborator"
+    line**, not a term-specific one — `historyNote` renders from the outcome's `reason`, and
+    the refusal `detail` (`keyword-changed` / `stage-moved`) is not surfaced in the message.
+    Two consecutive refusals then drop the entry with the clearer "no longer matches the
+    current data" note (`REFUSAL_DROP_LIMIT`).
 9. Classic-select coalescing can merge a clear-then-pick into one entry (coarser step, never a
    wrong value); engine selects are discrete.
 10. Manuscript persistence failures surface asynchronously; a manuscript undo relies on the
     blob-conflict scope-clear as its safety net.
 11. History is session-memory: gone after refresh/sign-out/project switch (state persists).
 12. Edge/Safari chrome-level shortcut behaviour requires manual verification (documented in §1).
+
+## 12. Round 2 — adversarial review and fixes (r2)
+
+A 6-dimension adversarial review (every finding double-verified; 18 confirmed, 1 split, 0
+refuted) drove a fix round on top of v4.13.0:
+
+- **[critical] Coalesced typed edits could never be undone**: the merged entry kept the FIRST
+  keystroke's `undoOp.expect`, so the executor precondition always failed — and the refused
+  entry jammed the extraction scope. Fixed with a `mergeOps` hook on `coalesceOrRecord`
+  (extraction crosses the preconditions: undo expects the last keystroke's state, redo expects
+  the first prev), round-trip-tested through the real record and apply paths, plus a
+  drop-after-2-consecutive-refusals provider policy so a stale entry can never permanently
+  bury the stack.
+- **[major ×4] The snackbar Undo button undid the top of the stack, not the noted action**:
+  `record`/`coalesce` now return the stamped entry and notes carry `entryId`; the button calls
+  `undoEntry(entryId)`, which succeeds only while that entry is still top of its scope —
+  otherwise "That action can no longer be undone directly — press Ctrl+Z to step back."
+- **Executor-aware availability**: `canUndo/canRedo` are false when the top entry's kind has no
+  registered executor (executors unmount with their pages); chords/buttons refuse gracefully
+  ("Return to the page where the change was made to undo it"). Hoisting screening executors
+  above the sub-tab switch was evaluated and rejected (they are the tail of ScreeningTab's
+  write path) — graceful degradation is the shipped answer.
+- **Cleared-scope safety**: completing/restoring an in-flight undo can no longer resurrect a
+  scope cleared by project switch/conflict.
+- **Stacks survive stage switches**: the provider is hoisted above the stage/overview branch,
+  so visiting the project overview no longer destroys page histories; the legacy shell's
+  conflict clearing now filters by project id.
+- **Scope delegates**: the search scope registers a real delegate (`canUndo`/`undo`), so the
+  header Undo button works on the Search stage; delegates never jump ahead of real entries.
+- **Screening**: a failed decision save restores the reviewer's unsaved
+  reason/notes/rating/labels; keyword mutations are serialized per project so overlapping ops
+  cannot derive inverses from stale pre-images; a keyword-add undo now refuses (instead of
+  silently deleting) when a collaborator's verdict landed in between; decision writes carry an
+  absolute stage-ratchet precondition.
+- **Extraction**: undo/redo refuse on completed/locked articles with an accurate message
+  (refusal notes now render executor-provided `detail` verbatim); the Ctrl/Cmd+Enter
+  placeholder step works again over manual-input chips (root cause was the chip editor's
+  unconditional preventDefault, fixed at the source).
+
+r2 verification: `npm run test:ci` **453 files / 7703 tests passed** (7612 at r1);
+`npm run lint` + `npm run build` clean; interaction suite 295 tests; targeted e2e
+(extraction-undo, keywordContextMenu, screeningUndoRedo, searchWorkspace) — see commit message
+for the run result.
+
+r2 additions to known limitations: a twice-refused entry is dropped from history (so a locked
+article's undo disappears after two attempts); a superseded Undo note is not auto-dismissed;
+keyword/stage refusal toasts use the generic collaborator message unless the executor supplies
+`detail`; the promotion-staleness guard reads the cached row (a server-side check would need a
+409 or a per-undo re-read).

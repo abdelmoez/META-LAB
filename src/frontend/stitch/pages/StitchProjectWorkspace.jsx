@@ -55,7 +55,7 @@ import {
 } from '../primitives';
 // 108.md §§2-3, §22 — the project-wide interaction layer (history stacks + the ONE
 // shortcut router + the undo-feedback snackbar) and its header Undo/Redo pair.
-import ProjectInteractionProvider from '../../history/ProjectInteractionProvider.jsx';
+import ProjectInteractionProvider, { HistorySaveStatusWatch } from '../../history/ProjectInteractionProvider.jsx';
 import StitchHistoryControls from '../shell/StitchHistoryControls.jsx';
 import { historyScopeForStage } from '../../../research-engine/interaction/projectScopes.js';
 // 77.md §9 — isolate a stage/engine crash to its own card instead of blanking the whole
@@ -121,10 +121,21 @@ function nextStageId(stage) {
 }
 
 export default function StitchProjectWorkspace() {
+  const { projectId } = useParams();
   const { search } = useLocation();
   const stage = activeProjectStage(search);
-  if (!SCOPE.has(stage)) return <StitchProjectOverview />;
-  return <DeepToolPage stage={stage} />;
+  // 108.md §3/§16 + 108 review — the interaction layer is mounted HERE, above the
+  // overview↔deep-tool branch, and not inside DeepToolPage. Those are two different
+  // component types at the same position, so rendering the provider inside the deep
+  // tool made a trip through the project overview (the breadcrumb project name, the
+  // rail's Overview item — both plain `/app/project/:id` links) unmount the provider
+  // and destroy EVERY scope's stack. §16 only allows a projectId change to do that.
+  // `scope` still follows the stage; the overview's own scope is 'overview'.
+  return (
+    <ProjectInteractionProvider projectId={projectId} scope={historyScopeForStage(stage)}>
+      {SCOPE.has(stage) ? <DeepToolPage stage={stage} /> : <StitchProjectOverview />}
+    </ProjectInteractionProvider>
+  );
 }
 
 function DeepToolPage({ stage }) {
@@ -465,12 +476,12 @@ function DeepToolPage({ stage }) {
       : { background: S.card, borderRadius: 16, border: `1px solid ${salpha(S.outlineVariant, 0.45)}`, padding: 20, minHeight: 400 };
 
   return (
-    // 108.md §3 — ONE history object for the project; `scope` only selects which
-    // stage's stack Ctrl+Z reads, so leaving Extraction for Screening and coming
-    // back continues where it left off (§16). `saveStatus === 'conflict'` means the
-    // blob CAS refused our write and this page reloaded the server's copy, which
-    // invalidates every blob-backed stack (§15).
-    <ProjectInteractionProvider projectId={projectId} scope={historyScopeForStage(stage)} saveStatus={doc.saveStatus}>
+    <>
+    {/* 108.md §15 — `saveStatus === 'conflict'` means the blob CAS refused our write
+        and this page reloaded the server's copy, which invalidates every blob-backed
+        stack. The provider itself lives above this page (see StitchProjectWorkspace),
+        so the doc's status is reported INTO it from here rather than passed up. */}
+    <HistorySaveStatusWatch saveStatus={doc.saveStatus} />
     <StitchAppShell {...shellProps} breadcrumb={breadcrumb}
       docTitle={[STAGE_LABEL[stage] || 'Workspace', project.name]}>
       <div style={wrapperStyle}>
@@ -498,6 +509,6 @@ function DeepToolPage({ stage }) {
           precision={(project && project.analysisPrecision) || undefined} />
       </Suspense>
     </StitchAppShell>
-    </ProjectInteractionProvider>
+    </>
   );
 }

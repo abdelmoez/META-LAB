@@ -129,12 +129,64 @@ test.describe('Extraction Undo / Redo', () => {
       await expect(custom).toHaveValue(PHRASE);
 
       // ONE undo clears the whole phrase…
+      // 108 review, [critical]: this is the assertion the stale coalesced `expect` used
+      // to fail — the executor refused, the field kept the phrase and the toast read
+      // "changed by a collaborator". The value check IS the regression test; the
+      // absence of that toast is what proves the executor ran rather than refused.
       await undo(page);
       await expect(page.getByTestId('pex-field-denominatorCustom')).toHaveValue('');
+      await expect(page.getByText('Could not undo — changed by a collaborator')).toHaveCount(0);
+
+      // …and the symmetric half: redo re-applies the WHOLE phrase, which only works if
+      // the merged redoOp.expect is the value the undo just restored ('').
+      await redo(page);
+      await expect(page.getByTestId('pex-field-denominatorCustom')).toHaveValue(PHRASE);
+      await undo(page);
+      await expect(page.getByTestId('pex-field-denominatorCustom')).toHaveValue('');
+
       // …and the NEXT undo reverses the select, not another character.
       await undo(page);
       await expect(denom).toHaveValue('');
       await expect(page.getByTestId('pex-field-denominatorCustom')).toHaveCount(0);
+    } finally {
+      await deleteProject(request, project.id);
+    }
+  });
+
+  test('undo REFUSES on a completed/locked article (108 review, [major])', async ({ page, request, setFlags }) => {
+    // Every forward write is gated on `editable = !readOnly && !completed`; the undo
+    // executor used to bypass it and silently rewrite a completed article's values,
+    // provenance and needsReview — past the server's completion validation.
+    await setFlags({ extractionEngine: true });
+    const project = await createProject(request, `E2E Undo Locked ${Date.now()}`);
+    try {
+      // Same seed shape as pecan-engine.spec.ts's completion test — an OR row whose
+      // 2×2 cells pass the server's blocking checks, so "Complete" really completes.
+      const res = await request.post(`/api/projects/${project.id}/studies`, {
+        data: { author: 'Locked', year: '2021', outcome: 'All-cause mortality', esType: 'OR', a: '12', b: '88', c: '20', d: '80' },
+      });
+      expect(res.ok(), `seed study failed: ${res.status()}`).toBeTruthy();
+
+      await openArticle(page, project.id, 'Locked');
+      const cellA = page.getByTestId('pex-field-a');
+      await cellA.fill('');
+      await cellA.type('15');
+      await expect(cellA).toHaveValue('15');
+
+      // Mark complete — the toolbar flips to Reopen and every input goes disabled.
+      await page.getByRole('button', { name: /Complete/i }).first().click();
+      await expect(page.getByRole('button', { name: /Reopen/i })).toBeVisible({ timeout: 15000 });
+      await expect(page.getByTestId('pex-field-a')).toBeDisabled();
+
+      // The entry is still on the extraction stack, so Ctrl+Z reaches the executor.
+      await undo(page);
+      await expect(page.getByText('This article is completed/locked — reopen it to undo.')).toBeVisible({ timeout: 5000 });
+      await expect(page.getByTestId('pex-field-a')).toHaveValue('15');
+
+      // …and it stays refused across a reload (the server holds the completed value).
+      await page.reload();
+      await page.getByText('Locked').first().click();
+      await expect(page.getByTestId('pex-field-a')).toHaveValue('15', { timeout: 15000 });
     } finally {
       await deleteProject(request, project.id);
     }

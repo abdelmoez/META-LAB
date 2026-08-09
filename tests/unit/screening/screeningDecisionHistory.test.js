@@ -163,6 +163,29 @@ describe('decisionPrecondition — §§14-15 collaboration safety', () => {
     expect(decisionAlreadyApplied(null, entry.undoOp)).toBe(false);
   });
 
+  it('refuses a title/abstract write on a record that has LEFT that stage (the ratchet)', () => {
+    // 108 review, [split-major] — the rule above only fires when the promotion was
+    // already visible when the entry was recorded. This one is absolute: whatever the
+    // entry pinned, a decision may not be written at a stage the record has left, and
+    // there is no demotion path to repair it with.
+    const pinnedFT = decisionEntry({
+      recordId: 'r1', stage: TA, prev, next, currentStage: FT,
+    });
+    expect(pinnedFT.undoOp.expect.currentStage).toBe(FT);
+    const promoted = rec({ currentStage: FT, myDecision: { decision: 'include', stage: TA } });
+    // The pinned-stage rule passes (FT === FT) — the ratchet is what refuses.
+    expect(decisionPrecondition(promoted, pinnedFT.undoOp)).toBe(DECISION_REFUSE.STAGE);
+  });
+
+  it('leaves a same-stage op alone (a full-text op on a full-text record is fine)', () => {
+    const ft = decisionEntry({
+      recordId: 'r1', stage: FT, prev: decisionPayload({}, FT),
+      next: decisionPayload({ decision: 'include' }, FT), currentStage: FT,
+    });
+    const live = rec({ currentStage: FT, myDecision: { decision: 'include', stage: FT } });
+    expect(decisionPrecondition(live, ft.undoOp)).toBeNull();
+  });
+
   it('allows the redo once the undo has landed', () => {
     const live = rec({ myDecision: { decision: UNDECIDED, stage: TA } });
     expect(decisionPrecondition(live, entry.redoOp)).toBeNull();
@@ -232,6 +255,35 @@ describe('ScreeningTab decision wiring (source pin)', () => {
   it('rolls the optimistic patch back when the write fails, but only if it still owns the record', () => {
     expect(SRC).toMatch(/const\s+mySeq\s*=\s*decSeqRef\.current\.get\(rid\);/);
     expect(SRC).toMatch(/if\s*\(decSeqRef\.current\.get\(rid\)\s*===\s*mySeq\)\s*\{\s*\n\s*applyDecisionRow\(rid,\s*prev\);/);
+  });
+
+  it('KEEPS the reviewer’s unsaved form input when the write fails (108 review)', () => {
+    // The row rollback is right (the optimistic patch was a lie); re-syncing the FORM to
+    // the server's last-persisted values blanked the notes textarea, the rating, the
+    // labels and the exclusion reason on every failed save.
+    expect(SRC).toMatch(/const\s+formBefore\s*=\s*\{\s*\.\.\.body\s*\};/);
+    expect(SRC).toMatch(/syncDecisionForm\(rid,\s*formBefore\);/);
+    // The failure path must never put `prev` back into the form.
+    expect(SRC).not.toMatch(/syncDecisionForm\(rid,\s*prev\)/);
+    // The snapshot is taken before the optimistic patch, i.e. from what the user meant.
+    const snapAt = SRC.indexOf('const formBefore = { ...body };');
+    const patchAt = SRC.indexOf('applyDecisionRow(rid, body);');
+    const restoreAt = SRC.indexOf('syncDecisionForm(rid, formBefore);');
+    expect(snapAt).toBeGreaterThan(-1);
+    expect(patchAt).toBeGreaterThan(snapAt);
+    expect(restoreAt).toBeGreaterThan(patchAt);
+    // …and the reviewer is told the input survived.
+    expect(SRC).toContain('Decision not saved — your reason, notes, rating and labels were kept');
+  });
+
+  it('documents why the screening executors cannot be hoisted above the sub-tab switch', () => {
+    // 108 review, [major] — the alternative (a null-backed executor published upward)
+    // would re-enable the header button for something that cannot run. The provider's
+    // executor-aware availability is the shipped answer; this pin keeps the reasoning
+    // attached to the registration it explains.
+    expect(SRC).toMatch(/registerExecutor\(SCREENING_KIND\.KEYWORD,\s*keywordExecutor\)/);
+    expect(SRC).toMatch(/registerExecutor\(SCREENING_KIND\.DECISION,\s*decisionExecutor\)/);
+    expect(SRC).toContain('WHY BOTH REGISTRATIONS STAY HERE');
   });
 
   it('makes a promotion-causing decision INERT rather than undoable (one-way ratchet)', () => {

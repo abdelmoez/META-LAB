@@ -24,6 +24,7 @@ import {
 } from '../../../src/research-engine/screening/keywordModel.js';
 import {
   keywordEntry, keywordStateBefore, keywordOpBody, SCREENING_KIND,
+  keywordExpect, keywordExpectState, keywordPrecondition, KEYWORD_REFUSE,
 } from '../../../src/frontend/screening/lib/screeningHistory.js';
 
 const SRC = readFileSync(
@@ -50,7 +51,7 @@ describe('ScreeningTab never hand-rolls a keyword inverse (source pin)', () => {
     // 108.md §12 — a duplicate add or a no-op remove is not a user action to undo.
     expect(SRC).toMatch(/if\s*\(!r\s*\|\|\s*!r\.changed\)\s*return\s+r;/);
     const callAt = SRC.indexOf('const r = await runKeywordOp(op);');
-    const recordAt = SRC.indexOf('if (entry) histRef.current.record(entry);');
+    const recordAt = SRC.indexOf('const stamped = entry ? histRef.current.record(entry) : null;');
     const beforeAt = SRC.indexOf('const before = keywordStateBefore(kwRawRef.current, [op]);');
     expect(beforeAt).toBeGreaterThan(-1);
     expect(callAt).toBeGreaterThan(beforeAt);    // pre-image captured before the write
@@ -60,6 +61,17 @@ describe('ScreeningTab never hand-rolls a keyword inverse (source pin)', () => {
   it('registers a keyword executor that refuses an unchanged replay', () => {
     expect(SRC).toMatch(/registerExecutor\(SCREENING_KIND\.KEYWORD,\s*keywordExecutor\)/);
     expect(SRC).toMatch(/if\s*\(!r\.changed\)\s*return\s*\{\s*ok:\s*false,\s*reason:\s*'refused'\s*\}/);
+  });
+
+  it('checks the entry precondition BEFORE it replays the inverse (108 review)', () => {
+    // The reducer's `changed` flag cannot tell "my inverse applied" from "my inverse
+    // destroyed a collaborator's verdict", so the entry's own expect is the first gate.
+    expect(SRC).toMatch(/keywordPrecondition\(keywordExpectState\(kwRawRef\.current,\s*op\.expect\),\s*op\.expect\)/);
+    const preAt = SRC.indexOf('const refuse = keywordPrecondition(');
+    const callAt = SRC.indexOf('const r = await runKeywordOp(body);');
+    expect(preAt).toBeGreaterThan(-1);
+    expect(callAt).toBeGreaterThan(preAt);
+    expect(SRC).toMatch(/if\s*\(refuse\)\s*return\s*\{\s*ok:\s*false,\s*reason:\s*'refused',\s*detail:\s*refuse\s*\};/);
   });
 });
 
@@ -82,8 +94,16 @@ describe('keyword feedback goes through the shared queued surface (§17)', () =>
     expect(SRC).not.toMatch(/<KeywordSnackbar/);
   });
 
-  it('wires the snackbar Undo button to the history undo, not to a second op', () => {
-    expect(SRC).toMatch(/undo:\s*\(\)\s*=>\s*\{\s*histRef\.current\.undo\(\);\s*\}/);
+  it('wires the snackbar Undo button to the ENTRY the note names (108 review)', () => {
+    // A bare `histRef.current.undo()` was the regression: undo-carrying notes QUEUE for
+    // 8 s, so the visible note is routinely older than the top of the stack and its
+    // button reversed a different action than its text described.
+    expect(SRC).toMatch(/undo:\s*\(\)\s*=>\s*\{\s*histRef\.current\.undoEntry\(entryId\);\s*\}/);
+    expect(SRC).not.toMatch(/undo:\s*\(\)\s*=>\s*\{\s*histRef\.current\.undo\(\);\s*\}/);
+    // The note carries the id too, so the surface can be asserted / dismissed by entry.
+    expect(SRC).toMatch(/message,\s*tone,\s*entryId,/);
+    // …and the id is the STAMPED one that record() handed back, not a locally minted one.
+    expect(SRC).toMatch(/notifyUndoable\(opts\.note,\s*stamped\.id\)/);
   });
 });
 
@@ -114,7 +134,7 @@ describe('the recorded entry really is an inverse (executed, not asserted)', () 
     expect(undone.meta).not.toHaveProperty('seeded');
 
     // …and redo REPLAYS the forward op rather than inverting the inverse.
-    expect(entry.redoOp).toEqual({ ops: [op] });
+    expect(entry.redoOp.ops).toEqual([op]);
     expect(runOps(undone, entry.redoOp)).toEqual(added);
   });
 
@@ -227,8 +247,131 @@ describe('runKeywordOp response sequencing (source pin)', () => {
     expect(SRC).toMatch(/if\s*\(seq\s*!==\s*kwSeqRef\.current\)\s*return\s+r;/);
     // The stale-response guard must sit BEFORE the state adoption, not after it.
     const guardAt = SRC.indexOf('if (seq !== kwSeqRef.current) return r;');
-    const adoptAt = SRC.indexOf('setKwLocal({');
+    const adoptAt = SRC.indexOf('setKwLocal(adopted);');
     expect(guardAt).toBeGreaterThan(-1);
     expect(adoptAt).toBeGreaterThan(guardAt);
+  });
+});
+
+/* ── the send chain: overlapping ops must not share a pre-image ────────────────── */
+
+describe('keyword ops are serialized per project (source pin, 108 review)', () => {
+  it('runs every tracked op — and every executor replay — on ONE promise chain', () => {
+    expect(SRC).toMatch(/const\s+kwChainRef\s*=\s*useRef\(null\)/);
+    expect(SRC).toMatch(/const\s+run\s*=\s*kwChainRef\.current\.then\(task\);/);
+    // The chain must survive a rejection or one failed op wedges every later one
+    // (the decChainRef rule, applied to keywords).
+    expect(SRC).toMatch(/kwChainRef\.current\s*=\s*run\.then\(\(\)\s*=>\s*\{\},\s*\(\)\s*=>\s*\{\}\);/);
+    expect(SRC).toMatch(/const\s+runKeywordOpTracked\s*=\s*useCallback\(\(op,\s*opts\s*=\s*\{\}\)\s*=>\s*enqueueKeywordOp\(/);
+    expect(SRC).toMatch(/const\s+keywordExecutor\s*=\s*useCallback\(\(op\)\s*=>\s*enqueueKeywordOp\(/);
+  });
+
+  it('adopts the response into kwRawRef SYNCHRONOUSLY, before React commits kwLocal', () => {
+    // The next task on the chain is a microtask; without this the serialization would
+    // still hand it the pre-first-op columns and the inverse index would be wrong.
+    expect(SRC).toMatch(/kwRawRef\.current\s*=\s*adopted;\s*\n\s*setKwLocal\(adopted\);/);
+  });
+});
+
+/* ── entry preconditions: an inverse must not eat a collaborator's verdict ─────── */
+
+describe('keyword entries carry a precondition (108 review, [major])', () => {
+  const raw = (state) => ({
+    inclusionKeywords: JSON.stringify(state.inclusion),
+    exclusionKeywords: JSON.stringify(state.exclusion),
+    keywordMeta: JSON.stringify(state.meta),
+  });
+
+  it('snapshots the post-forward image for undo and the pre-forward image for redo', () => {
+    const before = { inclusion: ['RCT'], exclusion: [], meta: emptyKeywordMeta() };
+    const op = { type: 'add', list: 'include', term: 'sepsis' };
+    const entry = keywordEntry(before, op);
+    expect(entry.undoOp.expect).toEqual({
+      key: 'sepsis', terms: { include: { present: true, decision: '' } },
+    });
+    expect(entry.redoOp.expect).toEqual({
+      key: 'sepsis', terms: { include: { present: false, decision: '' } },
+    });
+  });
+
+  it('only snapshots the lists the op TOUCHED (a move covers both)', () => {
+    const before = { inclusion: [], exclusion: ['epilepsy'], meta: emptyKeywordMeta() };
+    const entry = keywordEntry(before, { type: 'move', list: 'exclude', term: 'epilepsy', toList: 'include' });
+    expect(Object.keys(entry.undoOp.expect.terms).sort()).toEqual(['exclude', 'include']);
+    expect(entry.undoOp.expect.terms).toEqual({
+      exclude: { present: false, decision: 'rejected' },
+      include: { present: true, decision: '' },
+    });
+  });
+
+  it('REFUSES the undo of an add once a collaborator has rejected the term', () => {
+    // The reported defect, executed: leader A adds `sepsis`; leader B deletes it (a
+    // verdict remove, writing decisions.include.sepsis = 'rejected'); A presses Ctrl+Z.
+    // The inverse is `clear-decision {removeTerm:true}`, whose removeTerm degrades to
+    // false while it still deletes B's verdict and reports changed:true.
+    const before = { inclusion: ['cohort'], exclusion: [], meta: emptyKeywordMeta() };
+    const add = { type: 'add', list: 'include', term: 'sepsis' };
+    const entry = keywordEntry(before, add);
+
+    const added = applyKeywordOp(before, add).state;
+    const afterCollaborator = applyKeywordOp(added, { type: 'remove', list: 'include', term: 'sepsis' }).state;
+    expect(afterCollaborator.meta.decisions.include).toEqual({ sepsis: 'rejected' });
+
+    // The reducer alone would happily run the inverse and report success…
+    const wouldApply = applyKeywordOp(afterCollaborator, entry.undoOp.ops[0]);
+    expect(wouldApply.changed).toBe(true);
+    expect(wouldApply.state.meta.decisions.include).toEqual({});   // B's verdict destroyed
+
+    // …so the entry's precondition is what stops it.
+    const live = keywordExpectState(raw(afterCollaborator), entry.undoOp.expect);
+    expect(keywordPrecondition(live, entry.undoOp.expect)).toBe(KEYWORD_REFUSE.TERM);
+  });
+
+  it('ALLOWS the undo while nothing has moved, and the redo after it lands', () => {
+    const before = { inclusion: ['cohort'], exclusion: [], meta: emptyKeywordMeta() };
+    const add = { type: 'add', list: 'include', term: 'sepsis' };
+    const entry = keywordEntry(before, add);
+
+    const added = applyKeywordOp(before, add).state;
+    const liveAfterAdd = keywordExpectState(raw(added), entry.undoOp.expect);
+    expect(keywordPrecondition(liveAfterAdd, entry.undoOp.expect)).toBeNull();
+
+    const undone = applyKeywordOp(added, entry.undoOp.ops[0]).state;
+    const liveAfterUndo = keywordExpectState(raw(undone), entry.redoOp.expect);
+    expect(keywordPrecondition(liveAfterUndo, entry.redoOp.expect)).toBeNull();
+  });
+
+  it('refuses a delete-undo once the term is back on the list (someone re-added it)', () => {
+    const before = {
+      inclusion: ['RCT', 'sepsis'], exclusion: [],
+      meta: { version: 1, decisions: { include: {}, exclude: {} }, origins: { include: { sepsis: 'manual' }, exclude: {} } },
+    };
+    const op = { type: 'remove', list: 'include', term: 'sepsis' };
+    const entry = keywordEntry(before, op);
+    expect(entry.undoOp.expect.terms.include).toEqual({ present: false, decision: 'rejected' });
+
+    const deleted = applyKeywordOp(before, op).state;
+    const reAdded = applyKeywordOp(deleted, { type: 'add', list: 'include', term: 'sepsis' }).state;
+    const live = keywordExpectState(raw(reAdded), entry.undoOp.expect);
+    expect(keywordPrecondition(live, entry.undoOp.expect)).toBe(KEYWORD_REFUSE.TERM);
+  });
+
+  it('materialises the SAME lists the expect covers, so a default term is not a phantom', () => {
+    // Stored inclusion is `[]` but the endpoint (and the workbench) show the shared
+    // defaults; an expect measured against the raw `[]` would refuse every default-term
+    // undo. keywordExpectState re-materialises exactly the touched list.
+    const stored = { inclusionKeywords: '[]', exclusionKeywords: '[]', keywordMeta: '{}' };
+    const state = keywordStateBefore(stored, [{ type: 'remove', list: 'include', term: 'RCT' }]);
+    const entry = keywordEntry(state, { type: 'remove', list: 'include', term: 'RCT' });
+    const live = keywordExpectState(stored, entry.redoOp.expect);
+    // The untouched side stays raw — the expect never looked at it.
+    expect(live.exclusion).toEqual([]);
+    expect(keywordPrecondition(live, entry.redoOp.expect)).toBeNull();
+  });
+
+  it('is inert for an entry that carries no expect (pre-review entries)', () => {
+    expect(keywordPrecondition({ inclusion: [], exclusion: [], meta: emptyKeywordMeta() }, undefined)).toBeNull();
+    expect(keywordExpect({ inclusion: [], exclusion: [], meta: emptyKeywordMeta() }, [], 'x'))
+      .toEqual({ key: 'x', terms: {} });
   });
 });

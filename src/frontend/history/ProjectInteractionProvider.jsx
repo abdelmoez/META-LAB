@@ -36,7 +36,7 @@
  * Extraction and coming back continues the Screening stack (108.md §16). Only a
  * projectId change wipes everything, which HistoryProvider does on its own.
  */
-import { useEffect } from 'react';
+import { useEffect, useRef } from 'react';
 import HistoryProvider, { useProjectHistory } from './HistoryContext.jsx';
 import UndoFeedbackProvider, { useUndoFeedback } from './useUndoFeedback.jsx';
 import ShortcutProvider, { useShortcut, TIER } from '../shortcuts/ShortcutProvider.jsx';
@@ -78,29 +78,73 @@ function HistoryGlobals() {
 }
 
 /**
+ * conflictTargetsProject(detail, projectId) — 108 review, [minor] "an autosave 409
+ * for ANY project wipes the active project's blob-backed undo stacks".
+ *
+ * `serverStorage.saveAll` PUTs EVERY writable project in one batch and dispatches one
+ * `metalab:autosave-conflict` per 409'd project, carrying `{detail:{id,name}}`
+ * (serverStorage.js). The legacy monolith already filters its own banner by that id
+ * (Workspace.jsx `onConflict`); the history watcher did not, so a collaborator's save
+ * of an unrelated project dropped the stacks of the one on screen.
+ *
+ * Pure so the rule is unit-tested rather than buried in a listener. An event with no
+ * id (or a provider with no project) is treated as OURS: the conservative direction
+ * is to clear a stack we might not have needed to, never to keep a stack that now
+ * describes a blob the shell has already thrown away.
+ */
+export function conflictTargetsProject(detail, projectId) {
+  const id = detail && detail.id != null ? String(detail.id) : '';
+  const mine = projectId == null ? '' : String(projectId);
+  if (!id || !mine) return true;
+  return id === mine;
+}
+
+/**
  * HistoryConflictWatch — 108.md §15/§16. An autosave compare-and-set refusal means
  * the shell threw away the local blob and adopted the server's copy, so every entry
- * describing the local blob is now a lie. Both shells announce it differently:
- * the legacy monolith dispatches `metalab:autosave-conflict` on window;
- * useStitchProjectDoc flips `saveStatus` to 'conflict'. Both land here.
+ * describing the local blob is now a lie. The legacy monolith announces it with the
+ * `metalab:autosave-conflict` window event (batched across projects, hence the id
+ * filter above); the Stitch doc flips `saveStatus` — see HistorySaveStatusWatch.
  *
  * Only BLOB-backed scopes are cleared — the relational screening stack and the
  * Search Builder's own stack are untouched by a blob conflict.
  */
-function HistoryConflictWatch({ saveStatus }) {
+function HistoryConflictWatch({ projectId }) {
   const { clearScopes } = useProjectHistory();
+  // The mounted project behind a render-assigned ref (the repo's hook convention),
+  // so switching projects re-targets the filter without re-binding the listener.
+  const pid = useRef(projectId);
+  pid.current = projectId;
 
   useEffect(() => {
     if (typeof window === 'undefined') return undefined;
-    const onConflict = () => clearScopes(isBlobScope);
+    const onConflict = (e) => {
+      if (!conflictTargetsProject(e && e.detail, pid.current)) return;
+      clearScopes(isBlobScope);
+    };
     window.addEventListener('metalab:autosave-conflict', onConflict);
     return () => window.removeEventListener('metalab:autosave-conflict', onConflict);
   }, [clearScopes]);
 
+  return null;
+}
+
+/**
+ * HistorySaveStatusWatch — the OTHER channel of the same §15 rule, for shells whose
+ * autosave state is a React value rather than a window event (useStitchProjectDoc's
+ * `saveStatus`).
+ *
+ * Exported and separately mountable because the Stitch shell now mounts the provider
+ * ABOVE the overview/deep-tool branch (108 review, [minor] "the shell destroys every
+ * page-scoped undo stack when the user visits the project overview"), while the doc —
+ * and therefore `saveStatus` — is loaded by the deep-tool page BELOW it. The deep
+ * tool renders this one line inside the provider instead of passing a prop upwards.
+ */
+export function HistorySaveStatusWatch({ saveStatus }) {
+  const { clearScopes } = useProjectHistory();
   useEffect(() => {
     if (saveStatus === 'conflict') clearScopes(isBlobScope);
   }, [saveStatus, clearScopes]);
-
   return null;
 }
 
@@ -114,7 +158,8 @@ function HistoryHost({ projectId, scope, saveStatus, idFn, now, children }) {
         isEditable={isEditableDomTarget}
       >
         <HistoryGlobals />
-        <HistoryConflictWatch saveStatus={saveStatus} />
+        <HistoryConflictWatch projectId={projectId} />
+        <HistorySaveStatusWatch saveStatus={saveStatus} />
         {children}
       </ShortcutProvider>
     </HistoryProvider>

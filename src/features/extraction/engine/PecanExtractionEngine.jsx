@@ -30,7 +30,8 @@ import { downloadBlob } from '../../../frontend/components/exportCore.js';
 // 108.md §8 — the project-wide history + the pure extraction inverse appliers.
 import { useProjectHistory } from '../../../frontend/history/HistoryContext.jsx';
 import {
-  applyExtractionWrite, findStudyRow, matchesExpected, EXTRACTION_HISTORY_KIND,
+  applyExtractionWrite, findStudyRow, matchesExpected, isExtractionRowLocked,
+  EXTRACTION_HISTORY_KIND, EXTRACTION_LOCKED_REFUSAL,
 } from '../../../research-engine/interaction/extractionHistory.js';
 import ArticleList from './ArticleList.jsx';
 import ArticleWorkspace from './ArticleWorkspace.jsx';
@@ -154,7 +155,14 @@ export default function PecanExtractionEngine({ project, updateProject, activeId
      blob and an older in-flight PUT cannot resurrect the undone value (inv108 §3).
      Note it calls writeStudy, NOT ArticleWorkspace's setFields/writeValues: those are
      the RECORDING call sites, and replaying an inverse through them would both destroy
-     the provenance and log the undo as a fresh action (clearing the redo branch). */
+     the provenance and log the undo as a fresh action (clearing the redo branch).
+     108 review, [major] — the gate is PER ROW, not per open article. `canEdit` is a
+     project-level permission from the server article list, and the entry may name a
+     study the user has since navigated away from, so the completed/locked state is
+     re-derived from the target row itself (the same `extractionMeta` flags
+     ArticleWorkspace's `editable = !readOnly && !completed` is computed from). Without
+     it an undo rewrites values, provenance and needsReview on an article the UI has
+     closed for editing — and fans article-level keys out to its locked siblings. */
   const live = useRef({});
   live.current = { studies, saveStatus, canEdit, readOnly };
   const { registerExecutor } = useProjectHistory();
@@ -164,6 +172,12 @@ export default function PecanExtractionEngine({ project, updateProject, activeId
     if (now.saveStatus === 'conflict') return { ok: false, reason: 'failed' };
     const row = findStudyRow(now.studies, op && op.studyId);
     if (!row) return { ok: false, reason: 'refused' };
+    if (isExtractionRowLocked(row)) {
+      // The generic §17 note says "changed by a collaborator", which is not what
+      // happened; the banner names the actual remedy (Reopen from the toolbar).
+      setBanner(EXTRACTION_LOCKED_REFUSAL);
+      return { ok: false, reason: 'refused', detail: EXTRACTION_LOCKED_REFUSAL };
+    }
     if (!matchesExpected(row, op.expect)) return { ok: false, reason: 'refused' };
     writeStudy(op.studyId, op.fields, op.provenance);
     return true;

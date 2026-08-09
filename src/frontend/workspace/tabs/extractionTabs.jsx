@@ -42,8 +42,9 @@ import { isCaseRow, caseInfoOf, caseDisplayName, caseVarKey, normalizeCaseVariab
 // a time, so the `extraction.field` kind always resolves to the surface in view.
 import { useProjectHistory } from "../../history/HistoryContext.jsx";
 import {
-  buildExtractionEntry, canMergeExtractionEdit, applyRowPatch, findStudyRow,
-  matchesExpected, EXTRACTION_HISTORY_KIND, EXTRACTION_SURFACE,
+  buildExtractionEntry, canMergeExtractionEdit, mergeExtractionOps, applyRowPatch, findStudyRow,
+  matchesExpected, isExtractionRowLocked, EXTRACTION_LOCKED_REFUSAL,
+  EXTRACTION_HISTORY_KIND, EXTRACTION_SURFACE,
 } from "../../../research-engine/interaction/extractionHistory.js";
 
 /* monolith-local utils (verbatim copies — projectHelpers.js does not export them) */
@@ -731,7 +732,10 @@ function ClassicExtractionTab({project,updateProject,activeId,setTab}){
     if(row&&!live.current.readOnly){
       // Ids/timestamps are seeded OUTSIDE the state updater (StrictMode double-invoke).
       const entry=buildExtractionEntry({study:row,patch:fields,surface:EXTRACTION_SURFACE.CLASSIC,discrete});
-      if(entry){ if(discrete) recordHistory(entry); else coalesceHistory(entry,canMergeExtractionEdit); }
+      // 108 review, [critical] — mergeExtractionOps CROSSES the preconditions over the
+      // merge (undo expects the LAST keystroke's value, redo the FIRST one's prev).
+      // Without it a coalesced typed edit can never satisfy matchesExpected below.
+      if(entry){ if(discrete) recordHistory(entry); else coalesceHistory(entry,canMergeExtractionEdit,mergeExtractionOps); }
     }
     const at=new Date().toISOString();
     return updateProject(activeId,p=>({...p,studies:applyRowPatch(p.studies,id,fields,{at})}));
@@ -742,12 +746,17 @@ function ClassicExtractionTab({project,updateProject,activeId,setTab}){
      per-value provenance, so there is none to restore. It deliberately does NOT call
      updStudy: that would RECORD the inverse as a fresh user action, clear the redo
      branch and make Ctrl+Shift+Z impossible. Precondition read from the freshest render
-     (§14/§15), refusal when a collaborator moved the value. */
+     (§14/§15), refusal when a collaborator moved the value.
+     108 review, [major] — a COMPLETED/LOCKED article is refused too. Both surfaces write
+     the same studies[] blob, so an article completed in the engine (server-validated,
+     `extractionMeta.locked/completedAt` stamped) must not be rewritten by an inverse
+     replayed from here either. */
   useEffect(()=>registerExecutor(EXTRACTION_HISTORY_KIND,async(op)=>{
     const now=live.current;
     if(now.readOnly) return {ok:false,reason:"refused"};
     const row=findStudyRow(now.studies,op&&op.studyId);
     if(!row) return {ok:false,reason:"refused"};
+    if(isExtractionRowLocked(row)) return {ok:false,reason:"refused",detail:EXTRACTION_LOCKED_REFUSAL};
     if(!matchesExpected(row,op.expect)) return {ok:false,reason:"refused"};
     const at=new Date().toISOString();
     updateProject(activeId,p=>({...p,studies:applyRowPatch(p.studies,op.studyId,op.fields,{at})}));
