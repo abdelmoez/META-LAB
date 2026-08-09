@@ -9,9 +9,12 @@
  */
 
 import { ADJUST_LABEL, DATA_NATURE_LABEL, isNonPrimary } from '../project-model/constants.js';
-// 107.md §8 — the proportion-metadata registries live only in the LIVE constants module
-// (project-model/constants.js is the stale 8-measure copy — see monolithConstants.js).
-import { DENOMINATOR_POPULATION_LABEL, ACTION_STATUS_LABEL } from '../project-model/monolithConstants.js';
+// 107.md §8 — proportion-metadata registry MEMBERSHIP, taken from proportionMeta's Sets
+// (which are built from the LIVE monolithConstants registries; project-model/constants.js is
+// the stale 8-measure copy). Never a bare `DENOMINATOR_POPULATION_LABEL[value]` lookup: the
+// label maps are plain objects, so 'constructor'/'toString' read truthy and suppressed this
+// warning while the readers still showed the row as unclassified (review fix).
+import { isDenominatorPopulationKey, isActionStatusKey } from '../extraction/proportionMeta.js';
 
 /**
  * validateStudy(s)
@@ -77,9 +80,9 @@ export function validateStudy(s) {
     const action = s.actionStatus == null ? "" : String(s.actionStatus).trim();
     if (denom === "other" && !String(s.denominatorCustom == null ? "" : s.denominatorCustom).trim())
       add("error", "denominatorCustom", "Custom denominator description is required for Other/custom.");
-    if (denom && !DENOMINATOR_POPULATION_LABEL[denom])
+    if (denom && !isDenominatorPopulationKey(denom))
       add("warn", "denominatorPopulation", `Unrecognised denominator population "${denom}" — pick one of the listed options.`);
-    if (action && !ACTION_STATUS_LABEL[action])
+    if (action && !isActionStatusKey(action))
       add("warn", "actionStatus", `Unrecognised action status "${action}" — pick one of the listed options.`);
   }
 

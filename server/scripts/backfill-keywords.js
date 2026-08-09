@@ -17,15 +17,25 @@ function isEmptyList(json) {
   catch { return true; }
 }
 
+// 107.md r2 — keywordMeta.seeded marks a side the leader DELIBERATELY emptied; the
+// backfill must not resurrect the defaults over that decision.
+function seededSides(keywordMeta) {
+  try {
+    const seeded = (JSON.parse(keywordMeta || '{}') || {}).seeded;
+    return seeded && typeof seeded === 'object' ? seeded : {};
+  } catch { return {}; }
+}
+
 async function main() {
   const projects = await prisma.screenProject.findMany({
-    select: { id: true, title: true, inclusionKeywords: true, exclusionKeywords: true },
+    select: { id: true, title: true, inclusionKeywords: true, exclusionKeywords: true, keywordMeta: true },
   });
   let inc = 0, exc = 0;
   for (const p of projects) {
     const data = {};
-    if (isEmptyList(p.inclusionKeywords)) { data.inclusionKeywords = JSON.stringify(DEFAULT_INCLUDE_KEYWORDS); inc++; }
-    if (isEmptyList(p.exclusionKeywords)) { data.exclusionKeywords = JSON.stringify(DEFAULT_EXCLUDE_KEYWORDS); exc++; }
+    const seeded = seededSides(p.keywordMeta);
+    if (isEmptyList(p.inclusionKeywords) && !seeded.include) { data.inclusionKeywords = JSON.stringify(DEFAULT_INCLUDE_KEYWORDS); inc++; }
+    if (isEmptyList(p.exclusionKeywords) && !seeded.exclude) { data.exclusionKeywords = JSON.stringify(DEFAULT_EXCLUDE_KEYWORDS); exc++; }
     if (Object.keys(data).length) {
       await prisma.screenProject.update({ where: { id: p.id }, data });
       console.log(`  filled ${p.title || p.id}: ${Object.keys(data).join(', ')}`);

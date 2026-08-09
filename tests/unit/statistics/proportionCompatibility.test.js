@@ -16,9 +16,11 @@ import {
   checkProportionCompatibility, applyProportionFilters, activeProportionFilters,
   proportionIssueSignature, proportionOverrideStale, buildProportionOverride,
   describeOverrideCategories, overrideDateText, subgroupGroupLabel, proportionFilterKey,
-  sanitizeProportionFilters, sanitizeProportionOverrides,
+  sanitizeProportionFilters, sanitizeProportionOverrides, isPoolableRow, poolableRows,
+  proportionValueLabel,
   UNCLASSIFIED_GROUP_LABEL, UNCLASSIFIED_FILTER,
 } from '../../../src/research-engine/statistics/proportionCompatibility.js';
+import { runMeta } from '../../../src/research-engine/statistics/monolithStats.js';
 
 const prop = (over = {}) => ({
   id: 'x', author: 'Smith', year: '2024', esType: 'PROP',
@@ -239,6 +241,17 @@ describe('applyProportionFilters', () => {
     expect(applyProportionFilters(customs, { denominatorCustom: 'patients with a vus' }).map((r) => r.id)).toEqual(['a']);
   });
 
+  // 107.md r2 — a row whose population moved away from 'other' but still carries the old
+  // text must not answer a denominatorCustom filter; it reads as unclassified instead.
+  it('stale custom text on a non-other row does not match a custom filter', () => {
+    const customs = [
+      prop({ id: 'a', denominatorPopulation: 'other', denominatorCustom: 'Patients with a VUS' }),
+      prop({ id: 'stale', denominatorPopulation: 'all_patients_tested', denominatorCustom: 'Patients with a VUS' }),
+    ];
+    expect(applyProportionFilters(customs, { denominatorCustom: 'patients with a vus' }).map((r) => r.id)).toEqual(['a']);
+    expect(applyProportionFilters(customs, { denominatorCustom: UNCLASSIFIED_FILTER }).map((r) => r.id)).toEqual(['stale']);
+  });
+
   it('activeProportionFilters reports the configured pairs in a stable order', () => {
     expect(activeProportionFilters({ actionStatus: 'implemented', denominatorPopulation: 'other' }))
       .toEqual([['denominatorPopulation', 'other'], ['actionStatus', 'implemented']]);
@@ -299,6 +312,102 @@ describe('override signature — consent is for a specific estimate set', () => 
   });
 });
 
+/* ══════════════ the check runs on the rows runMeta actually pools ══════════════ */
+
+describe('poolable subset — the check describes the pool, not every ES-bearing row', () => {
+  const full = (id, denom) => prop({ id, author: 'A' + id, denominatorPopulation: denom, actionStatus: 'implemented' });
+  /** An effect size with no 95% CI: extracted, but never weighted by runMeta. */
+  const noCI = (id, denom) => prop({ id, author: 'A' + id, lo: '', hi: '', denominatorPopulation: denom, actionStatus: 'implemented' });
+
+  it('isPoolableRow is runMeta’s own predicate', () => {
+    expect(isPoolableRow(prop())).toBe(true);
+    expect(isPoolableRow(prop({ lo: '' }))).toBe(false);
+    expect(isPoolableRow(prop({ hi: '' }))).toBe(false);
+    expect(isPoolableRow(prop({ es: '' }))).toBe(false);
+    expect(isPoolableRow(prop({ hi: 'abc' }))).toBe(false);
+    expect(isPoolableRow(null)).toBe(false);
+    // and it really agrees with runMeta on the same rows
+    const rows = [full('1', 'all_patients_tested'), full('2', 'all_patients_tested'), noCI('3', 'all_patients_tested')];
+    expect(runMeta(rows, 'random').k).toBe(rows.filter(isPoolableRow).length);
+  });
+
+  it('poolableRows returns the SAME array when nothing is dropped (byte stability)', () => {
+    const rows = [full('1', 'all_patients_tested'), full('2', 'all_patients_tested')];
+    expect(poolableRows(rows)).toBe(rows);
+    expect(poolableRows(rows.concat([noCI('3', 'other')])).map((r) => r.id)).toEqual(['1', '2']);
+    expect(poolableRows([])).toEqual([]);
+    expect(poolableRows(null)).toEqual([]);
+  });
+
+  it('a CI-less row of another category does NOT create a false block', () => {
+    const c = checkProportionCompatibility([
+      full('1', 'all_patients_tested'), full('2', 'all_patients_tested'),
+      noCI('3', 'plp_molecular_diagnoses'),
+    ]);
+    expect(c.blocking).toBe(false);
+    expect(c.propCount).toBe(2);              // only the rows the diamond is drawn from
+  });
+
+  it('the same row DOES block once its CI is entered', () => {
+    const c = checkProportionCompatibility([
+      full('1', 'all_patients_tested'), full('2', 'all_patients_tested'),
+      full('3', 'plp_molecular_diagnoses'),
+    ]);
+    expect(c.blocking).toBe(true);
+    expect(c.propCount).toBe(3);
+  });
+});
+
+/* ══════════════ the signature identifies its MEMBERS, not just counts ══════════════ */
+
+describe('override signature — member identity, not just per-value counts', () => {
+  const row = (id, denom) => prop({ id, author: 'A' + id, denominatorPopulation: denom, actionStatus: 'implemented' });
+  const base = [
+    row('1', 'all_patients_tested'), row('2', 'all_patients_tested'),
+    row('3', 'plp_molecular_diagnoses'), row('4', 'plp_molecular_diagnoses'),
+  ];
+  const check = checkProportionCompatibility(base);
+  const rec = buildProportionOverride(check, { at: '2026-08-09T10:00:00.000Z' });
+
+  it('is versioned so a legacy fingerprint is recognisable', () => {
+    expect(proportionIssueSignature(check).startsWith('v2|')).toBe(true);
+    expect(proportionIssueSignature({ issues: [] })).toBe('');
+  });
+
+  it('does not change when the rows are merely reordered', () => {
+    const shuffled = [base[3], base[0], base[2], base[1]];
+    expect(proportionOverrideStale(rec, checkProportionCompatibility(shuffled))).toBe(false);
+  });
+
+  it('goes stale on an OFFSETTING metadata swap that leaves both counts identical', () => {
+    const swapped = base.map((s) => (s.id === '1' ? { ...s, denominatorPopulation: 'plp_molecular_diagnoses' }
+      : s.id === '3' ? { ...s, denominatorPopulation: 'all_patients_tested' } : s));
+    const after = checkProportionCompatibility(swapped);
+    // counts are untouched — 2 and 2 — which is exactly what the count-only signature missed
+    expect(after.issues[0].values.map((v) => v.count)).toEqual(check.issues[0].values.map((v) => v.count));
+    expect(proportionOverrideStale(rec, after)).toBe(true);
+  });
+
+  it('goes stale when a row ENTERS the pool because its CI was filled in', () => {
+    const pending = base.concat([prop({ id: '5', author: 'A5', lo: '', hi: '', denominatorPopulation: 'plp_molecular_diagnoses', actionStatus: 'implemented' })]);
+    // while the CI is blank the row is not pooled, so the override still describes the pool
+    expect(proportionOverrideStale(rec, checkProportionCompatibility(pending))).toBe(false);
+    const filled = pending.map((s) => (s.id === '5' ? { ...s, lo: '-0.5', hi: '0.5' } : s));
+    expect(proportionOverrideStale(rec, checkProportionCompatibility(filled))).toBe(true);
+  });
+
+  it('a persisted count-only (pre-v2) signature is treated as STALE, never honoured', () => {
+    const legacySig = 'denominatorPopulation:plp_molecular_diagnoses=2,all_patients_tested=2';
+    expect(proportionOverrideStale({ signature: legacySig }, check)).toBe(true);
+    // even against the very check that produced it under the old scheme
+    expect(proportionOverrideStale({ ...rec, signature: legacySig }, check)).toBe(true);
+  });
+
+  it('the persisted record shape is unchanged — the digest lives only in the signature', () => {
+    expect(rec.categories.every((c) => Object.keys(c).sort().join(',') === 'count,field,label,value')).toBe(true);
+  });
+});
+
 describe('subgroupGroupLabel — display buckets never merge legacy with a real category', () => {
   it("maps '' / missing / unknown to the legacy label", () => {
     expect(subgroupGroupLabel('denominatorPopulation', '')).toBe(UNCLASSIFIED_GROUP_LABEL);
@@ -316,6 +425,24 @@ describe('subgroupGroupLabel — display buckets never merge legacy with a real 
   it('leaves unrelated grouping keys alone', () => {
     expect(subgroupGroupLabel('design', 'RCT')).toBe('RCT');
     expect(subgroupGroupLabel('design', '')).toBe('Unspecified');
+  });
+
+  // 107.md §8E review fix — the label maps are plain objects, so a bare `map[v]` lookup
+  // reads Object.prototype members as truthy "labels". Registry membership, not truthiness.
+  it('an inherited Object.prototype key is unclassified, never a Function label', () => {
+    for (const key of ['constructor', 'toString', 'hasOwnProperty', '__proto__', 'valueOf']) {
+      expect(subgroupGroupLabel('denominatorPopulation', key)).toBe(UNCLASSIFIED_GROUP_LABEL);
+      expect(subgroupGroupLabel('actionStatus', key)).toBe(UNCLASSIFIED_GROUP_LABEL);
+      expect(proportionValueLabel('denominatorPopulation', key)).toBe(UNCLASSIFIED_GROUP_LABEL);
+      expect(proportionValueLabel('actionStatus', key)).toBe(UNCLASSIFIED_GROUP_LABEL);
+    }
+  });
+
+  it('proportionValueLabel still resolves real keys and names the legacy state honestly', () => {
+    expect(proportionValueLabel('denominatorPopulation', 'all_patients_tested')).toBe('All patients tested');
+    expect(proportionValueLabel('actionStatus', 'unclear')).toBe('Unclear');
+    expect(proportionValueLabel('denominatorPopulation', '')).toBe(UNCLASSIFIED_GROUP_LABEL);
+    expect(proportionValueLabel('denominatorCustom', 'Patients with a VUS')).toBe('Patients with a VUS');
   });
 });
 

@@ -107,6 +107,32 @@ export function moveIntent({ index, dir, count, hasMore, loadingMore } = {}) {
 }
 
 /**
+ * advanceContextMatches — 107.md rec. Is a pending keyboard auto-advance still about
+ * the list the reviewer is looking at?
+ *
+ * `moveIntent` returning 'load-next' arms a deferred selection ("select the first
+ * record that was not already loaded") which is resolved one render later, when the
+ * batch lands. Between those two moments the reviewer can switch project, change the
+ * filter, type in the search box, or a realtime `decision.saved` reset can replace the
+ * whole window — and the deferred selection would then land on a record from a list
+ * that is no longer displayed (and POST `markOpened` for a foreign record id).
+ *
+ * The arm site stamps the dataset identity; this compares it to the live one. `gen` is
+ * the caller's load generation, bumped by every RESET load.
+ *
+ * @param {{pid?:string, filter?:string, search?:string, gen?:number}|null} pending
+ * @param {{pid?:string, filter?:string, search?:string, gen?:number}} ctx
+ * @returns {boolean} true only when every stamped field still matches
+ */
+export function advanceContextMatches(pending, ctx = {}) {
+  if (!pending || typeof pending !== 'object') return false;
+  return pending.pid === ctx.pid
+    && pending.filter === ctx.filter
+    && pending.search === ctx.search
+    && pending.gen === ctx.gen;
+}
+
+/**
  * buildFastListQuery — the Prisma where/orderBy for an eligible request.
  * Ordering matches the in-memory path (createdAt asc) with an id tiebreak so
  * skip/take pagination is stable across requests when createdAt ties (bulk imports

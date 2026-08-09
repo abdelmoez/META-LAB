@@ -8,7 +8,8 @@
  * criteria text was saved. They are now SUGGESTIONS that require review:
  *
  *   ACTIVE      = the stored ScreenProject list (∪ the shared defaults when the
- *                 stored list is empty) — unchanged semantics.
+ *                 stored list is empty AND the side was never edited — see
+ *                 `keywordMeta.seeded`).
  *   SUGGESTED   = suggestCriteriaKeywords(picoSnapshot) (negation-aware,
  *                 generic-blocked, conflict-checked) MINUS anything already active
  *                 and minus anything the reviewer accepted/rejected.
@@ -25,7 +26,7 @@
 import { extractConceptKeywords } from './conceptKeywords.js';
 import { suggestCriteriaKeywords } from './suggestKeywords.js';
 import { normalizeKeywordKey } from './keywordNormalize.js';
-import { normalizeKeywordMeta, resolveOrigin, KEYWORD_ORIGIN } from './keywordModel.js';
+import { normalizeKeywordMeta, resolveOrigin, isSideSeeded, KEYWORD_ORIGIN } from './keywordModel.js';
 
 /** Keyword sources — how an ACTIVE term got onto the list. */
 export const KEYWORD_SOURCE = Object.freeze({
@@ -106,9 +107,21 @@ export function mergeKeywordSources(storedTerms, criteriaTerms, opts = {}) {
   return { terms, sourceByTerm };
 }
 
-/** Active terms for one side: the stored list, or the shared defaults when empty. */
-function activeTerms(stored, defaults) {
-  return (Array.isArray(stored) && stored.length) ? stored : (Array.isArray(defaults) ? defaults : []);
+/**
+ * Active terms for one side: the stored list, or the shared defaults when it is
+ * empty AND the side was never edited.
+ *
+ * 107.md rec — the defaults fallback used to be unconditional, so removing the last
+ * chip resurrected all ~28/~50 shared defaults as live highlight/filter terms (and
+ * the next keyword op re-persisted them, undoing the curation). `keywordMeta.seeded`
+ * records the sides that have been deliberately edited; for those an empty stored
+ * list means EMPTY. Projects that predate the marker carry no `seeded` key, so their
+ * empty lists still show the defaults exactly as before.
+ */
+function activeTerms(stored, defaults, edited) {
+  const list = Array.isArray(stored) ? stored : [];
+  if (list.length || edited) return list;
+  return Array.isArray(defaults) ? defaults : [];
 }
 
 /**
@@ -139,8 +152,8 @@ export function resolveKeywordState({
   const suggestions = suggestCriteriaKeywords(picoSnapshot);
 
   const active = {
-    include: activeTerms(storedInclude, defaults.include),
-    exclude: activeTerms(storedExclude, defaults.exclude),
+    include: activeTerms(storedInclude, defaults.include, isSideSeeded(meta, 'include')),
+    exclude: activeTerms(storedExclude, defaults.exclude, isSideSeeded(meta, 'exclude')),
   };
   const activeKeys = {
     include: new Set(active.include.map(normalizeKeywordKey)),

@@ -1086,17 +1086,27 @@ export async function getKeywordStats(req, res) {
   }
 }
 
+// 107.md rec — bounded CAS retries for the keyword read-modify-write below. Same
+// shape and budget rationale as mutateProjectBlob's loop in server/store.js.
+const KEYWORD_OP_MAX_ATTEMPTS = 5;
+
 /**
  * POST /projects/:pid/keywords/ops — single-term keyword mutation (107.md §2/§3).
  *
  * Body: { type: 'add'|'remove'|'move'|'accept'|'reject',
- *         list: 'include'|'exclude', term: string, toList?: 'include'|'exclude' }
+ *         list: 'include'|'exclude', term: string, toList?: 'include'|'exclude',
+ *         reject?: boolean }
  *
  * Why this exists next to the legacy full-array PUT /projects/:pid: the old path
  * sends the WHOLE list on every chip add/remove with no concurrency control, so two
  * leaders editing keywords at the same time silently discard each other's terms.
- * Here the read-modify-write runs through the shared pure reducer INSIDE a
- * transaction, so concurrent single-term ops compose instead of clobbering.
+ * Here the read-modify-write runs through the shared pure reducer and its write is
+ * CONDITIONAL ON THE PRE-IMAGE it read, so concurrent single-term ops compose
+ * instead of clobbering.
+ *
+ * `reject: false` (remove/move only) is the non-verdict Undo variant — it deletes
+ * the term without recording a "rejected" decision, so undoing an accidental add
+ * does not permanently suppress the matching criteria suggestion.
  */
 export async function keywordOps(req, res) {
   try {
@@ -1107,7 +1117,7 @@ export async function keywordOps(req, res) {
       return res.status(403).json({ error: 'Only project leaders can edit keyword lists' });
     }
 
-    const { type, list, term, toList } = req.body || {};
+    const { type, list, term, toList, reject } = req.body || {};
     if (!KEYWORD_OPS.includes(type)) return res.status(400).json({ error: 'invalid keyword operation' });
     if (!KEYWORD_LISTS.includes(list)) return res.status(400).json({ error: 'list must be "include" or "exclude"' });
     if (typeof term !== 'string' || !term.trim()) return res.status(400).json({ error: 'term is required' });
@@ -1120,52 +1130,87 @@ export async function keywordOps(req, res) {
       }
       if (toList === list) return res.status(400).json({ error: 'toList must differ from list' });
     }
+    if (reject !== undefined && typeof reject !== 'boolean') {
+      return res.status(400).json({ error: 'reject must be a boolean' });
+    }
+    if (reject === false && type !== 'remove' && type !== 'move') {
+      return res.status(400).json({ error: 'reject:false applies only to "remove" and "move"' });
+    }
 
     const pidVal = access.project.id;
     const touched = type === 'move' ? [list, toList || (list === 'include' ? 'exclude' : 'include')] : [list];
 
-    const result = await prisma.$transaction(async (tx) => {
-      const row = await tx.screenProject.findUnique({
-        where: { id: pidVal },
-        select: { inclusionKeywords: true, exclusionKeywords: true, keywordMeta: true },
-      });
-      if (!row) return { missing: true };
-      const before = {
-        inclusion: parseJsonList(row.inclusionKeywords),
-        exclusion: parseJsonList(row.exclusionKeywords),
-        meta: normalizeKeywordMeta(row.keywordMeta),
-      };
-      // A side whose stored list is empty is DISPLAYED as the shared defaults; the
-      // first real edit writes those out so the edit is additive, never a wipe.
-      const seeded = materializeDefaults(
-        before,
-        { include: DEFAULT_INCLUDE_KEYWORDS, exclude: DEFAULT_EXCLUDE_KEYWORDS },
-        touched,
-      );
-      const out = applyKeywordOp(seeded, { type, list, term: term.trim(), toList });
-      if (!out.ok) return { badRequest: out.error };
-      const next = out.state;
-      const wrote = out.changed || seeded !== before;
-      if (wrote) {
-        await tx.screenProject.update({
+    // 107.md rec — OPTIMISTIC PRE-IMAGE GUARD. A bare interactive transaction is
+    // ATOMIC but not ISOLATED: Prisma inherits the database default, i.e. READ
+    // COMMITTED on the Postgres deployment target, where two concurrent ops both
+    // SELECT the same lists and the second UPDATE — keyed only on `id` — re-applies
+    // values computed from its stale read, silently dropping the first term. The
+    // write below is therefore conditional on the exact strings that were read
+    // (updateMany + full-column WHERE: portable to BOTH SQLite and Postgres, no
+    // isolation-level games, no FOR UPDATE). A losing writer re-reads and re-runs
+    // the reducer, exactly like mutateProjectBlob's CAS retry loop (server/store.js).
+    let result = null;
+    for (let attempt = 0; attempt < KEYWORD_OP_MAX_ATTEMPTS; attempt += 1) {
+      // eslint-disable-next-line no-await-in-loop
+      result = await prisma.$transaction(async (tx) => {
+        const row = await tx.screenProject.findUnique({
           where: { id: pidVal },
-          data: {
-            inclusionKeywords: JSON.stringify(next.inclusion),
-            exclusionKeywords: JSON.stringify(next.exclusion),
-            keywordMeta: JSON.stringify(next.meta),
-          },
+          select: { inclusionKeywords: true, exclusionKeywords: true, keywordMeta: true },
         });
-      }
-      return {
-        wrote,
-        changed: out.changed,
-        reason: out.reason,
-        inclusionKeywords: JSON.stringify(next.inclusion),
-        exclusionKeywords: JSON.stringify(next.exclusion),
-        keywordMeta: JSON.stringify(next.meta),
-      };
-    });
+        if (!row) return { missing: true };
+        const before = {
+          inclusion: parseJsonList(row.inclusionKeywords),
+          exclusion: parseJsonList(row.exclusionKeywords),
+          meta: normalizeKeywordMeta(row.keywordMeta),
+        };
+        // A side whose stored list is empty is DISPLAYED as the shared defaults; the
+        // first real edit writes those out so the edit is additive, never a wipe.
+        // A side already marked edited in keywordMeta is left empty on purpose.
+        const seeded = materializeDefaults(
+          before,
+          { include: DEFAULT_INCLUDE_KEYWORDS, exclude: DEFAULT_EXCLUDE_KEYWORDS },
+          touched,
+        );
+        const out = applyKeywordOp(seeded, { type, list, term: term.trim(), toList, reject });
+        if (!out.ok) return { badRequest: out.error };
+        const next = out.state;
+        const wrote = out.changed || seeded !== before;
+        if (wrote) {
+          const upd = await tx.screenProject.updateMany({
+            where: {
+              id: pidVal,
+              inclusionKeywords: row.inclusionKeywords,
+              exclusionKeywords: row.exclusionKeywords,
+              keywordMeta: row.keywordMeta,
+            },
+            data: {
+              inclusionKeywords: JSON.stringify(next.inclusion),
+              exclusionKeywords: JSON.stringify(next.exclusion),
+              keywordMeta: JSON.stringify(next.meta),
+            },
+          });
+          // Someone else committed a keyword write between our SELECT and this
+          // UPDATE — discard everything and re-derive from their state.
+          if (upd.count === 0) return { contended: true };
+        }
+        return {
+          wrote,
+          changed: out.changed,
+          reason: out.reason,
+          inclusionKeywords: JSON.stringify(next.inclusion),
+          exclusionKeywords: JSON.stringify(next.exclusion),
+          keywordMeta: JSON.stringify(next.meta),
+        };
+      });
+      if (!result?.contended) break;
+    }
 
+    if (result?.contended) {
+      return res.status(409).json({
+        error: 'Another leader is editing the keyword lists right now. Try again in a moment.',
+        code: 'KEYWORD_OP_CONTENTION',
+      });
+    }
     if (result?.missing) return res.status(404).json({ error: 'Project not found' });
     if (result?.badRequest) return res.status(400).json({ error: result.badRequest });
 
@@ -2235,6 +2280,15 @@ export async function cancelDuplicateJob(req, res) {
   }
 }
 
+/**
+ * 107.md §1 (rec round) — the `project.updated` emits on the resolution paths below
+ * poke EVERY member, the resolving user INCLUDED. The Stitch workflow stepper reads
+ * its summary from `useScreeningSummary`, a different owner from the embedded
+ * SiftProject the Duplicates tab refreshes, and it has no polling loop — so an emit
+ * carrying `{ exclude: req.user.id }` left the person who just resolved the last
+ * group staring at "N unresolved" until a full reload. The initiator's extra refetch
+ * is idempotent; same argument as `emitDuplicateJobTerminal` in the worker.
+ */
 export async function resolveDuplicateGroup(req, res) {
   try {
     // Same guard as detectDuplicates: outsider 404, member without permission 403.
@@ -2279,7 +2333,7 @@ export async function resolveDuplicateGroup(req, res) {
       // API since prompt23. "" is the model's own no-primary sentinel.
       await prisma.screenDuplicateGroup.update({ where: { id: group.id }, data: { resolvedAt: new Date(), primaryId: '' } });
       await writeAudit(p.id, req.user, 'DUPLICATE_GROUP_KEEP_ALL', { entityType: 'duplicateGroup', entityId: group.id });
-      emitToProjectMembers(p.id, { type: 'project.updated' }, { exclude: req.user.id });
+      emitToProjectMembers(p.id, { type: 'project.updated' });
       return res.json({ resolved: true, keepAll: true });
     }
 
@@ -2305,7 +2359,7 @@ export async function resolveDuplicateGroup(req, res) {
       entityType: 'duplicateGroup', entityId: group.id, primaryId,
       details: { mergedFields: Object.keys(patch), filledFrom },
     });
-    emitToProjectMembers(p.id, { type: 'project.updated' }, { exclude: req.user.id });
+    emitToProjectMembers(p.id, { type: 'project.updated' });
 
     res.json({ resolved: true, primaryId, mergedFields: Object.keys(patch) });
   } catch (err) {
@@ -2368,7 +2422,7 @@ export async function resolveAllExactDuplicates(req, res) {
       mergedFieldCount += Object.keys(patch).length;
     }
 
-    if (resolvedGroups > 0) emitToProjectMembers(p.id, { type: 'project.updated' }, { exclude: req.user.id });
+    if (resolvedGroups > 0) emitToProjectMembers(p.id, { type: 'project.updated' });
     res.json({ resolvedGroups, flaggedDuplicates, mergedFieldCount, skippedGroups });
   } catch (err) {
     console.error('[screening] resolveAllExactDuplicates:', err.message);

@@ -16,7 +16,7 @@ import {
   resolveKeywordState,
   KEYWORD_SOURCE,
 } from '../../src/research-engine/screening/criteriaKeywords.js';
-import { applyKeywordOp } from '../../src/research-engine/screening/keywordModel.js';
+import { applyKeywordOp, materializeDefaults } from '../../src/research-engine/screening/keywordModel.js';
 
 describe('normalizeKeyword', () => {
   it('lowercases, trims, collapses internal whitespace', () => {
@@ -243,5 +243,96 @@ describe('resolveKeywordState — suggestions + conflicts', () => {
       const st = resolveKeywordState({ ...base, storedInclude: ['RCT'], storedExclude: [], keywordMeta: junk, picoSnapshot: {} });
       expect(st.include.terms).toEqual(['RCT']);
     }
+  });
+
+  // 107.md rec — the snackbar Undo must not silently kill a live suggestion.
+  it('undoing an accidental add leaves the criteria suggestion PENDING again', () => {
+    const snap = { incl: 'Adults with drug-resistant epilepsy' };
+    const term = 'drug-resistant epilepsy';
+    const before = resolveKeywordState({ ...base, storedInclude: ['RCT'], storedExclude: [], picoSnapshot: snap });
+    expect(before.include.pending).toContain(term);
+
+    let state = { inclusion: ['RCT'], exclusion: [], meta: undefined };
+    state = applyKeywordOp(state, { type: 'add', list: 'include', term }).state;
+    const undone = applyKeywordOp(state, { type: 'remove', list: 'include', term, reject: false }).state;
+    const after = resolveKeywordState({
+      ...base, storedInclude: undone.inclusion, storedExclude: undone.exclusion,
+      keywordMeta: undone.meta, picoSnapshot: snap,
+    });
+    expect(after.include.terms).toEqual(['RCT']);
+    expect(after.include.pending).toEqual(before.include.pending);
+    expect(after.pendingCount).toBe(before.pendingCount);
+
+    // …while the deliberate chip × still suppresses it, as designed.
+    const rejected = applyKeywordOp(state, { type: 'remove', list: 'include', term }).state;
+    const suppressed = resolveKeywordState({
+      ...base, storedInclude: rejected.inclusion, storedExclude: rejected.exclusion,
+      keywordMeta: rejected.meta, picoSnapshot: snap,
+    });
+    expect(suppressed.include.pending).not.toContain(term);
+  });
+});
+
+// 107.md rec — an empty stored list means "show the shared defaults" ONLY while the
+// side has never been edited. Removing the last chip used to resurrect all ~28/~50
+// default terms as live highlight/filter terms, and the next op re-persisted them.
+describe('resolveKeywordState — an emptied side stays empty', () => {
+  const kwState = (inclusion, exclusion, meta) => ({ inclusion, exclusion, meta });
+  const resolve = (state) => resolveKeywordState({
+    ...base,
+    storedInclude: state.inclusion, storedExclude: state.exclusion,
+    keywordMeta: state.meta, picoSnapshot: {},
+  });
+
+  it('BACK-COMPAT: empty lists with empty meta still show the shared defaults', () => {
+    for (const meta of [undefined, null, '{}', {}, 'not json']) {
+      const st = resolveKeywordState({ ...base, storedInclude: [], storedExclude: [], keywordMeta: meta, picoSnapshot: {} });
+      expect(st.include.terms).toEqual(defaults.inc);
+      expect(st.exclude.terms).toEqual(defaults.exc);
+      expect(st.include.sourceByTerm['RCT']).toBe('default');
+    }
+  });
+
+  it('removing the LAST active term leaves the side empty, not repopulated', () => {
+    const curated = kwState(['seizure'], [], undefined);
+    expect(resolve(curated).include.terms).toEqual(['seizure']);
+
+    const emptied = applyKeywordOp(curated, { type: 'remove', list: 'include', term: 'seizure' }).state;
+    expect(emptied.inclusion).toEqual([]);
+    const st = resolve(emptied);
+    expect(st.include.terms).toEqual([]);          // NOT defaults.inc
+    expect(st.exclude.terms).toEqual(defaults.exc); // the untouched side is unaffected
+  });
+
+  it('the NEXT op does not re-materialize the defaults (the controller sequence)', () => {
+    // Mirrors keywordOps: materializeDefaults(touched sides) → applyKeywordOp.
+    const seeds = { include: defaults.inc, exclude: defaults.exc };
+    let state = kwState(['seizure'], [], undefined);
+    state = applyKeywordOp(materializeDefaults(state, seeds, ['include']), {
+      type: 'remove', list: 'include', term: 'seizure',
+    }).state;
+    expect(state.inclusion).toEqual([]);
+
+    for (const op of [
+      { type: 'reject', list: 'include', term: 'epilepsy' },
+      { type: 'add', list: 'include', term: 'my term' },
+      { type: 'remove', list: 'include', term: 'my term' },
+    ]) {
+      const seeded = materializeDefaults(state, seeds, ['include']);
+      expect(seeded.inclusion).not.toContain('RCT');   // never re-seeded
+      state = applyKeywordOp(seeded, op).state;
+    }
+    expect(state.inclusion).toEqual([]);
+    expect(resolve(state).include.terms).toEqual([]);
+  });
+
+  it('an emptied side can be repopulated by hand and keeps working normally', () => {
+    let state = applyKeywordOp(kwState(['seizure'], [], undefined), {
+      type: 'remove', list: 'include', term: 'seizure',
+    }).state;
+    state = applyKeywordOp(state, { type: 'add', list: 'include', term: 'refractory epilepsy' }).state;
+    const st = resolve(state);
+    expect(st.include.terms).toEqual(['refractory epilepsy']);
+    expect(st.include.sourceByTerm['refractory epilepsy']).toBe('manual');
   });
 });

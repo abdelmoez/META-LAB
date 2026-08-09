@@ -21,10 +21,22 @@ export const SYNC_INPUT_FIELDS = Object.freeze([
   'n', 'nExp', 'nCtrl', 'meanExp', 'sdExp', 'meanCtrl', 'sdCtrl',
   'a', 'b', 'c', 'd', 'events', 'total', 'tp', 'fp', 'fn', 'tn',
   'es', 'lo', 'hi',
-  // 107.md §8 — the per-estimate proportion metadata defines WHAT the proportion is a
-  // proportion OF, so reclassifying a denominator changes the meaning of an estimate
-  // already carried into the analysis. Without these three the article would keep
-  // reading "In analysis" after the reviewer changed its scope.
+]);
+
+/**
+ * 107.md §8 — the per-estimate proportion metadata defines WHAT the proportion is a
+ * proportion OF, so reclassifying a denominator changes the meaning of an estimate already
+ * carried into the analysis; without it the article would keep reading "In analysis" after
+ * the reviewer changed its scope.
+ *
+ * These keys are emitted only when they CARRY A VALUE — they are deliberately not members
+ * of SYNC_INPUT_FIELDS above (review fix). A fixed member emits `key=` for a row that never
+ * had the key, which would change the digest of every pre-107 row and flip every
+ * previously-synced article to the amber "Updated since sync" badge on upgrade, with no
+ * migration able to repair the hashes already persisted in `extractionMeta.syncHash`. The
+ * 106.md `cv_*` block below avoids exactly the same trap by collecting keys dynamically.
+ */
+export const SYNC_OPTIONAL_FIELDS = Object.freeze([
   'denominatorPopulation', 'denominatorCustom', 'actionStatus',
 ]);
 
@@ -58,6 +70,13 @@ export function computeSyncHash(study = {}) {
     const v = study[k];
     return `${k}=${v == null ? '' : String(v).trim()}`;
   });
+  // 107.md §8 — the proportion metadata contributes ONLY when classified, so an
+  // unclassified/legacy row hashes byte-identically to pre-107 (see SYNC_OPTIONAL_FIELDS).
+  for (const k of SYNC_OPTIONAL_FIELDS) {
+    const v = study[k];
+    const t = v == null ? '' : String(v).trim();
+    if (t !== '') parts.push(`${k}=${t}`);
+  }
   // 106.md — patient-level CASE VARIABLE values (`cv_*`) are analysis inputs too: a
   // case-report meta-analysis pools age/sex/outcome, not only es/lo/hi. Without this
   // an edit to "Case 3 → Age" would leave the article showing "In analysis" while its

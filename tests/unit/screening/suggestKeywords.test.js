@@ -125,6 +125,53 @@ describe('suggestCriteriaKeywords — conflicting polarity', () => {
     expect(out.conflicts[0].reason).toMatch(/both inclusion and exclusion/i);
   });
 
+  // 107.md rec — conflicts used to be intersected over the SYNONYM-EXPANDED lists,
+  // and SYNONYM_FAMILIES groups members that are not clinically interchangeable
+  // (bariatric surgery / sleeve gastrectomy / gastric bypass). A synonym-only
+  // collision therefore deleted the concept the reviewer literally wrote and offered
+  // a phrase from neither criterion under "Appears in both …".
+  it('107.md rec regression fixture: a shared synonym family is NOT a conflict', () => {
+    const out = suggestCriteriaKeywords({
+      incl: 'Adults undergoing bariatric surgery',
+      excl: 'Revision after sleeve gastrectomy',
+    });
+    expect(out.conflicts).toEqual([]);
+    expect(has(out.include, 'bariatric surgery')).toBe(true);   // the verbatim criterion survives
+    expect(has(out.exclude, 'sleeve gastrectomy')).toBe(true);
+    // 'metabolic surgery' appears in NEITHER criterion — it must never be presented
+    // as an arbitration card, and it must not be offered on both sides at once.
+    expect(has(out.include, 'metabolic surgery')).toBe(false);
+    expect(has(out.exclude, 'metabolic surgery')).toBe(false);
+    expect(has(out.exclude, 'bariatric surgery')).toBe(false);  // only a synonym here
+  });
+
+  it('the sibling fixture behaves the same way (sleeve gastrectomy vs gastric bypass)', () => {
+    const out = suggestCriteriaKeywords({
+      incl: 'Adults undergoing sleeve gastrectomy',
+      excl: 'Prior gastric bypass',
+    });
+    expect(out.conflicts).toEqual([]);
+    expect(has(out.include, 'sleeve gastrectomy')).toBe(true);
+    expect(has(out.exclude, 'gastric bypass')).toBe(true);
+  });
+
+  it('every reported conflict is a concept actually written on BOTH sides', () => {
+    const cases = [
+      { incl: 'Adults undergoing bariatric surgery', excl: 'Revision after sleeve gastrectomy' },
+      { incl: 'Adults with epilepsy', excl: 'Studies with epilepsy' },
+      { incl: 'Adults with type 2 diabetes', excl: 'Gestational diabetes' },
+      { incl: 'Randomized controlled trials', excl: 'Animal studies' },
+    ];
+    for (const snap of cases) {
+      const out = suggestCriteriaKeywords(snap);
+      for (const { term } of out.conflicts) {
+        const k = term.toLowerCase();
+        expect(snap.incl.toLowerCase(), JSON.stringify(snap)).toContain(k);
+        expect(snap.excl.toLowerCase(), JSON.stringify(snap)).toContain(k);
+      }
+    }
+  });
+
   it('only the ambiguous concept is withheld — the rest of each side survives', () => {
     const out = suggestCriteriaKeywords({
       incl: 'Adults with epilepsy\nRandomized controlled trials',

@@ -19,6 +19,8 @@ import {
   effectiveDenominatorPopulation, effectiveActionStatus,
   denominatorPopulationLabel, actionStatusLabel, denominatorCustomText,
   requiresCustomDenominator, isProportionMetaUnclassified,
+  isDenominatorPopulationKey, isActionStatusKey,
+  denominatorPopulationPatch, exportedDenominatorCustom,
 } from '../../../src/research-engine/extraction/proportionMeta.js';
 import {
   DENOMINATOR_POPULATIONS, ACTION_STATUSES,
@@ -209,6 +211,100 @@ describe('requiresCustomDenominator (107.md §8A)', () => {
   });
 });
 
+/* ═════════════ registry membership is a Set test, never a truthy lookup ═════════════ */
+
+/** Keys every plain object inherits from Object.prototype. `LABEL[k]` is TRUTHY for each
+ *  of them, which is why gating logic must ask the registry, not the label map. */
+const PROTOTYPE_KEYS = ['constructor', 'toString', 'hasOwnProperty', 'valueOf', '__proto__'];
+
+describe('isDenominatorPopulationKey / isActionStatusKey (107.md §8E review fix)', () => {
+  it('true for every registry member, trimmed', () => {
+    for (const [k] of DENOMINATOR_POPULATIONS) expect(isDenominatorPopulationKey(k)).toBe(true);
+    for (const [k] of ACTION_STATUSES) expect(isActionStatusKey(k)).toBe(true);
+    expect(isDenominatorPopulationKey('  other  ')).toBe(true);
+  });
+
+  it('false for "", null, undefined and unknown values', () => {
+    for (const v of ['', '   ', null, undefined, 'martians', 'OTHER', 42]) {
+      expect(isDenominatorPopulationKey(v)).toBe(false);
+      expect(isActionStatusKey(v)).toBe(false);
+    }
+  });
+
+  it('false for inherited Object.prototype keys (a bare label lookup reads TRUTHY)', () => {
+    for (const k of PROTOTYPE_KEYS) {
+      expect(DENOMINATOR_POPULATION_LABEL[k]).toBeTruthy();   // the trap being guarded
+      expect(ACTION_STATUS_LABEL[k]).toBeTruthy();
+      expect(isDenominatorPopulationKey(k)).toBe(false);
+      expect(isActionStatusKey(k)).toBe(false);
+    }
+  });
+
+  it('the readers already treat those values as unclassified — so must the validators', () => {
+    for (const k of PROTOTYPE_KEYS) {
+      expect(effectiveDenominatorPopulation({ denominatorPopulation: k })).toBe('');
+      expect(effectiveActionStatus({ actionStatus: k })).toBe('');
+      expect(denominatorPopulationLabel({ denominatorPopulation: k })).toBe('');
+      expect(actionStatusLabel({ actionStatus: k })).toBe('');
+    }
+  });
+});
+
+/* ═══════════ §8A — switching the population clears an orphaned description ═══════════ */
+
+describe('denominatorPopulationPatch (107.md §8A review fix)', () => {
+  const withCustom = { esType: 'PROP', denominatorPopulation: 'other', denominatorCustom: 'Patients who completed post-test genetic counseling' };
+
+  it('clears denominatorCustom in the SAME patch when leaving Other/custom', () => {
+    for (const [k] of DENOMINATOR_POPULATIONS) {
+      if (k === 'other') continue;
+      expect(denominatorPopulationPatch(withCustom, k))
+        .toEqual({ denominatorPopulation: k, denominatorCustom: '' });
+    }
+  });
+
+  it('also clears it when the reviewer goes back to "— Not classified —"', () => {
+    expect(denominatorPopulationPatch(withCustom, '')).toEqual({ denominatorPopulation: '', denominatorCustom: '' });
+  });
+
+  it('KEEPS the description when the new value is still Other/custom', () => {
+    expect(denominatorPopulationPatch(withCustom, 'other')).toEqual({ denominatorPopulation: 'other' });
+    expect(denominatorPopulationPatch(withCustom, ' other ')).toEqual({ denominatorPopulation: ' other ' });
+  });
+
+  it('writes the single key when there is nothing to clear (no gratuitous blob churn)', () => {
+    expect(denominatorPopulationPatch({ esType: 'PROP' }, 'all_patients_tested'))
+      .toEqual({ denominatorPopulation: 'all_patients_tested' });
+    expect(denominatorPopulationPatch({ denominatorCustom: '   ' }, 'all_patients_tested'))
+      .toEqual({ denominatorPopulation: 'all_patients_tested' });
+    expect(denominatorPopulationPatch(undefined, 'all_patients_tested'))
+      .toEqual({ denominatorPopulation: 'all_patients_tested' });
+  });
+
+  it('passes the raw select value through untouched (it is what the row stores)', () => {
+    expect(denominatorPopulationPatch({}, 'plp_molecular_diagnoses').denominatorPopulation).toBe('plp_molecular_diagnoses');
+  });
+});
+
+describe('exportedDenominatorCustom (107.md §8A review fix — belt and braces)', () => {
+  it('returns the description for an Other/custom row', () => {
+    expect(exportedDenominatorCustom({ denominatorPopulation: 'other', denominatorCustom: '  Completed counselling  ' }))
+      .toBe('Completed counselling');
+  });
+
+  it('returns "" for a STALE row written before the select started clearing it', () => {
+    expect(exportedDenominatorCustom({ denominatorPopulation: 'all_patients_tested', denominatorCustom: 'Completed counselling' })).toBe('');
+  });
+
+  it('returns "" for an unclassified, unknown-value or legacy row', () => {
+    expect(exportedDenominatorCustom({ denominatorPopulation: '', denominatorCustom: 'junk' })).toBe('');
+    expect(exportedDenominatorCustom({ denominatorPopulation: 'martians', denominatorCustom: 'junk' })).toBe('');
+    expect(exportedDenominatorCustom({ denominatorPopulation: 'constructor', denominatorCustom: 'junk' })).toBe('');
+    expect(exportedDenominatorCustom({})).toBe('');
+    expect(exportedDenominatorCustom(null)).toBe('');
+  });
+});
+
 /* ══════════════════════ the model: BOTH mkStudy factories ══════════════════════ */
 
 describe('mkStudy mints the three fields as "" (BOTH factories — 107.md §15)', () => {
@@ -287,6 +383,27 @@ describe('validateStudy — Other/custom requires its description (107.md §8E)'
     const warns = issues.filter((i) => i.sev === 'warn').map((i) => i.field);
     expect(warns).toContain('denominatorPopulation');
     expect(warns).toContain('actionStatus');
+  });
+
+  it('an inherited-key value ("constructor"/"toString") also WARNS — both copies', () => {
+    // Before the review fix `!DENOMINATOR_POPULATION_LABEL['constructor']` was false, so the
+    // warning was suppressed while every reader still showed "— Not classified —": the
+    // screen said unclassified and nothing flagged the junk on the row.
+    for (const k of PROTOTYPE_KEYS) {
+      for (const validate of [validateStudy, validateStudyMonolith]) {
+        const issues = validate(prop({ denominatorPopulation: k, actionStatus: k }));
+        expect(issues.filter((i) => i.sev === 'error')).toHaveLength(0);
+        const warned = issues.filter((i) => i.sev === 'warn').map((i) => i.field);
+        expect(warned).toContain('denominatorPopulation');
+        expect(warned).toContain('actionStatus');
+      }
+    }
+  });
+
+  it('"other" is still the ONLY value that demands a description (prototype keys do not)', () => {
+    for (const k of PROTOTYPE_KEYS) {
+      expect(msgs(prop({ denominatorPopulation: k, denominatorCustom: '' }))).not.toContain(CUSTOM_REQUIRED);
+    }
   });
 
   it('the monolithStats DUPLICATE of validateStudy carries the same rules', () => {

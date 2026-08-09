@@ -64,6 +64,23 @@ export function effectiveActionStatus(study) {
   return ACTION_KEYS.has(v) ? v : UNCLASSIFIED;
 }
 
+/**
+ * isDenominatorPopulationKey / isActionStatusKey — registry MEMBERSHIP, not truthiness.
+ * `DENOMINATOR_POPULATION_LABEL` and `ACTION_STATUS_LABEL` are plain `Object.fromEntries`
+ * maps, so `LABEL['constructor']` / `LABEL['toString']` read TRUTHY off the prototype: a
+ * row storing one of those strings suppressed the "unrecognised value" warning while every
+ * Set-based reader here still treated it as unclassified (107.md §8E review fix). Callers
+ * that GATE on the registry must use these, never a bare lookup.
+ * @returns {boolean}
+ */
+export function isDenominatorPopulationKey(value) {
+  return DENOMINATOR_KEYS.has(raw(value));
+}
+
+export function isActionStatusKey(value) {
+  return ACTION_KEYS.has(raw(value));
+}
+
 /** The custom denominator description as stored (trimmed); '' when absent. */
 export function denominatorCustomText(study) {
   return raw(study && study.denominatorCustom);
@@ -90,6 +107,36 @@ export function actionStatusLabel(study) {
  */
 export function requiresCustomDenominator(value) {
   return raw(value) === 'other';
+}
+
+/**
+ * denominatorPopulationPatch(study, nextValue) — 107.md §8A (review fix). The COMBINED row
+ * patch for changing the denominator population: the free-text description only means
+ * anything under 'Other/custom', and the input that shows it is hidden for every other
+ * option, so text left behind by an earlier choice is invisible on screen yet still
+ * exported — two contradictory denominator statements in one submission package. Clearing
+ * it HERE keeps value + provenance in a single blob write (83.md §5) instead of two
+ * sequential field writes that a save could flush between.
+ *
+ * Returns the single-key patch when there is nothing to clear, so switching the population
+ * on a row that never had a description writes exactly what it wrote before.
+ * @returns {{denominatorPopulation:*, denominatorCustom?:string}}
+ */
+export function denominatorPopulationPatch(study, nextValue) {
+  const patch = { denominatorPopulation: nextValue };
+  if (!requiresCustomDenominator(nextValue) && denominatorCustomText(study)) patch.denominatorCustom = '';
+  return patch;
+}
+
+/**
+ * exportedDenominatorCustom(study) — the description an EXPORT should carry: '' unless the
+ * row's effective population is 'Other/custom'. Belt and braces beside the patch above —
+ * a project saved before that fix can still hold stale text, and no load-path normalizer
+ * strips it (writing to old rows would make every project open dirty, 107.md §15).
+ * @returns {string}
+ */
+export function exportedDenominatorCustom(study) {
+  return requiresCustomDenominator(effectiveDenominatorPopulation(study)) ? denominatorCustomText(study) : '';
 }
 
 /**

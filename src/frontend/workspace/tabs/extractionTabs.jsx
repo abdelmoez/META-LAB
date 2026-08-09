@@ -29,7 +29,7 @@ import { orderStudies, EXTRACTION_SORTS, DEFAULT_EXTRACTION_SORT } from "../../p
 import { isNonPrimary } from "../../../research-engine/import-export/referenceParsers.js";
 import { SOURCE_OPTIONS, DATA_NATURE, ADJUST_OPTIONS, EXTRACT_FLAGS, ES_TYPES, DENOMINATOR_POPULATIONS, ACTION_STATUSES } from "../../../research-engine/project-model/monolithConstants.js";
 // 107.md §8/§9 — per-estimate proportion metadata + the derived percentage.
-import { UNCLASSIFIED_LABEL, effectiveDenominatorPopulation, effectiveActionStatus, requiresCustomDenominator, formatProportionDisplay } from "../../../research-engine/extraction/proportionMeta.js";
+import { UNCLASSIFIED_LABEL, effectiveDenominatorPopulation, effectiveActionStatus, requiresCustomDenominator, formatProportionDisplay, denominatorPopulationPatch, exportedDenominatorCustom } from "../../../research-engine/extraction/proportionMeta.js";
 import { calcES, CONVERSIONS, validateStudy, findDuplicates, checkPoolability } from "../../../research-engine/statistics/monolithStats.js";
 import { AI_FEATURES_ENABLED, callClaude, fetchCitationAI, fileToBase64, fetchByDOI, fetchByPMID, safeParseJSON } from "../../services/aiService.js";
 import { openExportDialog } from "../exportDialogBridge.js";
@@ -388,6 +388,9 @@ function StudyCard({s,idx,updStudy,delStudy,dup,onClone}){
   const[showMeta,setShowMeta]=useState(false);
   const[showConv,setShowConv]=useState(false);
   const ch=(k,v)=>updStudy(s.id,k,v);
+  // 107.md §8A (review fix) — a multi-key write, so a value and the companion field it
+  // invalidates land in ONE project update instead of two sequential single-key writes.
+  const chFields=(fields)=>updStudy(s.id,fields);
   const toggleFlag=(f)=>{const cur=s.flags||[];ch("flags",cur.includes(f)?cur.filter(x=>x!==f):[...cur,f]);};
   const issues=validateStudy(s);
   const errors=issues.filter(i=>i.sev==="error");
@@ -504,7 +507,7 @@ function StudyCard({s,idx,updStudy,delStudy,dup,onClone}){
           stored value shows as unclassified instead of a blank select. */}
       {s.esType==="PROP"&&(<div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:12}}>
         <div><label style={lbl}>Denominator population <HelpTip text="Which population this proportion's DENOMINATOR counts. Belongs to this estimate — a second proportion from the same paper can use a different denominator."/></label>
-          <select value={effectiveDenominatorPopulation(s)} onChange={e=>ch("denominatorPopulation",e.target.value)} style={inp}>
+          <select value={effectiveDenominatorPopulation(s)} onChange={e=>chFields(denominatorPopulationPatch(s,e.target.value))} style={inp}>
             <option value="">{UNCLASSIFIED_LABEL}</option>
             {DENOMINATOR_POPULATIONS.map(([k,l])=><option key={k} value={k}>{l}</option>)}
           </select></div>
@@ -647,6 +650,10 @@ export function buildExtractionCSV(studies=[],project={}){
     "es","lo","hi","needsReview","extractedBy","extractedAt","conversions","notes"];
   const esc=v=>{let t;if(Array.isArray(v))t=v.join("; ");else if(v&&typeof v==="object")t=JSON.stringify(v);else t=String(v==null?"":v);
     t=t.replace(/"/g,'""');return /[",\n]/.test(t)?`"${t}"`:t;};
+  // 107.md §8A (review fix) — the custom description belongs to "Other/custom" ONLY. A row
+  // saved before the select started clearing it can still carry text from an earlier
+  // choice, which would export a denominator contradicting the exported population.
+  const cell=(s,c)=>c==="denominatorCustom"?exportedDenominatorCustom(s):s[c];
   // 106.md §Export — when the review extracted individual patients, every row also
   // carries its case identity and the review's patient-level variables, so this one
   // file IS case-level. The parent-article columns (author/year/doi/pmid) are
@@ -669,7 +676,7 @@ export function buildExtractionCSV(studies=[],project={}){
     return s[c]==null?"":s[c];
   };
   const header=[...cols,...caseHeaders.map(esc)].join(",");   // labels are user text — escape them
-  const rows=list.map(s=>[...cols.map(c=>esc(s[c])),...caseCols.map(c=>esc(caseCell(s,c)))].join(","));
+  const rows=list.map(s=>[...cols.map(c=>esc(cell(s,c))),...caseCols.map(c=>esc(caseCell(s,c)))].join(","));
   return [header,...rows].join("\n");
 }
 
@@ -688,7 +695,11 @@ function ClassicExtractionTab({project,updateProject,activeId,setTab}){
   useEffect(()=>{let dead=false;extractionAssistFlagEnabled().then(on=>{if(!dead)setExtractionAssistOn(on);});return()=>{dead=true;};},[]);
   const addStudy=()=>updateProject(activeId,p=>({...p,studies:[...p.studies,mkStudy()]}));
   const addStudyObj=(st)=>updateProject(activeId,p=>({...p,studies:[...p.studies,st]}));
-  const updStudy=(id,k,v)=>updateProject(activeId,p=>({...p,studies:p.studies.map(s=>s.id===id?{...s,[k]:v,updatedAt:new Date().toISOString()}:s)}));
+  // (id, key, value) for a single field, or (id, {k:v,…}) for a COMBINED write — one
+  // project update, so a value and the companion field it invalidates can never be
+  // persisted apart (107.md §8A review fix).
+  const updStudy=(id,k,v)=>{const fields=(k&&typeof k==="object")?k:{[k]:v};
+    return updateProject(activeId,p=>({...p,studies:p.studies.map(s=>s.id===id?{...s,...fields,updatedAt:new Date().toISOString()}:s)}));};
   const delStudy=id=>updateProject(activeId,p=>({...p,studies:p.studies.filter(s=>s.id!==id)}));
   // Clone study-level metadata into a new row for another outcome / time point / arm.
   // 83.md §2 — the PDF linkage (screening ids + study-document pointer) is STUDY-level

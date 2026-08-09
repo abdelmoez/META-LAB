@@ -12,9 +12,13 @@
  *  - a duplicate add (different case + spacing) is a flagged no-op
  *  - move is atomic: gone from the source list, present on the target
  *  - accept records a decision AND activates the term
- *  - remove is the real Undo path
+ *  - remove records a deliberate rejection; { reject:false } is the Undo variant
+ *    that records NO verdict (107.md rec round)
+ *  - removing the last term leaves the side EMPTY — the shared defaults do not
+ *    come back, and no later op re-seeds them (107.md rec round)
  *  - a non-leader member gets 403
- *  - validation: unknown op / bad list / empty term / over-long term → 400
+ *  - validation: unknown op / bad list / empty term / over-long term / bad
+ *    `reject` flag → 400
  */
 import { describe, it, expect, beforeAll } from 'vitest';
 
@@ -130,6 +134,56 @@ describe('107.md §2 — keyword ops endpoint (integration)', () => {
     expect(JSON.parse(r.data.keywordMeta).decisions.include.epilepsy).toBe('rejected');
   });
 
+  // 107.md rec round — the snackbar Undo used a plain `remove`, which recorded a
+  // 'rejected' verdict and permanently suppressed the matching criteria suggestion.
+  it('{ reject:false } removes the term WITHOUT recording a verdict', async () => {
+    if (!up) return;
+    const a = await register(`kwundo_${rnd()}@t.local`);
+    const pid = await newProject(a.cookie, `KW undo ${rnd()}`);
+
+    const added = await op(a.cookie, pid, { type: 'add', list: 'include', term: 'drug-resistant epilepsy' });
+    expect(added.status).toBe(200);
+    expect(JSON.parse(added.data.keywordMeta).origins.include['drug-resistant epilepsy']).toBe('manual');
+
+    const undo = await op(a.cookie, pid, {
+      type: 'remove', list: 'include', term: 'drug-resistant epilepsy', reject: false,
+    });
+    expect(undo.status).toBe(200);
+    expect(parse(undo.data.inclusionKeywords)).not.toContain('drug-resistant epilepsy');
+    const meta = JSON.parse(undo.data.keywordMeta || '{}');
+    expect(meta.decisions.include['drug-resistant epilepsy']).toBeUndefined();
+    expect(meta.origins.include['drug-resistant epilepsy']).toBeUndefined();
+
+    const fresh = await api(`/screening/projects/${pid}`, { cookie: a.cookie });
+    expect(JSON.parse(fresh.data.keywordMeta || '{}').decisions?.include?.['drug-resistant epilepsy'])
+      .toBeUndefined();
+  });
+
+  it('removing the last term leaves the side empty and no later op re-seeds it', async () => {
+    if (!up) return;
+    const a = await register(`kwempty_${rnd()}@t.local`);
+    const pid = await newProject(a.cookie, `KW empty ${rnd()}`);
+    // Curate down to one term through the legacy full-array path, then use the ops
+    // endpoint for the removal that empties the side.
+    const curated = await api(`/screening/projects/${pid}`, {
+      method: 'PUT', cookie: a.cookie, body: { inclusionKeywords: JSON.stringify(['seizure']) },
+    });
+    if (curated.status !== 200) return; // precondition, not the thing under test
+
+    const gone = await op(a.cookie, pid, { type: 'remove', list: 'include', term: 'seizure' });
+    expect(gone.status).toBe(200);
+    expect(parse(gone.data.inclusionKeywords)).toEqual([]);
+    expect(JSON.parse(gone.data.keywordMeta).seeded.include).toBe(true);
+
+    const later = await op(a.cookie, pid, { type: 'reject', list: 'include', term: 'epilepsy' });
+    expect(later.status).toBe(200);
+    expect(parse(later.data.inclusionKeywords)).toEqual([]);
+
+    const fresh = await api(`/screening/projects/${pid}`, { cookie: a.cookie });
+    expect(parse(fresh.data.inclusionKeywords)).toEqual([]);
+    expect(parse(fresh.data.exclusionKeywords).length).toBeGreaterThan(0); // other side untouched
+  });
+
   it('a non-leader member gets 403', async () => {
     if (!up) return;
     const owner = await register(`kwown_${rnd()}@t.local`);
@@ -157,6 +211,8 @@ describe('107.md §2 — keyword ops endpoint (integration)', () => {
       { type: 'add', list: 'include', term: '   ' },
       { type: 'add', list: 'include', term: 'x'.repeat(201) },
       { type: 'move', list: 'include', term: 'x', toList: 'include' },
+      { type: 'remove', list: 'include', term: 'x', reject: 'nope' },
+      { type: 'add', list: 'include', term: 'x', reject: false },
       {},
     ]) {
       const r = await op(a.cookie, pid, body);

@@ -11,7 +11,7 @@
 
 // 107.md §8F — human LABELS for the per-estimate proportion metadata (self-healing:
 // an unknown or absent value resolves to '', never a fabricated category).
-import { denominatorPopulationLabel, actionStatusLabel } from '../extraction/proportionMeta.js';
+import { denominatorPopulationLabel, actionStatusLabel, exportedDenominatorCustom } from '../extraction/proportionMeta.js';
 
 /** Filesystem-safe slug for ZIP entry names. */
 export function safeName(s, fallback = 'item') {
@@ -136,7 +136,10 @@ export function buildStudyTableCSV(studies, robByStudyId = {}) {
     sampleSize: sampleSize(s),
     esType: s.esType || '',
     denominatorPopulation: denominatorPopulationLabel(s),
-    denominatorCustom: s.denominatorCustom || '',
+    // 107.md §8A (review fix) — only 'Other/custom' has a description. A row that still
+    // carries text from an earlier choice must not print a denominator that contradicts
+    // the population in the neighbouring column of a HUMAN-READ submission table.
+    denominatorCustom: exportedDenominatorCustom(s),
     actionStatus: actionStatusLabel(s),
     reportedFormat: s.reportedFormat || '',
     reported: reportedSummary(s),

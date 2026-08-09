@@ -42,10 +42,12 @@ import { rankItems } from '../../../research-engine/screening/ai/ranking.js';
 import { parseScreeningShortcuts, DEFAULT_SCREENING_SHORTCUTS, keyLabel } from '../screeningShortcuts.js';
 // 107.md §5 — nearestScrollTop: minimal-scroll ('nearest') arithmetic for one container.
 import { shouldWindow, computeListWindow, measuredRowHeight, nearestScrollTop, DEFAULT_ROW_HEIGHT } from '../lib/listWindow.js';
+// 107.md rec — the keyword gate, resolved in one pure place (see lib/screenAccess.js).
+import { canEditScreeningKeywords } from '../lib/screenAccess.js';
 // 100.md §13 — pure page-window arithmetic (what is still loadable before/after the
 // contiguous run of pages currently held), shared with the list-query module's tests.
 // 107.md §7 — moveIntent: what a next/previous keystroke means at the current position.
-import { pageWindow, moveIntent } from '../../../research-engine/screening/recordListQuery.js';
+import { pageWindow, moveIntent, advanceContextMatches } from '../../../research-engine/screening/recordListQuery.js';
 import { api } from '../../api-client/apiClient.js';
 import Tooltip from '../../components/Tooltip.jsx';
 
@@ -234,12 +236,22 @@ export default function ScreeningTab({ pid, project, access, refreshProject, use
   const [kwOpError, setKwOpError] = useState('');
   const [kwNote, setKwNote] = useState(null);        // { message, tone, undo }
   const [kwConflict, setKwConflict] = useState(null); // { phrase, from, to }
-  const canEditKeywords = !!access?.canManageSettings;
+  const canEditKeywords = canEditScreeningKeywords(access);
+
+  // 107.md rec — RESPONSE SEQUENCING. Two ops can be in flight at once (nothing locks
+  // the abstract shortcut or the chip buttons), and the responses carry FULL keyword
+  // columns. Adopting whichever resolves last would let an older snapshot overwrite a
+  // newer one — the second term silently vanishes from the chips, the highlighting and
+  // `kwCtxRef`, and nothing refetches (the server excludes the acting user from its
+  // realtime poke). Only the latest request may write `kwLocal`.
+  const kwSeqRef = useRef(0);
 
   const runKeywordOp = useCallback(async (op) => {
+    const seq = (kwSeqRef.current += 1);
     setKwOpError('');
     try {
       const r = await screeningApi.keywordOp(pid, op);
+      if (seq !== kwSeqRef.current) return r;   // superseded — its state is stale
       setKwLocal({
         inclusionKeywords: r.inclusionKeywords,
         exclusionKeywords: r.exclusionKeywords,
@@ -248,9 +260,11 @@ export default function ScreeningTab({ pid, project, access, refreshProject, use
       return r;
     } catch (e) {
       const message = e.message || 'Could not update keywords';
-      setKwOpError(message);
-      // Also surface it where the action was taken (the abstract, not the panel).
-      setKwNote({ message, tone: 'error' });
+      if (seq === kwSeqRef.current) {
+        setKwOpError(message);
+        // Also surface it where the action was taken (the abstract, not the panel).
+        setKwNote({ message, tone: 'error' });
+      }
       return null;
     }
   }, [pid]);
@@ -286,7 +300,10 @@ export default function ScreeningTab({ pid, project, access, refreshProject, use
         message: `Added “${phrase}” to ${label} keywords.`,
         tone: 'info',
         // Undo is a real inverse op against the server, not a local rollback.
-        undo: { type: 'remove', list, term: phrase },
+        // `reject: false` is what makes it an INVERSE rather than a second edit: a
+        // plain `remove` also records a 'rejected' verdict, which permanently
+        // suppressed the matching criteria suggestion the add was never meant to touch.
+        undo: { type: 'remove', list, term: phrase, reject: false },
       });
     });
   }, []);
@@ -307,7 +324,9 @@ export default function ScreeningTab({ pid, project, access, refreshProject, use
       setKwNote({
         message: `Moved “${c.phrase}” to ${label} keywords.`,
         tone: 'info',
-        undo: { type: 'move', list: c.to, term: c.phrase, toList: c.from },
+        // Non-verdict inverse: restores the source origin verbatim and leaves no
+        // 'rejected' residue on the list the term is being moved back onto.
+        undo: { type: 'move', list: c.to, term: c.phrase, toList: c.from, reject: false },
       });
     });
   }, [kwConflict, runKeywordOp]);
@@ -410,10 +429,20 @@ export default function ScreeningTab({ pid, project, access, refreshProject, use
    * at a time would be dozens of round-trips on a real review). The loaded window is
    * therefore a CONTIGUOUS run of pages `firstPage…page`, not always `1…page`, which is
    * what `hasMore` / `hasEarlier` / the remaining count below are derived from.
+   *
+   * 107.md rec — LOAD GENERATION. A `reset` replaces the whole window (project switch,
+   * filter/search change, Resume Screening, the realtime `decision.saved` refresh); an
+   * append issued against the PREVIOUS window and landing afterwards would splice rows
+   * answering a different query onto it — page 2 of the old list appended below page 9
+   * of the new one, with `page`/`firstPage` describing a window the array no longer
+   * holds. Every reset bumps the generation; an append captures it at request time and
+   * is DISCARDED when it no longer matches.
    */
+  const loadGenRef = useRef(0);
   const loadRecords = useCallback(async ({ reset = false, direction = 'next', p, s, f, select } = {}) => {
     const pageNum = reset ? (p ?? 1) : (p ?? (direction === 'prev' ? firstPage - 1 : page + 1));
     if (!reset && (pageNum < 1)) return false;
+    const gen = reset ? (loadGenRef.current += 1) : loadGenRef.current;
     const searchVal = s !== undefined ? s : searchRef.current;
     const filterVal = f !== undefined ? f : filterRef.current;
     reset ? setLoading(true) : setLoadingMore(true);
@@ -428,6 +457,9 @@ export default function ScreeningTab({ pid, project, access, refreshProject, use
         if (aiBandRef.current && aiBandRef.current !== 'all') params.aiBand = aiBandRef.current;
       }
       const data = await screeningApi.listRecords(pid, params);
+      // Superseded by a reset issued while this append was in flight. Dropping it is
+      // the only correct merge — its rows answer a query the list no longer shows.
+      if (!reset && gen !== loadGenRef.current) return false;
       const recs = data.records || [];
       recordsRef.current = reset ? recs : (direction === 'prev' ? [...recs, ...recordsRef.current] : [...recordsRef.current, ...recs]);
       setRecords(recordsRef.current);
@@ -490,6 +522,10 @@ export default function ScreeningTab({ pid, project, access, refreshProject, use
     // a realtime event arriving mid-switch cannot reload "page 9" of a fresh project.
     setFirstPage(1); firstPageRef.current = 1;
     aiQueueMounted.current = false;
+    // 107.md rec — an auto-advance armed in the OLD project must not resolve against
+    // the new one (it would select a foreign record and markOpened a 404). The load
+    // generation below covers filter/search resets; a pid change is scrubbed here.
+    pendingAdvanceRef.current = null; advanceLockRef.current = false;
     loadRecords({ reset: true, s: '', f: 'all' });
     setSelectedIncl([]); setSelectedExcl([]); keywordsRef.current = '';
     Promise.all([
@@ -622,17 +658,21 @@ export default function ScreeningTab({ pid, project, access, refreshProject, use
        · identify the new study by IDENTITY, not by index — an AI queue mode reorders
          the merged list, so `records[previousCount]` is not reliably a new record. */
   const navCtxRef = useRef({});
-  navCtxRef.current = { hasMore: pageWin.hasMore, loadingMore };
+  // 107.md rec — `loading` (the RESET state) belongs in the in-flight input too. Only
+  // `loadingMore` was consulted, so a keystroke during a reset (Resume Screening, a
+  // filter change, the realtime `decision.saved` refresh) still returned 'load-next'
+  // and issued an append computed from the pre-reset `page`.
+  navCtxRef.current = { hasMore: pageWin.hasMore, loadingMore, loading };
   const advanceLockRef = useRef(false);
   const pendingAdvanceRef = useRef(null);
 
   function moveSelection(dir) {
     const recs = displayRecordsRef.current;
     const idx = recs.findIndex(r => r.id === selectedIdRef.current);
-    const { hasMore, loadingMore: busy } = navCtxRef.current;
+    const { hasMore, loadingMore: busy, loading: resetting } = navCtxRef.current;
     const intent = moveIntent({
       index: idx, dir, count: recs.length,
-      hasMore, loadingMore: busy || advanceLockRef.current,
+      hasMore, loadingMore: busy || resetting || advanceLockRef.current,
     });
     if (intent === 'move') {
       const next = recs[idx + (Number(dir) < 0 ? -1 : 1)];
@@ -641,7 +681,14 @@ export default function ScreeningTab({ pid, project, access, refreshProject, use
     }
     if (intent !== 'load-next') return;   // 'end' → stay put; 'noop' → already loading
     advanceLockRef.current = true;
-    pendingAdvanceRef.current = { seen: new Set(recs.map(r => r.id)) };
+    // Stamp the DATASET this advance was armed against (107.md rec): the effect below
+    // fires on the first render where `loadingMore` is false — whichever load that was
+    // — so without the stamp a project switch or filter change mid-flight lands the
+    // reader on a record from the previous list.
+    pendingAdvanceRef.current = {
+      seen: new Set(recs.map(r => r.id)),
+      pid, filter: filterRef.current, search: searchRef.current, gen: loadGenRef.current,
+    };
     loadMore();
   }
 
@@ -656,9 +703,14 @@ export default function ScreeningTab({ pid, project, access, refreshProject, use
     // Failure: the error banner + the manual "Load more" button carry the retry, and
     // the reviewer keeps the study (and the decision form) they were already on.
     if (listError) return;
+    // The list under us is no longer the one the keystroke was issued against — drop
+    // the advance silently rather than selecting a record from the previous dataset.
+    if (!advanceContextMatches(pend, {
+      pid, filter: filterRef.current, search: searchRef.current, gen: loadGenRef.current,
+    })) return;
     const next = displayRecords.find(r => !pend.seen.has(r.id));
     if (next) selectRecord(next.id);
-  }, [displayRecords, loadingMore, listError, selectRecord]);
+  }, [displayRecords, loadingMore, listError, selectRecord, pid]);
 
   /* ── 100.md §§12-15 — Resume Screening ─────────────────────────────────────
      The reviewer's stopping point lives on the SERVER, derived from their OWN
@@ -1018,6 +1070,10 @@ function LeftColumn({
   const scrollRef = useRef(null);
   const rowsRef = useRef(null);
   const scrollRaf = useRef(0);
+  // 107.md rec — the opaque sticky "Load more" bar is pinned INSIDE this scrollport, so
+  // the bottom of `clientHeight` is not visible space. Measured, not hard-coded: the
+  // button's padding and font scale with the design tokens.
+  const loadMoreRef = useRef(null);
   const [scrollTop, setScrollTop] = useState(0);
   const [viewportH, setViewportH] = useState(600);
   const [rowH, setRowH] = useState(DEFAULT_ROW_HEIGHT);
@@ -1053,6 +1109,12 @@ function LeftColumn({
     setRowH(prev => measuredRowHeight(rowsRef.current.offsetHeight, visibleRecords.length, prev));
   }, [windowed, visibleRecords.length, records.length, scrollTop]);
 
+  // Shared by the two scroll effects below: which selection the nearest-scroll pass has
+  // already handled, and whether it still owes one. Declared here because the resume
+  // one-shot has to hand ownership of a selection over to it (107.md rec).
+  const navSelRef = useRef(null);
+  const navPendingRef = useRef(false);
+
   // 100.md §13 — after Resume Screening loads the right page, bring the resumed row
   // into view. One-shot: the parent clears the flag so ordinary selection (arrow keys,
   // clicking a row) never yanks the list around.
@@ -1060,9 +1122,11 @@ function LeftColumn({
     if (!scrollToSelected || !selectedId) return;
     const el = scrollRef.current;
     if (!el) return;
+    let centred = false;
     const row = el.querySelector(`[data-record-id="${CSS.escape(selectedId)}"]`);
     if (row && typeof row.scrollIntoView === 'function') {
       try { row.scrollIntoView({ block: 'center', behavior: 'smooth' }); } catch { row.scrollIntoView(); }
+      centred = true;
     } else if (windowed) {
       // Above WINDOW_MIN_COUNT rows only a slice is in the DOM (65.md SCR-5), so the
       // resumed row can be absent — scrolling to nothing would silently strand the
@@ -1075,6 +1139,12 @@ function LeftColumn({
         return; // keep the flag set: re-run once the row is mounted
       }
     }
+    // 107.md rec — this one-shot OWNS the scroll for this selection. Clearing the flag
+    // below re-runs the nearest-scroll effect one commit later, and it would write
+    // `el.scrollTop` a few milliseconds into the smooth animation above — cancelling it
+    // and leaving the resumed article edge-aligned instead of centred. Marking the
+    // selection handled here is what keeps the centring.
+    if (centred) { navSelRef.current = selectedId; navPendingRef.current = false; }
     if (onScrolledToSelected) onScrolledToSelected();
   }, [scrollToSelected, selectedId, onScrolledToSelected, windowed, records, rowH]);
 
@@ -1089,9 +1159,13 @@ function LeftColumn({
      one element and nothing else. The offset is the MINIMUM that makes the row fully
      visible ('nearest'), so a row already in view never moves — this is also why the
      effect must fire on SELECTION changes only: reacting to scrollTop as well would
-     snap the list back every time the reviewer scrolled ahead by hand. */
-  const navSelRef = useRef(null);
-  const navPendingRef = useRef(false);
+     snap the list back every time the reviewer scrolled ahead by hand.
+
+     107.md rec — the offset is computed against the UNOBSTRUCTED band, not the raw
+     clientHeight: the "Load more" bar is `position: sticky; bottom: 0` and opaque
+     inside this very scrollport, so bottom-aligning a row parked ~50px of a 74px row
+     behind it on exactly the long lists this was written for. The "Earlier records"
+     block at the top is in normal flow (it scrolls away), so there is no top inset. */
   useEffect(() => {
     if (navSelRef.current !== selectedId) { navSelRef.current = selectedId; navPendingRef.current = true; }
     if (!navPendingRef.current) return;
@@ -1099,6 +1173,9 @@ function LeftColumn({
     const el = scrollRef.current;
     const vh = el ? (el.clientHeight || 0) : 0;
     if (!el || !selectedId || !vh) { navPendingRef.current = false; return; }
+    // 0 when the bar is not rendered (`!hasMore`) — React nulls the ref on unmount, and
+    // the prop is checked too so a stale node can never contribute a phantom inset.
+    const insetBottom = (hasMore && loadMoreRef.current) ? (loadMoreRef.current.offsetHeight || 0) : 0;
 
     const row = el.querySelector(`[data-record-id="${CSS.escape(selectedId)}"]`);
     if (row) {
@@ -1110,6 +1187,7 @@ function LeftColumn({
         rowTop: (rRect.top - cRect.top) + el.scrollTop,
         rowHeight: rRect.height,
         scrollTop: el.scrollTop, viewportHeight: vh,
+        insetBottom,
       });
       if (next != null) el.scrollTop = next;
       navPendingRef.current = false;
@@ -1121,10 +1199,10 @@ function LeftColumn({
     // next pass measures it for real (same two-step the resume effect above uses).
     const idx = records.findIndex(r => r.id === selectedId);
     if (idx < 0) { navPendingRef.current = false; return; }
-    const next = nearestScrollTop({ rowTop: idx * rowH, rowHeight: rowH, scrollTop: el.scrollTop, viewportHeight: vh });
+    const next = nearestScrollTop({ rowTop: idx * rowH, rowHeight: rowH, scrollTop: el.scrollTop, viewportHeight: vh, insetBottom });
     if (next == null) { navPendingRef.current = false; return; }
     el.scrollTop = next;
-  }, [selectedId, scrollToSelected, windowed, records, rowH, scrollTop]);
+  }, [selectedId, scrollToSelected, windowed, records, rowH, scrollTop, hasMore]);
 
   return (
     <div style={{ width: 300, flexShrink: 0, borderRight: `1px solid ${C.brd}`, display: 'flex', flexDirection: 'column', background: C.surf, overflow: 'hidden', minHeight: 0 }}>
@@ -1208,7 +1286,11 @@ function LeftColumn({
             </div>
             {windowed && <div aria-hidden="true" style={{ height: win.bottomPad, flexShrink: 0 }} />}
             {hasMore && (
-              <div style={{ position: 'sticky', bottom: 0, background: C.surf, borderTop: `1px solid ${C.brd}`, padding: '10px 14px', textAlign: 'center', flexShrink: 0 }}>
+              /* 107.md rec — measured by the nearest-scroll effect above: this bar is
+                 opaque and pinned over the bottom of the list's own scrollport, so it
+                 has to be subtracted from the usable viewport before a row is
+                 bottom-aligned against it. */
+              <div ref={loadMoreRef} data-testid="screening-load-more" style={{ position: 'sticky', bottom: 0, background: C.surf, borderTop: `1px solid ${C.brd}`, padding: '10px 14px', textAlign: 'center', flexShrink: 0 }}>
                 <Button variant="ghost" onClick={onLoadMore} disabled={loadingMore} full style={{ fontSize: 12, padding: '7px 14px' }}>
                   {loadingMore ? 'Loading…' : `Load more (${Number(remaining || 0).toLocaleString()})`}
                 </Button>

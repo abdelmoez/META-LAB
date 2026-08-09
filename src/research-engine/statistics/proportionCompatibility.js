@@ -32,6 +32,7 @@ import {
 } from '../project-model/monolithConstants.js';
 import {
   effectiveDenominatorPopulation, effectiveActionStatus, denominatorCustomText, UNCLASSIFIED,
+  isDenominatorPopulationKey, isActionStatusKey, exportedDenominatorCustom,
 } from '../extraction/proportionMeta.js';
 
 /** How the unclassified/legacy state is named EVERYWHERE it is user-visible. */
@@ -68,6 +69,18 @@ const ENUM_LABEL = {
   denominatorPopulation: DENOMINATOR_POPULATION_LABEL,
   actionStatus: ACTION_STATUS_LABEL,
 };
+/** Registry MEMBERSHIP, never `map[v]` truthiness — the label maps are plain
+ *  `Object.fromEntries` objects, so `map['constructor']` returns a Function off the
+ *  prototype and would be rendered as the category's name (107.md §8E review fix). */
+const ENUM_HAS = {
+  denominatorPopulation: isDenominatorPopulationKey,
+  actionStatus: isActionStatusKey,
+};
+/** The label for a stored enum value, or '' when the value is not in the registry. */
+function enumLabel(field, value) {
+  const has = ENUM_HAS[field];
+  return has && has(value) ? ENUM_LABEL[field][value] : '';
+}
 
 const raw = (v) => (v == null ? '' : String(v).trim());
 /** Free-text comparison key: whitespace-collapsed + case-folded, so "All tested" and
@@ -77,6 +90,27 @@ const normText = (v) => raw(v).replace(/\s+/g, ' ').toLowerCase();
 /** A single-arm proportion row. Everything here applies to PROP estimates only. */
 export function isProportionRow(study) {
   return !!study && String(study.esType || '').trim().toUpperCase() === 'PROP';
+}
+
+/**
+ * 107.md §11 — the check must describe the estimates that are ACTUALLY pooled, not every
+ * row that happens to carry an effect size. `runMeta` (monolithStats.js:31) drops any row
+ * without a numeric es + lo + hi, so a row with a blank CI is neither in the diamond nor
+ * a reason to block it — and it must not enter the override signature either, or filling
+ * that CI in later would grow the pool without invalidating the recorded consent.
+ * The predicate below is `runMeta`'s, verbatim, so the two can never drift.
+ */
+export function isPoolableRow(study) {
+  if (!study) return false;
+  return study.es !== '' && study.lo !== '' && study.hi !== ''
+    && !isNaN(+study.es) && !isNaN(+study.lo) && !isNaN(+study.hi);
+}
+
+/** The poolable subset. Byte stability: the SAME array back when nothing is dropped. */
+export function poolableRows(rows) {
+  if (!Array.isArray(rows) || !rows.length) return Array.isArray(rows) ? rows : [];
+  const out = rows.filter(isPoolableRow);
+  return out.length === rows.length ? rows : out;
 }
 
 /** "Smith 2024" — how an affected estimate is named on the warning card. */
@@ -100,7 +134,9 @@ export function proportionFilterKey(outcome, timepoint) {
 export function effectiveProportionValue(study, field) {
   if (field === 'denominatorPopulation') return effectiveDenominatorPopulation(study);
   if (field === 'actionStatus') return effectiveActionStatus(study);
-  if (field === 'denominatorCustom') return normText(denominatorCustomText(study));
+  // 107.md r2 — stale custom text on a row whose population is no longer 'other' must not
+  // answer a denominatorCustom filter; only rows effectively classified 'other' carry one.
+  if (field === 'denominatorCustom') return normText(exportedDenominatorCustom(study));
   return UNCLASSIFIED;
 }
 
@@ -108,9 +144,8 @@ export function effectiveProportionValue(study, field) {
 export function proportionValueLabel(field, value) {
   const v = raw(value);
   if (field === 'denominatorCustom') return v || UNCLASSIFIED_GROUP_LABEL;
-  const map = ENUM_LABEL[field];
-  if (!map) return v || UNCLASSIFIED_GROUP_LABEL;
-  return (v && map[v]) || UNCLASSIFIED_GROUP_LABEL;
+  if (!ENUM_LABEL[field]) return v || UNCLASSIFIED_GROUP_LABEL;
+  return enumLabel(field, v) || UNCLASSIFIED_GROUP_LABEL;
 }
 
 /**
@@ -122,7 +157,7 @@ export function proportionValueLabel(field, value) {
 export function subgroupGroupLabel(field, value) {
   const v = raw(value);
   if (field === 'denominatorPopulation' || field === 'actionStatus') {
-    return (v && ENUM_LABEL[field][v]) || UNCLASSIFIED_GROUP_LABEL;
+    return enumLabel(field, v) || UNCLASSIFIED_GROUP_LABEL;
   }
   return v || 'Unspecified';
 }
@@ -156,13 +191,20 @@ export function applyProportionFilters(rows, filterMap) {
 
 /* ── the check ─────────────────────────────────────────────────────────────────── */
 
+/** Stable per-row identity for the override signature: the row id when it has one,
+ *  otherwise its display label — never the array index, which reordering would change. */
+function rowIdentity(study) {
+  return raw(study && study.id) || studyLabel(study);
+}
+
 function tally(rows, field) {
   const buckets = new Map();
   rows.forEach((s) => {
     const v = effectiveProportionValue(s, field);
     let b = buckets.get(v);
-    if (!b) { b = { value: v, count: 0, studies: [], seen: new Set(), display: '' }; buckets.set(v, b); }
+    if (!b) { b = { value: v, count: 0, studies: [], ids: [], seen: new Set(), display: '' }; buckets.set(v, b); }
     b.count += 1;
+    b.ids.push(rowIdentity(s));
     if (!b.display && field === 'denominatorCustom') b.display = denominatorCustomText(s);
     const lab = studyLabel(s);
     if (!b.seen.has(lab)) { b.seen.add(lab); b.studies.push(lab); }
@@ -178,6 +220,9 @@ function lineFor(field, bucket) {
       : proportionValueLabel(field, bucket.value),
     count: bucket.count,
     studies: bucket.studies,
+    // Sorted so the signature does not depend on studies[] order (a drag-reorder is
+    // not a change of estimate set); never rendered — it exists for the signature.
+    ids: bucket.ids.slice().sort(),
   };
 }
 
@@ -186,15 +231,19 @@ function lineFor(field, bucket) {
  * pooled proportion analysis (already outcome-scoped, exclusions applied, and with any
  * persisted filter already applied) and report what would be silently combined.
  *
+ * Only the POOLABLE rows are inspected (`isPoolableRow` = runMeta's own predicate): a row
+ * with an effect size but no 95% CI is not in the diamond, so it can neither create a
+ * conflict nor be counted in the override signature.
+ *
  * @param {Array<object>} rows  studies[] rows for one outcome pair
  * @returns {{applicable:boolean, blocking:boolean, infoOnly:boolean,
  *            issues:Array<{field:string,fieldLabel:string,kind:string,
- *                          values:Array<{value:string,label:string,count:number,studies:string[]}>,
+ *                          values:Array<{value:string,label:string,count:number,studies:string[],ids:string[]}>,
  *                          unclassifiedCount:number,totalAffected:number}>,
  *            unclassifiedFields:string[], propCount:number}}
  */
 export function checkProportionCompatibility(rows) {
-  const list = Array.isArray(rows) ? rows.filter(isProportionRow) : [];
+  const list = Array.isArray(rows) ? rows.filter((s) => isProportionRow(s) && isPoolableRow(s)) : [];
   // Nothing is pooled below two estimates, so there is nothing to warn about.
   if (list.length < 2) {
     return { applicable: false, blocking: false, infoOnly: false, issues: [], unclassifiedFields: [], propCount: list.length };
@@ -259,24 +308,49 @@ export function checkProportionCompatibility(rows) {
 /* ── the documented override (107.md §12) ──────────────────────────────────────── */
 
 /**
- * A stable fingerprint of WHAT was overridden: every conflicting field, its value keys
- * and their estimate counts. If the estimate set later changes (a study added, a value
- * corrected, a filter applied) the signature stops matching and the override is stale —
- * an override is consent to pool a SPECIFIC set of conflicting estimates, not a blanket
+ * Signature format marker. `v1` was `field:value=count[,…][;…]` — counts ONLY, which two
+ * offsetting metadata edits (A→X while B→Y) left byte-identical, and which a row entering
+ * the pool (its CI finally typed in) could also leave unchanged. `v2` additionally
+ * fingerprints WHICH rows are in each bucket, so membership changes are visible.
+ * A stored `v1` signature can never be re-derived, so it reads as STALE — the safe
+ * direction: the reviewer is asked to re-confirm rather than silently kept unblocked.
+ */
+const SIGNATURE_VERSION = 'v2';
+
+/** djb2 over the sorted member ids — short, deterministic, and locale-free. */
+function idDigest(ids) {
+  const s = (Array.isArray(ids) ? ids.slice().sort() : []).join('');
+  let h = 5381;
+  for (let i = 0; i < s.length; i += 1) h = (((h << 5) + h) ^ s.charCodeAt(i)) >>> 0;
+  return h.toString(16);
+}
+
+/**
+ * A stable fingerprint of WHAT was overridden: every conflicting field, its value keys,
+ * their estimate counts AND a digest of the contributing row ids. If the estimate set
+ * later changes (a study added, a value corrected, two values swapped, a blank CI filled
+ * in, a filter applied) the signature stops matching and the override is stale — an
+ * override is consent to pool a SPECIFIC set of conflicting estimates, not a blanket
  * permission for whatever the analysis becomes later.
  */
 export function proportionIssueSignature(check) {
   const issues = (check && check.issues) || [];
   if (!issues.length) return '';
-  return issues
-    .map((i) => `${i.field}:${i.values.map((v) => `${v.value || UNCLASSIFIED_FILTER}=${v.count}`).join(',')}`)
+  const body = issues
+    .map((i) => `${i.field}:${i.values
+      .map((v) => `${v.value || UNCLASSIFIED_FILTER}=${v.count}#${idDigest(v.ids)}`).join(',')}`)
     .join(';');
+  return `${SIGNATURE_VERSION}|${body}`;
 }
 
 /** True when a recorded override no longer describes the estimates on screen. */
 export function proportionOverrideStale(override, check) {
   if (!override) return false;
-  return String(override.signature || '') !== proportionIssueSignature(check);
+  const stored = String(override.signature || '');
+  // A pre-v2 (count-only) signature cannot identify its members — treat it as stale
+  // rather than honour a fingerprint that offsetting edits could have survived.
+  if (stored && stored.indexOf(`${SIGNATURE_VERSION}|`) !== 0) return true;
+  return stored !== proportionIssueSignature(check);
 }
 
 /**
@@ -401,6 +475,7 @@ export function sanitizeProportionOverrides(map) {
 
 export default {
   checkProportionCompatibility, applyProportionFilters, activeProportionFilters,
+  isPoolableRow, poolableRows, isProportionRow,
   proportionFilterKey, proportionIssueSignature, proportionOverrideStale,
   buildProportionOverride, describeOverrideCategories, overrideDateText,
   proportionFilterLabel, proportionExportFields, proportionExportMetaRows,

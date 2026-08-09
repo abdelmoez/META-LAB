@@ -19,10 +19,17 @@
  * Canonical shape:
  *   { version: 1,
  *     decisions: { include: { [key]: 'accepted'|'rejected' }, exclude: {…} },
- *     origins:   { include: { [key]: 'manual'|'accepted' },   exclude: {…} } }
+ *     origins:   { include: { [key]: 'manual'|'accepted' },   exclude: {…} },
+ *     seeded?:   { include?: true, exclude?: true } }
  * where `key` is `normalizeKeywordKey(term)`. Terms that carry no explicit origin
  * fall back to 'default' when they are part of the shared seed list, else 'manual'
  * (see `resolveOrigin`) — so the ~80 seeded defaults never have to be written out.
+ *
+ * `seeded` marks a side that has been DELIBERATELY EDITED. An empty stored list is
+ * normally displayed as the shared defaults; once the side is marked, an empty list
+ * means empty (see `resolveKeywordState`), so deleting the last chip no longer
+ * resurrects ~28/~50 default terms. The key is OMITTED when nothing is marked, so
+ * every project that predates it keeps its exact byte shape and its defaults.
  */
 import { normalizeKeywordKey } from './keywordNormalize.js';
 
@@ -78,10 +85,30 @@ function cleanMap(raw, allowed) {
   return out;
 }
 
+/** `seeded` holds ONLY `true` under a known list key — an empty marker is dropped. */
+function cleanSeeded(raw) {
+  const out = {};
+  if (!isPlainObject(raw)) return out;
+  for (const list of KEYWORD_LISTS) if (raw[list] === true) out[list] = true;
+  return out;
+}
+
+function seededIsCanonical(seeded) {
+  if (!isPlainObject(seeded)) return false;
+  const keys = Object.keys(seeded);
+  if (!keys.length) return false;   // the canonical form OMITS an empty marker
+  for (const k of keys) {
+    if (!KEYWORD_LISTS.includes(k) || seeded[k] !== true) return false;
+  }
+  return true;
+}
+
 function metaIsCanonical(meta) {
   if (!isPlainObject(meta)) return false;
   const keys = Object.keys(meta);
-  if (keys.length !== 3) return false;
+  // 3 keys = the pre-`seeded` shape (still canonical); 4 = with the edited marker.
+  if (keys.length !== 3 && keys.length !== 4) return false;
+  if (keys.length === 4 && !seededIsCanonical(meta.seeded)) return false;
   if (meta.version !== KEYWORD_META_VERSION) return false;
   if (!isPlainObject(meta.decisions) || !isPlainObject(meta.origins)) return false;
   if (Object.keys(meta.decisions).length !== 2 || Object.keys(meta.origins).length !== 2) return false;
@@ -118,7 +145,32 @@ export function normalizeKeywordMeta(raw) {
     decisions[list] = cleanMap(isPlainObject(v) && isPlainObject(v.decisions) ? v.decisions[list] : null, DECISION_VALUES);
     origins[list] = cleanMap(isPlainObject(v) && isPlainObject(v.origins) ? v.origins[list] : null, ORIGIN_VALUES);
   }
-  return { version: KEYWORD_META_VERSION, decisions, origins };
+  const out = { version: KEYWORD_META_VERSION, decisions, origins };
+  const seeded = cleanSeeded(isPlainObject(v) ? v.seeded : null);
+  if (Object.keys(seeded).length) out.seeded = seeded;
+  return out;
+}
+
+/**
+ * isSideSeeded — has this side been DELIBERATELY edited (chip removed, term moved
+ * off it, or the shared defaults materialized into it)? When true an empty stored
+ * list must stay empty instead of falling back to the shared defaults.
+ * Expects an already-normalized meta (any object is tolerated).
+ *
+ * @param {object|null|undefined} meta
+ * @param {'include'|'exclude'} list
+ * @returns {boolean}
+ */
+export function isSideSeeded(meta, list) {
+  const seeded = isPlainObject(meta) ? meta.seeded : null;
+  return isPlainObject(seeded) && seeded[list] === true;
+}
+
+/** seeded map + one more side, always in KEYWORD_LISTS order (stable JSON bytes). */
+function withSeeded(seeded, list) {
+  const next = {};
+  for (const l of KEYWORD_LISTS) if (l === list || (isPlainObject(seeded) && seeded[l] === true)) next[l] = true;
+  return next;
 }
 
 /** Empty canonical meta (a fresh object every call — callers may mutate their copy). */
@@ -152,20 +204,31 @@ export function resolveOrigin(term, list, meta, defaults = {}) {
  * additive rather than a silent wipe (this mirrors what the pre-107 keyword editor
  * already did). Returns the SAME state object when nothing needed materializing.
  *
+ * Writing the seeds out is also the moment the side stops being "never edited", so
+ * it is marked in `meta.seeded` — otherwise removing every term one by one would
+ * leave an empty list that the defaults fallback silently repopulates.
+ *
  * @param {{inclusion:string[], exclusion:string[], meta:object}} state
  * @param {{include?:string[], exclude?:string[]}} defaults
  * @param {Array<'include'|'exclude'>} [lists] — restrict to the sides being edited
  */
 export function materializeDefaults(state, defaults = {}, lists = KEYWORD_LISTS) {
   let next = state;
+  let meta = null;
+  const baseMeta = normalizeKeywordMeta(state?.meta);
   for (const list of lists) {
     const field = LIST_FIELD[list];
     if (!field) continue;
     const cur = Array.isArray(next[field]) ? next[field] : [];
     if (cur.length) continue;
+    // A side that was DELIBERATELY emptied stays empty — re-seeding it here is what
+    // silently undid a leader's curation the op after they removed the last chip.
+    if (isSideSeeded(baseMeta, list)) continue;
     const seed = Array.isArray(defaults[list]) ? defaults[list] : [];
     if (!seed.length) continue;
-    next = { ...next, [field]: [...seed] };
+    if (!meta) meta = cloneMeta(baseMeta);
+    meta.seeded = withSeeded(meta.seeded, list);
+    next = { ...next, [field]: [...seed], meta };
   }
   return next;
 }
@@ -177,11 +240,14 @@ function readList(state, list) {
 
 /** Shallow-clone meta down to the two maps we are about to touch. */
 function cloneMeta(meta) {
-  return {
+  const out = {
     version: KEYWORD_META_VERSION,
     decisions: { include: { ...meta.decisions.include }, exclude: { ...meta.decisions.exclude } },
     origins: { include: { ...meta.origins.include }, exclude: { ...meta.origins.exclude } },
   };
+  const seeded = cleanSeeded(meta.seeded);
+  if (Object.keys(seeded).length) out.seeded = seeded;
+  return out;
 }
 
 function fail(state, error) {
@@ -196,7 +262,8 @@ function unchanged(state, reason) {
  *
  * @param {{inclusion:string[], exclusion:string[], meta:object|string}} state
  * @param {{type:'add'|'remove'|'move'|'accept'|'reject', list:'include'|'exclude',
- *          term:string, toList?:'include'|'exclude', origin?:string}} op
+ *          term:string, toList?:'include'|'exclude', origin?:string,
+ *          reject?:boolean}} op
  * @returns {{ok:boolean, error:string|null, changed:boolean, reason:string,
  *            state:{inclusion:string[], exclusion:string[], meta:object}}}
  *
@@ -208,6 +275,13 @@ function unchanged(state, reason) {
  *     term is a no-op (`reason: 'not_found'`).
  *   - ATOMIC move: remove + add in one result, carrying the term's origin across.
  *   - MANUAL TERMS ARE NEVER TOUCHED by any op other than one naming them.
+ *
+ * `reject: false` (valid on `remove` and `move` only) is the NON-VERDICT variant —
+ * the true inverse of `add`/`accept`/`move` used by the snackbar Undo. It deletes
+ * the term and its origin and records NO decision, so an accidentally added concept
+ * goes back to being a pending criteria suggestion instead of being permanently
+ * rejected. Plain `remove`/`move` (the chip × and → buttons) are unchanged: they
+ * ARE a deliberate "not on this list" verdict.
  */
 export function applyKeywordOp(state, op) {
   const base = {
@@ -237,6 +311,13 @@ export function applyKeywordOp(state, op) {
     if (!KEYWORD_LISTS.includes(toList)) return fail(start, 'toList must be "include" or "exclude"');
     if (toList === list) return fail(start, 'toList must differ from list');
   }
+  if (op.reject !== undefined && typeof op.reject !== 'boolean') return fail(start, 'reject must be a boolean');
+  if (op.reject === false && type !== 'remove' && type !== 'move') {
+    return fail(start, 'reject:false applies only to "remove" and "move"');
+  }
+  // The UNDO variant is not a deliberate edit, so it must not mark the side as
+  // edited either — an undone add leaves the meta byte-identical to before it.
+  const verdict = op.reject !== false;
 
   const meta = cloneMeta(base.meta);
   const lists = { include: [...base.inclusion], exclude: [...base.exclusion] };
@@ -258,20 +339,34 @@ export function applyKeywordOp(state, op) {
     if (!hasKey(list)) return unchanged(start, 'not_found');
     drop(list);
     delete meta.origins[list][key];
-    // Removing a term is an explicit "not on this list" verdict, so a criteria
-    // suggestion for the same concept must not immediately reappear as pending.
-    meta.decisions[list][key] = KEYWORD_DECISION.REJECTED;
+    if (verdict) {
+      // Removing a term is an explicit "not on this list" verdict, so a criteria
+      // suggestion for the same concept must not immediately reappear as pending.
+      meta.decisions[list][key] = KEYWORD_DECISION.REJECTED;
+      meta.seeded = withSeeded(meta.seeded, list);
+    } else {
+      delete meta.decisions[list][key];
+    }
     changed = true;
     reason = 'removed';
   } else if (type === 'move') {
     if (!hasKey(list)) return unchanged(start, 'not_found');
-    const carried = base.meta.origins[list][key] || KEYWORD_ORIGIN.MANUAL;
+    // Carry the SOURCE origin verbatim — including its ABSENCE. Stamping 'manual'
+    // on a term that carried no explicit origin (i.e. a shared default) made the
+    // inverse move un-restorable: the term came back badged 'manual' forever.
+    const carried = base.meta.origins[list][key];
     const display = lists[list].find(t => normalizeKeywordKey(t) === key) || term;
     drop(list);
     delete meta.origins[list][key];
-    meta.decisions[list][key] = KEYWORD_DECISION.REJECTED;
+    if (verdict) {
+      meta.decisions[list][key] = KEYWORD_DECISION.REJECTED;
+      meta.seeded = withSeeded(meta.seeded, list);
+    } else {
+      delete meta.decisions[list][key];
+    }
     if (!hasKey(toList)) lists[toList].push(display);
-    meta.origins[toList][key] = carried;
+    if (carried) meta.origins[toList][key] = carried;
+    else delete meta.origins[toList][key];
     delete meta.decisions[toList][key];
     if (carried === KEYWORD_ORIGIN.ACCEPTED) meta.decisions[toList][key] = KEYWORD_DECISION.ACCEPTED;
     changed = true;

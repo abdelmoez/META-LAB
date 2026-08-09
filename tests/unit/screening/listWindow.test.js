@@ -152,6 +152,92 @@ describe('nearestScrollTop', () => {
   });
 });
 
+/* ── 107.md rec — obstructed strips (the sticky "Load more" bar) ───────────────── */
+
+describe('nearestScrollTop insets', () => {
+  // Same 600px viewport over 74px rows, now with a 50px opaque bar pinned to the
+  // bottom of the SAME scrollport: only 0…550 of the viewport is actually visible.
+  const vh = 600, rh = 74, bar = 50;
+  const at = (index, scrollTop, insets = {}) => nearestScrollTop({
+    rowTop: index * rh, rowHeight: rh, scrollTop, viewportHeight: vh, ...insets,
+  });
+
+  it('defaults to zero insets — every un-inset result is byte-identical', () => {
+    for (const [i, st] of [[0, 0], [8, 0], [10, 2000], [400, 0], [8, 65]]) {
+      expect(at(i, st, { insetTop: 0, insetBottom: 0 })).toEqual(at(i, st));
+    }
+  });
+
+  it('bottom-aligns ABOVE the sticky bar instead of behind it', () => {
+    // Row 8 spans 592…666. Without the inset the row's bottom edge lands on 600, i.e.
+    // its last 50px sit under the bar; with it, on 550.
+    expect(at(8, 0)).toBe(66);
+    expect(at(8, 0, { insetBottom: bar })).toBe(66 + bar);
+    // The row is then fully inside the UNOBSTRUCTED band [scrollTop, scrollTop+550].
+    const next = at(8, 0, { insetBottom: bar });
+    expect(8 * rh - next).toBeGreaterThanOrEqual(0);            // top edge visible
+    expect(8 * rh + rh - next).toBeLessThanOrEqual(vh - bar);   // bottom edge clear of the bar
+  });
+
+  it('treats rows that the bar merely clips as NOT visible', () => {
+    // Row 7 (518…592) is fully inside the raw viewport but its last 42px are behind
+    // the bar, so the inset pass nudges it up while the un-inset pass does nothing.
+    expect(at(7, 0)).toBeNull();
+    expect(at(7, 0, { insetBottom: bar })).toBe(7 * rh + rh - (vh - bar));
+    expect(at(7, 0, { insetBottom: bar })).toBe(42);
+  });
+
+  it('is idempotent — applying the inset offset once is enough', () => {
+    const target = at(400, 0, { insetBottom: bar });
+    expect(target).toBe(400 * rh + rh - (vh - bar));
+    expect(nearestScrollTop({
+      rowTop: 400 * rh, rowHeight: rh, scrollTop: target, viewportHeight: vh, insetBottom: bar,
+    })).toBeNull();
+  });
+
+  it('never lets the bottom inset drag a row DOWN out of view', () => {
+    // A row above the fold still aligns to the top edge — the bottom inset is irrelevant.
+    expect(at(10, 2000, { insetBottom: bar })).toBe(10 * rh);
+    expect(at(26, 2000, { insetBottom: bar })).toBe(26 * rh);
+  });
+
+  it('honours a TOP inset symmetrically (a sticky header, if one is ever added)', () => {
+    const head = 40;
+    // Row 10 spans 740…814; scrolled to 2000 it is above the fold. Aligning its top
+    // edge to the raw top puts it under the header, so it must land 40px lower.
+    expect(at(10, 2000, { insetTop: head })).toBe(10 * rh - head);
+    // A row already clear of the header does not move.
+    expect(nearestScrollTop({ rowTop: 100, rowHeight: rh, scrollTop: 0, viewportHeight: vh, insetTop: head })).toBeNull();
+    // …one that is only partially under it moves by exactly the overlap.
+    expect(nearestScrollTop({ rowTop: 20, rowHeight: rh, scrollTop: 0, viewportHeight: vh, insetTop: head })).toBeNull();
+    expect(nearestScrollTop({ rowTop: 20, rowHeight: rh, scrollTop: 10, viewportHeight: vh, insetTop: head })).toBe(0);
+  });
+
+  it('combines both insets into one usable band', () => {
+    const both = { insetTop: 40, insetBottom: bar };
+    // Usable band is 40…550 of the viewport (510px tall).
+    expect(at(8, 0, both)).toBe(8 * rh + rh - (vh - bar));
+    expect(at(20, 20 * rh, both)).toBe(20 * rh - 40);
+  });
+
+  it('ignores garbage / negative insets', () => {
+    expect(at(8, 0, { insetBottom: -50 })).toBe(66);
+    expect(at(8, 0, { insetBottom: NaN })).toBe(66);
+    expect(at(8, 0, { insetTop: undefined, insetBottom: null })).toBe(66);
+  });
+
+  it('ignores insets that swallow the whole viewport (mid-layout measurement)', () => {
+    expect(at(8, 0, { insetBottom: vh })).toBe(66);
+    expect(at(8, 0, { insetBottom: vh + 400 })).toBe(66);
+    expect(at(8, 0, { insetTop: 400, insetBottom: 400 })).toBe(66);
+  });
+
+  it('cannot ask for a negative offset at the top of the list', () => {
+    expect(nearestScrollTop({ rowTop: 0, rowHeight: rh, scrollTop: 0, viewportHeight: vh, insetTop: 100 })).toBeNull();
+    expect(nearestScrollTop({ rowTop: 10, rowHeight: rh, scrollTop: 300, viewportHeight: vh, insetTop: 100 })).toBe(0);
+  });
+});
+
 describe('measuredRowHeight', () => {
   it('adopts a measurement that differs beyond the threshold', () => {
     expect(measuredRowHeight(900, 10, 74)).toBeCloseTo(90, 6);

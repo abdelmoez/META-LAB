@@ -599,7 +599,9 @@ export async function recoverStuckDuplicateJobs(now = Date.now(), maxAttempts = 
   const cutoff = now - DUP_CFG.STUCK_MS;
   const processing = await prisma.screenDuplicateJob.findMany({
     where: { status: 'processing' },
-    select: { id: true, attempts: true, heartbeatAt: true, startedAt: true },
+    // projectId is needed for the terminal emit below — a give-up is the ONE
+    // terminal transition no client can observe on its own.
+    select: { id: true, projectId: true, attempts: true, heartbeatAt: true, startedAt: true },
   });
   const stuck = processing.filter((j) => {
     const last = j.heartbeatAt || j.startedAt;
@@ -609,6 +611,10 @@ export async function recoverStuckDuplicateJobs(now = Date.now(), maxAttempts = 
   const { giveUp, retry } = partitionStuckJobs(stuck, maxAttempts);
   for (const job of giveUp) {
     await fail(job.id, `Duplicate detection stopped after ${maxAttempts} interrupted attempts. Contact an administrator if this keeps happening.`);
+    // 107.md §1 — poison-pill failure is terminal: without this poke the stepper
+    // keeps rendering the last-fetched 'processing' state forever, even though the
+    // row says 'failed' and carries a user-facing error.
+    emitDuplicateJobTerminal(job.projectId, job.id);
   }
   if (retry.length) {
     await prisma.screenDuplicateJob.updateMany({

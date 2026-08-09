@@ -57,6 +57,7 @@ import {
 } from './outcomeGroups.js';
 import { progressOf, articleStatusOf } from './engine/articleStatus.js';
 import { mkValueProvenance } from './engine/articleProvenance.js';
+import { exportedDenominatorCustom } from './proportionMeta.js';
 
 const DEFAULT_ID = () => Math.random().toString(36).slice(2, 10);
 const s = (v) => (v == null ? '' : String(v).trim());
@@ -879,7 +880,9 @@ export function buildCaseExportRows(studies = [], caseVariables = [], opts = {})
       caseLabel: obs.caseName,
       esType: s(st.esType), es: s(st.es), lo: s(st.lo), hi: s(st.hi),
       denominatorPopulation: s(st.denominatorPopulation),
-      denominatorCustom: s(st.denominatorCustom),
+      // 107.md §8A (review fix) — '' unless the effective population is 'Other/custom';
+      // a row can still hold text from a population it no longer claims.
+      denominatorCustom: exportedDenominatorCustom(st),
       actionStatus: s(st.actionStatus),
       notes: s(st.notes),
     };

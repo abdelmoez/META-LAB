@@ -1,6 +1,7 @@
 # Screening Workflow + Proportion Extraction Upgrade — 107.md
 
 Implementation report for `.claude/Prompts/107.md`. Version **4.12.0**.
+Round 2 (adversarial review + fixes) is documented in §15 at the end.
 
 ## 1. What was inspected first
 
@@ -216,7 +217,11 @@ click-to-pick — a picked PDF token is never a controlled term) and the conditi
 mirrored into *both* `validateStudy` copies; enforced server-side at the completion boundary via
 `completionGate` → `completionService`, consistent with the repo's passthrough autosave
 architecture). Legacy rows raise no new errors and do not regress to "incomplete"
-(`expectedFieldsFor` untouched).
+(`expectedFieldsFor` untouched). The out-of-registry **warning** asks
+`isDenominatorPopulationKey`/`isActionStatusKey` (proportionMeta's Sets), never
+`DENOMINATOR_POPULATION_LABEL[value]`: the label maps are plain objects, so a stored
+`"constructor"`/`"toString"` read truthy and suppressed the warning while every reader still showed
+"— Not classified —".
 
 The derived percentage (`23 / 59 = 39.0%`) renders beside Events/Total in both forms —
 display-only, recomputed at render, one decimal via the centralized `fmtPct`/
@@ -225,9 +230,15 @@ suppressed for blank/nonnumeric/`total ≤ 0`/negative/`events > total` inputs.
 
 ### Wiring
 
-`SYNC_INPUT_FIELDS`, manuscript `rosterSlice`, and provenance `STUDY_VALUE_FIELDS` all carry the
+The analysis-sync hash, manuscript `rosterSlice`, and provenance `STUDY_VALUE_FIELDS` all carry the
 three fields (editing them flags analysis-sync staleness, manuscript dependency drift, and
-project-history events). `propagateArticleFields` does **not** fan them out (per-estimate, not
+project-history events). In `computeSyncHash` they ride in `SYNC_OPTIONAL_FIELDS`, **not**
+`SYNC_INPUT_FIELDS`: a fixed member emits `key=` for a row that never had the key, which would
+change the digest of every pre-107 row and flip every previously-synced article to "Updated since
+sync" on upgrade — the `syncHash` already persisted in `extractionMeta` cannot be migrated. Emitting
+them only when they carry a value keeps an unclassified row byte-identical to pre-107 while a real
+classification still moves the hash (the same rule as the 106.md `cv_*` block).
+`propagateArticleFields` does **not** fan them out (per-estimate, not
 article-level); new outcome rows start unclassified; `duplicateCase` keeps the classification;
 project duplication copies the blob verbatim. The AI extraction mapper deliberately cannot
 populate them (§8D "do not infer").
@@ -236,6 +247,11 @@ populate them (§8D "do not infer").
 
 - Extraction CSV, journal-submission study CSV (human labels), and the case-level CSV all carry
   the three columns; legacy rows export empty.
+- `denominatorCustom` is exported **only when the effective population is `other`**
+  (`exportedDenominatorCustom`). The select clears an orphaned description in the same write when
+  the population moves away from Other/custom (`denominatorPopulationPatch`), but the input is
+  hidden for every other option, so a project saved before that fix can still hold text the
+  reviewer cannot see — exporting it would ship two contradictory denominator statements.
 - Project JSON export/import is whole-blob passthrough: values round-trip verbatim, and **older
   files without the fields import successfully with the fields absent = unclassified** (pinned by
   test, including a forward-version unknown-value round trip).
@@ -400,3 +416,68 @@ Playwright specs.
     SSR-unverifiable (renders only when open; covered by parse checks + shared registries), and
     `analysisSettings.proportionFilters/Overrides` are not yet registered as manuscript
     dependency keys (moot until limitation 1 is fixed).
+
+## 15. Round 2 — adversarial review and fixes (r2)
+
+After the feature commit, a 6-dimension adversarial review (every finding cross-examined by two
+independent verifiers; 19 confirmed, 3 split, 3 refuted) drove a fix round. What was fixed:
+
+### Correctness
+- **[critical] `canEditKeywords` was always false in the real app** — `SiftProject`'s access
+  literal never forwarded `canManageSettings`, so the §3 shortcut and the §2 suggestion panel
+  were unreachable and the keyword editor regressed for leaders. Access shaping is now the pure
+  `src/frontend/screening/lib/screenAccess.js` (`buildScreenAccess`), and the gate is
+  `canManageSettings || isLeader` — pinned by tests.
+- **[critical] The §11/§12 pooling gate was bypassable via the Forest and Sensitivity tabs.**
+  The gate derivation is now the shared pure `proportionGate(...)`; both tabs suppress the
+  pooled plot/robustness outputs *and their exports* while blocked, rendering a compact
+  read-only compatibility panel; ForestTab also shows the active-filter chips. The
+  all-outcomes summary table applies filters/exclusions and renders a
+  "blocked — incompatible estimates" marker instead of pooling.
+- **keywordOps lost updates under Postgres READ COMMITTED** — the transaction now uses an
+  optimistic pre-image `updateMany` guard with a bounded retry (modelled on
+  `mutateProjectBlob`), returning 409 `KEYWORD_OP_CONTENTION` after 5 attempts.
+  Mutation-tested: weakening the WHERE fails 4 regression tests.
+- **`remove` recorded a 'rejected' verdict, so Undo permanently killed a live suggestion** —
+  the reducer gained a non-verdict `reject:false` variant for `remove`/`move` (an exact
+  inverse, restoring origins verbatim); the snackbar and conflict-dialog Undo paths use it.
+- **Cross-polarity conflicts were computed over synonym-expanded lists**, suppressing the
+  authored concept and reporting phrases the user never wrote — conflicts now come from the
+  deduped concept lists; a synonym reaching both sides is kept only where it is authored.
+- **Removing the last active term resurrected the ~80 shared defaults** — `keywordMeta.seeded`
+  now marks a deliberately-emptied side; `activeTerms` and the backfill script both honour it.
+- **`SYNC_INPUT_FIELDS` had invalidated every stored syncHash** — the three proportion keys are
+  now value-conditional (like `cv_*`), so legacy rows hash byte-identically to pre-107
+  (pinned against a hardcoded pre-107 digest) and previously-synced articles stay "synced".
+- **Stale `denominatorCustom`** — switching the population away from Other/custom now clears
+  the text in the same write; all four exporters and the filter comparison route through
+  `exportedDenominatorCustom` (empty unless effectively 'other').
+- **Compatibility check/signature ran over rows `runMeta` never pools** — both now use the
+  poolable subset (es+lo+hi), and the override signature (`v2|`) embeds a per-bucket digest of
+  contributing row ids, so offsetting swaps and CI-fills flip it. Pre-v2 count-only signatures
+  read as stale (safer direction; re-record the override).
+- **Navigation races** — auto-load now respects reset loads (generation counter discards
+  superseded appends), `pendingAdvance` is scoped to `{pid, filter, search, gen}`, the
+  nearest-scroll accounts for the sticky Load-more bar (`insetBottom`), and the Resume one-shot
+  claims the selection before the nearest-scroll pass so its smooth centering is not cancelled.
+- **Realtime gaps** — poison-pill duplicate-job failures now emit the terminal events;
+  duplicate-group resolution emits no longer exclude the initiator; `runKeywordOp` responses
+  are sequence-guarded against out-of-order adoption.
+- **Hardening** — enum label lookups use Set predicates (`'constructor'`-style keys read as
+  unclassified everywhere); SubgroupTab gained the dominant-measure fallback so blank-first-row
+  PROP outcomes still offer the stratification variables; "Time Point"/"Outcome Measured"
+  grouping works again via explicit cross-pair scoping with an on-screen scope note.
+
+### r2 verification
+`npm run test:ci` **439 files / 7230 tests passed** (7064 at v4.12.0 r1); `npm run lint` clean;
+`npm run build` clean; `npm run test:integration` against a fresh server **96 files, 819
+passed / 9 skipped**; screening e2e (chromium) **20 passed / 1 skipped**, no flakes.
+
+### r2 additions to known limitations
+- Pre-r2 persisted overrides (count-only signatures) surface as stale and must be re-recorded.
+- The KeywordEditor accordion itself is still `isLeader`-gated (pre-existing; a non-leader with
+  `canManageSettings` can use the suggestion panel and shortcuts but not the chip editor).
+- The forward move's `seeded` marker is not cleared by its Undo (inert — the side is non-empty).
+- Two racing *reset* loads can still land out of order (append-vs-reset is guarded; reset-vs-
+  reset was left per the surgical-fix rule).
+- An arrow press at the end of the loaded window during a reset load is now a deliberate no-op.

@@ -6,6 +6,8 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
 import { C, FONT, MONO, alpha } from '../ui/theme.js';
+// 107.md rec — the access shape passed to every sub-tab, built in ONE pure place.
+import { buildScreenAccess } from '../lib/screenAccess.js';
 import { GlobalStyle, BetaBadge, Badge, Loading, ErrorBanner, Modal, Button, ScreeningContentShell } from '../ui/components.jsx';
 import { Icon } from '../../components/icons.jsx';
 import { screeningApi } from '../api-client/screeningApi.js';
@@ -174,15 +176,10 @@ export default function SiftProject({ embedded = false, embeddedPid = null, onGo
 
   const setTab = (key) => setParams(prev => { const n = new URLSearchParams(prev); n.set(tabParam, key); return n; }, { replace: true });
 
-  const access = project ? {
-    isLeader: project.isLeader, myRole: project.myRole,
-    // 92.md rec round — forward ownership + granular perms so tabs can grant
-    // members with a specific permission (e.g. canManageDuplicates) the same
-    // controls the server already allows them to use.
-    isOwner: project.isOwner, perms: project.perms || {},
-    canScreen: project.canScreen, canChat: project.canChat,
-    canResolveConflicts: project.canResolveConflicts, blindMode: project.blindMode,
-  } : {};
+  // 107.md rec — this WAS a hand-written literal that omitted `canManageSettings`, so
+  // ScreeningTab's keyword gate read `undefined` (= denied) for every user including
+  // the owner. The field list lives in lib/screenAccess.js now and is unit-tested.
+  const access = buildScreenAccess(project);
 
   const tabSet = embedded ? EMBEDDED_TABS : TABS;
   const active = tabSet.find(t => t.key === tab) || tabSet[0];

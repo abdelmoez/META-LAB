@@ -179,9 +179,15 @@ function toTerms(concepts) {
   return out;
 }
 
+/**
+ * One side's suggestion material: the deduped CONCEPTS the reviewer actually wrote,
+ * and the display TERMS (those concepts plus ≤2 curated synonyms each). The two are
+ * kept apart because cross-polarity conflicts must be judged on the concepts only —
+ * see suggestCriteriaKeywords.
+ */
 function sideSuggestions(text) {
-  const concepts = extractConcepts(denegateText(text)).filter(c => !isGeneric(c));
-  return toTerms(dropSubsumed(concepts));
+  const concepts = dropSubsumed(extractConcepts(denegateText(text)).filter(c => !isGeneric(c)));
+  return { concepts, terms: toTerms(concepts) };
 }
 
 function parseSnapshot(picoSnapshot) {
@@ -209,27 +215,53 @@ function parseSnapshot(picoSnapshot) {
  */
 export function suggestCriteriaKeywords(picoSnapshot) {
   const pico = parseSnapshot(picoSnapshot);
-  const rawInclude = sideSuggestions(typeof pico.incl === 'string' ? pico.incl : '');
-  const rawExclude = sideSuggestions(typeof pico.excl === 'string' ? pico.excl : '');
+  const inc = sideSuggestions(typeof pico.incl === 'string' ? pico.incl : '');
+  const exc = sideSuggestions(typeof pico.excl === 'string' ? pico.excl : '');
 
   // Cross-polarity conflicts: emitted on NEITHER side, flagged for user review.
-  const excludeKeys = new Set(rawExclude.map(normalizeKeywordKey));
-  const conflictKeys = new Set(rawInclude.map(normalizeKeywordKey).filter(k => excludeKeys.has(k)));
+  //
+  // 107.md rec — the intersection is taken over the CONCEPT lists, i.e. what the
+  // reviewer literally wrote, NOT the synonym-expanded term lists. Several
+  // SYNONYM_FAMILIES group members that are not clinically interchangeable
+  // (bariatric surgery / sleeve gastrectomy / gastric bypass), so intersecting the
+  // expanded lists reported a conflict on a concept that appears on only ONE side —
+  // "Adults undergoing bariatric surgery" vs "Revision after sleeve gastrectomy"
+  // dropped the verbatim inclusion concept and surfaced 'metabolic surgery', a
+  // phrase in neither criterion, under "Appears in both inclusion and exclusion".
+  const includeConceptKeys = new Set(inc.concepts.map(normalizeKeywordKey));
+  const excludeConceptKeys = new Set(exc.concepts.map(normalizeKeywordKey));
+  const conflictKeys = new Set([...includeConceptKeys].filter(k => excludeConceptKeys.has(k)));
 
   const conflicts = [];
-  if (conflictKeys.size) {
-    for (const term of rawInclude) {
-      if (!conflictKeys.has(normalizeKeywordKey(term))) continue;
-      conflicts.push({
-        term,
-        reason: 'Appears in both inclusion and exclusion criteria — the polarity is ambiguous.',
-      });
-    }
+  for (const term of inc.concepts) {
+    if (!conflictKeys.has(normalizeKeywordKey(term))) continue;
+    conflicts.push({
+      term,
+      reason: 'Appears in both inclusion and exclusion criteria — the polarity is ambiguous.',
+    });
   }
 
-  const trim = list => list
-    .filter(t => !conflictKeys.has(normalizeKeywordKey(t)))
+  // The expanded term lists are still filtered by those keys, so a genuinely
+  // ambiguous concept stays off both sides along with its synonyms. A term that
+  // reaches both sides ONLY through synonym expansion carries no authored polarity
+  // and is not worth an arbitration card, but it must not be offered as a pending
+  // suggestion on both sides at once either: keep it where the reviewer actually
+  // wrote it as a concept, drop it where it is merely a synonym (and from both when
+  // it is a concept on neither).
+  const incTermKeys = new Set(inc.terms.map(normalizeKeywordKey));
+  const excTermKeys = new Set(exc.terms.map(normalizeKeywordKey));
+  const trim = (list, ownConcepts) => list
+    .filter((t) => {
+      const k = normalizeKeywordKey(t);
+      if (conflictKeys.has(k)) return false;
+      if (!incTermKeys.has(k) || !excTermKeys.has(k)) return true;
+      return ownConcepts.has(k);
+    })
     .slice(0, MAX_SUGGESTIONS_PER_SIDE);
 
-  return { include: trim(rawInclude), exclude: trim(rawExclude), conflicts };
+  return {
+    include: trim(inc.terms, includeConceptKeys),
+    exclude: trim(exc.terms, excludeConceptKeys),
+    conflicts,
+  };
 }

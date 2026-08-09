@@ -80,14 +80,24 @@ export function computeListWindow({ count, scrollTop, viewportHeight, rowHeight 
  * null), a row above the viewport is brought to the TOP edge, a row below it to the
  * BOTTOM edge. It never centres and never jumps to the top of the list.
  *
+ * INSETS (107.md rec) — "visible" is not the same as "inside clientHeight". The record
+ * list pins an OPAQUE `position: sticky; bottom: 0` "Load more" bar inside its own
+ * scrollport whenever more pages exist, so a row aligned against the raw bottom edge
+ * ends up mostly hidden behind it (~50px of a 74px row) — on exactly the long lists
+ * the auto-scroll was written for. `insetTop`/`insetBottom` describe those obstructed
+ * strips; the alignment targets shift by them so the row lands in the UNOBSTRUCTED
+ * band. Both default to 0, i.e. the un-inset behaviour is unchanged.
+ *
  * @param {object} o
  * @param {number} o.rowTop          row offset from the top of the scrollable CONTENT (px)
  * @param {number} o.rowHeight       row height (px)
  * @param {number} o.scrollTop       current container scroll offset (px)
  * @param {number} o.viewportHeight  visible height of the container (px)
+ * @param {number} [o.insetTop]      obstructed strip pinned to the container's TOP (px)
+ * @param {number} [o.insetBottom]   obstructed strip pinned to the container's BOTTOM (px)
  * @returns {number|null} the new scrollTop, or null when no scrolling is needed
  */
-export function nearestScrollTop({ rowTop, rowHeight, scrollTop, viewportHeight } = {}) {
+export function nearestScrollTop({ rowTop, rowHeight, scrollTop, viewportHeight, insetTop = 0, insetBottom = 0 } = {}) {
   const top = Number(rowTop);
   const rh = Number(rowHeight);
   const cur = Math.max(0, Number(scrollTop) || 0);
@@ -95,8 +105,14 @@ export function nearestScrollTop({ rowTop, rowHeight, scrollTop, viewportHeight 
   // Without a measured viewport there is no "visible" to reason about.
   if (!Number.isFinite(top) || !Number.isFinite(rh) || !Number.isFinite(vh) || vh <= 0) return null;
 
-  const alignTop = top;                 // row's top edge at the viewport's top edge
-  const alignBottom = top + rh - vh;    // row's bottom edge at the viewport's bottom edge
+  let padTop = Number(insetTop) > 0 ? Number(insetTop) : 0;
+  let padBottom = Number(insetBottom) > 0 ? Number(insetBottom) : 0;
+  // Insets that swallow the whole viewport describe nothing usable (a mid-layout
+  // measurement, a collapsed container). Ignore them rather than emit nonsense.
+  if (padTop + padBottom >= vh) { padTop = 0; padBottom = 0; }
+
+  const alignTop = top - padTop;                    // row's top edge below the top inset
+  const alignBottom = top + rh - vh + padBottom;    // row's bottom edge above the bottom inset
   // For a row shorter than the viewport this is [alignBottom, alignTop]; for a row
   // TALLER than the viewport the order flips and the interval is every offset at which
   // the row covers the whole viewport — both are "as visible as it gets".

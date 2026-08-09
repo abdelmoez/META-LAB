@@ -13,9 +13,11 @@ import { describe, it, expect } from 'vitest';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import {
-  AnalysisTab, SubgroupTab, SensitivityTab, ResearchExport,
+  AnalysisTab, SubgroupTab, SensitivityTab, ForestTab, ResearchExport,
   enumerateOutcomePairs, studiesForPair, pairIsProportion, groupRowsForSubgroup,
   writeProportionFilter, writeProportionOverride, overrideActorName, detectCovariates,
+  proportionGate, dominantEsType, crossPairRowsForGrouping, buildOutcomeSummaryRows,
+  crossPairScopeNote, CROSS_PAIR_SCOPE_HEADLINE, proportionClassCell,
 } from '../../src/frontend/workspace/tabs/analysisTabs.jsx';
 import { subgroupAnalysis } from '../../src/research-engine/statistics/monolithStats.js';
 import {
@@ -210,6 +212,179 @@ describe('AnalysisTab — the documented override (107.md §12)', () => {
   });
 });
 
+/* ══════════════════ the SHARED gate — no tab may bypass it ══════════════════ */
+
+const OVERRIDE_MIXED = buildProportionOverride(checkProportionCompatibility(MIXED), {
+  at: '2026-08-09T09:00:00.000Z', by: 'Dr Reviewer', note: 'Both denominators are the tested cohort.',
+});
+const PAIR = enumerateOutcomePairs(MIXED)[0];
+const renderForest = (p) => renderToStaticMarkup(createElement(ForestTab, { project: p }));
+const renderSensitivity = (p) => renderToStaticMarkup(createElement(SensitivityTab, { project: p }));
+
+describe('proportionGate — one derivation for AnalysisTab, ForestTab, SensitivityTab and the summary table', () => {
+  it('blocks a mixed PROP pair and clears a homogeneous one', () => {
+    expect(proportionGate(project(MIXED), PAIR, MIXED).blocked).toBe(true);
+    expect(proportionGate(project(HOMOGENEOUS), PAIR, HOMOGENEOUS).blocked).toBe(false);
+  });
+  it('honours a matching override and re-blocks on a stale one', () => {
+    const p = project(MIXED, { proportionOverrides: { [KEY]: OVERRIDE_MIXED } });
+    const g = proportionGate(p, PAIR, MIXED);
+    expect(g.honored).toBe(true);
+    expect(g.blocked).toBe(false);
+    const grown = MIXED.concat([prop({ id: '4', author: 'Park', year: '2020', es: '0.5', lo: '0.1', hi: '0.9', denominatorPopulation: 'plp_molecular_diagnoses' })]);
+    const stale = proportionGate(project(grown, { proportionOverrides: { [KEY]: OVERRIDE_MIXED } }), PAIR, grown);
+    expect(stale.stale).toBe(true);
+    expect(stale.blocked).toBe(true);
+  });
+  it('never fires for a non-PROP pair', () => {
+    const or = MIXED.map((s) => ({ ...s, esType: 'OR' }));
+    expect(proportionGate(project(or), { ...PAIR, esType: 'OR' }, or).blocked).toBe(false);
+  });
+  it('dominantEsType resolves a blank first row to the majority measure', () => {
+    expect(dominantEsType([{ esType: '' }, { esType: 'PROP' }, { esType: 'PROP' }])).toBe('PROP');
+    expect(dominantEsType([])).toBe('');
+  });
+});
+
+describe('ForestTab — the gate, the chip, and the suppressed export', () => {
+  it('draws and offers the publication export for a homogeneous PROP outcome', () => {
+    const html = renderForest(project(HOMOGENEOUS));
+    expect(html).toContain('PUBLICATION-STYLE FIGURE');
+    expect(html).toContain('Export figure');
+    expect(html).not.toContain('Forest plot hidden until you confirm');
+  });
+
+  it('suppresses the diamond AND the export while the pool is blocked', () => {
+    const html = renderForest(project(MIXED));
+    expect(html).toContain('Forest plot hidden until you confirm');
+    expect(html).not.toContain('PUBLICATION-STYLE FIGURE');
+    expect(html).not.toContain('Export figure');
+    expect(html).not.toContain('Detected measure');
+  });
+
+  it('explains WHY and WHERE to resolve it, without duplicating the override form', () => {
+    const html = renderForest(project(MIXED));
+    expect(html).toContain('Incompatible denominator population');
+    expect(html).toContain('The selected estimates use multiple denominator populations:');
+    expect(html).toContain('Resolve this on the Meta-Analysis tab');
+    expect(html).not.toContain('OTHER WAYS TO RESOLVE THIS');
+    expect(html).not.toContain('Pool anyway (record override)');
+    expect(html).not.toContain('Only All patients tested');       // no filter buttons here
+  });
+
+  it('an honoured override unblocks it and states the override on the tab', () => {
+    const html = renderForest(project(MIXED, { proportionOverrides: { [KEY]: OVERRIDE_MIXED } }));
+    expect(html).toContain('Compatibility warning overridden 2026-08-09');
+    expect(html).toContain('PUBLICATION-STYLE FIGURE');
+    expect(html).not.toContain('Forest plot hidden until you confirm');
+  });
+
+  it('a stale override does NOT unblock it', () => {
+    const grown = MIXED.concat([prop({ id: '4', author: 'Park', year: '2020', es: '0.5', lo: '0.1', hi: '0.9', denominatorPopulation: 'plp_molecular_diagnoses' })]);
+    const html = renderForest(project(grown, { proportionOverrides: { [KEY]: OVERRIDE_MIXED } }));
+    expect(html).toContain('Recorded override is out of date');
+    expect(html).toContain('Forest plot hidden until you confirm');
+    expect(html).not.toContain('PUBLICATION-STYLE FIGURE');
+  });
+
+  it('renders the active proportion-filter chip so the figure never silently drops estimates', () => {
+    const html = renderForest(project(MIXED, { proportionFilters: { [KEY]: { denominatorPopulation: 'all_patients_tested' } } }));
+    expect(html).toContain('Denominator population: All patients tested');
+    expect(html).toContain('2 studies');
+    expect(html).toContain('PUBLICATION-STYLE FIGURE');   // filtering resolved the conflict
+  });
+
+  it('a non-PROP outcome is byte-identical with and without the feature', () => {
+    const or = HOMOGENEOUS.map((s) => ({ ...s, esType: 'OR' }));
+    const html = renderForest(project(or));
+    expect(html).toContain('PUBLICATION-STYLE FIGURE');
+    expect(html).not.toContain('Incompatible');
+    expect(html).not.toContain('Denominator population');
+  });
+});
+
+describe('SensitivityTab — the gate suppresses every robustness output', () => {
+  it('runs normally for a homogeneous PROP outcome', () => {
+    const html = renderSensitivity(project(HOMOGENEOUS));
+    expect(html).toContain('LEAVE-ONE-OUT ANALYSIS');
+    expect(html).not.toContain('Robustness checks hidden until you confirm');
+  });
+
+  it('hides leave-one-out, funnel, Egger and trim-and-fill while blocked', () => {
+    const html = renderSensitivity(project(MIXED));
+    expect(html).toContain('Robustness checks hidden until you confirm');
+    expect(html).toContain('Incompatible denominator population');
+    expect(html).toContain('Resolve this on the Meta-Analysis tab');
+    expect(html).not.toContain('LEAVE-ONE-OUT ANALYSIS');
+    expect(html).not.toContain('FUNNEL PLOT');
+    expect(html).not.toContain("EGGER'S REGRESSION TEST");
+    expect(html).not.toContain('TRIM-AND-FILL');
+    expect(html).not.toContain('PRIMARY-DATA-ONLY RE-ANALYSIS');
+  });
+
+  it('an honoured override unblocks it; a stale one does not', () => {
+    const ok = renderSensitivity(project(MIXED, { proportionOverrides: { [KEY]: OVERRIDE_MIXED } }));
+    expect(ok).toContain('LEAVE-ONE-OUT ANALYSIS');
+    expect(ok).toContain('Compatibility warning overridden 2026-08-09');
+    const grown = MIXED.concat([prop({ id: '4', author: 'Park', year: '2020', es: '0.5', lo: '0.1', hi: '0.9', denominatorPopulation: 'plp_molecular_diagnoses' })]);
+    const stale = renderSensitivity(project(grown, { proportionOverrides: { [KEY]: OVERRIDE_MIXED } }));
+    expect(stale).toContain('Robustness checks hidden until you confirm');
+    expect(stale).not.toContain('LEAVE-ONE-OUT ANALYSIS');
+  });
+
+  it('shows the active proportion filter it is honouring', () => {
+    const html = renderSensitivity(project(HOMOGENEOUS, { proportionFilters: { [KEY]: { actionStatus: 'implemented' } } }));
+    expect(html).toContain('ESTIMATES FILTERED');
+    expect(html).toContain('Action status: Implemented');
+  });
+});
+
+/* ══════════════════ the all-outcomes summary table ══════════════════ */
+
+describe('summary of findings — the table obeys the same helpers and the same gate', () => {
+  const MANAGEMENT = [
+    prop({ id: 'm1', outcome: 'Management change', author: 'M1' }),
+    prop({ id: 'm2', outcome: 'Management change', author: 'M2', es: '-0.20', lo: '-0.80', hi: '0.40' }),
+  ];
+  const TWO = MIXED.concat(MANAGEMENT);
+  const pairs = enumerateOutcomePairs(TWO);
+  const rowFor = (rows, outcome) => rows.find((r) => r.pr.outcome === outcome);
+
+  it('marks the blocked outcome instead of printing a pooled value for it', () => {
+    const rows = buildOutcomeSummaryRows(project(TWO), TWO, pairs, 'random', {});
+    expect(rowFor(rows, OUTCOME).blocked).toBe(true);
+    expect(rowFor(rows, OUTCOME).r).toBeNull();
+    expect(rowFor(rows, 'Management change').blocked).toBe(false);
+    expect(rowFor(rows, 'Management change').r).not.toBeNull();
+  });
+
+  it('the marker is what the table actually renders', () => {
+    const html = renderAnalysis(project(TWO));
+    expect(html).toContain('SUMMARY OF FINDINGS — ALL OUTCOMES');
+    expect(html).toContain('blocked — incompatible estimates');
+  });
+
+  it('applies the persisted filter, so k matches the headline', () => {
+    const filtered = project(TWO, { proportionFilters: { [KEY]: { denominatorPopulation: 'all_patients_tested' } } });
+    const rows = buildOutcomeSummaryRows(filtered, TWO, pairs, 'random', {});
+    expect(rowFor(rows, OUTCOME).k).toBe(2);          // 3 rows, one filtered out
+    expect(rowFor(rows, OUTCOME).blocked).toBe(false);
+    expect(renderAnalysis(filtered)).not.toContain('blocked — incompatible estimates');
+  });
+
+  it('applies isExcludedFromAnalysis (the 86.md P1.6 defect)', () => {
+    const withExcluded = TWO.concat([prop({ id: 'x', author: 'X', extractionMeta: { includedInAnalysis: false } })]);
+    const rows = buildOutcomeSummaryRows(project(withExcluded), withExcluded, enumerateOutcomePairs(withExcluded), 'random', {});
+    expect(rowFor(rows, OUTCOME).k).toBe(3);
+  });
+
+  it('an honoured override lets the table pool again', () => {
+    const rows = buildOutcomeSummaryRows(project(TWO, { proportionOverrides: { [KEY]: OVERRIDE_MIXED } }), TWO, pairs, 'random', {});
+    expect(rowFor(rows, OUTCOME).blocked).toBe(false);
+    expect(rowFor(rows, OUTCOME).r).not.toBeNull();
+  });
+});
+
 /* ══════════════════ the pure blob writers ══════════════════ */
 
 describe('writeProportionFilter / writeProportionOverride — pure, and self-pruning', () => {
@@ -321,6 +496,119 @@ describe('SubgroupTab bucket mapping — the pure transform the tab feeds subgro
   });
 });
 
+/* ══════════════════ SubgroupTab — Time Point / Outcome Measured ══════════════════ */
+
+describe('cross-pair grouping — Time Point and Outcome Measured are no longer no-ops', () => {
+  const at = (tp, id, over = {}) => prop({
+    id, author: 'A' + id, outcome: 'Mortality', timepoint: tp, esType: 'OR',
+    denominatorPopulation: '', actionStatus: '', ...over,
+  });
+  const MORTALITY = [
+    at('30d', '1'), at('30d', '2', { es: '-0.20', lo: '-0.80', hi: '0.40' }),
+    at('90d', '3', { es: '0.90', lo: '0.30', hi: '1.50' }), at('90d', '4', { es: '0.70', lo: '0.10', hi: '1.30' }),
+  ];
+  const OTHER = [
+    prop({ id: '5', author: 'E', outcome: 'Readmission', timepoint: '', esType: 'OR', es: '0.4', lo: '0.1', hi: '0.7' }),
+    prop({ id: '6', author: 'F', outcome: 'Readmission', timepoint: '', esType: 'OR', es: '0.6', lo: '0.2', hi: '1.0' }),
+  ];
+  const ALL = MORTALITY.concat(OTHER);
+  const pair30 = enumerateOutcomePairs(ALL).find((p) => p.timepoint === '30d');
+
+  it('every other key stays pair-scoped (returns null)', () => {
+    expect(crossPairRowsForGrouping(ALL, pair30, 'design')).toBeNull();
+    expect(crossPairRowsForGrouping(ALL, pair30, 'denominatorPopulation')).toBeNull();
+    expect(crossPairRowsForGrouping(ALL, null, 'timepoint')).toBeNull();   // needs a selected pair
+  });
+
+  it('timepoint spans the sibling pairs sharing the outcome NAME, and nothing else', () => {
+    const rows = crossPairRowsForGrouping(ALL, pair30, 'timepoint');
+    expect(rows.map((s) => s.id)).toEqual(['1', '2', '3', '4']);
+  });
+
+  it('outcome spans every outcome pair', () => {
+    expect(crossPairRowsForGrouping(ALL, pair30, 'outcome').map((s) => s.id)).toEqual(['1', '2', '3', '4', '5', '6']);
+  });
+
+  it('both still apply isExcludedFromAnalysis and skip ES-less rows', () => {
+    const dirty = ALL.concat([
+      at('90d', '7', { extractionMeta: { includedInAnalysis: false } }),
+      at('90d', '8', { es: '' }),
+    ]);
+    expect(crossPairRowsForGrouping(dirty, pair30, 'timepoint').map((s) => s.id)).toEqual(['1', '2', '3', '4']);
+    expect(crossPairRowsForGrouping(dirty, pair30, 'outcome').map((s) => s.id)).toEqual(['1', '2', '3', '4', '5', '6']);
+  });
+
+  it('mortality @30d vs @90d produces two subgroups and a real Q-between again', () => {
+    const rows = crossPairRowsForGrouping(ALL, pair30, 'timepoint');
+    const res = subgroupAnalysis(groupRowsForSubgroup(rows, 'timepoint'), 'timepoint', 'random');
+    expect(res.groups.map((g) => g.group).sort()).toEqual(['30d', '90d']);
+    expect(res.Qbetween).not.toBeNull();
+    expect(res.df).toBe(1);
+    expect(res.pBetween).not.toBeNull();
+    // and the pair-scoped rows really are the single-group no-op this replaces
+    const scoped = studiesForPair(ALL, pair30);
+    expect(subgroupAnalysis(scoped, 'timepoint', 'random').Qbetween).toBeNull();
+  });
+
+  it('grouping by outcome compares Mortality against Readmission', () => {
+    const rows = crossPairRowsForGrouping(ALL, pair30, 'outcome');
+    const res = subgroupAnalysis(groupRowsForSubgroup(rows, 'outcome'), 'outcome', 'random');
+    expect(res.groups.map((g) => g.group).sort()).toEqual(['Mortality', 'Readmission']);
+    expect(res.Qbetween).not.toBeNull();
+  });
+
+  it('SubgroupTab keeps both buttons; the note only appears once one is picked', () => {
+    // SSR renders initial state, and the default groupKey is "design" — the note is a
+    // click away, so the STRING is pinned on the pure builder below.
+    const html = renderToStaticMarkup(createElement(SubgroupTab, { project: project(MORTALITY.concat(OTHER)) }));
+    expect(html).toContain('Time Point');
+    expect(html).toContain('Outcome Measured');
+    expect(html).not.toContain(CROSS_PAIR_SCOPE_HEADLINE);
+  });
+
+  it('the note states the scope, the counts and that the pair filter is off', () => {
+    const rows = crossPairRowsForGrouping(ALL, pair30, 'timepoint');
+    const note = crossPairScopeNote('timepoint', pair30, rows.length, 2);
+    expect(note).toContain('Every time point recorded for “Mortality” is grouped together');
+    expect(note).toContain('4 estimates across 2 outcome pairs');
+    expect(note).toContain("The selected pair's proportion filter does not apply here");
+    const byOutcome = crossPairScopeNote('outcome', pair30, 6, 3);
+    expect(byOutcome).toContain('Every outcome in the project is grouped together — 6 estimates across 3 outcome pairs');
+    expect(byOutcome).toContain('Only compare outcomes measured on the same scale.');
+  });
+});
+
+describe('SubgroupTab — PROP detection uses the dominant measure (blank first row)', () => {
+  /** The first eligible row has no Effect measure, which is what enumerateOutcomePairs copies. */
+  const rows = [
+    prop({ id: '1', author: 'A', esType: '' }),
+    prop({ id: '2', author: 'B', es: '-0.20', lo: '-0.80', hi: '0.40' }),
+    prop({ id: '3', author: 'C', es: '0.90', lo: '0.30', hi: '1.50', denominatorPopulation: 'plp_molecular_diagnoses' }),
+  ];
+
+  it('the pair itself reports a blank measure — this is the trap', () => {
+    expect(enumerateOutcomePairs(rows)[0].esType).toBe('');
+  });
+
+  it('still offers Denominator population and Action status', () => {
+    const html = renderToStaticMarkup(createElement(SubgroupTab, { project: project(rows) }));
+    expect(html).toContain('Denominator population');
+    expect(html).toContain('Action status');
+  });
+
+  it('and AnalysisTab still points the reviewer here', () => {
+    const html = renderAnalysis(project(rows));
+    expect(html).toContain('the Subgroup tab can stratify by denominator population or action status');
+  });
+
+  it('a genuinely non-PROP outcome with a blank first row still offers neither', () => {
+    const or = rows.map((s, i) => ({ ...s, esType: i === 0 ? '' : 'OR' }));
+    const html = renderToStaticMarkup(createElement(SubgroupTab, { project: project(or) }));
+    expect(html).not.toContain('Denominator population');
+    expect(html).not.toContain('Action status');
+  });
+});
+
 describe('SensitivityTab — outcome scoping (86.md P1.6)', () => {
   it('asks for an outcome instead of pooling across all of them', () => {
     const rows = HOMOGENEOUS.concat([
@@ -378,6 +666,30 @@ describe('ResearchExport metadata/columns — empty unless a filter or override 
     ]);
     expect(proportionExportFields(null, rec)).toEqual(['denominatorPopulation']);
   });
+  // Review fix — ResearchExport is the FOURTH exporter of denominatorCustom. A row whose
+  // population was switched away from Other/custom keeps the old text on the blob (no
+  // load-path normalizer strips it, 107.md §15), and the input that would reveal it is
+  // hidden, so this exporter must resolve it through `exportedDenominatorCustom` too.
+  describe('proportionClassCell — the export cell never emits a stale custom denominator', () => {
+    const CUSTOM = 'Patients who completed post-test genetic counseling';
+    const staleRow = prop({ denominatorPopulation: 'all_patients_tested', denominatorCustom: CUSTOM });
+    const realRow = prop({ denominatorPopulation: 'other', denominatorCustom: CUSTOM });
+
+    it("drops it when the population is no longer 'other'", () => {
+      expect(proportionClassCell(staleRow, 'denominatorCustom')).toBe('');
+    });
+    it('keeps it for a row that really is Other/custom', () => {
+      expect(proportionClassCell(realRow, 'denominatorCustom')).toBe(CUSTOM);
+    });
+    it('still label-resolves the two enums, and stays empty for a legacy row', () => {
+      expect(proportionClassCell(staleRow, 'denominatorPopulation')).toBe('All patients tested');
+      expect(proportionClassCell(staleRow, 'actionStatus')).toBe('Implemented');
+      expect(proportionClassCell(legacy({}), 'denominatorPopulation')).toBe('');
+      expect(proportionClassCell(legacy({}), 'actionStatus')).toBe('');
+      expect(proportionClassCell(staleRow, 'bogus')).toBe('');
+    });
+  });
+
   it('the rendered export block is unchanged when the new props are absent', () => {
     const result = { k: 2, studies: [], fixed: { es: 0, lo: -1, hi: 1 }, random: { es: 0, lo: -1, hi: 1 }, I2: 0, tau2: 0, Q: 0, Qpval: 1, pval: 1, tau2Method: 'DL' };
     const base = renderToStaticMarkup(createElement(ResearchExport, { result, esType: 'PROP', method: 'random', studies: [] }));

@@ -6,7 +6,10 @@
    IMPORTANT: these are the MONOLITH's OWN copies. They are intentionally NOT merged with
    the pre-existing `src/research-engine/statistics/*` or `project-model/constants.js`
    modules — those are separate duplicates and re-pointing could drift behavior. */
-import { ADJUST_LABEL, DATA_NATURE_LABEL, DENOMINATOR_POPULATION_LABEL, ACTION_STATUS_LABEL } from "../project-model/monolithConstants.js";
+import { ADJUST_LABEL, DATA_NATURE_LABEL } from "../project-model/monolithConstants.js";
+// 107.md §8E — registry MEMBERSHIP, not a truthy label-map lookup ('constructor'/'toString'
+// read truthy off Object.prototype and suppressed the warning — review fix).
+import { isDenominatorPopulationKey, isActionStatusKey } from "../extraction/proportionMeta.js";
 import { isNonPrimary } from "../import-export/referenceParsers.js";
 // RoadMap/2.md — opt-in τ² estimators (DL stays the default; existing results unchanged).
 import { estimateTau2, TAU2_METHODS } from "./tau2.js";
@@ -699,9 +702,9 @@ export function validateStudy(s){
     const action=s.actionStatus==null?"":String(s.actionStatus).trim();
     if(denom==="other"&&!String(s.denominatorCustom==null?"":s.denominatorCustom).trim())
       add("error","denominatorCustom","Custom denominator description is required for Other/custom.");
-    if(denom&&!DENOMINATOR_POPULATION_LABEL[denom])
+    if(denom&&!isDenominatorPopulationKey(denom))
       add("warn","denominatorPopulation",`Unrecognised denominator population "${denom}" — pick one of the listed options.`);
-    if(action&&!ACTION_STATUS_LABEL[action])
+    if(action&&!isActionStatusKey(action))
       add("warn","actionStatus",`Unrecognised action status "${action}" — pick one of the listed options.`);
   }
   // diagnostic

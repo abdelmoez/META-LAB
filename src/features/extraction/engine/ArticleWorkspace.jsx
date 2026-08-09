@@ -44,6 +44,7 @@ import { DENOMINATOR_POPULATIONS, ACTION_STATUSES } from '../../../research-engi
 import {
   PROPORTION_META_FIELDS, UNCLASSIFIED_LABEL, effectiveDenominatorPopulation,
   effectiveActionStatus, requiresCustomDenominator, formatProportionDisplay,
+  denominatorPopulationPatch,
 } from '../../../research-engine/extraction/proportionMeta.js';
 import { studyDocApi } from '../unified/studyDocApi.js';
 import ConverterPanel from './ConverterPanel.jsx';
@@ -595,28 +596,37 @@ export default function ArticleWorkspace({
     return { mode: 'click', onTextClick: assignFromClick, onTextMiss: () => setStatus('No number there — zoom in, or run text recognition on scanned pages.') };
   }, [method, assignFromClick, effUrl, editable]);
 
-  const setField = useCallback((f, v) => {
+  const setFields = useCallback((fields) => {
     if (!editable || !study) return;
+    const keys = Object.keys(fields || {});
+    if (!keys.length) return;
     // 77.md §2/§15 — a manually typed VALUE invalidates any prior click/table source
     // location (which described the previous value). Re-attribute the field to 'manual',
     // drop the stale page/bbox so jump-to-source can't point at the wrong place, and keep
-    // the replaced value in history. Value + provenance land in ONE blob write (83.md §5).
+    // the replaced value in history. Value + provenance land in ONE blob write (83.md §5) —
+    // which is also why a companion field (107.md §8A: clearing an orphaned custom
+    // denominator) must ride in the SAME patch, never a second setField call.
     let provEntry = null;
-    if (ALL_VALUE_KEYS.includes(f) || isCaseVarKey(f)) {   // 106.md — case variables too
+    for (const f of keys) {
+      const v = fields[f];
+      if (!ALL_VALUE_KEYS.includes(f) && !isCaseVarKey(f)) continue;   // 106.md — case variables too
       const prior = readProvenance(study, f);
       const changed = String(study[f] || '') !== String(v);
       if (prior && (prior.page || prior.bbox || prior.method) && changed) {
         const history = Array.isArray(prior.history) ? prior.history.slice(-10) : [];
         if (nonEmpty(study[f])) history.push({ value: String(study[f]), method: prior.method || 'manual', at: new Date().toISOString() });
-        provEntry = { [f]: { method: 'manual', page: null, bbox: null, history: history.length ? history : undefined } };
+        provEntry = provEntry || {};
+        provEntry[f] = { method: 'manual', page: null, bbox: null, history: history.length ? history : undefined };
       }
     }
-    if (onWriteStudy) onWriteStudy(study.id, { [f]: v, needsReview: true }, provEntry || undefined);
+    const p = { ...fields, needsReview: true };
+    if (onWriteStudy) onWriteStudy(study.id, p, provEntry || undefined);
     else {
-      patch({ [f]: v, needsReview: true });
+      patch(p);
       if (provEntry && onAttachProvenance) onAttachProvenance(study.id, provEntry);
     }
   }, [editable, study, patch, onAttachProvenance, onWriteStudy]);
+  const setField = useCallback((f, v) => setFields({ [f]: v }), [setFields]);
   const focusField = useCallback((f) => { if (method === 'click' && assignOptions.some(([k]) => k === f)) setActiveField(f); }, [method, assignOptions]);
 
   const activeLabel = activeField === 'smart'
@@ -828,7 +838,7 @@ export default function ArticleWorkspace({
                 <div>
                   <label style={lbl} htmlFor="pex-denominatorPopulation">{FIELD_LABELS.denominatorPopulation}</label>
                   <select id="pex-denominatorPopulation" data-testid="pex-field-denominatorPopulation"
-                    value={denomPop} onChange={(e) => setField('denominatorPopulation', e.target.value)}
+                    value={denomPop} onChange={(e) => setFields(denominatorPopulationPatch(study, e.target.value))}
                     disabled={!editable} style={{ ...inp, fontSize: 12 }}>
                     <option value="">{UNCLASSIFIED_LABEL}</option>
                     {DENOMINATOR_POPULATIONS.map(([k, l]) => <option key={k} value={k}>{l}</option>)}

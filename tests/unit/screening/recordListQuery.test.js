@@ -5,6 +5,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   fastListEligible, buildFastListQuery, FAST_LIST_FILTERS, pageWindow, moveIntent,
+  advanceContextMatches,
 } from '../../../src/research-engine/screening/recordListQuery.js';
 
 describe('fastListEligible — conservative eligibility', () => {
@@ -125,6 +126,58 @@ describe('moveIntent — keyboard navigation at the edge of the loaded window', 
     expect(M({ index: 49, dir: 0, hasMore: true })).toBe('load-next'); // 0 reads as forward
     expect(M({ index: 3, dir: -0.5 })).toBe('move');
     expect(M({ index: 200, dir: 1, hasMore: false })).toBe('end');
+  });
+
+  /* 107.md rec — the caller feeds the RESET load state in as well. A reset (Resume
+     Screening, filter/search change, the realtime `decision.saved` refresh) replaces
+     the whole window, so an append issued during one merges two different queries.
+     moveIntent's own contract is unchanged; this pins the semantics the caller relies
+     on — any in-flight load, of either kind, must read as 'noop' at the boundary. */
+  it('treats an in-flight RESET as "already loading" at the boundary', () => {
+    const busy = (loadingMore) => M({ index: 49, dir: 1, hasMore: true, loadingMore });
+    expect(busy(false)).toBe('load-next');
+    expect(busy(true)).toBe('noop');            // loadingMore || loading || advanceLock
+    // …and it still moves inside the loaded window while a reset is in flight.
+    expect(M({ index: 10, dir: 1, hasMore: true, loadingMore: true })).toBe('move');
+  });
+});
+
+/* ── 107.md rec — is a deferred auto-advance still about the displayed list? ───── */
+
+describe('advanceContextMatches — scoping a pending auto-advance to its dataset', () => {
+  const PEND = { pid: 'p1', filter: 'all', search: '', gen: 3 };
+  const CTX = { pid: 'p1', filter: 'all', search: '', gen: 3 };
+
+  it('matches when nothing moved under the reviewer', () => {
+    expect(advanceContextMatches(PEND, CTX)).toBe(true);
+    expect(advanceContextMatches({ ...PEND, seen: new Set(['a']) }, CTX)).toBe(true);
+  });
+
+  it('rejects a project switch mid-flight', () => {
+    expect(advanceContextMatches(PEND, { ...CTX, pid: 'p2' })).toBe(false);
+  });
+
+  it('rejects a filter or search change mid-flight', () => {
+    expect(advanceContextMatches(PEND, { ...CTX, filter: 'undecided' })).toBe(false);
+    expect(advanceContextMatches(PEND, { ...CTX, search: 'sepsis' })).toBe(false);
+  });
+
+  it('rejects any intervening RESET load (the generation moved)', () => {
+    expect(advanceContextMatches(PEND, { ...CTX, gen: 4 })).toBe(false);
+    expect(advanceContextMatches({ ...PEND, gen: 0 }, { ...CTX, gen: 1 })).toBe(false);
+  });
+
+  it('never matches an absent or non-object pending advance', () => {
+    expect(advanceContextMatches(null, CTX)).toBe(false);
+    expect(advanceContextMatches(undefined, CTX)).toBe(false);
+    expect(advanceContextMatches('nope', CTX)).toBe(false);
+    expect(advanceContextMatches(PEND)).toBe(false);
+  });
+
+  it('compares strictly — a missing stamp is not a wildcard', () => {
+    expect(advanceContextMatches({}, {})).toBe(true);                       // both empty
+    expect(advanceContextMatches({}, CTX)).toBe(false);
+    expect(advanceContextMatches(PEND, { pid: 'p1', filter: 'all', search: '' })).toBe(false);
   });
 });
 

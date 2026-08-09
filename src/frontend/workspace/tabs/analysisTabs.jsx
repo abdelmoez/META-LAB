@@ -48,7 +48,7 @@ import {
   UNCLASSIFIED_GROUP_LABEL, UNCLASSIFIED_FILTER, ALL_UNCLASSIFIED_NOTE, PROPORTION_FIELD_LABEL,
 } from "../../../research-engine/statistics/proportionCompatibility.js";
 import {
-  denominatorPopulationLabel, actionStatusLabel, denominatorCustomText,
+  denominatorPopulationLabel, actionStatusLabel, exportedDenominatorCustom,
 } from "../../../research-engine/extraction/proportionMeta.js";
 
 /* ════════════ SHARED: OUTCOME-PAIR SCOPING ════════════
@@ -105,6 +105,59 @@ export function pairIsProportion(pair,dominantEsType){
   return String((pair&&pair.esType)||dominantEsType||"").trim().toUpperCase()==="PROP";
 }
 
+/** The most frequent effect measure across a row set. `enumerateOutcomePairs` copies
+ *  `esType` from the FIRST eligible row, which is blank for an imported/converted PROP
+ *  outcome whose first row never had the measure set — every §11 gate therefore needs
+ *  this fallback, not just AnalysisTab's. Pure + exported so all tabs share one answer. */
+export function dominantEsType(rows){
+  const types=(Array.isArray(rows)?rows:[]).map(s=>s&&s.esType).filter(Boolean);
+  if(!types.length) return "";
+  return types.slice().sort((a,b)=>types.filter(t=>t===b).length-types.filter(t=>t===a).length)[0];
+}
+
+const NO_PROP_CHECK=Object.freeze({applicable:false,blocking:false,infoOnly:false,issues:[],unclassifiedFields:[],propCount:0});
+
+/**
+ * 107.md §11/§12 — THE pooling gate, in one place.
+ *
+ * AnalysisTab owned this derivation privately, so ForestTab and SensitivityTab pooled,
+ * drew and EXPORTED exactly the estimate set AnalysisTab refuses to pool. It is pure, so
+ * every tab (and the all-outcomes summary table) now derives it from the same function
+ * and can never disagree about whether a pool is blocked.
+ *
+ * `rows` must already be pair-scoped, exclusion-filtered and proportion-filtered; the
+ * compatibility check narrows further to the rows runMeta would actually pool.
+ */
+export function proportionGate(project,pair,rows,domEsType){
+  const dom=domEsType===undefined?dominantEsType(rows):domEsType;
+  const isPropPair=pairIsProportion(pair,dom);
+  const check=isPropPair?checkProportionCompatibility(rows):NO_PROP_CHECK;
+  const override=isPropPair?pairProportionOverride(project,pair):null;
+  const stale=proportionOverrideStale(override,check);
+  const honored=!!override&&!stale;
+  return {isPropPair,check,override,stale,honored,
+    // Unresolved blocking incompatibility gates the pooled result exactly like a
+    // checkPoolability blocker does — 107.md §12 "Do not silently proceed."
+    blocked:isPropPair&&check.blocking&&!honored,esType:dom};
+}
+
+/**
+ * The rows of AnalysisTab's "Summary of findings — all outcomes" table.
+ *
+ * It used to build its own subset straight from project.studies — no
+ * `isExcludedFromAnalysis`, no persisted filter, no compatibility check — so it printed a
+ * pooled proportion + CI + I² for an outcome the gate below refuses to pool, and a k that
+ * contradicted the tab's own headline. Same helpers, same gate, one place. Pure + exported.
+ */
+export function buildOutcomeSummaryRows(project,studies,outcomePairs,method,opts){
+  return (Array.isArray(outcomePairs)?outcomePairs:[]).map(pr=>{
+    const subset=applyProportionFilters(studiesForPair(studies,pr),pairProportionFilter(project,pr));
+    const g=proportionGate(project,pr,subset);
+    return {pr,k:subset.length,et:g.esType||"",blocked:g.blocked,
+      r:g.blocked?null:runMeta(subset,method,opts)};
+  });
+}
+
 /**
  * 107.md §10/§12 — the rows SubgroupTab hands to `subgroupAnalysis`. For the two new
  * keys the bucket key becomes the DISPLAY label, so a legacy/'' value (→ "Not classified
@@ -118,6 +171,41 @@ export function groupRowsForSubgroup(studies,groupKey){
   const rows=Array.isArray(studies)?studies:[];
   if(groupKey!=="denominatorPopulation"&&groupKey!=="actionStatus") return rows;
   return rows.map(s=>({...s,[groupKey]:subgroupGroupLabel(groupKey,s&&s[groupKey])}));
+}
+
+/**
+ * The two grouping keys that are CONSTANT inside an outcome pair, and so became dead
+ * buttons when SubgroupTab was pair-scoped (107.md §10): `timepoint` and `outcome`.
+ * Grouping by either is the classic, methodologically standard comparison — mortality
+ * @30d vs @90d, or one outcome against another — so instead of removing the buttons the
+ * two keys deliberately step OUTSIDE the pair:
+ *   • timepoint → every sibling pair sharing the selected outcome NAME (all its time points)
+ *   • outcome   → every outcome pair in the project
+ * `isExcludedFromAnalysis` still applies. The pair's proportion filter does NOT: it is
+ * keyed to one pair and would silently drop whole arms of the comparison.
+ *
+ * @returns {Array<object>|null} null for every other key (stay pair-scoped).
+ * Pure + exported: this is the interactive behaviour SSR cannot exercise.
+ */
+export function crossPairRowsForGrouping(allStudies,pair,groupKey){
+  if(!pair||(groupKey!=="timepoint"&&groupKey!=="outcome")) return null;
+  const base=(Array.isArray(allStudies)?allStudies:[])
+    .filter(s=>s&&s.es!==""&&!isNaN(+s.es)&&!isExcludedFromAnalysis(s));
+  if(groupKey==="outcome") return base;
+  const name=(pair.outcome||"").trim();
+  return base.filter(s=>(s.outcome||"").trim()===name);
+}
+
+/** Lead of the note that must accompany any cross-pair comparison. */
+export const CROSS_PAIR_SCOPE_HEADLINE="This comparison spans outcome pairs.";
+/** The rest of that note. Pure + exported so SSR can pin it without a click. */
+export function crossPairScopeNote(groupKey,pair,rowCount,pairCount){
+  const pairs=`${rowCount} estimates across ${pairCount} outcome pair${pairCount===1?"":"s"}`;
+  const what=groupKey==="timepoint"?"time points":"outcomes";
+  const lead=groupKey==="timepoint"
+    ? `Every time point recorded for “${(pair&&pair.outcome)||"(unnamed)"}” is grouped together — ${pairs} — so the subgroups can actually differ.`
+    : `Every outcome in the project is grouped together — ${pairs}. Only compare outcomes measured on the same scale.`;
+  return `${lead} The selected pair's proportion filter does not apply here, and pooling different ${what} within a subgroup is your responsibility to justify.`;
 }
 
 /* ── pure blob writers for the two persisted resolutions ──────────────────────────
@@ -170,10 +258,29 @@ const ISSUE_HEADLINE={
 };
 const STUDY_LIST_CAP=6;
 
-export function ProportionCompatibilityPanel({check,filters,override,stale,onSetFilter,onClearFilter,onRecordOverride,onClearOverride}){
+/** The active persisted proportion filter as read-only chips, for the outcome bar of
+ *  every tab that pools — an exported figure or table must never silently omit estimates.
+ *  Renders nothing (and adds no wrapper) when no filter is set. */
+export function ProportionFilterChips({filters}){
+  const entries=activeProportionFilters(filters);
+  if(!entries.length) return null;
+  return(<>{entries.map(([field,value])=>(
+    <span key={field} style={tagS("blue")}>
+      {PROPORTION_FIELD_LABEL[field]}: {proportionFilterLabel(field,value)}
+    </span>
+  ))}</>);
+}
+
+/** Where a reviewer resolves a block they cannot resolve on the tab they are looking at. */
+export const PROP_RESOLVE_HINT="Resolve this on the Meta-Analysis tab — filter to one category, stratify on the Subgroup tab, correct the extraction metadata, exclude the estimates, or record an explicit override there.";
+
+/** `compact` is the read-only variant ForestTab/SensitivityTab render: the warning and the
+ *  honoured/stale banners, but no filter chips (their outcome bar already shows them), no
+ *  per-category filter buttons and no override form — those live on the Meta-Analysis tab. */
+export function ProportionCompatibilityPanel({check,filters,override,stale,onSetFilter,onClearFilter,onRecordOverride,onClearOverride,compact}){
   const[note,setNote]=useState("");
   const c=check||{applicable:false,blocking:false,infoOnly:false,issues:[]};
-  const filterEntries=activeProportionFilters(filters);
+  const filterEntries=compact?[]:activeProportionFilters(filters);
   const honored=!!override&&!stale;
   if(!c.applicable&&!filterEntries.length&&!override) return null;
 
@@ -261,8 +368,15 @@ export function ProportionCompatibilityPanel({check,filters,override,stale,onSet
       );
     })}
 
+    {/* ── COMPACT: point at the tab that owns the resolutions ── */}
+    {compact&&!honored&&c.blocking&&(
+      <div style={{background:C.card,border:`1px solid ${C.brd}`,borderRadius:8,padding:"10px 14px",fontSize:11,color:C.muted,lineHeight:1.6}}>
+        {PROP_RESOLVE_HINT}
+      </div>
+    )}
+
     {/* ── THE OTHER RESOLUTION PATHS (107.md §12) ── */}
-    {!honored&&c.blocking&&(
+    {!compact&&!honored&&c.blocking&&(
       <div style={{background:C.card,border:`1px solid ${C.brd}`,borderRadius:8,padding:"12px 16px"}}>
         <div style={{fontSize:11,fontWeight:700,color:C.muted,letterSpacing:0.8,marginBottom:8}}>OTHER WAYS TO RESOLVE THIS</div>
         <ul style={{margin:0,paddingLeft:20,fontSize:12,color:C.muted,lineHeight:1.8}}>
@@ -341,10 +455,7 @@ export function AnalysisTab({project,updateProject,onApplyPrecisionToAll,current
   const pool=useMemo(()=>checkPoolability(filteredStudies),[filteredStudies]);
   const result=useMemo(()=>runMeta(filteredStudies,method,{tau2Method}),[filteredStudies,method,tau2Method]);
   const valid=filteredStudies;
-  const esType=useMemo(()=>{
-    const types=valid.map(s=>s.esType).filter(Boolean);
-    return types.length?types.sort((a,b)=>types.filter(t=>t===b).length-types.filter(t=>t===a).length)[0]:"";
-  },[valid]);
+  const esType=useMemo(()=>dominantEsType(valid),[valid]);
   const prec = project?.analysisPrecision;
   const interp=useMemo(()=>interpretResult(result,esType,filteredStudies,prec),[result,esType,filteredStudies,prec]);
   const typeWarn=useMemo(()=>analysisTypeWarnings(filteredStudies),[filteredStudies]);
@@ -356,16 +467,10 @@ export function AnalysisTab({project,updateProject,onApplyPrecisionToAll,current
   // ── 107.md §11/§12 — proportion compatibility ─────────────────────────────
   // Gated on the PAIR's measure (not the filtered set's) so a filter that empties the
   // pool cannot hide the chip that clears it. Nothing below fires for any other measure.
-  const isPropPair=pairIsProportion(activeOutcome,esType);
-  const propCheck=useMemo(()=>(isPropPair?checkProportionCompatibility(filteredStudies)
-    :{applicable:false,blocking:false,infoOnly:false,issues:[],unclassifiedFields:[],propCount:0}),
-    [isPropPair,filteredStudies]);
-  const propOverride=isPropPair?pairProportionOverride(project,activeOutcome):null;
-  const propStale=proportionOverrideStale(propOverride,propCheck);
-  const propHonored=!!propOverride&&!propStale;
-  // Unresolved blocking incompatibility gates the pooled result exactly like a
-  // checkPoolability blocker does — 107.md §12 "Do not silently proceed."
-  const propBlocked=isPropPair&&propCheck.blocking&&!propHonored;
+  // Derived by the SHARED gate so Forest/Sensitivity/the summary table cannot disagree.
+  const gate=useMemo(()=>proportionGate(project,activeOutcome,filteredStudies,esType),
+    [project,activeOutcome,filteredStudies,esType]);
+  const{isPropPair,check:propCheck,override:propOverride,stale:propStale,honored:propHonored,blocked:propBlocked}=gate;
 
   const outcomeKey=activeOutcome?activeOutcome.key:"";
   const setProportionFilter=(field,value)=>{
@@ -450,14 +555,12 @@ export function AnalysisTab({project,updateProject,onApplyPrecisionToAll,current
     {/* SUMMARY OF FINDINGS (all outcomes — only shown when >1 outcome) */}
     {outcomePairs.length>1&&(()=>{
       try{
-        const rows=outcomePairs.map(pr=>{
-          const subset=studies.filter(s=>(s.outcome||"").trim()===pr.outcome&&(s.timepoint||"").trim()===pr.timepoint&&s.es!==""&&!isNaN(+s.es));
-          const r=runMeta(subset,method,{tau2Method});
-          const et=subset.map(s=>s.esType).filter(Boolean)[0]||"";
-          const tt=ES_TYPES[et]||{};const isLog=!!tt.log,isProp=et==="PROP";
+        // 107.md §10/§11/§12 — built by the shared helper + the shared gate.
+        const rows=buildOutcomeSummaryRows(project,studies,outcomePairs,method,{tau2Method}).map(row=>{
+          const tt=ES_TYPES[row.et]||{};const isLog=!!tt.log,isProp=row.et==="PROP";
           const bt=x=>isLog?Math.exp(x):isProp?(()=>{const e=Math.exp(x);return e/(1+e);})():x;
           const dv=x=>x==null?"—":isProp?(bt(x)*100).toFixed(normalizePrecision(prec).decimals)+"%":isLog?fmtES(bt(x),prec):fmtES(+x,prec);
-          return {pr,r,et,dv,k:subset.length};
+          return {...row,dv};
         });
         return(
           <div style={{background:C.card,border:`1px solid ${C.brd}`,borderRadius:8,padding:16,marginBottom:16}}>
@@ -470,14 +573,20 @@ export function AnalysisTab({project,updateProject,onApplyPrecisionToAll,current
                 ))}
               </tr></thead>
               <tbody>
-                {rows.map(({pr,r,et,dv,k})=>(
+                {rows.map(({pr,r,et,dv,k,blocked})=>(
                   <tr key={pr.key} style={{borderBottom:`1px solid ${C.brd}`,cursor:"pointer",background:pr.key===effectiveKey?`${themeAlpha(C.acc,'10')}`:"transparent"}} onClick={()=>setSelectedKey(pr.key)}>
                     <td style={{padding:"6px 10px",fontWeight:pr.key===effectiveKey?700:400}}>{pr.label||pr.outcome||"(unnamed)"}</td>
                     <td style={{padding:"6px 10px",color:C.muted}}>{et?ES_TYPES[et].scale:"—"}</td>
                     <td style={{padding:"6px 10px",textAlign:"right",fontFamily:"'IBM Plex Mono',monospace"}}>{k}</td>
-                    <td style={{padding:"6px 10px",textAlign:"right",fontFamily:"'IBM Plex Mono',monospace",fontWeight:700,color:r?C.grn:C.dim}}>{r?dv(r.pES):"—"}</td>
-                    <td style={{padding:"6px 10px",textAlign:"right",fontFamily:"'IBM Plex Mono',monospace",color:C.muted}}>{r?`${dv(r.lo95)} to ${dv(r.hi95)}`:"need ≥2"}</td>
-                    <td style={{padding:"6px 10px",textAlign:"right",fontFamily:"'IBM Plex Mono',monospace",color:r&&r.I2>50?C.yel:C.muted}}>{r?r.I2+"%":"—"}</td>
+                    {blocked?(
+                      <td colSpan={3} style={{padding:"6px 10px",textAlign:"right",color:C.red,fontSize:11}}>
+                        ⛔ blocked — incompatible estimates
+                      </td>
+                    ):(<>
+                      <td style={{padding:"6px 10px",textAlign:"right",fontFamily:"'IBM Plex Mono',monospace",fontWeight:700,color:r?C.grn:C.dim}}>{r?dv(r.pES):"—"}</td>
+                      <td style={{padding:"6px 10px",textAlign:"right",fontFamily:"'IBM Plex Mono',monospace",color:C.muted}}>{r?`${dv(r.lo95)} to ${dv(r.hi95)}`:"need ≥2"}</td>
+                      <td style={{padding:"6px 10px",textAlign:"right",fontFamily:"'IBM Plex Mono',monospace",color:r&&r.I2>50?C.yel:C.muted}}>{r?r.I2+"%":"—"}</td>
+                    </>)}
                   </tr>
                 ))}
               </tbody>
@@ -870,6 +979,23 @@ export function DataBehindAnalysis({result,studies,esType,prec}){
   </div>);
 }
 
+/**
+ * One classification cell of the research-ready export (TSV / CSV / .xls / preview).
+ *
+ * Label-resolved, and deliberately EMPTY (never "Not classified") for a legacy row — an
+ * empty cell is honest, a label in a data column would read like a category.
+ * `denominatorCustom` goes through `exportedDenominatorCustom`, NOT the raw text: a row
+ * whose population was switched away from Other/custom keeps the old description on the
+ * blob (no load-path normalizer strips it, 107.md §15) and the input that would reveal it
+ * is hidden — this is the FOURTH exporter of that field. Pure + exported.
+ */
+export function proportionClassCell(study,field){
+  if(field==="denominatorPopulation") return denominatorPopulationLabel(study);
+  if(field==="actionStatus") return actionStatusLabel(study);
+  if(field==="denominatorCustom") return exportedDenominatorCustom(study);
+  return "";
+}
+
 /* ════════════ RESEARCH-READY EXPORT ════════════ */
 /* Builds study-level + pooled + heterogeneity tables and offers copy / CSV / Excel(.xls) / publication table */
 export function ResearchExport({result,esType,method,studies,prec,proportionFilters,proportionOverride}){
@@ -882,11 +1008,7 @@ export function ResearchExport({result,esType,method,studies,prec,proportionFilt
   const propOverride=proportionOverride||null;
   const classFields=proportionExportFields(proportionFilters,propOverride);
   const propMetaRows=proportionExportMetaRows(proportionFilters,propOverride);
-  // Label-resolved, and deliberately EMPTY (never "Not classified") for a legacy row —
-  // an empty cell is honest, a label in a data column would read like a category.
-  const classCell=(s,f)=>f==="denominatorPopulation"?denominatorPopulationLabel(s)
-    :f==="actionStatus"?actionStatusLabel(s)
-    :f==="denominatorCustom"?denominatorCustomText(s):"";
+  const classCell=proportionClassCell;
   const classCsvKey={denominatorPopulation:"Denominator_population",actionStatus:"Action_status",denominatorCustom:"Custom_denominator_definition"};
   const t=ES_TYPES[esType]||{};
   const isLog=!!t.log, isProp=esType==="PROP";
@@ -1143,7 +1265,12 @@ export function ForestTab({project}){
 
   const valid=filteredStudies;
   // auto-detect dominant effect measure from filtered studies
-  const esType=useMemo(()=>{const t=valid.map(s=>s.esType).filter(Boolean);return t.length?t.sort((a,b)=>t.filter(x=>x===b).length-t.filter(x=>x===a).length)[0]:"";},[valid]);
+  const esType=useMemo(()=>dominantEsType(valid),[valid]);
+  // 107.md §11/§12 — the SAME gate AnalysisTab applies. Without it this tab drew and
+  // exported a publication-ready diamond over exactly the estimates AnalysisTab refuses
+  // to pool, with nothing on screen saying so.
+  const gate=useMemo(()=>proportionGate(project,activeOutcome,filteredStudies,esType),
+    [project,activeOutcome,filteredStudies,esType]);
   const autoLabel=esType?`${ES_TYPES[esType]?.scale} (effect size)`:"Effect Size";
   const[esLabel,setEsLabel]=useState(autoLabel);
   const[nullLine,setNullLine]=useState(0);
@@ -1177,6 +1304,9 @@ export function ForestTab({project}){
         </select>
       )}
       {filteredStudies.length>0&&<span style={{fontSize:11,color:C.muted,marginLeft:"auto"}}>{filteredStudies.length} studies</span>}
+      {/* 107.md §12 — an active persisted filter silently dropped estimates from the
+          exported figure with nothing on screen saying so. Same chip as SubgroupTab. */}
+      <ProportionFilterChips filters={proportionFilters}/>
     </div>
 
     {/* no outcome selected yet */}
@@ -1187,8 +1317,21 @@ export function ForestTab({project}){
         <div style={{fontSize:12}}>Each outcome gets its own separate forest plot.</div>
       </div>
     )}
-    {/* controls + plot — only when an outcome is selected */}
-    {(outcomePairs.length===1||effectiveKey)&&(<>
+
+    {/* 107.md §11/§12 — THE gate, read-only: the resolutions live on the Meta-Analysis tab. */}
+    {(outcomePairs.length===1||effectiveKey)&&gate.isPropPair&&(
+      <ProportionCompatibilityPanel compact check={gate.check} override={gate.override} stale={gate.stale}/>
+    )}
+    {(outcomePairs.length===1||effectiveKey)&&gate.blocked&&(
+      <div style={{background:C.card,border:`1px solid ${C.brd}`,borderRadius:8,padding:32,textAlign:"center",color:C.muted}}>
+        <div style={{fontSize:32,marginBottom:10}}>🛑</div>
+        <div style={{fontSize:14,marginBottom:4,color:C.txt}}>Forest plot hidden until you confirm</div>
+        <div style={{fontSize:12,maxWidth:480,margin:"0 auto",lineHeight:1.6}}>These estimates do not all measure the same quantity (see above), so neither the pooled diamond nor its publication export is available for them.</div>
+      </div>
+    )}
+
+    {/* controls + plot — only when an outcome is selected AND the pool is not blocked */}
+    {(outcomePairs.length===1||effectiveKey)&&!gate.blocked&&(<>
     <div style={{display:"flex",gap:10,marginBottom:14,flexWrap:"wrap",alignItems:"center"}}>
       {[["random","Random Effects"],["fixed","Fixed / Common Effect"]].map(([m,label])=>(
         <button key={m} onClick={()=>setMethod(m)} style={btnS(method===m?"primary":"ghost")}>{label}</button>
@@ -1316,6 +1459,11 @@ export function SensitivityTab({project}){
   const nonPrimaryCount=useMemo(()=>studies.filter(s=>s.es!==""&&!isNaN(+s.es)&&isNonPrimary(s)).length,[studies]);
   const primaryResult=useMemo(()=>runMeta(primaryStudies,method,{tau2Method}),[primaryStudies,method,tau2Method]);
 
+  // 107.md §11/§12 — the SAME gate AnalysisTab applies. Without it this tab reported a
+  // pooled estimate, leave-one-out, Egger and trim-and-fill over exactly the estimates
+  // AnalysisTab refuses to pool, and offered a funnel-plot export of them.
+  const gate=useMemo(()=>proportionGate(project,activeOutcome,studies),[project,activeOutcome,studies]);
+
   const outcomeSelector=(outcomePairs.length>1)?(
     <div style={{background:C.card,border:`1px solid ${C.brd}`,borderRadius:8,padding:12,marginBottom:14,display:"flex",alignItems:"center",gap:12,flexWrap:"wrap"}}>
       <span style={{fontSize:11,fontWeight:700,color:C.muted,letterSpacing:0.5,whiteSpace:"nowrap"}}>OUTCOME</span>
@@ -1325,8 +1473,14 @@ export function SensitivityTab({project}){
         {outcomePairs.map(p=>(<option key={p.key} value={p.key}>{p.label||p.outcome||"(unnamed)"}</option>))}
       </select>
       <span style={{fontSize:11,color:C.muted}}>Robustness checks run on one outcome at a time.</span>
+      <ProportionFilterChips filters={proportionFilters}/>
     </div>
-  ):null;
+  ):(activeProportionFilters(proportionFilters).length>0?(
+    <div style={{background:C.card,border:`1px solid ${C.brd}`,borderRadius:8,padding:"9px 14px",marginBottom:14,display:"flex",alignItems:"center",gap:8,flexWrap:"wrap"}}>
+      <span style={{fontSize:10,fontWeight:700,color:C.acc,letterSpacing:0.8}}>ESTIMATES FILTERED</span>
+      <ProportionFilterChips filters={proportionFilters}/>
+    </div>
+  ):null);
 
   if(!result) return (<div>
     <SectionHeader icon="activity" title="Sensitivity & Publication Bias" desc="Assess robustness and small-study effects. Needs ≥3 studies with effect sizes."/>
@@ -1335,6 +1489,19 @@ export function SensitivityTab({project}){
       <div style={{fontSize:36,marginBottom:10}}>🎯</div>{outcomePairs.length>1&&!effectiveKey
         ?"Select an outcome above — each outcome is assessed separately."
         :"Add at least 3 studies with effect sizes"}
+    </div>
+  </div>);
+
+  // Blocked: nothing below describes a pool that may legitimately exist, so no robustness
+  // output and no funnel export is rendered at all.
+  if(gate.blocked) return (<div>
+    <SectionHeader icon="activity" title="Sensitivity & Publication Bias" desc="Robustness checks: leave-one-out, funnel plot, Egger's test."/>
+    {outcomeSelector}
+    <ProportionCompatibilityPanel compact check={gate.check} override={gate.override} stale={gate.stale}/>
+    <div style={{background:C.card,border:`1px solid ${C.brd}`,borderRadius:8,padding:32,textAlign:"center",color:C.muted}}>
+      <div style={{fontSize:32,marginBottom:10}}>🛑</div>
+      <div style={{fontSize:14,marginBottom:4,color:C.txt}}>Robustness checks hidden until you confirm</div>
+      <div style={{fontSize:12,maxWidth:480,margin:"0 auto",lineHeight:1.6}}>Leave-one-out, the funnel plot, Egger&apos;s test and trim-and-fill all describe one pooled estimate — and these estimates do not all measure the same quantity (see above).</div>
     </div>
   </div>);
 
@@ -1348,6 +1515,9 @@ export function SensitivityTab({project}){
   return(<div>
     <SectionHeader icon="activity" title="Sensitivity & Publication Bias" desc="Robustness checks: leave-one-out, funnel plot, Egger's test." badge={`k = ${result.k}`}/>
     {outcomeSelector}
+    {gate.isPropPair&&(
+      <ProportionCompatibilityPanel compact check={gate.check} override={gate.override} stale={gate.stale}/>
+    )}
     {result.k<10&&(
       <div style={{background:"var(--t-yel-bg)",border:`1px solid ${themeAlpha(C.yel,'44')}`,borderLeft:`3px solid ${C.yel}`,borderRadius:6,padding:"10px 14px",marginBottom:14,fontSize:12,color:C.muted,lineHeight:1.6}}>
         <strong style={{color:C.yel}}>⚠ Only {result.k} studies.</strong> Cochrane and most guidance recommend assessing publication bias (funnel plot, Egger's test) <strong>only when ≥10 studies</strong> are pooled. With fewer, these tests have low power and the funnel is hard to read — interpret the results below with caution and don't over-rely on them.
@@ -1583,7 +1753,11 @@ export function SubgroupTab({project}){
     ()=>applyProportionFilters(studiesForPair(allStudies,activeOutcome),proportionFilters),
     [allStudies,activeOutcome,proportionFilters]);
 
-  const isPropPair=pairIsProportion(activeOutcome,"");
+  // 107.md §12 — the same dominant-measure fallback AnalysisTab uses. `enumerateOutcomePairs`
+  // copies esType from the FIRST eligible row, so a PROP outcome whose first row has a
+  // blank Effect measure would otherwise be denied the two stratification variables the
+  // blocking card on the Analysis tab tells the reviewer to come here for.
+  const isPropPair=pairIsProportion(activeOutcome,dominantEsType(studies));
   const keys=[
     {id:"design",label:"Study Design"},
     {id:"drugClass",label:"Drug Class"},
@@ -1600,7 +1774,13 @@ export function SubgroupTab({project}){
   ];
   // Falls back cleanly if the reviewer switches from a PROP outcome to a non-PROP one.
   const activeGroupKey=keys.some(k=>k.id===groupKey)?groupKey:"design";
-  const grouped=useMemo(()=>groupRowsForSubgroup(studies,activeGroupKey),[studies,activeGroupKey]);
+  // Time Point / Outcome Measured are constant INSIDE a pair, so pair scoping made them
+  // permanent single-group no-ops. They deliberately step outside the pair instead.
+  const crossRows=useMemo(()=>crossPairRowsForGrouping(allStudies,activeOutcome,activeGroupKey),
+    [allStudies,activeOutcome,activeGroupKey]);
+  const scopedRows=crossRows||studies;
+  const crossPairs=useMemo(()=>(crossRows?enumerateOutcomePairs(crossRows).length:0),[crossRows]);
+  const grouped=useMemo(()=>groupRowsForSubgroup(scopedRows,activeGroupKey),[scopedRows,activeGroupKey]);
   const result=useMemo(()=>subgroupAnalysis(grouped,activeGroupKey,method,{tau2Method}),[grouped,activeGroupKey,method,tau2Method]);
 
   return(<div>
@@ -1624,11 +1804,7 @@ export function SubgroupTab({project}){
         </select>
       )}
       {studies.length>0&&<span style={{fontSize:11,color:C.muted,marginLeft:"auto"}}>{studies.length} estimates</span>}
-      {activeProportionFilters(proportionFilters).map(([field,value])=>(
-        <span key={field} style={tagS("blue")}>
-          {PROPORTION_FIELD_LABEL[field]}: {proportionFilterLabel(field,value)}
-        </span>
-      ))}
+      <ProportionFilterChips filters={proportionFilters}/>
     </div>
 
     <div style={{display:"flex",gap:10,marginBottom:16,flexWrap:"wrap",alignItems:"center"}}>
@@ -1641,6 +1817,14 @@ export function SubgroupTab({project}){
         <button key={m} onClick={()=>setMethod(m)} style={{...btnS(method===m?"primary":"ghost"),fontSize:11,padding:"4px 10px"}}>{label}</button>
       ))}
     </div>
+
+    {/* ── CROSS-PAIR NOTE — this comparison is deliberately NOT pair-scoped ── */}
+    {crossRows&&(
+      <div style={{background:"var(--t-yel-bg)",border:`1px solid ${themeAlpha(C.yel,'44')}`,borderLeft:`3px solid ${C.yel}`,borderRadius:6,padding:"10px 14px",marginBottom:14,fontSize:12,color:C.muted,lineHeight:1.6}}>
+        <strong style={{color:C.yel}}>⚠ {CROSS_PAIR_SCOPE_HEADLINE}</strong>{" "}
+        {crossPairScopeNote(activeGroupKey,activeOutcome,scopedRows.length,crossPairs)}
+      </div>
+    )}
 
     {!result || result.groups.length===0?(<div style={{background:C.card,border:`1px solid ${C.brd}`,borderRadius:8,padding:40,textAlign:"center",color:C.muted}}>
       <div style={{fontSize:36,marginBottom:10}}>🔬</div>{outcomePairs.length>1&&!effectiveKey

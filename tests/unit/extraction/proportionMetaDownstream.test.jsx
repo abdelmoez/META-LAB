@@ -13,7 +13,7 @@
 import { describe, it, expect } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { mkStudy } from '../../../src/research-engine/project-model/defaults.js';
-import { computeSyncHash, SYNC_INPUT_FIELDS } from '../../../src/research-engine/extraction/engine/syncState.js';
+import { computeSyncHash, syncStatusOf, SYNC_INPUT_FIELDS, SYNC_OPTIONAL_FIELDS } from '../../../src/research-engine/extraction/engine/syncState.js';
 import { computeDependencyState } from '../../../src/research-engine/manuscript/dependencies.js';
 import { studyValues, STUDY_VALUE_FIELDS } from '../../../src/research-engine/provenance/fingerprint.js';
 import { buildStudyTableCSV } from '../../../src/research-engine/import-export/journalSubmission.js';
@@ -42,6 +42,18 @@ const classified = (over = {}) => row({
   actionStatus: 'implemented',
   ...over,
 });
+/** 107.md §8A review fix — the contradictory row a pre-fix project can still hold: the
+ *  reviewer typed a custom denominator under "Other/custom", then switched the population
+ *  away. The input that showed the text is no longer rendered, so nothing on screen
+ *  reveals it — an exporter that emits it ships two conflicting denominator statements. */
+const STALE_TEXT = 'Patients who completed post-test genetic counseling';
+const STALE_ROW = {
+  id: 'stale', author: 'Nguyen', year: '2023', outcome: 'Diagnostic yield', esType: 'PROP',
+  events: '23', total: '59', es: '0.39', lo: '0.27', hi: '0.52',
+  denominatorPopulation: 'all_patients_tested', denominatorCustom: STALE_TEXT,
+  actionStatus: 'implemented',
+};
+
 /** A row as it exists in a project saved BEFORE this feature: the keys simply are absent. */
 function legacyRow(over = {}) {
   const s = row({ id: 'L1', author: 'Old', year: '2011', esType: 'PROP', events: '4', total: '10', ...over });
@@ -51,9 +63,75 @@ function legacyRow(over = {}) {
 
 /* ══════════════════ allow-list 1 — the analysis-sync hash ══════════════════ */
 
-describe('syncState.SYNC_INPUT_FIELDS carries the three fields (107.md §8)', () => {
-  it('lists all three', () => {
-    for (const f of PROPORTION_META_FIELDS) expect(SYNC_INPUT_FIELDS).toContain(f);
+/**
+ * The PRE-107 hash, reimplemented here verbatim. `extractionMeta.syncHash` is durable and
+ * nothing rewrites it on load, so the digest of an unclassified row is a COMPATIBILITY
+ * CONTRACT: if it moves, every article a reviewer ever marked "In analysis" flips to the
+ * amber "Updated since sync" badge the first time the project is opened after upgrade.
+ * Reproduced independently (not imported) so this pins the OLD algorithm, not the new one.
+ */
+const PRE_107_SYNC_FIELDS = [
+  'esType', 'outcome', 'timepoint', 'adjusted',
+  'n', 'nExp', 'nCtrl', 'meanExp', 'sdExp', 'meanCtrl', 'sdCtrl',
+  'a', 'b', 'c', 'd', 'events', 'total', 'tp', 'fp', 'fn', 'tn',
+  'es', 'lo', 'hi',
+];
+function pre107SyncHash(study) {
+  const cell = (k) => `${k}=${study[k] == null ? '' : String(study[k]).trim()}`;
+  const parts = PRE_107_SYNC_FIELDS.map(cell);
+  for (const k of Object.keys(study).filter((k) => /^cv_.+/.test(k)).sort()) parts.push(cell(k));
+  const str = parts.join('|');
+  let h = 5381;
+  for (let i = 0; i < str.length; i++) h = ((h << 5) + h + str.charCodeAt(i)) >>> 0;
+  return h.toString(16);
+}
+
+describe('syncState hashes the three fields WITHOUT invalidating legacy syncs (107.md §8)', () => {
+  it('they are appended value-conditionally, not fixed SYNC_INPUT_FIELDS members', () => {
+    for (const f of PROPORTION_META_FIELDS) expect(SYNC_INPUT_FIELDS).not.toContain(f);
+    expect([...SYNC_OPTIONAL_FIELDS]).toEqual([...PROPORTION_META_FIELDS]);
+    expect([...SYNC_INPUT_FIELDS]).toEqual(PRE_107_SYNC_FIELDS);
+  });
+
+  it('a legacy row hashes BYTE-IDENTICALLY to pre-107 (hardcoded digest)', () => {
+    // The digest a pre-107 build produced for this exact row. A fixed `key=` emit for the
+    // three new keys changed it to 6802383a, silently invalidating every stored syncHash.
+    const oldRow = { esType: 'OR', outcome: 'x', es: '1', lo: '0', hi: '2' };
+    expect(pre107SyncHash(oldRow)).toBe('56409487');    // the reimplementation is faithful
+    expect(computeSyncHash(oldRow)).toBe('56409487');
+  });
+
+  it('every unclassified shape hashes as pre-107: missing keys, "", whitespace', () => {
+    const legacy = legacyRow();
+    for (const shape of [
+      legacy,
+      { ...legacy, denominatorPopulation: '', denominatorCustom: '', actionStatus: '' },
+      { ...legacy, denominatorPopulation: '   ', denominatorCustom: '  ', actionStatus: '' },
+      { ...legacy, denominatorPopulation: null, denominatorCustom: undefined, actionStatus: null },
+    ]) {
+      expect(computeSyncHash(shape)).toBe(pre107SyncHash(legacy));
+    }
+  });
+
+  it('a pre-107 CASE row (cv_* values, no classification) is byte-stable too', () => {
+    const caseRow = legacyRow({ cv_age: '54', cv_sex: 'F' });
+    expect(computeSyncHash(caseRow)).toBe(pre107SyncHash(caseRow));
+  });
+
+  it('a stored pre-107 syncHash still reads "synced" after the upgrade', () => {
+    const legacy = legacyRow({ es: '0.5', lo: '0.3', hi: '0.7' });
+    const stored = { ...legacy, extractionMeta: { syncHash: pre107SyncHash(legacy), syncedAt: 't', includedInAnalysis: true } };
+    expect(syncStatusOf(stored)).toBe('synced');
+  });
+
+  it('but a REAL classification still moves the hash (drift is still detected)', () => {
+    const legacy = legacyRow({ es: '0.5', lo: '0.3', hi: '0.7' });
+    const stored = { ...legacy, extractionMeta: { syncHash: pre107SyncHash(legacy), syncedAt: 't', includedInAnalysis: true } };
+    for (const [f, v] of [['denominatorPopulation', 'all_patients_tested'],
+      ['denominatorCustom', 'post-test counselling'], ['actionStatus', 'implemented']]) {
+      expect(computeSyncHash({ ...legacy, [f]: v })).not.toBe(pre107SyncHash(legacy));
+      expect(syncStatusOf({ ...stored, [f]: v })).toBe('updated_since_sync');
+    }
   });
 
   it('the hash changes when ANY of the three changes', () => {
@@ -77,6 +155,13 @@ describe('syncState.SYNC_INPUT_FIELDS carries the three fields (107.md §8)', ()
     const legacy = legacyRow();
     expect(computeSyncHash({ ...legacy, denominatorPopulation: '', denominatorCustom: '', actionStatus: '' }))
       .toBe(computeSyncHash(legacy));
+  });
+
+  it('an out-of-registry value still moves the hash (the raw value is the input)', () => {
+    // The readers self-heal to "unclassified", but the STORED text is what was hashed —
+    // dropping it would let hand-edited junk hide behind a stale "In analysis" badge.
+    const legacy = legacyRow();
+    expect(computeSyncHash({ ...legacy, actionStatus: 'martians' })).not.toBe(computeSyncHash(legacy));
   });
 });
 
@@ -169,6 +254,26 @@ describe('extraction CSV (buildExtractionCSV) — 107.md §8F', () => {
     const csv = buildExtractionCSV([classified({ denominatorPopulation: 'other', denominatorCustom: 'Completed counselling, then tested' })], {});
     expect(csv).toContain('"Completed counselling, then tested"');
   });
+
+  it('drops a STALE description whose population is no longer Other/custom', () => {
+    const csv = buildExtractionCSV([STALE_ROW], {});
+    const [header, first] = csv.split('\n');
+    const cols = header.split(',');
+    const cells = first.split(',');
+    expect(cells[cols.indexOf('denominatorPopulation')]).toBe('all_patients_tested');
+    expect(cells[cols.indexOf('denominatorCustom')]).toBe('');
+    expect(csv).not.toContain(STALE_TEXT);
+  });
+
+  it('an inherited-key enum value exports RAW (this file is the machine-readable dump)', () => {
+    const csv = buildExtractionCSV([classified({ denominatorPopulation: 'constructor', actionStatus: 'toString', denominatorCustom: STALE_TEXT })], {});
+    const [header, first] = csv.split('\n');
+    const cols = header.split(',');
+    const cells = first.split(',');
+    expect(cells[cols.indexOf('denominatorPopulation')]).toBe('constructor');
+    expect(cells[cols.indexOf('actionStatus')]).toBe('toString');
+    expect(cells[cols.indexOf('denominatorCustom')]).toBe('');   // not 'other' → no description
+  });
 });
 
 describe('journal-submission study table CSV — 107.md §8F', () => {
@@ -198,6 +303,30 @@ describe('journal-submission study table CSV — 107.md §8F', () => {
     const cols = csv.split('\n')[0].split(',');
     expect(csv.split('\n')[1].split(',')[cols.indexOf('Action status')]).toBe('');
   });
+
+  it('an inherited-key value exports empty too (never Object.prototype junk)', () => {
+    const csv = buildStudyTableCSV([classified({ denominatorPopulation: 'constructor', actionStatus: 'toString' })]).replace(/^﻿/, '');
+    const cols = csv.split('\n')[0].split(',');
+    const cells = csv.split('\n')[1].split(',');
+    expect(cells[cols.indexOf('Denominator population')]).toBe('');
+    expect(cells[cols.indexOf('Action status')]).toBe('');
+    expect(csv).not.toContain('function');
+  });
+
+  it('a STALE description is NOT printed beside a population that contradicts it', () => {
+    const csv = buildStudyTableCSV([STALE_ROW]).replace(/^﻿/, '');
+    const cols = csv.split('\n')[0].split(',');
+    const cells = csv.split('\n')[1].split(',');
+    expect(cells[cols.indexOf('Denominator population')]).toBe('All patients tested');
+    expect(cells[cols.indexOf('Denominator description')]).toBe('');
+    expect(csv).not.toContain(STALE_TEXT);
+  });
+
+  it('…but a genuine Other/custom row still prints its description', () => {
+    const csv = buildStudyTableCSV([classified({ denominatorPopulation: 'other', denominatorCustom: STALE_TEXT })]).replace(/^﻿/, '');
+    const cols = csv.split('\n')[0].split(',');
+    expect(csv.split('\n')[1].split(',')[cols.indexOf('Denominator description')]).toBe(STALE_TEXT);
+  });
 });
 
 describe('case-level export (buildCaseExportRows) — 107.md §8F', () => {
@@ -214,6 +343,15 @@ describe('case-level export (buildCaseExportRows) — 107.md §8F', () => {
     // A newly added sibling case starts UNCLASSIFIED — nothing is inferred for it.
     expect(rows[1].denominatorPopulation).toBe('');
     expect(rows[1].actionStatus).toBe('');
+  });
+
+  it('omits a STALE description, keeps a genuine Other/custom one', () => {
+    seq = 0;
+    const stale = enableCaseSeries([{ ...STALE_ROW, id: 's1' }], 's1', { idFn });
+    expect(buildCaseExportRows(stale.studies, []).rows[0].denominatorCustom).toBe('');
+    seq = 0;
+    const real = enableCaseSeries([classified({ id: 's2', denominatorPopulation: 'other', denominatorCustom: STALE_TEXT })], 's2', { idFn });
+    expect(buildCaseExportRows(real.studies, []).rows[0].denominatorCustom).toBe(STALE_TEXT);
   });
 });
 
@@ -358,6 +496,14 @@ describe('ArticleWorkspace SSR — PROP row (107.md §8A/§8B/§8C/§9)', () => 
     const html = render(classified({ denominatorPopulation: 'other' }));
     expect(html).toContain('Denominator description');
     expect(html).toContain('data-testid="pex-field-denominatorCustom"');
+  });
+
+  it('a STALE description is invisible on screen — which is why exports must drop it', () => {
+    // The reviewer cannot see or delete it here; the select now clears it on the next
+    // switch (denominatorPopulationPatch) and every exporter suppresses it meanwhile.
+    const html = render(STALE_ROW);
+    expect(html).not.toContain('data-testid="pex-field-denominatorCustom"');
+    expect(html).not.toContain(STALE_TEXT);
   });
 
   it('a non-PROP row renders neither the selects nor the derived line', () => {
