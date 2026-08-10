@@ -12,6 +12,15 @@
  * into template variables, and delegate to renderTemplate(). Nothing in this
  * file writes email markup any more.
  *
+ * SENDING GOES THROUGH sendTemplatedEmail. renderTemplate + sendEmail are the
+ * primitives; sendTemplatedEmail is the only path that also applies the three
+ * things an operator and a recipient can actually control — the admin copy
+ * override, the per-template disable switch, and the user's opt-out (plus the
+ * List-Unsubscribe headers that make the opt-out reachable). Adding a new
+ * outbound email means calling sendTemplatedEmail (or enqueueing through
+ * emailOutboxService, which applies the same three); calling sendEmail with a
+ * hand-rendered body silently opts that email out of all of it.
+ *
  * Env vars:
  *   EMAIL_PROVIDER  — informational label (e.g. "smtp", "resend", "sendgrid"). Optional.
  *   SMTP_HOST       — SMTP server host. Required to actually send.
@@ -37,10 +46,13 @@
  */
 
 import { recordUsage, USAGE } from '../utils/usage.js';
-import { renderTemplate } from './emailTemplates.js';
+import { renderTemplate, getEmailTemplate } from './emailTemplates.js';
+import { unsubscribeHeaders, isEmailCategoryEnabled } from './emailUnsubscribe.js';
+import { prisma } from '../db/client.js';
 // NOTE on imports: usage.js imports ONLY the prisma client — no controller or
 // service imports — so this cannot create a circular dependency. emailTemplates
-// imports nothing at all.
+// imports nothing at all, and emailUnsubscribe imports only emailTemplates (it
+// reaches prisma lazily), so neither can import its way back to here.
 
 // The shared email chrome moved to emailTemplates.js (it is copy, not transport)
 // but stays exported from here: it is part of this module's public surface and
@@ -287,14 +299,27 @@ export async function sendEmail({ to, subject, html, text, context, headers } = 
 
   console.error('[emailService] sendMail failed:', lastErr.message);
   recordUsage({ type: USAGE.EMAIL_FAILED, meta: { context: context || null, error: lastErr.message } });
-  return { sent: false, reason: 'send_failed', error: lastErr.message };
+  // `permanent` is the retry contract for every queue in front of this function
+  // (today: emailOutboxWorker). The classifier already knows a 5xx SMTP reject
+  // from a dropped socket; without surfacing it the caller has only a string to
+  // guess from and re-queues rejects that will never be accepted. Same predicate
+  // that gates the in-function retry above, inverted: transient → retryable.
+  return { sent: false, reason: 'send_failed', error: lastErr.message, permanent: !isTransientEmailError(lastErr) };
 }
 
 // ── Template adapters ─────────────────────────────────────────────────────────
-// Each function keeps the signature its call sites already use and returns
-// { html, text }. Everything they do is (a) turn a Date into the display string
-// the copy expects and (b) resolve the small value-level fallbacks the old
-// hand-written bodies had inline. The copy itself is in emailTemplates.js.
+// Each render* function keeps the signature its call sites already use and
+// returns { html, text }. Everything they do is (a) turn a Date into the display
+// string the copy expects and (b) resolve the small value-level fallbacks the
+// old hand-written bodies had inline. The copy itself is in emailTemplates.js.
+//
+// Each one is now a two-line shell over an exported *Variables builder. That
+// split exists because sendTemplatedEmail (below) needs the VARIABLES, not a
+// pre-rendered body: it has to render with the admin's overrides applied, which
+// a render* adapter — which renders against registry defaults — cannot do. Call
+// sites therefore pass `xVariables(opts)` rather than growing a second, drifting
+// copy of the salutation/date/fallback rules. The render* adapters stay exported
+// and unchanged in behaviour: the unit tests and the ops preview use them.
 
 /** "20 July 2026, 10:00" — the datetime form used by expiry/change notices. */
 function formatDateTime(value) {
@@ -337,8 +362,8 @@ export {
  * @param {{appName?:string, toName?:string, bodyText:string, originalSubject?:string, fromName?:string}} opts
  * @returns {{html:string, text:string}}
  */
-export function renderReplyEmail({ appName = 'PecanRev', toName = '', bodyText = '', originalSubject = '', fromName = '' } = {}) {
-  const { html, text } = renderTemplate('contact.reply', {
+export function contactReplyVariables({ appName = 'PecanRev', toName = '', bodyText = '', originalSubject = '', fromName = '' } = {}) {
+  return {
     appName,
     greeting: salutation(toName),
     bodyText,
@@ -347,7 +372,11 @@ export function renderReplyEmail({ appName = 'PecanRev', toName = '', bodyText =
     // The signature shows the NAME of the staff member who wrote this — never
     // their email address (which is the shared no-reply mailbox).
     signoff: fromName ? `Best regards,\n${fromName}\n${appName} team` : `— The ${appName} team`,
-  });
+  };
+}
+
+export function renderReplyEmail(opts = {}) {
+  const { html, text } = renderTemplate('contact.reply', contactReplyVariables(opts));
   return { html, text };
 }
 
@@ -366,13 +395,17 @@ export const renderContactReplyEmail = renderReplyEmail;
  * @param {{appName?:string, firstName?:string, supportEmail?:string}} opts
  * @returns {{html:string, text:string}}
  */
-export function renderBetaWaitlistConfirmationEmail({ appName = 'PecanRev', firstName = '', supportEmail = '' } = {}) {
-  const { html, text } = renderTemplate('waitlist.confirmation', {
+export function waitlistConfirmationVariables({ appName = 'PecanRev', firstName = '', supportEmail = '' } = {}) {
+  return {
     appName,
     greeting: salutation(firstName),
     siteLink: env('APP_BASE_URL') || appName,
     supportEmail,
-  });
+  };
+}
+
+export function renderBetaWaitlistConfirmationEmail(opts = {}) {
+  const { html, text } = renderTemplate('waitlist.confirmation', waitlistConfirmationVariables(opts));
   return { html, text };
 }
 
@@ -384,20 +417,24 @@ export function renderBetaWaitlistConfirmationEmail({ appName = 'PecanRev', firs
  *          expiresAt?:Date|string|null, initiatedByOperator?:boolean}} opts
  * @returns {{html:string, text:string}}
  */
-export function renderPasswordResetEmail({
+export function passwordResetVariables({
   appName = 'PecanRev',
   toName = '',
   link = '',
   expiresAt = null,
   initiatedByOperator = false,
 } = {}) {
-  const { html, text } = renderTemplate('password.reset', {
+  return {
     appName,
     greeting: salutation(toName),
     link,
     expiresAtText: formatDateTime(expiresAt),
     initiatedByOperator: Boolean(initiatedByOperator),
-  });
+  };
+}
+
+export function renderPasswordResetEmail(opts = {}) {
+  const { html, text } = renderTemplate('password.reset', passwordResetVariables(opts));
   return { html, text };
 }
 
@@ -406,13 +443,17 @@ export function renderPasswordResetEmail({
  * @param {{appName?:string, toName?:string, link:string, expiresAt?:Date|string|null}} opts
  * @returns {{html:string, text:string}}
  */
-export function renderEmailVerificationEmail({ appName = 'PecanRev', toName = '', link = '', expiresAt = null } = {}) {
-  const { html, text } = renderTemplate('email.verification', {
+export function emailVerificationVariables({ appName = 'PecanRev', toName = '', link = '', expiresAt = null } = {}) {
+  return {
     appName,
     greeting: salutation(toName),
     link,
     expiresAtText: formatDateTime(expiresAt),
-  });
+  };
+}
+
+export function renderEmailVerificationEmail(opts = {}) {
+  const { html, text } = renderTemplate('email.verification', emailVerificationVariables(opts));
   return { html, text };
 }
 
@@ -480,13 +521,17 @@ export function renderWaitlistInvitationEmail({
  * @param {{appName?:string, toName?:string, supportEmail?:string}} opts
  * @returns {{html:string, text:string}}
  */
-export function renderWelcomeEmail({ appName = 'PecanRev', toName = '', supportEmail = '' } = {}) {
-  const { html, text } = renderTemplate('welcome', {
+export function welcomeVariables({ appName = 'PecanRev', toName = '', supportEmail = '' } = {}) {
+  return {
     appName,
     greeting: salutation(toName),
     supportEmail,
     appBaseUrl: env('APP_BASE_URL'),
-  });
+  };
+}
+
+export function renderWelcomeEmail(opts = {}) {
+  const { html, text } = renderTemplate('welcome', welcomeVariables(opts));
   return { html, text };
 }
 
@@ -498,14 +543,154 @@ export function renderWelcomeEmail({ appName = 'PecanRev', toName = '', supportE
  * @param {{appName?:string, toName?:string, changedAt?:Date|string|null, supportEmail?:string}} opts
  * @returns {{html:string, text:string}}
  */
-export function renderPasswordChangedEmail({ appName = 'PecanRev', toName = '', changedAt = null, supportEmail = '' } = {}) {
-  const { html, text } = renderTemplate('password.changed', {
+export function passwordChangedVariables({ appName = 'PecanRev', toName = '', changedAt = null, supportEmail = '' } = {}) {
+  return {
     appName,
     greeting: salutation(toName),
     whenText: formatDateTime(changedAt),
     supportEmail,
-  });
+  };
+}
+
+export function renderPasswordChangedEmail(opts = {}) {
+  const { html, text } = renderTemplate('password.changed', passwordChangedVariables(opts));
   return { html, text };
+}
+
+// ── The one governed send path ────────────────────────────────────────────────
+/**
+ * Tolerant read of an EmailTemplate.fieldsJson blob. Junk → undefined, which
+ * renderTemplate reads as "no overrides" (registry defaults), never as an empty
+ * template. Mirrors emailOutboxWorker.parseObject.
+ */
+function parseFieldsJson(raw) {
+  if (!raw) return undefined;
+  if (typeof raw === 'object' && !Array.isArray(raw)) return raw;
+  try {
+    const parsed = JSON.parse(String(raw));
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) return parsed;
+  } catch { /* fall through */ }
+  return undefined;
+}
+
+/**
+ * sendTemplatedEmail — render a registry template WITH the admin's overrides and
+ * the recipient's preferences applied, then send it. Never throws.
+ *
+ * WHY THIS EXISTS. Until now only emailOutboxWorker consulted the EmailTemplate
+ * table, so the eight direct-send call sites rendered registry defaults: an
+ * admin could edit copy in the ops console, see the change in the preview and
+ * the test-send, and still have real users receive the old text — and switching
+ * 'welcome' off was a no-op. Three governance layers were being skipped, so all
+ * three live here, in the order that keeps them honest:
+ *
+ *   1. DISABLE   — a disableable template whose override row says enabled:false
+ *                  is not sent at all (checked BEFORE rendering: a disabled
+ *                  template should cost nothing).
+ *   2. OPT-OUT   — for category 'optional' with a known recipient, the user's
+ *                  User.emailNotifications blob wins over everything.
+ *   3. HEADERS   — List-Unsubscribe (+ RFC 8058 one-click POST) for the same
+ *                  category-'optional' + known-user case, merged OVER whatever
+ *                  the caller passed so a caller can never shadow the opt-out.
+ *
+ * A skip is not a failure: it returns { sent:false, skipped:true, reason } so a
+ * caller can tell "we deliberately did not send" from "we tried and could not".
+ *
+ * @param {{templateKey:string, variables?:object, to:string, subject?:string|null,
+ *          recipientUserId?:string|null, headers?:Record<string,string>|null,
+ *          context?:string|null, client?:object|null}} opts
+ *        `subject` overrides the RENDERED subject and is only for mail whose
+ *        subject is per-message operator input (the contact reply / staff
+ *        compose composer); leave it null everywhere else so an admin's subject
+ *        edit actually reaches the recipient.
+ *        `context` is the usage-metric label; defaults to templateKey.
+ *        `client` is an injectable prisma-shaped client for tests.
+ * @returns {Promise<{sent:boolean, id?:string, skipped?:boolean, reason?:string,
+ *          error?:string, permanent?:boolean, missingRequired?:string[]}>}
+ */
+export async function sendTemplatedEmail({
+  templateKey,
+  variables = {},
+  to,
+  subject = null,
+  recipientUserId = null,
+  headers = null,
+  context = null,
+  client = null,
+} = {}) {
+  try {
+    const entry = getEmailTemplate(templateKey);
+    if (!entry) {
+      // A typo'd key must be loud but must not 500 the request that triggered it.
+      console.error(`[emailService] sendTemplatedEmail: unknown email template "${templateKey}"`);
+      return { sent: false, reason: 'unknown_template' };
+    }
+    const db = client || prisma;
+
+    // EmailTemplate is edit-by-key with no unique index on templateKey, so a
+    // duplicate row is possible; ordering by createdAt makes "which override
+    // wins" deterministic (oldest — the row the editor has been updating) rather
+    // than whatever the database happens to return first. A read failure means
+    // registry defaults, never a dropped email.
+    let override = null;
+    try {
+      override = await db.emailTemplate.findFirst({ where: { templateKey }, orderBy: { createdAt: 'asc' } });
+    } catch { override = null; }
+
+    if (entry.disableable && override && override.enabled === false) {
+      return { sent: false, skipped: true, reason: 'template_disabled' };
+    }
+
+    if (entry.category === 'optional' && recipientUserId) {
+      try {
+        const user = await db.user.findUnique({
+          where: { id: String(recipientUserId) },
+          select: { emailNotifications: true },
+        });
+        // isEmailCategoryEnabled owns the opt-OUT semantics (absent → enabled)
+        // AND re-asserts that a transactional key can never be switched off,
+        // so the rule lives in exactly one place for both send paths.
+        if (user && !isEmailCategoryEnabled(user.emailNotifications, templateKey)) {
+          return { sent: false, skipped: true, reason: 'unsubscribed' };
+        }
+      } catch { /* preference read blip → send (opt-OUT model: absence means enabled) */ }
+    }
+
+    // unsubscribeHeaders returns {} for transactional keys and when APP_BASE_URL
+    // or JWT_SECRET cannot produce a real link, so this is safe to call blind.
+    let finalHeaders = headers && typeof headers === 'object' ? { ...headers } : null;
+    if (recipientUserId) {
+      const unsub = unsubscribeHeaders(recipientUserId, templateKey);
+      if (unsub && Object.keys(unsub).length) finalHeaders = { ...(finalHeaders || {}), ...unsub };
+    }
+
+    let rendered;
+    try {
+      rendered = renderTemplate(templateKey, variables || {}, { overrides: parseFieldsJson(override?.fieldsJson) });
+    } catch (err) {
+      console.error(`[emailService] ${templateKey}: template render failed:`, err?.message || err);
+      return { sent: false, reason: 'render_failed', error: String(err?.message || err) };
+    }
+
+    if (rendered.missingRequired.length) {
+      // NEVER send a half-rendered email — the recipient would get copy with a
+      // literal "[link]" in it. Name the tokens so the fix is obvious from the log.
+      console.error(`[emailService] ${templateKey}: missing required template variable(s): ${rendered.missingRequired.join(', ')} — not sent`);
+      return { sent: false, reason: 'render_failed', missingRequired: rendered.missingRequired };
+    }
+
+    return await sendEmail({
+      to,
+      subject: (typeof subject === 'string' && subject.trim()) ? subject : rendered.subject,
+      html: rendered.html,
+      text: rendered.text,
+      context: context || templateKey,
+      ...(finalHeaders ? { headers: finalHeaders } : {}),
+    });
+  } catch (err) {
+    console.error('[emailService] sendTemplatedEmail failed:', err?.message || err);
+    return { sent: false, reason: 'error' };
+  }
 }
 
 /** Env-configurable support address (93.md §6.3). Empty string when unset. */
@@ -517,25 +702,28 @@ export function configuredSupportEmail() {
 /**
  * sendPasswordChangedNotice — 93.md §6.3. Best-effort convenience used by
  * passwordResetService + profileController.changePassword. NEVER throws and
- * never blocks the caller's main flow on failure (sendEmail already never
- * throws; this wrapper also swallows render-time surprises).
- * @param {{to:string, toName?:string}} opts
+ * never blocks the caller's main flow on failure (sendTemplatedEmail already
+ * never throws; this wrapper also swallows any remaining surprise).
+ *
+ * Routed through sendTemplatedEmail so an admin's copy edit reaches the
+ * recipient. 'password.changed' is transactional, so neither the disable switch
+ * nor the opt-out blob can suppress it — a security notice is not optional.
+ * @param {{to:string, toName?:string, recipientUserId?:string|null}} opts
  * @returns {Promise<{sent:boolean, reason?:string}>}
  */
-export async function sendPasswordChangedNotice({ to, toName = '' } = {}) {
+export async function sendPasswordChangedNotice({ to, toName = '', recipientUserId = null } = {}) {
   try {
     if (!to || !isEmailConfigured()) return { sent: false, reason: 'not_configured' };
-    const { html, text } = renderPasswordChangedEmail({
-      appName: 'PecanRev',
-      toName,
-      changedAt: new Date(),
-      supportEmail: configuredSupportEmail(),
-    });
-    return await sendEmail({
+    return await sendTemplatedEmail({
+      templateKey: 'password.changed',
+      variables: passwordChangedVariables({
+        appName: 'PecanRev',
+        toName,
+        changedAt: new Date(),
+        supportEmail: configuredSupportEmail(),
+      }),
       to,
-      subject: 'Your PecanRev password was changed',
-      html,
-      text,
+      recipientUserId,
       context: 'password_changed',
     });
   } catch (err) {

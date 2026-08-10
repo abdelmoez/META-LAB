@@ -101,13 +101,29 @@ describe('unsubscribe token', () => {
 describe('List-Unsubscribe headers', () => {
   it('are emitted for a disableable category and point at the public route', () => {
     const headers = unsubscribeHeaders('user-1', 'welcome');
-    expect(Object.keys(headers)).toEqual(['List-Unsubscribe']);
+    expect(Object.keys(headers).sort()).toEqual(['List-Unsubscribe', 'List-Unsubscribe-Post']);
     const value = headers['List-Unsubscribe'];
     expect(value.startsWith('<https://app.test/api/email/unsubscribe?token=')).toBe(true);
     expect(value.endsWith('>')).toBe(true);
 
     const token = decodeURIComponent(value.slice(value.indexOf('token=') + 6, -1));
     expect(verifyUnsubscribeToken(token).payload).toMatchObject({ userId: 'user-1', category: 'welcome' });
+  });
+
+  it('advertises RFC 8058 one-click with the exact literal the RFC mandates', () => {
+    // Gmail/Outlook show their native Unsubscribe button only when BOTH headers
+    // are present, and they POST to the List-Unsubscribe URL. The value is a
+    // fixed literal — any drift (spacing, casing, a URL) silently disables the
+    // button, which is the failure this pin exists to catch.
+    expect(unsubscribeHeaders('user-1', 'welcome')['List-Unsubscribe-Post']).toBe('List-Unsubscribe=One-Click');
+  });
+
+  it('emits the one-click header ONLY together with a real List-Unsubscribe', () => {
+    // Advertising one-click on mail that carries no opt-out URL (transactional,
+    // or a missing APP_BASE_URL) would promise a button with nothing behind it.
+    expect(unsubscribeHeaders('user-1', 'password.reset')['List-Unsubscribe-Post']).toBeUndefined();
+    delete process.env.APP_BASE_URL;
+    expect(unsubscribeHeaders('user-1', 'welcome')['List-Unsubscribe-Post']).toBeUndefined();
   });
 
   it('are NEVER emitted for transactional mail', () => {

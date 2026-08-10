@@ -26,6 +26,13 @@
  *     KEPT when the outbox reports a DB error; the enqueue carries
  *     entityId=projectId + discriminator=firstMessageAt so a re-swept row
  *     dedupes instead of double-sending.
+ *  7. RACING TWINS COALESCE. ChatDigestPending has an @@index, not an @@unique,
+ *     on (userId, projectId), so two simultaneous chat posts can each miss the
+ *     other and leave two pending rows for one pair with different
+ *     firstMessageAt — i.e. two different idempotency keys, i.e. two emails
+ *     about one conversation. The sweep folds every row for the pair into ONE
+ *     burst (min firstMessageAt, max lastMessageAt, summed count, unioned
+ *     senders), enqueues once, and deletes by the ids it actually read.
  *
  * The policy half needs no mocks at all — that is the point of extracting it.
  * The sweep half runs against an in-memory prisma; emailService is mocked so no
@@ -46,17 +53,27 @@ const db = { pending: [], users: [], projects: [], members: [], reads: [], outbo
 
 const prismaMock = {
   chatDigestPending: {
+    // Two query shapes: the sweep's due-window scan, and settleChatDigestRow's
+    // coalescing read of every row for one (userId, projectId) pair.
     findMany: vi.fn(async ({ where, take }) => {
-      const [quiet, max] = where.OR;
+      if (where.OR) {
+        const [quiet, max] = where.OR;
+        return db.pending
+          .filter((r) => new Date(r.lastMessageAt) <= quiet.lastMessageAt.lte
+            || new Date(r.firstMessageAt) <= max.firstMessageAt.lte)
+          .slice(0, take)
+          .map((r) => ({ ...r }));
+      }
       return db.pending
-        .filter((r) => new Date(r.lastMessageAt) <= quiet.lastMessageAt.lte
-          || new Date(r.firstMessageAt) <= max.firstMessageAt.lte)
-        .slice(0, take)
+        .filter((r) => r.userId === where.userId && r.projectId === where.projectId)
         .map((r) => ({ ...r }));
     }),
     deleteMany: vi.fn(async ({ where }) => {
+      const ids = where.id && typeof where.id === 'object' && Array.isArray(where.id.in)
+        ? where.id.in
+        : [where.id];
       const before = db.pending.length;
-      db.pending = db.pending.filter((r) => r.id !== where.id);
+      db.pending = db.pending.filter((r) => !ids.includes(r.id));
       return { count: before - db.pending.length };
     }),
   },
@@ -509,5 +526,133 @@ describe('sweepChatDigests', () => {
   it('settleChatDigestRow is directly drivable for one row', async () => {
     seedWorld();
     await expect(settleChatDigestRow(db.pending[0], T0, CONFIG)).resolves.toBe('sent');
+  });
+});
+
+// ── Racing twins ─────────────────────────────────────────────────────────────
+//
+// chatDigestService upserts with findFirst-then-write against a table that has
+// only an @@index on (userId, projectId). Two chat posts arriving together can
+// therefore each find nothing and each create a row. Both are "the same
+// conversation" but they carry different firstMessageAt values — the burst
+// identity the outbox keys on — so nothing downstream dedupes them.
+
+describe('sweepChatDigests — coalescing racing twins', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    enqueueEmail.mockResolvedValue({ enqueued: true, outboxId: 'ob-1' });
+    seedWorld();
+  });
+
+  /** A second pending row for the SAME (user, project) — the race the schema allows. */
+  function addTwin(over = {}) {
+    db.pending.push({
+      id: 'pd-2',
+      userId: 'u-1',
+      projectId: 'p-1',
+      firstMessageAt: new Date(T0 - 8 * 60 * 1000),  // started LATER than pd-1
+      lastMessageAt: new Date(T0 - 7 * 60 * 1000),   // ...and went quiet earlier
+      messageCount: 2,
+      senderNamesJson: '["Cy","Dee"]',
+      ...over,
+    });
+    return db.pending.at(-1);
+  }
+
+  it('merges twins into ONE enqueue keyed on the EARLIEST firstMessageAt', async () => {
+    addTwin();
+    const totals = await sweepChatDigests(T0, CONFIG);
+
+    expect(enqueueEmail).toHaveBeenCalledTimes(1);
+    expect(totals).toEqual({ sent: 1, dropped: 0, waiting: 0 });
+    const arg = enqueueEmail.mock.calls[0][0];
+    // The MINIMUM start is the burst identity, so the merged row dedupes against
+    // whichever twin an earlier sweep may already have queued.
+    expect(arg.discriminator).toBe(new Date(T0 - 10 * 60 * 1000).toISOString());
+    expect(arg.variables.messageCount).toBe(5);                       // 3 + 2
+    expect(arg.variables.senderSummary).toBe('Ben, Cy and 1 other');  // union of both rows
+    expect(renderTemplate('chat.digest', arg.variables).missingRequired).toEqual([]);
+  });
+
+  it('deletes BOTH twins, in one call, by the ids it actually read', async () => {
+    addTwin();
+    await sweepChatDigests(T0, CONFIG);
+    expect(prismaMock.chatDigestPending.deleteMany).toHaveBeenCalledTimes(1);
+    const { where } = prismaMock.chatDigestPending.deleteMany.mock.calls[0][0];
+    expect([...where.id.in].sort()).toEqual(['pd-1', 'pd-2']);
+    expect(db.pending).toHaveLength(0);
+  });
+
+  it('a row created MID-SETTLE survives to the next sweep', async () => {
+    // The documented race: the delete names only the ids read before the
+    // enqueue, so a genuinely new burst is never swallowed by it.
+    enqueueEmail.mockImplementation(async () => {
+      db.pending.push({
+        id: 'pd-late', userId: 'u-1', projectId: 'p-1',
+        firstMessageAt: new Date(T0), lastMessageAt: new Date(T0),
+        messageCount: 1, senderNamesJson: '["Eve"]',
+      });
+      return { enqueued: true, outboxId: 'ob-1' };
+    });
+    await sweepChatDigests(T0, CONFIG);
+    expect(db.pending.map((r) => r.id)).toEqual(['pd-late']);
+  });
+
+  it('a still-live twin holds the WHOLE burst back (lastMessageAt is the max)', async () => {
+    // pd-1 alone looks quiet, so the window query selects it — but its twin was
+    // posted to 10 seconds ago. Mailing now would digest half a conversation.
+    addTwin({ lastMessageAt: new Date(T0 - 10 * 1000) });
+    const totals = await sweepChatDigests(T0, CONFIG);
+    expect(totals).toEqual({ sent: 0, dropped: 0, waiting: 1 });
+    expect(enqueueEmail).not.toHaveBeenCalled();
+    expect(db.pending).toHaveLength(2);
+  });
+
+  it('unions sender names and holds the union to the stored cap', async () => {
+    db.pending[0].senderNamesJson = '["Ana","Ben","Cy"]';
+    addTwin({ senderNamesJson: '["Cy","Dee","Eli","Fay","Gil"]' });
+    await sweepChatDigests(T0, CONFIG);
+    // Ana, Ben, Cy, Dee, Eli — 'Cy' de-duplicated, Fay/Gil past the cap of 5.
+    expect(enqueueEmail.mock.calls[0][0].variables.senderSummary).toBe('Ana, Ben and 3 others');
+  });
+
+  it('a coalesced burst that DROPS deletes every twin', async () => {
+    seedWorld({ prefs: '{"projectChat":false}' });
+    addTwin();
+    const totals = await sweepChatDigests(T0, CONFIG);
+    expect(totals).toEqual({ sent: 0, dropped: 1, waiting: 0 });
+    expect(enqueueEmail).not.toHaveBeenCalled();
+    expect(db.pending).toHaveLength(0);
+  });
+
+  it('settles the pair once even when BOTH twins are due in the same batch', async () => {
+    addTwin({ firstMessageAt: new Date(T0 - 9 * 60 * 1000), lastMessageAt: new Date(T0 - 9 * 60 * 1000) });
+    const totals = await sweepChatDigests(T0, CONFIG);
+    // Both rows match the due-window query; the second must not be re-settled
+    // (it would find the pair already deleted and count a phantom drop).
+    expect(totals).toEqual({ sent: 1, dropped: 0, waiting: 0 });
+    expect(enqueueEmail).toHaveBeenCalledTimes(1);
+  });
+
+  it('does nothing when the pair was already settled elsewhere', async () => {
+    const orphan = { ...db.pending[0] };
+    db.pending = [];
+    await expect(settleChatDigestRow(orphan, T0, CONFIG)).resolves.toBe('dropped');
+    expect(enqueueEmail).not.toHaveBeenCalled();
+  });
+
+  it('falls back to the single row when the coalescing read fails', async () => {
+    prismaMock.chatDigestPending.findMany.mockRejectedValueOnce(new Error('db blip'));
+    await expect(settleChatDigestRow(db.pending[0], T0, CONFIG)).resolves.toBe('sent');
+    expect(enqueueEmail).toHaveBeenCalledTimes(1);
+    expect(enqueueEmail.mock.calls[0][0].variables.messageCount).toBe(3);
+  });
+
+  it('drops a burst whose timestamps are all unusable instead of inventing one', async () => {
+    db.pending[0].firstMessageAt = 'not-a-date';
+    db.pending[0].lastMessageAt = 'not-a-date';
+    await expect(settleChatDigestRow(db.pending[0], T0, CONFIG)).resolves.toBe('dropped');
+    expect(enqueueEmail).not.toHaveBeenCalled();
+    expect(db.pending).toHaveLength(0);
   });
 });

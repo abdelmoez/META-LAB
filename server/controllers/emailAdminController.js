@@ -250,8 +250,8 @@ async function overridesByKey() {
   return map;
 }
 
-async function overrideFor(key) {
-  return prisma.emailTemplate.findFirst({ where: { templateKey: key }, orderBy: { createdAt: 'asc' } });
+async function overrideFor(key, client = prisma) {
+  return client.emailTemplate.findFirst({ where: { templateKey: key }, orderBy: { createdAt: 'asc' } });
 }
 
 /* ─── GET /api/admin/email/templates ─────────────────────────────────────── */
@@ -298,32 +298,38 @@ export async function updateEmailTemplateAdmin(req, res) {
     const reason = typeof req.body?.reason === 'string' ? req.body.reason.trim().slice(0, 500) : '';
 
     const overrideFields = diffFieldsAgainstDefaults(entry, verdict.fields);
-    const existing = await overrideFor(key);
-    const before = existing ? parseObject(existing.fieldsJson) : {};
+    // Check-then-write in ONE transaction (the repo's no-@@unique dedupe rule,
+    // same as emailOutboxService): two racing admin saves must not create twin
+    // override rows the worker and the UI would then resolve differently.
+    const before = await prisma.$transaction(async (tx) => {
+      const existing = await overrideFor(key, tx);
+      const prior = existing ? parseObject(existing.fieldsJson) : {};
 
-    if (Object.keys(overrideFields).length === 0) {
-      // Edited back to the defaults → the override row has nothing to say.
-      if (existing) {
-        if (existing.enabled === false && entry.disableable) {
-          // Keep the disable flag; only the copy override is cleared.
-          await prisma.emailTemplate.update({
-            where: { id: existing.id },
-            data: { fieldsJson: '{}', updatedById: req.user.id },
-          });
-        } else {
-          await prisma.emailTemplate.deleteMany({ where: { templateKey: key } });
+      if (Object.keys(overrideFields).length === 0) {
+        // Edited back to the defaults → the override row has nothing to say.
+        if (existing) {
+          if (existing.enabled === false && entry.disableable) {
+            // Keep the disable flag; only the copy override is cleared.
+            await tx.emailTemplate.update({
+              where: { id: existing.id },
+              data: { fieldsJson: '{}', updatedById: req.user.id },
+            });
+          } else {
+            await tx.emailTemplate.deleteMany({ where: { templateKey: key } });
+          }
         }
+      } else if (existing) {
+        await tx.emailTemplate.update({
+          where: { id: existing.id },
+          data: { fieldsJson: JSON.stringify(overrideFields), updatedById: req.user.id },
+        });
+      } else {
+        await tx.emailTemplate.create({
+          data: { templateKey: key, fieldsJson: JSON.stringify(overrideFields), enabled: true, updatedById: req.user.id },
+        });
       }
-    } else if (existing) {
-      await prisma.emailTemplate.update({
-        where: { id: existing.id },
-        data: { fieldsJson: JSON.stringify(overrideFields), updatedById: req.user.id },
-      });
-    } else {
-      await prisma.emailTemplate.create({
-        data: { templateKey: key, fieldsJson: JSON.stringify(overrideFields), enabled: true, updatedById: req.user.id },
-      });
-    }
+      return prior;
+    });
 
     await logAdminAction(
       req, 'UPDATE_EMAIL_TEMPLATE', 'EmailTemplate', key,
@@ -380,18 +386,22 @@ export async function setEmailTemplateEnabledAdmin(req, res) {
     const enabled = req.body.enabled;
     const reason = typeof req.body?.reason === 'string' ? req.body.reason.trim().slice(0, 500) : '';
 
-    const existing = await overrideFor(key);
-    const beforeEnabled = existing ? existing.enabled !== false : true;
-    if (existing) {
-      await prisma.emailTemplate.update({
-        where: { id: existing.id },
-        data: { enabled, updatedById: req.user.id },
-      });
-    } else {
-      await prisma.emailTemplate.create({
-        data: { templateKey: key, fieldsJson: '{}', enabled, updatedById: req.user.id },
-      });
-    }
+    // Same one-transaction rule as the copy editor: no twin rows under races.
+    const beforeEnabled = await prisma.$transaction(async (tx) => {
+      const existing = await overrideFor(key, tx);
+      const prior = existing ? existing.enabled !== false : true;
+      if (existing) {
+        await tx.emailTemplate.update({
+          where: { id: existing.id },
+          data: { enabled, updatedById: req.user.id },
+        });
+      } else {
+        await tx.emailTemplate.create({
+          data: { templateKey: key, fieldsJson: '{}', enabled, updatedById: req.user.id },
+        });
+      }
+      return prior;
+    });
 
     await logAdminAction(
       req, 'EMAIL_TEMPLATE_TOGGLE', 'EmailTemplate', key,

@@ -167,10 +167,11 @@ export async function enqueueEmail({
   }
 
   // ── The invitation kill-switch ─────────────────────────────────────────────
-  // Keyed on the 'invite.' template PREFIX rather than a hard-coded list, so a
-  // future invitation template is paused by the same switch on the day it is
-  // registered instead of the day someone remembers to add it here.
-  if (String(templateKey).startsWith('invite.') && (await invitationsArePaused())) {
+  // invitationsPaused is documented and surfaced ONLY as the beta-waitlist
+  // emergency brake (Ops › Beta Waitlist; settingsController) — pre-112 it never
+  // touched project-member invites, so pausing those here would be a silent
+  // behavior change the UI has no copy for. Scope the gate to the waitlist key.
+  if (String(templateKey) === 'invite.waitlist' && (await invitationsArePaused())) {
     return { enqueued: false, reason: 'paused' };
   }
 

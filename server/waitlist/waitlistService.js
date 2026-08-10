@@ -14,10 +14,17 @@ import * as repo from './waitlistRepository.js';
 import { computeWaitlistMetrics } from './metrics.js';
 import { toCsv } from './csv.js';
 import { createRateLimiter, resendCooldownRemaining } from './rateLimit.js';
+// sendTemplatedEmail (not sendEmail + render*) so the admin's EmailTemplate copy
+// override actually binds on this send — see the SENDING GOES THROUGH note in
+// emailService.js. The template row lives in the MAIN database, which is not a
+// break of this module's "never touch the main DB" rule: that rule is about
+// waitlist RECORDS (which must never silently fall back to the app database),
+// and sendEmail already writes its UsageEvent rows there. A main-DB read failure
+// degrades to registry-default copy, never to a dropped confirmation.
 import {
-  sendEmail,
+  sendTemplatedEmail,
   isEmailConfigured,
-  renderBetaWaitlistConfirmationEmail,
+  waitlistConfirmationVariables,
 } from '../services/emailService.js';
 
 const RESEND_COOLDOWN_MS = 60_000; // min 60s between confirmation sends for one applicant
@@ -62,23 +69,22 @@ async function sendConfirmation(client, applicant) {
   if (!isEmailConfigured()) {
     return repo.recordEmailResult(client, applicant.id, { status: 'skipped' });
   }
-  const { html, text } = renderBetaWaitlistConfirmationEmail({
-    appName: 'PecanRev',
-    firstName: applicant.firstName || '',
-    supportEmail: supportEmail(),
-  });
-  const result = await sendEmail({
+  const result = await sendTemplatedEmail({
+    templateKey: 'waitlist.confirmation',
+    variables: waitlistConfirmationVariables({
+      appName: 'PecanRev',
+      firstName: applicant.firstName || '',
+      supportEmail: supportEmail(),
+    }),
     to: applicant.email,
-    subject: "You're on the PecanRev beta waitlist",
-    html,
-    text,
     context: 'beta_waitlist_confirmation',
   });
   if (result.sent === true) {
     return repo.recordEmailResult(client, applicant.id, { status: 'sent' });
   }
-  // result.reason ∈ not_configured | no_recipient | send_failed. Store a SAFE
-  // short reason — never result.error verbatim (could contain SMTP detail).
+  // result.reason ∈ not_configured | no_recipient | send_failed | recipients_skipped
+  // | render_failed | error. Store a SAFE short reason — never result.error
+  // verbatim (could contain SMTP detail).
   const safeReason = result.reason === 'send_failed' ? 'Provider temporarily unavailable' : (result.reason || 'unknown');
   const status = result.reason === 'not_configured' ? 'skipped' : 'failed';
   return repo.recordEmailResult(client, applicant.id, { status, error: safeReason });

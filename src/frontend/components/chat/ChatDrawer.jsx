@@ -43,6 +43,8 @@ import { canPostChatFlat, chatPostBlockReasonFlat, chatBlockMessage } from '../.
 
 const POLL_MS = 4000;
 const HEALTHY_POLL_MS = 30000;
+// Floor between live read-marker writes while the drawer is open (see markReadLive).
+const MARK_READ_THROTTLE_MS = 15000;
 
 function fmtTime(iso) {
   const d = new Date(iso);
@@ -129,6 +131,27 @@ export default function ChatDrawer({
   // Mirror the internal unread count to the launcher badge.
   useEffect(() => { onUnreadRef.current?.(unread); }, [unread]);
 
+  // r2 — READING LIVE COUNTS AS READING. markRead() used to fire on drawer OPEN
+  // and nowhere else, so a member who left the drawer open and watched a
+  // conversation arrive kept the lastReadAt they had at open time: server-side
+  // they looked permanently behind, and the email digest — which suppresses on
+  // exactly that read marker — mailed them a summary of messages already on
+  // their screen. Messages landing in an OPEN, VISIBLE drawer have been seen, so
+  // we re-stamp the marker as they arrive.
+  //
+  // Throttled to one call per 15s: a busy thread polls every 4s and must not
+  // turn into a write per poll. visibilityState gates it because an open drawer
+  // in a BACKGROUND tab is not being read — that user should still get a digest.
+  const lastMarkReadRef = useRef(0);
+  const markReadLive = useCallback(() => {
+    if (typeof document === 'undefined') return;         // SSR — no document, no reader
+    if (document.visibilityState !== 'visible') return;   // hidden tab ≠ read
+    const now = Date.now();
+    if (now - lastMarkReadRef.current < MARK_READ_THROTTLE_MS) return;
+    lastMarkReadRef.current = now;
+    apiRef.current.markRead().catch(() => {});
+  }, []);
+
   // countUnread=false for the initial history load — historical messages are
   // NOT unread just because we loaded them; the server's read marker decides.
   const merge = useCallback((incoming, serverTime, countUnread = true) => {
@@ -141,12 +164,14 @@ export default function ChatDrawer({
     }
     if (!fresh.length) return;
     setMessages(prev => [...prev, ...fresh]);
-    // New messages from OTHER members arriving while the drawer is closed.
-    if (countUnread && !openRef.current) {
-      const others = fresh.filter(m => !m.isMe).length;
-      if (others) setUnread(u => u + others);
-    }
-  }, []);
+    if (!countUnread) return; // initial history load — open() already marked read
+    const others = fresh.filter(m => !m.isMe).length;
+    if (!others) return;      // our own echoed send is neither unread nor a read event
+    // New messages from OTHER members: unread badge while closed, live read
+    // marker while open and on-screen.
+    if (!openRef.current) setUnread(u => u + others);
+    else markReadLive();
+  }, [markReadLive]);
 
   // Authoritative unread count from the server (per-user lastReadAt).
   const fetchUnread = useCallback(() => {
@@ -226,6 +251,7 @@ export default function ChatDrawer({
   useEffect(() => {
     if (open) {
       setUnread(0);
+      lastMarkReadRef.current = Date.now(); // opening IS a mark-read — start the throttle window here
       apiRef.current.markRead().catch(() => {});
       const t = setTimeout(() => inputRef.current?.focus(), 60);
       return () => clearTimeout(t);

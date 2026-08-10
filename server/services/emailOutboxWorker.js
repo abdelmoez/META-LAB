@@ -35,6 +35,34 @@
  * parking hands the row to the stuck-sweep instead, which re-queues it on the
  * next sweep (≤ STUCK_MS later) — crash recovery and transport backoff become
  * the same mechanism, and both are bounded by the same attempts cap.
+ *
+ * PERMANENT vs TRANSIENT TRANSPORT FAILURE. sendEmail classifies its own
+ * failures: `permanent: true` is an SMTP 5xx-class reject, and the reason
+ * 'recipients_skipped' means the staging recipient policy dropped every address.
+ * Neither gets better by being retried — parking a 550 just re-hammers the relay
+ * with a message it has already refused — so both settle the row as 'failed'
+ * immediately. Only an unclassified/transient 'send_failed' takes the park path.
+ *
+ * TERMINAL ROWS CARRY NO VARIABLES. Every terminal patch goes through
+ * settleTerminal(), which also blanks variablesJson. That blob is the RENDER
+ * INPUT — for 'invite.waitlist' and the password-reset copy it holds a link
+ * containing a raw single-use token — and a settled row is history, never
+ * rendered again (an admin "resend" mints a fresh row). renderedSubject is kept:
+ * that is what the Ops delivery list shows.
+ *
+ * NO LOST WAKEUPS. A kick that arrives while a drain is running is RECORDED
+ * (kickPending) instead of dropped, and the drain repeats its pass until one
+ * completes with no kick behind it. Without that, a row committed just after the
+ * running pass's last claim query would wait for the periodic sweep. And that
+ * sweep is now the backstop it was always meant to be: it kicks the drain on
+ * EVERY tick, not only when it re-queued something — recoverStuckOutboxEmails
+ * looks at 'sending' rows only, so 'pending' rows enqueued by ANOTHER instance
+ * (or orphaned by a crash between the enqueue and its kick) are invisible to it.
+ *
+ * INVITATION RECONCILIATION. invitationService hands an invite to this queue and
+ * records WaitlistInvitation.emailStatus = 'queued'; the authoritative delivery
+ * outcome only exists here. Terminal 'invite.waitlist' rows write it back
+ * (best-effort) so the Ops list does not show every invite as queued forever.
  */
 
 import { prisma } from '../db/client.js';
@@ -43,6 +71,7 @@ import { getEmailTemplate, renderTemplate } from './emailTemplates.js';
 import { sendEmail, isEmailConfigured } from './emailService.js';
 import { unsubscribeHeaders } from './emailUnsubscribe.js';
 import { enqueueEmail } from './emailOutboxService.js';
+import { MAX_DIGEST_SENDER_NAMES } from './chatDigestService.js';
 import {
   CHAT_DIGEST_TEMPLATE_KEY,
   GENERIC_DIGEST_PREVIEW,
@@ -67,6 +96,8 @@ const DIGEST_SWEEP_MS = 60 * 1000;
 const MAX_DIGEST_BATCH = 100;
 
 let draining = false;
+/** A kick that landed mid-drain. Cleared at the start of every drain pass. */
+let kickPending = false;
 let sweepTimer = null;
 let digestTimer = null;
 
@@ -90,6 +121,63 @@ function bounded(message, fallback = 'Email send failed') {
 /** Patch an outbox row; never throws into the worker loop. */
 async function patch(id, data) {
   try { await prisma.emailOutbox.update({ where: { id }, data }); } catch { /* best-effort */ }
+}
+
+/**
+ * reconcileInvitationEmail — write a terminal delivery outcome back onto the
+ * WaitlistInvitation the row was minted for.
+ *
+ * invitationService.sendInvitationEmail only knows that the hand-off to this
+ * queue succeeded, so it records emailStatus = 'queued'; nothing ever moved that
+ * forward, leaving every invite in the Ops list permanently "queued" — including
+ * the ones that bounced. Only the two DELIVERY verdicts map onto emailStatus: a
+ * 'skipped_*' row means this instance had nothing to hand off to, not that the
+ * invite failed, so those keep the 'queued' hand-off marker and the outbox row
+ * stays the authority.
+ *
+ * LAZY IMPORT is required, not stylistic: invitationService → emailOutboxService
+ * → (dynamic) this module, so a static import here would close the cycle at
+ * module-evaluation time. Best-effort throughout — reconciliation is bookkeeping
+ * and must never turn a delivered email into a failed row.
+ *
+ * @param {{templateKey?:string, entityId?:string|null}} row
+ * @param {string} status  the terminal status just written
+ * @param {string} [error] lastError for a failed outcome
+ */
+async function reconcileInvitationEmail(row, status, error) {
+  if (!row || row.templateKey !== 'invite.waitlist' || !row.entityId) return;
+  if (status !== 'sent' && status !== 'failed') return;
+  try {
+    const { recordInvitationEmailResult } = await import('./invitationService.js');
+    await recordInvitationEmailResult(
+      row.entityId,
+      status === 'sent' ? { status: 'sent' } : { status: 'failed', error: error || 'Email delivery failed' },
+    );
+  } catch (e) {
+    console.error('[email-outbox] invitation reconcile failed:', e?.message);
+  }
+}
+
+/**
+ * settleTerminal — patch a row into a TERMINAL state ('sent' | 'failed' |
+ * 'skipped_unconfigured' | 'skipped_disabled'). EVERY terminal write goes
+ * through here so two things happen exactly once, everywhere:
+ *
+ *   1. variablesJson is blanked. The blob exists to RENDER the message and
+ *      nothing else, and for 'invite.waitlist' it contains the accept link with
+ *      a raw single-use token in it (same for a password-reset link). A settled
+ *      row is history — renderedSubject is what an operator reads — so keeping
+ *      the plaintext token in the table forever buys nothing and risks
+ *      everything. A retry does still need it, which is why the PARK path below
+ *      deliberately does not come through here.
+ *   2. A waitlist invitation learns its delivery outcome.
+ *
+ * @param {object} row  the row being settled (needs id, templateKey, entityId)
+ * @param {object} data the terminal patch (must include `status`)
+ */
+async function settleTerminal(row, data) {
+  await patch(row.id, { ...data, variablesJson: '{}' });
+  await reconcileInvitationEmail(row, data.status, data.lastError);
 }
 
 /** Tolerant JSON → plain object (anything else becomes undefined). */
@@ -133,18 +221,25 @@ export async function processOutboxRow(row, maxAttempts = DEFAULT_MAX_JOB_ATTEMP
   if (!entry) {
     // The row names a template that no longer exists (a key was renamed under a
     // queued row). Unrenderable forever → permanent, never retried.
-    await patch(row.id, { status: 'failed', lastError: bounded(`Unknown email template: ${row.templateKey}`) });
+    await settleTerminal(row, { status: 'failed', lastError: bounded(`Unknown email template: ${row.templateKey}`) });
     return 'failed';
   }
 
   // Admin copy override for this key, if any (EmailTemplate is edit-by-key).
+  // ORDERED: the table has no unique constraint on templateKey, so a historic
+  // double-write can leave two override rows for one key. An unordered findFirst
+  // would then resolve to whichever row the planner happened to return, and the
+  // same queue could render two different subjects. Oldest wins, deterministically.
   let override = null;
   try {
-    override = await prisma.emailTemplate.findFirst({ where: { templateKey: row.templateKey } });
+    override = await prisma.emailTemplate.findFirst({
+      where: { templateKey: row.templateKey },
+      orderBy: { createdAt: 'asc' },
+    });
   } catch { override = null; } // no override table row / read blip → registry defaults
 
   if (override && override.enabled === false && entry.disableable) {
-    await patch(row.id, { status: 'skipped_disabled', lastError: null });
+    await settleTerminal(row, { status: 'skipped_disabled', lastError: null });
     return 'skipped_disabled';
   }
 
@@ -155,7 +250,7 @@ export async function processOutboxRow(row, maxAttempts = DEFAULT_MAX_JOB_ATTEMP
   try {
     rendered = renderTemplate(row.templateKey, variables, { overrides });
   } catch (err) {
-    await patch(row.id, { status: 'failed', lastError: bounded(err?.message, 'Email template render failed') });
+    await settleTerminal(row, { status: 'failed', lastError: bounded(err?.message, 'Email template render failed') });
     return 'failed';
   }
 
@@ -163,7 +258,7 @@ export async function processOutboxRow(row, maxAttempts = DEFAULT_MAX_JOB_ATTEMP
     // NEVER send a template with unresolved required tokens — the recipient
     // would get copy containing a literal "[link]". Name the tokens so the fix
     // is obvious from the row alone.
-    await patch(row.id, {
+    await settleTerminal(row, {
       status: 'failed',
       renderedSubject: rendered.subject || null,
       lastError: bounded(`Missing required template variable(s): ${rendered.missingRequired.join(', ')}`),
@@ -172,7 +267,7 @@ export async function processOutboxRow(row, maxAttempts = DEFAULT_MAX_JOB_ATTEMP
   }
 
   if (!isEmailConfigured()) {
-    await patch(row.id, {
+    await settleTerminal(row, {
       status: 'skipped_unconfigured',
       renderedSubject: rendered.subject || null,
       lastError: null,
@@ -201,7 +296,7 @@ export async function processOutboxRow(row, maxAttempts = DEFAULT_MAX_JOB_ATTEMP
   });
 
   if (result && result.sent) {
-    await patch(row.id, {
+    await settleTerminal(row, {
       status: 'sent',
       sentAt: new Date(),
       renderedSubject: rendered.subject || null,
@@ -211,17 +306,35 @@ export async function processOutboxRow(row, maxAttempts = DEFAULT_MAX_JOB_ATTEMP
   }
 
   const reason = bounded(result?.error || result?.reason, 'Email send failed');
+
+  // PERMANENT REJECT → terminal now, no park, no retry. sendEmail flags an SMTP
+  // 5xx-class refusal with `permanent: true`; 'recipients_skipped' means the
+  // staging recipient policy dropped every address, which is a configuration
+  // fact, not a transport blip. Retrying either one only re-sends a message the
+  // relay has already refused (and burns the attempts budget doing it), so the
+  // row is settled with the provider's own words in lastError.
+  if (result && (result.permanent === true || result.reason === 'recipients_skipped')) {
+    await settleTerminal(row, {
+      status: 'failed',
+      renderedSubject: rendered.subject || null,
+      lastError: reason,
+    });
+    return 'failed';
+  }
+
   const attempts = Number(row.attempts);
   const exhausted = Number.isFinite(attempts) && attempts >= maxAttempts;
   if (exhausted) {
-    await patch(row.id, {
+    await settleTerminal(row, {
       status: 'failed',
       renderedSubject: rendered.subject || null,
       lastError: bounded(`${reason} (gave up after ${maxAttempts} attempts)`),
     });
     return 'failed';
   }
-  // Park for the sweep (see the RETRY BACKOFF note at the top of the file).
+  // Park for the sweep (see the RETRY BACKOFF note at the top of the file). NOT
+  // settleTerminal: a parked row is going to be rendered again, so it keeps its
+  // variablesJson — the blob is only scrubbed once the row stops being a message.
   await patch(row.id, {
     status: 'sending',
     heartbeatAt: null,
@@ -233,25 +346,42 @@ export async function processOutboxRow(row, maxAttempts = DEFAULT_MAX_JOB_ATTEMP
 
 /**
  * drainEmailOutbox — claim + process rows one at a time until the queue is
- * empty. Re-entrancy guarded (a kick during a drain is a no-op). Exported so
- * tests can drive the claim loop deterministically instead of racing setImmediate.
+ * empty. Re-entrancy guarded, and NO KICK IS LOST: a caller that arrives while a
+ * drain is in flight records the wakeup instead of returning silently, and the
+ * running drain repeats its pass until one completes with nothing behind it.
+ *
+ * The race that costs: an enqueue commits, its kick lands here while `draining`
+ * is still true, and the running pass's claim query had ALREADY run (and seen
+ * nothing) before that commit became visible. Dropping the kick there stranded
+ * the row until the next 5-minute sweep. Re-running the pass costs one indexed
+ * findFirst and closes the window — the flag is cleared BEFORE each pass, so a
+ * kick arriving during a pass is always honoured by the next one.
+ *
+ * Exported so tests can drive the claim loop deterministically instead of racing
+ * setImmediate.
  */
 export async function drainEmailOutbox() {
-  if (draining || !isEmailOutboxWorkerEnabled()) return;
+  if (!isEmailOutboxWorkerEnabled()) return;
+  if (draining) { kickPending = true; return; }
   draining = true;
   try {
-    for (;;) {
-      const row = await claimNext();
-      if (!row) break;
-      try {
-        await processOutboxRow(row);
-      } catch (e) {
-        // processOutboxRow is written not to throw; if it ever does, settle the
-        // row rather than let one bad message wedge the whole queue.
-        console.error('[email-outbox] row failed unexpectedly:', e?.message);
-        await patch(row.id, { status: 'failed', lastError: bounded(e?.message, 'Unexpected worker error') });
+    do {
+      kickPending = false;
+      for (;;) {
+        const row = await claimNext();
+        if (!row) break;
+        try {
+          await processOutboxRow(row);
+        } catch (e) {
+          // processOutboxRow is written not to throw; if it ever does, settle the
+          // row rather than let one bad message wedge the whole queue.
+          console.error('[email-outbox] row failed unexpectedly:', e?.message);
+          await settleTerminal(row, { status: 'failed', lastError: bounded(e?.message, 'Unexpected worker error') });
+        }
       }
-    }
+      // No await between the last claim and this check, so nothing can slip in
+      // between "the queue is empty" and "we stopped draining".
+    } while (kickPending);
   } catch (e) {
     console.error('[email-outbox] drain:', e?.message);
   } finally {
@@ -279,7 +409,9 @@ export async function recoverStuckOutboxEmails(now = Date.now(), maxAttempts = D
   const cutoff = now - STUCK_MS;
   const sending = await prisma.emailOutbox.findMany({
     where: { status: 'sending' },
-    select: { id: true, attempts: true, heartbeatAt: true, lastError: true },
+    // templateKey + entityId ride along so the give-up branch can settle the row
+    // properly (invitation reconciliation) without a second read per row.
+    select: { id: true, attempts: true, heartbeatAt: true, lastError: true, templateKey: true, entityId: true },
   });
   const stuck = sending.filter((r) => {
     const last = r.heartbeatAt;
@@ -288,7 +420,7 @@ export async function recoverStuckOutboxEmails(now = Date.now(), maxAttempts = D
   if (!stuck.length) return { requeued: 0, failed: 0 };
   const { giveUp, retry } = partitionStuckJobs(stuck, maxAttempts);
   for (const r of giveUp) {
-    await patch(r.id, {
+    await settleTerminal(r, {
       status: 'failed',
       lastError: bounded(r.lastError
         ? `${r.lastError} (gave up after ${maxAttempts} attempts)`
@@ -302,6 +434,37 @@ export async function recoverStuckOutboxEmails(now = Date.now(), maxAttempts = D
     });
   }
   return { requeued: retry.length, failed: giveUp.length };
+}
+
+/**
+ * runOutboxSweepTick — one periodic maintenance tick: recover stuck/parked rows,
+ * then ALWAYS kick the drain.
+ *
+ * The kick is UNCONDITIONAL, and that is the whole point of this function. It
+ * used to fire only `if (requeued)`, which made the queue's only guaranteed
+ * drain trigger the enqueue-time kick — and recoverStuckOutboxEmails queries
+ * status 'sending', so it can never see a stranded 'pending' row. Any pending
+ * row this process did not itself enqueue (another app instance with the worker
+ * disabled, a crash between the DB commit and the setImmediate, a wakeup lost to
+ * the drain race) therefore sat in the table indefinitely. An empty kick costs
+ * one indexed findFirst; a stranded email costs a user their invitation.
+ *
+ * Exported so the guarantee is unit-testable without driving a 5-minute
+ * interval. Never throws — a recovery failure still kicks.
+ *
+ * @returns {Promise<{requeued:number, failed:number}>}
+ */
+export async function runOutboxSweepTick() {
+  let result = { requeued: 0, failed: 0 };
+  try {
+    result = await recoverStuckOutboxEmails();
+    if (result.requeued) console.log(`[email-outbox] periodic sweep re-queued ${result.requeued} email(s)`);
+    if (result.failed) console.warn(`[email-outbox] periodic sweep failed ${result.failed} email(s) over the retry cap (${DEFAULT_MAX_JOB_ATTEMPTS})`);
+  } catch (e) {
+    console.error('[email-outbox] periodic sweep failed:', e?.message);
+  }
+  kickEmailOutboxWorker();
+  return result;
 }
 
 // ── Chat digests (112.md §2) ──────────────────────────────────────────────────
@@ -323,15 +486,80 @@ export async function recoverStuckOutboxEmails(now = Date.now(), maxAttempts = D
 // the delete fails, the next sweep re-enqueues the same key and dedupes rather
 // than double-sending — at the cost of not re-sending a digest whose
 // messageCount grew in between. Under-notifying is the right side of that trade.
+//
+// ONE BURST PER (USER, PROJECT), NOT ONE PER ROW. ChatDigestPending has an
+// @@index — deliberately NOT a @@unique — on (userId, projectId), so
+// chatDigestService's findFirst-then-write accumulation is racy by design: two
+// chat posts landing at the same instant can each miss the other's row and
+// create TWINS, two pending rows for the same pair with different
+// firstMessageAt. firstMessageAt is the burst identity, so untreated twins
+// enqueue under two different idempotency keys and the recipient gets two emails
+// about one conversation. settleChatDigestRow therefore reads EVERY row for the
+// pair, folds them into one burst, and decides + enqueues exactly once.
 
-/** Delete a settled pending row. Never throws — a failed delete retries next sweep. */
-async function deletePendingDigest(id) {
-  try { await prisma.chatDigestPending.deleteMany({ where: { id } }); } catch { /* best-effort */ }
+/** Delete settled pending rows by id. Never throws — a failed delete retries next sweep. */
+async function deletePendingDigests(ids) {
+  if (!ids || !ids.length) return;
+  try { await prisma.chatDigestPending.deleteMany({ where: { id: { in: ids } } }); } catch { /* best-effort */ }
 }
 
 /**
- * settleChatDigestRow — resolve ONE due pending row: re-read the world, ask the
- * policy, then send / drop / leave it. Exported for tests.
+ * coalesceChatDigestRows — fold every pending row for one (user, project) into a
+ * single burst: earliest start, latest activity, summed count, unioned senders.
+ *
+ * The identity (firstMessageAt) is the MINIMUM so the merged burst dedupes
+ * against whichever twin a previous sweep may already have enqueued, and
+ * lastMessageAt is the MAXIMUM so a twin that is still receiving messages holds
+ * the whole burst back rather than mailing half of it early.
+ *
+ * @param {object[]} rows      every ChatDigestPending row for the pair
+ * @param {object} fallback    the row the sweep selected (raw timestamp fallback)
+ * @returns {{ids:string[], firstMessageAt:*, lastMessageAt:*, messageCount:number, senderNames:string[]}}
+ */
+function coalesceChatDigestRows(rows, fallback) {
+  const ids = [];
+  const senderNames = [];
+  let first = null;
+  let last = null;
+  let messageCount = 0;
+  for (const r of rows || []) {
+    if (!r || r.id === undefined || r.id === null) continue;
+    if (!ids.includes(r.id)) ids.push(r.id);
+    const f = new Date(r.firstMessageAt).getTime();
+    const l = new Date(r.lastMessageAt).getTime();
+    if (Number.isFinite(f) && (first === null || f < first)) first = f;
+    if (Number.isFinite(l) && (last === null || l > last)) last = l;
+    const n = Number(r.messageCount);
+    if (Number.isFinite(n) && n > 0) messageCount += n;
+    for (const name of parseSenderNames(r.senderNamesJson)) {
+      if (senderNames.length >= MAX_DIGEST_SENDER_NAMES) break;
+      if (!senderNames.includes(name)) senderNames.push(name);
+    }
+  }
+  return {
+    ids,
+    // When nothing parsed, hand the RAW values straight through so
+    // decideChatDigest reports 'malformed_timestamps' and drops the burst —
+    // inventing a timestamp here would mail a digest we cannot date.
+    firstMessageAt: first === null ? fallback?.firstMessageAt : new Date(first),
+    lastMessageAt: last === null ? fallback?.lastMessageAt : new Date(last),
+    messageCount,
+    senderNames,
+  };
+}
+
+/**
+ * settleChatDigestRow — resolve ONE due (user, project) burst: coalesce its
+ * pending rows, re-read the world, ask the policy, then send / drop / leave it.
+ * Exported for tests.
+ *
+ * ACCEPTED RACE. A message that arrives between the coalescing read and the
+ * delete bumps lastMessageAt/messageCount on a row we have already read, and the
+ * delete then removes it anyway — that message is folded into no digest. This is
+ * the same under-notify trade the delete-after-enqueue note above makes, and it
+ * is bounded by one sweep's duration. The delete names ONLY the ids actually
+ * read, so a row CREATED in that window (a new burst, new firstMessageAt)
+ * survives and mails on the next sweep.
  *
  * @param {object} row  a ChatDigestPending row
  * @param {number} now
@@ -340,6 +568,24 @@ async function deletePendingDigest(id) {
  */
 export async function settleChatDigestRow(row, now, config) {
   const { quietMs, maxMs, dailyCap } = config;
+
+  // COALESCE FIRST — see the ONE BURST PER (USER, PROJECT) note above.
+  let siblings;
+  try {
+    siblings = await prisma.chatDigestPending.findMany({
+      where: { userId: row.userId, projectId: row.projectId },
+    });
+  } catch {
+    // The read failed, not the pair. Degrade to the single row we were handed
+    // rather than skipping the digest entirely.
+    siblings = [row];
+  }
+  if (Array.isArray(siblings) && !siblings.length) {
+    // Another sweep (or another instance) already settled and deleted this pair.
+    // Enqueueing again would be a second email for a burst that is already out.
+    return 'dropped';
+  }
+  const burst = coalesceChatDigestRows(siblings, row);
 
   const user = await prisma.user.findUnique({
     where: { id: row.userId },
@@ -383,9 +629,9 @@ export async function settleChatDigestRow(row, now, config) {
 
   const base = {
     now,
-    firstMessageAt: row.firstMessageAt,
-    lastMessageAt: row.lastMessageAt,
-    messageCount: row.messageCount,
+    firstMessageAt: burst.firstMessageAt,
+    lastMessageAt: burst.lastMessageAt,
+    messageCount: burst.messageCount,
     quietMs,
     maxMs,
     dailyCap,
@@ -415,7 +661,7 @@ export async function settleChatDigestRow(row, now, config) {
 
   if (decision.action === 'wait') return 'waiting';
   if (decision.action === 'drop') {
-    await deletePendingDigest(row.id);
+    await deletePendingDigests(burst.ids);
     return 'dropped';
   }
 
@@ -428,8 +674,8 @@ export async function settleChatDigestRow(row, now, config) {
       // Absent recipientName is fine — the greeting paragraph is @if-guarded.
       ...(user.name ? { recipientName: user.name } : {}),
       projectName: project.title || 'your project',
-      senderSummary: formatSenderSummary(parseSenderNames(row.senderNamesJson)),
-      messageCount: row.messageCount,
+      senderSummary: formatSenderSummary(burst.senderNames),
+      messageCount: burst.messageCount,
       // ChatDigestPending stores no message text, so there is nothing to quote
       // (see GENERIC_DIGEST_PREVIEW). `preview` is a required variable, so it has
       // to resolve non-empty or the worker would fail the row on render.
@@ -437,11 +683,12 @@ export async function settleChatDigestRow(row, now, config) {
       chatUrl: chatDigestUrl(row.projectId, process.env.APP_BASE_URL),
     },
     entityId: row.projectId,
-    // firstMessageAt is the BURST identity: it is fixed for the life of the row
-    // (only lastMessageAt/messageCount grow), so a re-swept row dedupes while the
-    // next burst — a new row with a new firstMessageAt — sends.
+    // firstMessageAt is the BURST identity: it is fixed for the life of a row
+    // (only lastMessageAt/messageCount grow), so a re-swept burst dedupes while
+    // the next burst — a new row with a new firstMessageAt — sends. Coalesced to
+    // the MINIMUM across the pair's rows, so racing twins resolve to one key.
     // Safe to format: decideChatDigest already dropped unparseable timestamps.
-    discriminator: new Date(row.firstMessageAt).toISOString(),
+    discriminator: new Date(burst.firstMessageAt).toISOString(),
   });
 
   // 'error' is the outbox telling us the DB refused the write — keep the pending
@@ -449,7 +696,7 @@ export async function settleChatDigestRow(row, now, config) {
   // means the digest is already queued; 'invalid' can only be a programming
   // error that re-running will reproduce).
   if (!queued.enqueued && queued.reason === 'error') return 'waiting';
-  await deletePendingDigest(row.id);
+  await deletePendingDigests(burst.ids);
   return queued.enqueued || queued.reason === 'duplicate' ? 'sent' : 'dropped';
 }
 
@@ -480,7 +727,14 @@ export async function sweepChatDigests(now = Date.now(), config = readChatDigest
     console.error('[chat-digest] sweep query failed:', e?.message);
     return totals;
   }
+  // settleChatDigestRow settles a whole (user, project) pair, so a batch holding
+  // both halves of a racing twin must not settle it twice: the second call would
+  // find the pair already deleted and count a phantom drop.
+  const settled = new Set();
   for (const row of rows || []) {
+    const pair = `${row?.userId}|${row?.projectId}`;
+    if (settled.has(pair)) continue;
+    settled.add(pair);
     try {
       totals[await settleChatDigestRow(row, now, config)] += 1;
     } catch (e) {
@@ -509,12 +763,7 @@ export async function startEmailOutboxWorker() {
     console.error('[email-outbox] startup failed:', e?.message);
   }
   if (!sweepTimer) {
-    sweepTimer = setInterval(async () => {
-      try {
-        const { requeued } = await recoverStuckOutboxEmails();
-        if (requeued) { console.log(`[email-outbox] periodic sweep re-queued ${requeued} email(s)`); kickEmailOutboxWorker(); }
-      } catch (e) { console.error('[email-outbox] periodic sweep failed:', e?.message); }
-    }, STUCK_MS);
+    sweepTimer = setInterval(() => { runOutboxSweepTick().catch(() => {}); }, STUCK_MS);
     if (typeof sweepTimer.unref === 'function') sweepTimer.unref();
   }
   if (!digestTimer) {

@@ -28,10 +28,13 @@ import { prisma } from '../db/client.js';
 import { hashPassword } from '../auth/password.js';
 import { allocateUserNumber } from './userNumber.js';
 import { getDefaultTierId, recordTierAssignment } from './entitlementService.js';
+// sendTemplatedEmail (not sendEmail + renderWelcomeEmail) so the admin's copy
+// override, the 'welcome' disable switch and the recipient's opt-out actually
+// bind — see the SENDING GOES THROUGH note in emailService.js.
 import {
-  sendEmail,
+  sendTemplatedEmail,
   isEmailConfigured,
-  renderWelcomeEmail,
+  welcomeVariables,
   configuredSupportEmail,
   formatEmailDateTime,
   emailSalutation,
@@ -700,9 +703,18 @@ export async function acceptInvitationWithGoogle({ normalizedEmail, claims } = {
  * When SMTP is not configured we return WITHOUT claiming, so an environment that
  * gains SMTP later has not silently burned everyone's welcome flag.
  *
+ * The disable switch and the per-user opt-out are checked INSIDE
+ * sendTemplatedEmail, i.e. after the claim, so a suppressed welcome still burns
+ * the flag. That is the correct trade: the alternative — checking first — either
+ * duplicates the governance rules here or reopens the double-send race, and the
+ * only cost of the current order is that a user who was opted out at accept time
+ * does not retroactively receive a welcome if they opt back in later.
+ *
  * @param {string} userId
  * @param {{email?:string, toName?:string}} opts (email looked up when omitted)
- * @returns {Promise<{sent:boolean, reason?:string}>}
+ * @returns {Promise<{sent:boolean, reason?:string, skipped?:boolean}>}
+ *          reason ∈ no_user | not_configured | already_sent | template_disabled |
+ *          unsubscribed | render_failed | <sendEmail reason>
  */
 export async function sendWelcomeEmailOnce(userId, { email = '', toName = '' } = {}) {
   if (!userId) return { sent: false, reason: 'no_user' };
@@ -724,21 +736,29 @@ export async function sendWelcomeEmailOnce(userId, { email = '', toName = '' } =
     name = name || u.name || '';
   }
 
-  const { html, text } = renderWelcomeEmail({
-    appName: 'PecanRev',
-    toName: name || '',
-    supportEmail: configuredSupportEmail(),
-  });
-  const result = await sendEmail({
+  // 'welcome' is the one DISABLEABLE template, so this is the send where the
+  // admin switch and the user's opt-out finally have effect: sendTemplatedEmail
+  // may legitimately answer { skipped:true } instead of sending, and it attaches
+  // the List-Unsubscribe headers keyed to this user.
+  const result = await sendTemplatedEmail({
+    templateKey: 'welcome',
+    variables: welcomeVariables({
+      appName: 'PecanRev',
+      toName: name || '',
+      supportEmail: configuredSupportEmail(),
+    }),
     to,
-    subject: 'Welcome to PecanRev — your first review starts here',
-    html,
-    text,
+    recipientUserId: userId,
     context: 'welcome',
   });
   if (!result.sent) {
-    console.error('[invitation] welcome email not delivered:', result.reason || 'unknown');
-    return { sent: false, reason: result.reason || 'send_failed' };
+    // A skip is a decision, not a fault — log it as such and never at error level.
+    // The welcomeEmailSentAt claim is NOT rolled back either way: the flag means
+    // "the one-time welcome has been resolved for this user", and un-claiming a
+    // deliberate opt-out/disable would resurrect the mail on the next retry.
+    if (result.skipped) console.log(`[invitation] welcome email skipped (${result.reason}) for user ${userId}`);
+    else console.error('[invitation] welcome email not delivered:', result.reason || 'unknown');
+    return { sent: false, reason: result.reason || 'send_failed', ...(result.skipped ? { skipped: true } : {}) };
   }
   return { sent: true };
 }

@@ -26,7 +26,10 @@ import { buildUsersWhere, buildUsersOrderBy } from '../services/adminUserQuery.j
 import { getUserTimelineEvents } from '../services/userTimeline.js';
 import { recordTierAssignment } from '../services/entitlementService.js';
 import { createVerificationToken } from '../services/emailVerificationService.js';
-import { sendEmail, renderEmailVerificationEmail, isEmailConfigured } from '../services/emailService.js';
+// sendTemplatedEmail (not sendEmail + render*) so the admin's EmailTemplate copy
+// override, the per-template disable switch and the recipient's opt-out actually
+// bind on these sends — see the SENDING GOES THROUGH note in emailService.js.
+import { sendTemplatedEmail, emailVerificationVariables, isEmailConfigured } from '../services/emailService.js';
 import { startOfWindow } from '../utils/userGrowth.js';
 import { deriveStatus, BULK_USER_ACTIONS } from '../../src/shared/adminUsers.js';
 
@@ -232,8 +235,13 @@ export async function resendVerificationAdmin(req, res) {
     const link = `${base}/verify-email?token=${token}`;
     let sent = false;
     if (isEmailConfigured()) {
-      const { html, text } = renderEmailVerificationEmail({ toName: target.name || '', link, expiresAt });
-      const result = await sendEmail({ to: target.email, subject: 'Verify your PecanRev email', html, text, context: 'email_verification' });
+      const result = await sendTemplatedEmail({
+        templateKey: 'email.verification',
+        variables: emailVerificationVariables({ toName: target.name || '', link, expiresAt }),
+        to: target.email,
+        recipientUserId: target.id,
+        context: 'email_verification',
+      });
       sent = !!result.sent;
     }
     // Token itself is NEVER logged (Phase 12); the link is returned to the
@@ -323,8 +331,13 @@ export async function bulkUserAction(req, res) {
             if (!isEmailConfigured()) return { id, ok: false, code: 'FAILED' }; // no link fallback in bulk — links are per-operator artifacts
             const { token, expiresAt } = await createVerificationToken(id);
             const base = (process.env.APP_BASE_URL || '').replace(/\/+$/, '') || `${req.protocol}://${req.get('host')}`;
-            const { html, text } = renderEmailVerificationEmail({ toName: t.name || '', link: `${base}/verify-email?token=${token}`, expiresAt });
-            const sent = await sendEmail({ to: t.email, subject: 'Verify your PecanRev email', html, text, context: 'email_verification' });
+            const sent = await sendTemplatedEmail({
+              templateKey: 'email.verification',
+              variables: emailVerificationVariables({ toName: t.name || '', link: `${base}/verify-email?token=${token}`, expiresAt }),
+              to: t.email,
+              recipientUserId: id,
+              context: 'email_verification',
+            });
             await logAdminAction(req, 'RESEND_VERIFICATION', 'User', id, { email: t.email, sent: !!sent.sent, bulk: true }, { reason, bulkOperationId });
             return sent.sent ? { id, ok: true } : { id, ok: false, code: 'FAILED' };
           }

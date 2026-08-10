@@ -13,6 +13,9 @@ import { resolveInstitutionInput, invalidateInstitutionCandidates } from '../ser
 import { sessionCookieName, sessionCookieOptions } from '../config/cookies.js';
 // 93.md §6.3 — best-effort "your password was changed" security notice.
 import { sendPasswordChangedNotice } from '../services/emailService.js';
+// r2 — the ONE tolerant reader of the emailNotifications blob, shared with the
+// one-click unsubscribe writer so both sides agree on what the column contains.
+import { parseEmailPreferences } from '../services/emailUnsubscribe.js';
 
 const SESSION_COOKIE = sessionCookieName();
 
@@ -122,17 +125,40 @@ export async function updateProfile(req, res) {
       }
     }
     // 112.md §2 — per-user email notification prefs ({ projectChat: boolean }),
-    // same JSON-blob pattern as dashboardPreferences (object or JSON string; null
+    // same JSON-blob shape as dashboardPreferences (object or JSON string; null
     // clears). Absent/null means every optional email category stays OFF (opt-in:
     // a brand-new email class must never surprise existing users).
+    //
+    // MERGE, not replace (r2). This blob has a SECOND writer: the one-click
+    // unsubscribe endpoint (services/emailUnsubscribe.js) merges a single
+    // TEMPLATE KEY — e.g. {'chat.digest': false} — into the same column, because
+    // an unsubscribe link is followed from a mail client with no session and no
+    // knowledge of the rest of the blob. A wholesale JSON.stringify(body) here
+    // would silently ERASE that opt-out the next time the user saved anything on
+    // their profile, re-subscribing them to mail they had explicitly refused —
+    // and the List-Unsubscribe header would then be advertising an opt-out we do
+    // not honour. So we overlay ONLY the submitted keys onto the stored blob.
+    // Non-boolean values are dropped by parseEmailPreferences on both sides
+    // (this is a map of flags), and the 500-char cap is enforced on the MERGED
+    // result — the merge is what actually gets stored.
     let emailPrefPatch = {};
     if (emailNotifications !== undefined) {
       let obj = emailNotifications;
       if (typeof obj === 'string') { try { obj = JSON.parse(obj); } catch { return res.status(400).json({ error: 'emailNotifications must be valid JSON' }); } }
       if (obj === null) {
+        // Explicit null still clears the WHOLE column (the documented "reset all
+        // optional email prefs" escape hatch), not just the submitted keys.
         emailPrefPatch = { emailNotifications: null };
       } else if (typeof obj === 'object' && !Array.isArray(obj)) {
-        const json = JSON.stringify(obj);
+        const current = await prisma.user.findUnique({
+          where: { id: req.user.id },
+          select: { emailNotifications: true },
+        });
+        const merged = parseEmailPreferences(current?.emailNotifications);
+        for (const [k, v] of Object.entries(obj)) {
+          if (typeof v === 'boolean') merged[k] = v;
+        }
+        const json = JSON.stringify(merged);
         if (json.length > 500) return res.status(400).json({ error: 'emailNotifications is too large' });
         emailPrefPatch = { emailNotifications: json };
       } else {

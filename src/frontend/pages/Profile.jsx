@@ -371,6 +371,29 @@ function ScreeningShortcutsSection() {
 // email class, so existing users must opt in rather than be surprised by mail.
 // Saves on toggle (a single switch needs no separate Save button); transactional
 // emails (invites, password resets…) are not governed here and cannot be disabled.
+//
+// TWO KEYS, ONE SWITCH (r2). Effective digest consent is what the server actually
+// evaluates in chatDigestPolicy.chatDigestPrefEnabled:
+//     prefs.projectChat === true && prefs['chat.digest'] !== false
+// The second key is written by the one-click unsubscribe link in the digest mail.
+// Reading only `projectChat` therefore showed the toggle ON for a user who had
+// already unsubscribed from their inbox — the UI claiming they were subscribed to
+// mail we were (correctly) no longer sending. This switch renders and writes the
+// EFFECTIVE state, so it can never disagree with the delivery gate.
+const CHAT_DIGEST_KEY = 'chat.digest'; // = chatDigestPolicy.CHAT_DIGEST_TEMPLATE_KEY
+
+/**
+ * The exact rule chatDigestPolicy.chatDigestPrefEnabled applies, client-side.
+ * Exported so a test can pin it against the server rule it mirrors — the two
+ * drifting apart is precisely the bug this replaced.
+ */
+export function digestConsentFromBlob(raw) {
+  let obj = raw;
+  if (typeof obj === 'string') { try { obj = JSON.parse(obj); } catch { return false; } }
+  if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return false;
+  return obj.projectChat === true && obj[CHAT_DIGEST_KEY] !== false;
+}
+
 export function EmailNotificationsSection() {
   const [projectChat, setProjectChat] = useState(false);
   const [loaded, setLoaded]   = useState(false);
@@ -380,11 +403,7 @@ export function EmailNotificationsSection() {
 
   useEffect(() => {
     api.profile.get()
-      .then(r => {
-        let raw = r?.user?.emailNotifications ?? null;
-        if (typeof raw === 'string') { try { raw = JSON.parse(raw); } catch { raw = null; } }
-        setProjectChat(raw && typeof raw === 'object' ? raw.projectChat === true : false);
-      })
+      .then(r => { setProjectChat(digestConsentFromBlob(r?.user?.emailNotifications ?? null)); })
       .catch(() => { /* keep default OFF */ })
       .finally(() => setLoaded(true));
   }, []);
@@ -393,7 +412,14 @@ export function EmailNotificationsSection() {
     if (saving) return;
     setProjectChat(next); setSaving(true); setStatus(null); setErrMsg('');
     try {
-      await api.profile.update({ emailNotifications: { projectChat: next } });
+      // BOTH keys move together, by intent: turning the switch back ON here must
+      // CLEAR a prior one-click opt-out, otherwise the user re-checks the box,
+      // sees "Preference saved", and still receives nothing — `chat.digest:false`
+      // would silently outvote `projectChat:true` forever. Turning it OFF writes
+      // the opt-out too, so the state matches what an unsubscribe click produces.
+      // The server MERGES these keys into the stored blob (profileController), so
+      // no other category's flag is disturbed.
+      await api.profile.update({ emailNotifications: { projectChat: next, [CHAT_DIGEST_KEY]: next } });
       setStatus('saved');
     } catch (err) {
       setProjectChat(!next); // revert — the server did not accept the change

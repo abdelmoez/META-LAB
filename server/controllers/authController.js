@@ -8,7 +8,10 @@ import { recordUsage, USAGE } from '../utils/usage.js';
 // 93.md §5.3 — signup/activation funnel events (redacted, disable-switchable,
 // fire-and-forget; FIRST_* are DB-enforced once-per-user).
 import { recordEvent, recordFirstEvent } from '../services/analytics.js';
-import { sendEmail, renderPasswordResetEmail, renderEmailVerificationEmail } from '../services/emailService.js';
+// sendTemplatedEmail (not sendEmail + render*) so the admin's EmailTemplate copy
+// override, the per-template disable switch and the recipient's opt-out actually
+// bind on these sends — see the SENDING GOES THROUGH note in emailService.js.
+import { sendTemplatedEmail, passwordResetVariables, emailVerificationVariables } from '../services/emailService.js';
 import { createResetToken, consumeResetToken } from '../services/passwordResetService.js';
 import { createVerificationToken, consumeVerificationToken } from '../services/emailVerificationService.js';
 import { normalizeInstitution } from '../../src/research-engine/institutions/institutionMatch.js';
@@ -125,15 +128,20 @@ async function isEmailVerificationRequired() {
 
 /**
  * Mint a verify token + send the verification email. Best-effort: never throws,
- * never blocks the caller. Returns the sendEmail result (or a {sent:false} shape).
+ * never blocks the caller. Returns the send result (or a {sent:false} shape).
  */
 async function sendVerificationEmail(req, user) {
   try {
     const { token, expiresAt } = await createVerificationToken(user.id);
     const base = (process.env.APP_BASE_URL || '').replace(/\/+$/, '') || `${req.protocol}://${req.get('host')}`;
     const link = `${base}/verify-email?token=${token}`;
-    const { html, text } = renderEmailVerificationEmail({ toName: user.name || '', link, expiresAt });
-    return await sendEmail({ to: user.email, subject: 'Verify your PecanRev email', html, text, context: 'email_verification' });
+    return await sendTemplatedEmail({
+      templateKey: 'email.verification',
+      variables: emailVerificationVariables({ toName: user.name || '', link, expiresAt }),
+      to: user.email,
+      recipientUserId: user.id,
+      context: 'email_verification',
+    });
   } catch (e) {
     console.error('[auth] sendVerificationEmail issue:', e.message);
     return { sent: false, reason: 'error' };
@@ -395,12 +403,11 @@ export async function forgotPassword(req, res) {
         if (!user || user.suspended) return;
         const { token, expiresAt } = await createResetToken(user.id, { ip });
         const link = `${base}/reset?token=${token}`;
-        const { html, text } = renderPasswordResetEmail({ toName: user.name || '', link, expiresAt });
-        const result = await sendEmail({
+        const result = await sendTemplatedEmail({
+          templateKey: 'password.reset',
+          variables: passwordResetVariables({ toName: user.name || '', link, expiresAt }),
           to: user.email,
-          subject: 'Reset your PecanRev password',
-          html,
-          text,
+          recipientUserId: user.id,
           context: 'password_reset',
         });
         if (result.sent) recordUsage({ type: USAGE.PASSWORD_RESET_EMAIL_SENT, userId: user.id, meta: { self: true } });

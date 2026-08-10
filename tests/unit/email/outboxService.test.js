@@ -178,12 +178,16 @@ describe('enqueueEmail — the idempotency matrix', () => {
 describe('enqueueEmail — the invitation pause switch', () => {
   const paused = () => { db.settings = { key: 'appSettings', value: JSON.stringify({ invitationsPaused: true }) }; };
 
-  it('refuses every invite.* template while invitations are paused, writing nothing', async () => {
+  it('refuses invite.waitlist while invitations are paused, writing nothing', async () => {
     paused();
-    expect(await enqueueEmail(invite())).toEqual({ enqueued: false, reason: 'paused' });
     expect(await enqueueEmail(invite({ templateKey: 'invite.waitlist', variables: { link: 'https://a.test/x' } })))
       .toEqual({ enqueued: false, reason: 'paused' });
     expect(db.rows).toHaveLength(0);
+  });
+
+  it('does NOT pause project-member invites (r2 — the switch is the documented beta-waitlist brake only)', async () => {
+    paused();
+    expect((await enqueueEmail(invite())).enqueued).toBe(true);
   });
 
   it('does NOT pause non-invitation mail (a password reset is not an invitation)', async () => {

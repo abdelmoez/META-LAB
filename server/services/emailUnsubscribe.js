@@ -118,15 +118,29 @@ export function unsubscribeUrl(userId, category) {
  * sendEmail({ headers }). Returns {} for transactional categories: a
  * List-Unsubscribe on a password-reset email would advertise an opt-out we will
  * not honour.
+ *
+ * RFC 8058 (one-click). List-Unsubscribe alone tells a mail client there is an
+ * opt-out somewhere behind a link; List-Unsubscribe-Post tells it the URL will
+ * honour an unauthenticated POST, which is what makes Gmail/Outlook render their
+ * native "Unsubscribe" button instead of routing the reader to the spam
+ * complaint they would otherwise use. We can advertise it honestly because
+ * POST /api/email/unsubscribe exists and is token-authenticated — the pair is
+ * emitted together or not at all, since advertising one-click without the POST
+ * route is worse than advertising nothing.
+ *
+ * The RFC-mandated value is the exact literal 'List-Unsubscribe=One-Click'.
  * @param {string} userId
  * @param {string} category  a template key, e.g. 'welcome'
- * @returns {{'List-Unsubscribe'?:string}}
+ * @returns {{'List-Unsubscribe'?:string, 'List-Unsubscribe-Post'?:string}}
  */
 export function unsubscribeHeaders(userId, category) {
   if (!isDisableableCategory(category)) return {};
   const url = unsubscribeUrl(userId, category);
   if (!url) return {};
-  return { 'List-Unsubscribe': `<${url}>` };
+  return {
+    'List-Unsubscribe': `<${url}>`,
+    'List-Unsubscribe-Post': 'List-Unsubscribe=One-Click',
+  };
 }
 
 // ── The preference blob ───────────────────────────────────────────────────────

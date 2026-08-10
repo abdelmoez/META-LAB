@@ -150,6 +150,22 @@ async function postMessageCore(access, req, res) {
   const event = { type: 'chat.message' };
   if (access.project.linkedMetaLabProjectId) event.metaLabProjectId = access.project.linkedMetaLabProjectId;
   emitToProjectMembers(access.project.id, event, { exclude: req.user.id });
+  // r2 — POSTING PROVES CAUGHT-UP. ScreenChatRead.lastReadAt was written by
+  // markReadCore alone, which the drawer calls only on OPEN. So a member who
+  // opened the chat once and then spent an hour actively conversing kept a
+  // stale marker: every reply from a teammate counted as "unread", and the
+  // digest sweep — which suppresses on exactly this read state — mailed them a
+  // summary of a conversation they were in the middle of having. You cannot
+  // write a message into a thread without having read it, so the send itself is
+  // an unambiguous read signal. Same upsert shape as markReadCore (the
+  // @@unique projectId_userId composite backs the where). Best-effort: the
+  // message is already committed and the client already awaits this response —
+  // a read-marker failure must never fail the post.
+  prisma.screenChatRead.upsert({
+    where: { projectId_userId: { projectId: access.project.id, userId: req.user.id } },
+    update: { lastReadAt: created.createdAt },
+    create: { projectId: access.project.id, userId: req.user.id, lastReadAt: created.createdAt },
+  }).catch(err => console.error('[chat] sender read-marker error:', err?.message || err));
   // 112.md §2 — accumulate email-digest pending rows for opted-in recipients
   // (active members + owner, matching the realtime audience). Strictly
   // best-effort and fire-and-forget: a digest failure must never fail a post.

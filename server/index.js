@@ -295,6 +295,17 @@ const inviteLimiter = rateLimit({
   legacyHeaders: false,
 });
 
+// ── Rate limiter for the public email endpoints (112 r2) — the unsubscribe
+// page is unauthenticated and does HMAC work per request, so it gets the same
+// bounded budget as the other public mounts (30 req / 15 min in prod). ────────
+const emailPublicLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: process.env.NODE_ENV === 'production' ? 30 : 1000,
+  message: { error: 'Too many requests, please try again later' },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
 // ── Rate limiter for institution autocomplete (prompt35) — typeahead fires often,
 // so a generous-but-bounded budget (120 req / 15 min in prod) per IP. ───────────
 const institutionLimiter = rateLimit({
@@ -498,7 +509,7 @@ app.use('/api/settings', settingsRouter);
 // MUST be registered before the bare '/api' importExport router below (which
 // applies requireAuth at router level and would 401 the unsubscribe link). The
 // signed token in the query string is the only credential.
-app.use('/api/email', emailPublicRouter);
+app.use('/api/email', emailPublicLimiter, emailPublicRouter);
 
 // ── Protected route mounting ───────────────────────────────────────────────────
 app.use('/api/profile',              profileRouter);

@@ -7,7 +7,12 @@ import { logAdminAction } from '../utils/audit.js';
 import { validateThemePatch, defaultThemeSettings } from '../utils/themeValidate.js';
 import { bustThemeCache } from '../middleware/spaTheme.js';
 import { hashPassword } from '../auth/password.js';
-import { isEmailConfigured, sendEmail, renderReplyEmail, renderPasswordResetEmail, emailStatus } from '../services/emailService.js';
+// sendTemplatedEmail (not sendEmail + render*) so the admin's EmailTemplate copy
+// override, the per-template disable switch and the recipient's opt-out actually
+// bind on these sends — see the SENDING GOES THROUGH note in emailService.js.
+import {
+  isEmailConfigured, sendTemplatedEmail, contactReplyVariables, passwordResetVariables, emailStatus,
+} from '../services/emailService.js';
 import { createResetToken } from '../services/passwordResetService.js';
 import { getVersion } from '../version.js';
 import { bustMaintenanceCache } from '../middleware/maintenance.js';
@@ -975,13 +980,18 @@ export async function resetUserPassword(req, res) {
     const emailConfigured = isEmailConfigured();
     let sent = false;
     if (emailConfigured) {
-      const { html, text } = renderPasswordResetEmail({
-        toName: target.name || '',
-        link,
-        expiresAt,
-        initiatedByOperator: true,
+      const result = await sendTemplatedEmail({
+        templateKey: 'password.reset',
+        variables: passwordResetVariables({
+          toName: target.name || '',
+          link,
+          expiresAt,
+          initiatedByOperator: true,
+        }),
+        to: target.email,
+        recipientUserId: target.id,
+        context: 'password_reset',
       });
-      const result = await sendEmail({ to: target.email, subject: 'Reset your PecanRev password', html, text, context: 'password_reset' });
       sent = result.sent === true;
       recordUsage({ type: sent ? USAGE.PASSWORD_RESET_EMAIL_SENT : USAGE.PASSWORD_RESET_EMAIL_FAILED, userId: target.id, meta: { byOperator: req.user.id } });
     }
@@ -1025,17 +1035,16 @@ export async function sendPasswordReset(req, res) {
     const emailConfigured = isEmailConfigured();
     let sent = false;
     if (emailConfigured) {
-      const { html, text } = renderPasswordResetEmail({
-        toName: target.name || '',
-        link,
-        expiresAt,
-        initiatedByOperator: true,
-      });
-      const result = await sendEmail({
+      const result = await sendTemplatedEmail({
+        templateKey: 'password.reset',
+        variables: passwordResetVariables({
+          toName: target.name || '',
+          link,
+          expiresAt,
+          initiatedByOperator: true,
+        }),
         to: target.email,
-        subject: 'Reset your PecanRev password',
-        html,
-        text,
+        recipientUserId: target.id,
         context: 'password_reset',
       });
       sent = result.sent === true;
@@ -2682,17 +2691,23 @@ export async function replyToMessage(req, res) {
     const staff = await prisma.user.findUnique({ where: { id: req.user.id }, select: { name: true, email: true } });
     const staffName = (staff?.name || '').trim();
 
-    const { html, text } = renderReplyEmail({
-      appName: 'PecanRev',
-      toName: msg.name || '',
-      bodyText: body,
-      originalSubject: msg.subject || '',
-      fromName: staffName,
+    // sendTemplatedEmail never throws — { sent:false, reason } when not configured
+    // / on failure. (sendEmail underneath still records the EMAIL_SENT/EMAIL_FAILED
+    // usage metric itself, prompt9.) `subject` is passed explicitly because the
+    // reply subject is per-message operator input, not template copy.
+    const result = await sendTemplatedEmail({
+      templateKey: 'contact.reply',
+      variables: contactReplyVariables({
+        appName: 'PecanRev',
+        toName: msg.name || '',
+        bodyText: body,
+        originalSubject: msg.subject || '',
+        fromName: staffName,
+      }),
+      to: msg.email,
+      subject: finalSubject,
+      context: 'contact_reply',
     });
-
-    // sendEmail never throws — { sent:false, reason } when not configured / on failure.
-    // (It also records the EMAIL_SENT/EMAIL_FAILED usage metric itself, prompt9.)
-    const result = await sendEmail({ to: msg.email, subject: finalSubject, html, text, context: 'contact_reply' });
     const sent = result.sent === true;
 
     const reply = await prisma.contactReply.create({
@@ -2754,8 +2769,13 @@ export async function composeEmail(req, res) {
       data: { email, name: recipientName || null, subject: finalSubject, message: body, origin: 'staff', read: true, replied: true, repliedAt: new Date() },
     });
 
-    const { html, text } = renderReplyEmail({ appName: 'PecanRev', toName: recipientName, bodyText: body, fromName: staffName });
-    const result = await sendEmail({ to: email, subject: finalSubject, html, text, context: 'staff_compose' });
+    const result = await sendTemplatedEmail({
+      templateKey: 'contact.reply',
+      variables: contactReplyVariables({ appName: 'PecanRev', toName: recipientName, bodyText: body, fromName: staffName }),
+      to: email,
+      subject: finalSubject, // operator-composed, not template copy
+      context: 'staff_compose',
+    });
     const sent = result.sent === true;
 
     const reply = await prisma.contactReply.create({

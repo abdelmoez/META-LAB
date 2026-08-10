@@ -1,13 +1,22 @@
 /**
- * emailPublic.js — the unauthenticated email endpoints. Currently one:
+ * emailPublic.js — the unauthenticated email endpoints:
  *
- *   GET /api/email/unsubscribe?token=…
+ *   GET  /api/email/unsubscribe?token=…   safe: renders a confirmation form
+ *   POST /api/email/unsubscribe?token=…   flips the preference
  *
- * This is followed from a mail client, so it has to work with no session, no
- * JavaScript, and no SPA route — a redirect into the React app would break for
- * anyone whose client opens links in a stripped-down webview, and would make
- * the outcome depend on a bundle load. It therefore renders its own tiny,
- * self-contained HTML page and nothing else.
+ * These are followed from a mail client, so they have to work with no session,
+ * no JavaScript, and no SPA route — a redirect into the React app would break
+ * for anyone whose client opens links in a stripped-down webview, and would
+ * make the outcome depend on a bundle load. They therefore render their own
+ * tiny, self-contained HTML pages and nothing else.
+ *
+ * GET does NOT change state (r2). The link is advertised in List-Unsubscribe
+ * headers, and mail-security scanners (SafeLinks, Proofpoint…) prefetch every
+ * GET in a message — a state-changing GET would let a robot silently
+ * unsubscribe users. The GET renders a one-button POST form; RFC 8058
+ * one-click clients POST straight to the same URL (List-Unsubscribe-Post),
+ * which lands on the same handler. The token stays in the query string for
+ * both verbs, so no body parser is needed.
  *
  * The signed token is the only credential (see services/emailUnsubscribe.js).
  * Only 'optional'-category templates can be switched off; a token naming a
@@ -22,8 +31,9 @@ import { verifyUnsubscribeToken, setEmailPreference } from '../services/emailUns
 
 const router = express.Router();
 
-/** Minimal standalone confirmation page — no SPA, no external assets, no JS. */
-function page(res, status, title, message) {
+/** Minimal standalone confirmation page — no SPA, no external assets, no JS.
+ *  `formHtml` is trusted server-built markup (never user input). */
+function page(res, status, title, message, formHtml = '') {
   res.status(status).type('html').send(`<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -36,22 +46,19 @@ function page(res, status, title, message) {
   <div style="max-width:520px;margin:0 auto;background:#ffffff;border:1px solid #e5e7eb;border-radius:10px;padding:28px 32px;">
     <div style="font-size:18px;font-weight:700;letter-spacing:0.04em;color:#111827;margin-bottom:18px;">PecanRev</div>
     <h1 style="font-size:18px;font-weight:600;color:#111827;margin:0 0 12px;">${escapeHtml(title)}</h1>
-    <p style="font-size:14px;line-height:1.7;color:#374151;margin:0;">${escapeHtml(message)}</p>
+    <p style="font-size:14px;line-height:1.7;color:#374151;margin:0;">${escapeHtml(message)}</p>${formHtml}
   </div>
 </body>
 </html>`);
 }
 
-/**
- * handleUnsubscribe — exported for direct unit testing (no supertest, no live
- * server). Mounted below as the route handler.
- */
-export async function handleUnsubscribe(req, res) {
+/** Shared token+category gate for both verbs. Returns { template } or renders the error page. */
+function gateUnsubscribe(req, res) {
   const token = typeof req.query?.token === 'string' ? req.query.token : '';
   const verified = verifyUnsubscribeToken(token);
 
   if (!verified.ok) {
-    return page(
+    page(
       res,
       400,
       verified.error === 'expired' ? 'This link has expired' : 'This link is not valid',
@@ -59,19 +66,51 @@ export async function handleUnsubscribe(req, res) {
         ? 'Unsubscribe links stop working after 30 days. You can change your email preferences from your account settings instead.'
         : 'We could not read that unsubscribe link. Please use the link from the most recent email, or change your email preferences from your account settings.',
     );
+    return null;
   }
 
   const { userId, category } = verified.payload;
   const template = getEmailTemplate(category);
 
   if (!template || template.category !== 'optional') {
-    return page(
+    page(
       res,
       400,
       'This email cannot be turned off',
       'That link refers to a transactional email — a security notice or an action you asked for, such as a password reset or an invitation. Those are part of running your account and cannot be unsubscribed from.',
     );
+    return null;
   }
+  return { userId, category, template };
+}
+
+/**
+ * handleUnsubscribePage — the safe GET: confirm before changing anything. The
+ * form posts back to the same URL (empty action keeps the ?token= query).
+ */
+export async function handleUnsubscribePage(req, res) {
+  const gate = gateUnsubscribe(req, res);
+  if (!gate) return;
+  return page(
+    res,
+    200,
+    'Unsubscribe from these emails?',
+    `This will stop: ${gate.template.description} You will still receive account and security emails, which are required to run your account.`,
+    `
+    <form method="post" action="" style="margin:18px 0 0;">
+      <button type="submit" style="padding:10px 22px;background:#111827;border:none;border-radius:7px;color:#ffffff;font-size:14px;font-weight:600;cursor:pointer;">Unsubscribe</button>
+    </form>`,
+  );
+}
+
+/**
+ * handleUnsubscribe — the state-changing verb (POST, and RFC 8058 one-click
+ * POSTs). Exported for direct unit testing (no supertest, no live server).
+ */
+export async function handleUnsubscribe(req, res) {
+  const gate = gateUnsubscribe(req, res);
+  if (!gate) return;
+  const { userId, category, template } = gate;
 
   const result = await setEmailPreference(userId, category, false);
   if (!result.ok) {
@@ -91,6 +130,7 @@ export async function handleUnsubscribe(req, res) {
   );
 }
 
-router.get('/unsubscribe', handleUnsubscribe);
+router.get('/unsubscribe', handleUnsubscribePage);
+router.post('/unsubscribe', handleUnsubscribe);
 
 export default router;
