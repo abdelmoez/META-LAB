@@ -94,12 +94,24 @@ public payload shape.
 1. Mods have `view_research_diagnostics` at the API but no `research` sidebar entry; granting
    it needs getConsole + write-control hiding in the tabs.
 2. Force-rerun of duplicate detection (§9) is not implemented — requeue revives failed/stuck
-   jobs only; a deliberate rerun needs its own confirmation flow.
+   jobs only; a deliberate rerun needs its own confirmation flow. Requeue is now
+   cancellation-safe: a job carrying `cancelRequested` is refused with 409
+   `JOB_CANCEL_REQUESTED` and the writer no longer clears the flag, so Ops cannot override a
+   researcher's cancel. Resuming a cancelled run therefore has no path today — it is exactly
+   the missing force-rerun flow above.
 3. No shortcut conflict detector (§16): the router inventory covers the four routed bindings;
    per-user screening keys and unrouted Escape/FocusMode handlers are documented, not modeled.
 4. `analysis.allowCompatibilityOverride` / `requireOverrideRationale` are client-enforced only
    (the override write is a blob mutation; a determined API caller bypasses policy).
-5. ClientErrorReport has no retention/pruning job; the beacon is unauthenticated (userId null).
+5. ClientErrorReport still has no time-based retention job, but the row cap is now EVICTIVE
+   rather than terminal: at `CLIENT_ERROR_MAX_ROWS` the oldest-`lastSeenAt` rows are deleted
+   to make room, so a full table degrades to a recent-failures window instead of permanently
+   dropping every new fingerprint. The beacon stays unauthenticated (userId null) by design —
+   a crashed shell has no session to offer — and an unauthenticated report may only evict rows
+   that are themselves unauthenticated, so anonymous traffic cannot displace a crash captured
+   from a signed-in researcher. The fingerprint excludes the per-report `correlationId` (it is
+   kept in `context` as an exemplar), so repeats genuinely collapse onto one row; rows written
+   before this change carry poisoned single-use fingerprints and simply age out via eviction.
 6. §28 legacy-classification counts have no server aggregate; the card says so.
 7. Flag flips still propagate by reload semantics (5s public-settings cache; no SSE broadcast
    channel exists) — documented, not claimed otherwise.

@@ -705,9 +705,18 @@ export function buildScreeningAuditQuery(query = {}) {
   if (str(query.entityType)) where.entityType = str(query.entityType);
   if (str(query.actorId)) where.actorId = str(query.actorId);
 
-  const parseDate = (v) => { const d = new Date(String(v)); return Number.isNaN(d.getTime()) ? null : d; };
+  // 109 r2 review fix — a date-only `to` covers the WHOLE selected day. The filter
+  // bar posts `<input type="date">` values, and `lte: 2026-08-09T00:00:00Z` matched
+  // only rows at exact UTC midnight, so From = To = today returned nothing. `from`
+  // stays at midnight: an inclusive lower bound on a date-only value is correct.
+  const dateOnly = /^\d{4}-\d{2}-\d{2}$/;
+  const parseDate = (v, endOfDay = false) => {
+    const raw = String(v);
+    const d = new Date(endOfDay && dateOnly.test(raw) ? `${raw}T23:59:59.999Z` : raw);
+    return Number.isNaN(d.getTime()) ? null : d;
+  };
   const from = str(query.from) ? parseDate(query.from) : null;
-  const to = str(query.to) ? parseDate(query.to) : null;
+  const to = str(query.to) ? parseDate(query.to, true) : null;
   if (from || to) where.createdAt = { ...(from ? { gte: from } : {}), ...(to ? { lte: to } : {}) };
 
   return { where, page, limit, skip };

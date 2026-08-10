@@ -44,10 +44,22 @@ export function parseJobPage(query = {}) {
   return { page, limit, skip: (page - 1) * limit };
 }
 
-/** Parse an ISO-ish date filter; invalid input is ignored rather than 400-ing. */
-function parseDate(value) {
+/** `<input type="date">` emits this; a bare `new Date()` reads it as UTC midnight. */
+export const DATE_ONLY_RE = /^\d{4}-\d{2}-\d{2}$/;
+
+/**
+ * Parse an ISO-ish date filter; invalid input is ignored rather than 400-ing.
+ *
+ * 109 r2 review fix — a date-only `to` bound is widened to the END of that day.
+ * Every Ops filter bar posts `YYYY-MM-DD`, and `lte: 2026-08-09T00:00:00Z` excluded
+ * the whole selected end day (the same widening AdminConsole.jsx already did
+ * client-side for the platform audit log). `from` stays at midnight — an inclusive
+ * `gte` on a date-only lower bound is already correct.
+ */
+export function parseDate(value, { endOfDay = false } = {}) {
   if (!value) return null;
-  const d = new Date(String(value));
+  const raw = String(value);
+  const d = new Date(endOfDay && DATE_ONLY_RE.test(raw) ? `${raw}T23:59:59.999Z` : raw);
   return Number.isNaN(d.getTime()) ? null : d;
 }
 
@@ -159,7 +171,7 @@ export async function listDuplicateJobs(req, res) {
     if (status && DUP_JOB_STATUSES.includes(status)) where.status = status;
     if (req.query.projectId) where.projectId = String(req.query.projectId);
     const from = parseDate(req.query.from);
-    const to = parseDate(req.query.to);
+    const to = parseDate(req.query.to, { endOfDay: true });
     if (from || to) where.createdAt = { ...(from ? { gte: from } : {}), ...(to ? { lte: to } : {}) };
 
     const [total, jobs] = await Promise.all([
@@ -288,11 +300,24 @@ export async function getDuplicateJob(req, res) {
  *     mutating a finished row would rewrite history.
  *   - retry budget spent → refused. The give-up decision belongs to the shared
  *     jobRetry policy; Ops must not hand a poison pill an unlimited budget.
+ *   - a PENDING USER CANCELLATION → refused (109 r2 review fix). The writer used to
+ *     clear `cancelRequested` alongside REQUEUE_PATCH, so requeueing a job a
+ *     researcher had just asked to stop silently revoked that request and forced the
+ *     run to continue. §9 says Ops never erases user work; resuming a cancelled run
+ *     is the deliberate "start a new run" flow, not a side effect of a retry button.
  */
 export function canRequeueDuplicateJob(job, { now = Date.now(), maxAttempts = DEFAULT_MAX_JOB_ATTEMPTS, enabled = true } = {}) {
   if (!job) return { ok: false, status: 404, error: 'Job not found' };
   if (!enabled) {
     return { ok: false, status: 409, error: 'Duplicate detection is disabled in META·SIFT settings. Re-enable it before requeueing jobs.' };
+  }
+  if (job.cancelRequested) {
+    return {
+      ok: false,
+      status: 409,
+      code: 'JOB_CANCEL_REQUESTED',
+      error: 'A user asked for this job to be cancelled. Requeueing would override that request — start a new duplicate-detection run instead.',
+    };
   }
   if (job.status !== 'failed' && job.status !== 'processing') {
     return { ok: false, status: 400, error: 'Only failed or stuck jobs can be requeued' };
@@ -321,16 +346,21 @@ export async function requeueDuplicateJob(req, res) {
     const job = await prisma.screenDuplicateJob.findUnique({ where: { id: jobId } });
     const settings = await getMetaSiftSettings().catch(() => ({}));
     const verdict = canRequeueDuplicateJob(job, { enabled: settings.allowDuplicateDetection !== false });
-    if (!verdict.ok) return res.status(verdict.status).json({ error: verdict.error });
+    if (!verdict.ok) {
+      return res.status(verdict.status).json({ error: verdict.error, ...(verdict.code ? { code: verdict.code } : {}) });
+    }
 
     const reason = typeof req.body?.reason === 'string' ? req.body.reason.trim().slice(0, 500) : '';
 
     // Conditional on the status we just read: if the worker claimed or finished the
     // job in between, updateMany matches nothing and we report the race instead of
     // clobbering a live run (same CAS discipline as keywordOps / mutateProjectBlob).
+    // `cancelRequested` is NOT written: canRequeueDuplicateJob already refused a job
+    // carrying one, and the CAS below re-asserts the flag was still clear, so a
+    // cancellation racing this requeue loses the write rather than being erased.
     const upd = await prisma.screenDuplicateJob.updateMany({
-      where: { id: jobId, status: job.status },
-      data: { ...REQUEUE_PATCH, cancelRequested: false },
+      where: { id: jobId, status: job.status, cancelRequested: false },
+      data: { ...REQUEUE_PATCH },
     });
     if (upd.count === 0) return res.status(409).json({ error: 'The job changed state while you were requeueing it. Reload and try again.' });
 
@@ -358,8 +388,8 @@ export const CLIENT_ERROR_LIMITS = Object.freeze({ kind: 80, message: 500, conte
 /**
  * Hard cap on DISTINCT rows. Repeats collapse onto one row for free, but a client
  * spraying unique messages (a template literal with a timestamp in it, say) would
- * otherwise grow the table without bound. Over the cap, new fingerprints are
- * dropped and existing ones keep counting — capture degrades, it never wedges.
+ * otherwise grow the table without bound. At the cap the OLDEST-`lastSeenAt` rows
+ * are evicted to make room — capture degrades, it never wedges.
  */
 export const CLIENT_ERROR_MAX_ROWS = 5000;
 
@@ -373,6 +403,14 @@ const oneLine = (v, n) => (v == null ? '' : String(v).replace(/[\r\n\t]+/g, ' ')
  * engine, release, browser, correlation id). Stacks, payloads and query strings are
  * never read from the body — §47 says admins get enough context to debug, not a
  * copy of the user's data.
+ *
+ * 109 r2 review fix — THE FINGERPRINT EXCLUDES `cid`. Every producer mints a fresh
+ * random correlation id per beacon (frontend/components/errorReporting.js,
+ * monitoring/opsErrorReporter.js), so folding it into the hash made every report a
+ * distinct fingerprint: the increment path was dead, `count` was permanently 1, and
+ * the table filled with one row per crash. The id is still STORED in `context` as a
+ * single exemplar (the first occurrence's id — enough to correlate one instance
+ * against server logs), it just does not participate in identity.
  */
 export function sanitizeClientErrorReport(body) {
   const e = body && typeof body === 'object' && !Array.isArray(body) ? body : {};
@@ -384,10 +422,13 @@ export function sanitizeClientErrorReport(body) {
   push('engine', e.engine, 60);
   push('release', e.release, 60);
   push('browser', e.browser, 120);
+  // Everything hashed is stable across repeats of the same failure; `cid` is not,
+  // so it is appended to the stored context AFTER the identity string is taken.
+  const identity = parts.join(' ').slice(0, CLIENT_ERROR_LIMITS.context);
   push('cid', e.correlationId, 64);
   const context = parts.join(' ').slice(0, CLIENT_ERROR_LIMITS.context);
   if (!kind && !message) return null; // nothing identifiable → not worth a row
-  const fingerprint = crypto.createHash('sha1').update(`${kind}|${message}|${context}`).digest('hex');
+  const fingerprint = crypto.createHash('sha1').update(`${kind}|${message}|${identity}`).digest('hex');
   return { fingerprint, kind, message, context };
 }
 
@@ -395,6 +436,19 @@ export function sanitizeClientErrorReport(body) {
  * Persist (or increment) one client-error report. Fire-and-forget from the beacon
  * route — it must never delay or fail the 204, and a DB outage must not turn a
  * client crash into a second error.
+ *
+ * 109 r2 review fix — THE CAP IS EVICTIVE, NOT TERMINAL. It previously returned
+ * 'capped' for every new fingerprint once the table was full, and nothing anywhere
+ * in server/ ever pruned the table, so the first 5,000 distinct rows permanently
+ * blinded Ops crash capture. POST /api/client-errors is unauthenticated by design
+ * (a crashed shell has no session to offer), which made that a one-shot denial of
+ * the whole §47 monitoring surface. Now the oldest-`lastSeenAt` rows are deleted to
+ * make room, so the feed always reflects RECENT failures.
+ *
+ * Anonymity is the tightening the unauthenticated path gets (no auth is added, per
+ * §6): an unauthenticated report may only evict rows that are themselves
+ * unauthenticated. A sprayer can therefore churn its own share of the table but can
+ * never displace a crash captured from a signed-in researcher.
  */
 export async function recordClientErrorReport(body, { userId = null } = {}) {
   const row = sanitizeClientErrorReport(body);
@@ -406,12 +460,33 @@ export async function recordClientErrorReport(body, { userId = null } = {}) {
     });
     if (upd.count > 0) return 'incremented';
     const total = await prisma.clientErrorReport.count();
-    if (total >= CLIENT_ERROR_MAX_ROWS) return 'capped';
+    if (total >= CLIENT_ERROR_MAX_ROWS) {
+      const evicted = await evictOldestClientErrors(total - CLIENT_ERROR_MAX_ROWS + 1, { anonymousOnly: !userId });
+      // Nothing evictable (an anonymous report against a table of authenticated
+      // rows): drop this one rather than displacing a real user's crash.
+      if (!evicted) return 'capped';
+    }
     await prisma.clientErrorReport.create({ data: { ...row, userId: userId || null } });
     return 'created';
   } catch {
     return null; // telemetry is best-effort by construction
   }
+}
+
+/**
+ * Delete the `n` least-recently-seen rows, oldest first. Returns how many went.
+ * Two statements rather than a `delete where orderBy` because neither SQLite nor
+ * Prisma's portable `deleteMany` supports ordering a bulk delete.
+ */
+async function evictOldestClientErrors(n, { anonymousOnly = false } = {}) {
+  const take = Math.max(1, Math.min(50, Number(n) || 1));
+  const where = anonymousOnly ? { userId: null } : {};
+  const victims = await prisma.clientErrorReport.findMany({
+    where, orderBy: { lastSeenAt: 'asc' }, take, select: { id: true },
+  });
+  if (!victims.length) return 0;
+  const del = await prisma.clientErrorReport.deleteMany({ where: { id: { in: victims.map((v) => v.id) } } });
+  return del.count;
 }
 
 /** GET /api/admin/research/client-errors — paginated, filterable feed. */
@@ -422,7 +497,7 @@ export async function listClientErrors(req, res) {
     const kind = String(req.query.kind || '').trim();
     if (kind) where.kind = kind;
     const from = parseDate(req.query.from);
-    const to = parseDate(req.query.to);
+    const to = parseDate(req.query.to, { endOfDay: true });
     if (from || to) where.lastSeenAt = { ...(from ? { gte: from } : {}), ...(to ? { lte: to } : {}) };
 
     const [total, rows, distinct] = await Promise.all([

@@ -351,12 +351,35 @@ export function fmtValue(v) {
   return String(v);
 }
 
-/** Controlled text input that keeps its own draft until blur/Enter (avoids per-keystroke saves). */
+/**
+ * Controlled text input that keeps its own draft until blur/Enter (avoids
+ * per-keystroke saves).
+ *
+ * 109 r2 review fix — COMMIT ONLY WHAT THE ADMIN ACTUALLY TYPED. `draft` is seeded
+ * once at mount, which for a row that mounted before the settings GET resolved is
+ * the CATALOGUE DEFAULT, and `commit` fired unconditionally on blur. Tabbing through
+ * (or clicking into and out of) a NUMBER row therefore wrote the mount-time default
+ * over a stored value with zero keystrokes — silently, since `safe` rows have no
+ * confirm modal, and with an audit row attributing it to the admin. The render path
+ * always used the live `value`, so nothing on screen revealed it.
+ *
+ * Two guards, both needed: `dirty` means "the admin edited this field", and the
+ * value comparison means a draft edited back to the stored value is not a write
+ * either. `shown` keeps following `value` while clean, so a save landing elsewhere
+ * still refreshes the field.
+ */
+export const draftIsDirty = (dirty, draft, value) => dirty === true && draft !== String(value ?? '');
+
 export function DraftInput({ value, onCommit, placeholder, width = 150, testId, type = 'text', min, max, step, disabled = false }) {
   const [draft, setDraft] = useState(String(value ?? ''));
   const [dirty, setDirty] = useState(false);
   const shown = dirty ? draft : String(value ?? '');
-  const commit = () => { setDirty(false); onCommit(draft); };
+  const commit = () => {
+    if (!dirty) return;
+    setDirty(false);
+    if (!draftIsDirty(true, draft, value)) return;
+    onCommit(draft);
+  };
   return (
     <input
       data-testid={testId}

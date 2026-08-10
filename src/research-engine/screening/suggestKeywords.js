@@ -210,6 +210,28 @@ export function effectiveStopList({ stopListAdditions, stopListRemovals } = {}) 
   return next;
 }
 
+const EMPTY_STOP_SET = Object.freeze(new Set());
+
+/**
+ * 109 r2 review fix — the OPERATOR-ADDED half of the stop list, as its own set.
+ *
+ * `allowAmbiguousSingleWords` relaxes the blocklist for single-word concepts, and
+ * `effectiveStopList` merges the shipped set with `stopListAdditions` into one set,
+ * so turning the ambiguity knob on re-admitted every term an admin had explicitly
+ * asked to suppress — and since a stop-list addition is almost always a single word,
+ * that made `stopListAdditions` a no-op for exactly its own terms. It also
+ * disagreed with the synonym route, which kept blocking them (`toTerms` → isGeneric
+ * with no relaxation). An explicit admin block now ALWAYS wins: the relaxation is
+ * scoped to the shipped GENERIC_STANDALONE set, `stopListRemovals` still re-allows a
+ * shipped term outright, and both routes agree again.
+ */
+export function operatorStopList({ stopListAdditions } = {}) {
+  // Additions win over removals here exactly as they do in effectiveStopList (which
+  // applies `remove` first, then `add`), so the two never disagree about one term.
+  const add = asList(stopListAdditions).map(normalizeKeywordKey).filter(Boolean);
+  return add.length ? new Set(add) : EMPTY_STOP_SET;
+}
+
 /** A concept is blocked when the WHOLE concept is a generic standalone word. */
 function isGeneric(concept, stopList = GENERIC_STANDALONE) {
   return stopList.has(normalizeKeywordKey(concept));
@@ -260,9 +282,12 @@ function sideSuggestions(text, opts) {
   // wording): a multi-word phrase was never blocked, and a stop-listed word inside
   // one still is not. `preferPhrases` off keeps the bare concept next to the
   // qualified one instead of dropping it.
+  const hardBlocked = opts.operatorStopList || EMPTY_STOP_SET;
   const raw = extractConcepts(denegateText(text)).filter((c) => {
     if (!isGeneric(c, stopList)) return true;
     if (!opts.allowAmbiguousSingleWords) return false;
+    // An admin's stopListAdditions entry is never relaxed — see operatorStopList.
+    if (hardBlocked.has(normalizeKeywordKey(c))) return false;
     return normalizeKeywordKey(c).split(' ').filter(Boolean).length === 1;
   });
   const concepts = opts.preferPhrases ? dropSubsumed(raw) : raw;
@@ -295,6 +320,7 @@ function parseSnapshot(picoSnapshot) {
 export function suggestCriteriaKeywords(picoSnapshot, options) {
   const opts = resolveSuggestionOptions(options);
   opts.stopList = effectiveStopList(opts);
+  opts.operatorStopList = operatorStopList(opts);
   const pico = parseSnapshot(picoSnapshot);
   const inc = sideSuggestions(typeof pico.incl === 'string' ? pico.incl : '', opts);
   const exc = sideSuggestions(typeof pico.excl === 'string' ? pico.excl : '', opts);

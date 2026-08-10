@@ -77,7 +77,12 @@ export function keywordAuditRows(ops, results, { via = 'user' } = {}) {
     if (!opAction) continue;
 
     const term = trim(op.term);
-    const details = { op: opAction, term, list: op.list, via: source };
+    // 109 r2 review fix — `via` is CLIENT-CLAIMED and recorded as such. It arrives on
+    // the request body and there is no server-side proof that an undo really replayed
+    // history, so the ledger labels it honestly instead of implying provenance it
+    // cannot verify. `via` is kept alongside it so existing readers (and the §23
+    // audit filter) are unchanged; both always carry the same value.
+    const details = { op: opAction, term, list: op.list, via: source, claimedVia: source };
     if (op.type === 'move') details.toList = op.toList || (op.list === 'include' ? 'exclude' : 'include');
     if (op.origin !== undefined) details.origin = op.origin;
     if (op.reject !== undefined) details.reject = op.reject;

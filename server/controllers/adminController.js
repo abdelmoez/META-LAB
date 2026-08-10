@@ -1574,7 +1574,15 @@ export async function updateAdminSettings(req, res) {
     // marketing paragraph never bloats an audit row.
     const changedFields = [];
     for (const key of updated) {
-      const b = before[key]; const a = body[key];
+      // 109 r2 review fix — diff MERGED against MERGED. `body.featureFlags` was
+      // replaced above with coerceFlagPatch().next (catalogue defaults merged over
+      // the stored row), but `before` is the RAW stored JSON, so on any install
+      // upgraded from a release that predates a flag, the generic loop reported
+      // `undefined → true` for keys no admin touched — contradicting the
+      // UPDATE_FEATURE_FLAGS entry from the same request, which correctly diffs
+      // merged `flagsBefore` and says nothing changed.
+      const b = key === 'featureFlags' && flagsBefore ? flagsBefore : before[key];
+      const a = body[key];
       if (b && a && typeof b === 'object' && typeof a === 'object' && !Array.isArray(a)) {
         for (const f of new Set([...Object.keys(b), ...Object.keys(a)])) {
           const bv = b[f]; const av = a[f];

@@ -223,6 +223,16 @@ describe('Interaction tab', () => {
     expect(html).toContain('No live conflict detector yet');
   });
 
+  // 109 r2 review fix — the shortcut map said "off by default" while the catalogue
+  // ships `interaction.ctrlYRedoAlias` default:true, so the console asserted the
+  // opposite of what it configures. The label is now derived from the catalogue.
+  it('states the Ctrl+Y redo default the catalogue actually declares', () => {
+    const entry = OPS_SETTINGS.find((e) => e.key === 'interaction.ctrlYRedoAlias');
+    expect(entry.default).toBe(true);
+    expect(html).toContain('Redo (Windows/Linux alias, on by default)');
+    expect(html).not.toContain('off by default');
+  });
+
   it('reports honestly that undo/redo has no telemetry', () => {
     expect(html).toContain('data-testid="rg-history-diagnostics"');
     expect(html).toContain('no telemetry');

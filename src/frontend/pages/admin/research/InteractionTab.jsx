@@ -22,6 +22,16 @@ const NAV_ENTRIES = OPS_SETTINGS.filter((e) => e.category === 'screening');
 const HISTORY_ENTRIES = OPS_SETTINGS.filter((e) => e.category === 'interaction');
 
 /**
+ * 109 r2 review fix — READ THE DEFAULT FROM THE CATALOGUE. The Ctrl+Y row was
+ * hardcoded "off by default" while `interaction.ctrlYRedoAlias` ships `default:
+ * true` (the in-round correction that made the control plane reproduce shipped
+ * v4.13.0 behaviour), so the Ops console asserted the opposite of what it
+ * configures. Deriving it means the table cannot drift from the declaration again.
+ */
+const CTRL_Y_ENTRY = OPS_SETTINGS.find((e) => e.key === 'interaction.ctrlYRedoAlias');
+const CTRL_Y_DEFAULT_LABEL = CTRL_Y_ENTRY && CTRL_Y_ENTRY.default === false ? 'off by default' : 'on by default';
+
+/**
  * 109.md §15 — the shipped chords, as documented by the features that own them.
  * This is a DOCUMENTED map, not a live registry read: the shortcut router stores
  * only {id, tier, match, when, run}, so a real inventory (chord string, scope,
@@ -35,7 +45,7 @@ const SHORTCUTS = [
   { chord: 'Ctrl / Cmd + E', action: 'Add the selected abstract text as an EXCLUSION keyword', scope: 'Screening — active abstract', flag: 'abstractKeywordShortcuts' },
   { chord: 'Ctrl / Cmd + Z', action: 'Undo the last recorded action on this page', scope: 'Project — page-scoped history', flag: 'projectUndoRedo' },
   { chord: 'Ctrl / Cmd + Shift + Z', action: 'Redo', scope: 'Project — page-scoped history', flag: 'projectUndoRedo' },
-  { chord: 'Ctrl + Y', action: 'Redo (Windows/Linux alias, off by default)', scope: 'Project — page-scoped history', flag: 'projectUndoRedo' },
+  { chord: 'Ctrl + Y', action: `Redo (Windows/Linux alias, ${CTRL_Y_DEFAULT_LABEL})`, scope: 'Project — page-scoped history', flag: 'projectUndoRedo' },
   { chord: 'Arrow keys', action: 'Move between citations in the screening list', scope: 'Screening — record list', flag: null },
 ];
 

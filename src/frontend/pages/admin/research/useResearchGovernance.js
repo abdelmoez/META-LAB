@@ -23,6 +23,16 @@ import {
 /** Catalogue defaults, used until the GET answers (and if it never does). */
 const CATALOG_DEFAULTS = defaultsForDomain(RESEARCH_GOVERNANCE_KEY);
 
+/**
+ * This entry's row in a writer `rejected:[{key,error}]` list, if it has one. The
+ * server may key a rejection by catalogue key or by stored path, so both are matched
+ * (same rule on the success and the 400 path — exported for the unit test).
+ */
+export function rejectedFor(rejected, entry) {
+  if (!Array.isArray(rejected) || !entry) return null;
+  return rejected.find((r) => r && typeof r.error === 'string' && (r.key === entry.key || r.key === entry.path)) || null;
+}
+
 export function useResearchGovernance() {
   const [settings, setSettings] = useState(null);   // null = not loaded yet
   const [defaults, setDefaults] = useState(CATALOG_DEFAULTS);
@@ -77,13 +87,20 @@ export function useResearchGovernance() {
       if (!alive.current) return true;
       setSettings(mergeDomainDefaults(RESEARCH_GOVERNANCE_KEY, res?.settings));
       if (res?.defaults) setDefaults({ ...CATALOG_DEFAULTS, ...res.defaults });
-      const rejected = Array.isArray(res?.rejected) ? res.rejected : [];
-      const mine = rejected.find((r) => r.key === entry.key || r.key === entry.path);
+      const mine = rejectedFor(res?.rejected, entry);
       if (mine) { setError(`${entry.label}: ${mine.error}`); return false; }
       setLastSaved(entry.key);
       return true;
     } catch (e) {
-      if (alive.current) setError(e?.message || 'Save failed.');
+      // 109 r2 review fix — SURFACE THE WRITER'S PER-SETTING REASON. saveEntry sends
+      // exactly one catalogue key, so a coercion failure means `rejected.length > 0`
+      // AND `changed.length === 0`, which the server answers with 400 — adminApi
+      // throws and the success-path `rejected` check above can never run. The admin
+      // saw only "No valid settings provided" while the catalogue's real message
+      // ("Expected one of: …", "Expected a number") sat unread in the error body,
+      // which adminApiClient's req() already attaches as `err.body`.
+      const mine = rejectedFor(e?.body?.rejected, entry);
+      if (alive.current) setError(mine ? `${entry.label}: ${mine.error}` : (e?.message || 'Save failed.'));
       return false;
     } finally {
       if (alive.current) setSavingKey('');
