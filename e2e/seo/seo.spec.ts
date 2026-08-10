@@ -271,6 +271,24 @@ anonTest.describe('SEO — server crawler semantics (Express only)', () => {
     expect(res.status(), 'unknown paths must not answer 200 with a "Page not found" body').toBe(404);
   });
 
+  anonTest('@smoke an unknown child of an indexable prefix is a real 404 too', async () => {
+    anonTest.skip(!server, skipReason);
+    // /features and /resources are the only two subtrees sitemap.xml invites crawlers
+    // into, and neither has a parameterised route. Before the registry gate, every
+    // /features/<anything> answered 200 with the <NotFound/> body and no
+    // X-Robots-Tag — an unbounded indexable URL space with duplicate shell metadata.
+    for (const path of ['/features/does-not-exist', '/resources/does-not-exist',
+      '/features/screening/does-not-exist']) {
+      const res = await server!.get(path);
+      expect(res.status(), `${path} must be a real 404, not a soft one`).toBe(404);
+      expect(res.headers()['x-robots-tag'] || '', `${path} noindex`).toContain('noindex');
+    }
+    // …while the real children are untouched.
+    for (const path of ['/features/screening', '/resources/prisma-2020-explained']) {
+      expect((await server!.get(path)).status(), `${path} must still be served`).toBe(200);
+    }
+  });
+
   anonTest('/privacy 301s to /terms#privacy', async () => {
     anonTest.skip(!server, skipReason);
     const res = await server!.get('/privacy');
@@ -326,7 +344,9 @@ anonTest.describe('SEO — server crawler semantics (Express only)', () => {
     const html = await (await server!.get('/features/screening')).text();
     expect(html, 'prerendered <title>').toMatch(/<title>[^<]{5,}<\/title>/);
     expect(html, 'prerendered canonical').toContain(`${SITE_ORIGIN}/features/screening`);
-    expect(html, 'prerendered <h1>').toMatch(/<h1[\s>]/);
+    // EXACTLY one h1, matching the build-time guard in scripts/prerender-public.mjs.
+    // Presence-only would pass a page that declares two top-level subjects.
+    expect((html.match(/<h1[\s>]/gi) || []).length, 'prerendered <h1> count').toBe(1);
   });
 
   anonTest('the internal prerender directory is not a public URL space', async () => {

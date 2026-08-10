@@ -48,9 +48,17 @@ Three guards make the system self-defending rather than self-documenting:
 1. **CSP inline-script byte-identity** — a prerendered page whose inline scripts differ
    from `dist/index.html` by one byte would be blocked by `script-src` at runtime and
    flash the wrong theme. The prerenderer compares them and exits nonzero.
-2. **One `<h1>` per page** — checked at build time, not left to review.
+2. **Exactly one `<h1>` per page** — counted at build time, not left to review. (It
+   asserted only *presence* until review caught it; a page emitting two h1s shipped
+   green. `e2e/seo/seo.spec.ts` now counts the served document too.)
 3. **`classifyRequest` is pure** — the entire 404/301/noindex decision is a function
    over a path, unit-tested across a full matrix, with no Express objects in it.
+
+A fourth guard was added after review: `KNOWN_SPA_PREFIXES` rules carry
+`registryGated`, and `tests/unit/seo/publicPagesRegistry.test.js` asserts a prefix is
+gated **exactly when** it has no parameterised child in `src/App.jsx`. `/features` and
+`/resources` have none, so an unknown child (`/features/bogus`) is a real 404 rather
+than a 200 shell — see §5.10.
 
 ---
 
@@ -82,13 +90,13 @@ Three guards make the system self-defending rather than self-documenting:
 
 | Check | Command | Result |
 |---|---|---|
-| Unit suites | `npm run test:ci` | **473 files / 8308 tests green** (incl. 9 suites under `tests/unit/seo/`) |
+| Unit suites | `npm run test:ci` | **474 files / 8351 tests green** (incl. 10 suites under `tests/unit/seo/`) |
 | Lint | `npm run lint` | **clean** |
-| Build + prerender | `npm run build` | **17/17** prerendered; CSP byte-identity guard passed; one-`<h1>` guard passed |
+| Build + prerender | `npm run build` | **17/17** prerendered; CSP byte-identity guard passed; exactly-one-`<h1>` guard passed |
 | Sitemap | `grep -c '<url>' dist/sitemap.xml` | **16** |
 | Robots | `grep 'Disallow: /ops' dist/robots.txt` | present, plus `Sitemap:` |
 | llms.txt | `head dist/llms.txt` | present, plain-language |
-| E2E executed | `npx playwright test e2e/seo --project=chromium --workers=1` | **30/30 passed** against a live stack (`:3000` Vite + `:3001` built server) |
+| E2E executed | `npx playwright test e2e/seo --project=chromium --workers=1` | **44/44 passed** against a live stack (`:3000` Vite + `:3001` built server) |
 
 `e2e/seo/seo.spec.ts` is split into three groups, and the split is a finding, not a
 style choice (see §5.7).
@@ -124,11 +132,11 @@ authenticated session off `/`, `/login` and `/register`.
    the prerendered bytes still describe the landing page. The head is identical either
    way and the flag is currently off, so this is latent — but flipping the flag for
    real needs a rebuild, not just a settings save.
-2. **12 of the 16 sitemap entries carry no `<lastmod>`.** `lastmod` comes from
-   `git log -1 --format=%cI <lastmodSource>` and the content files were untracked when
-   the sitemap was generated; the generator omits the element rather than inventing a
-   date. **This self-heals**: the first `npm run build` after these files are committed
-   emits real dates for all 16.
+2. ~~**12 of the 16 sitemap entries carry no `<lastmod>`.**~~ **Resolved, as predicted.**
+   `lastmod` comes from `git log -1 --format=%cI <lastmodSource>`, and the content files
+   were untracked when the sitemap was first generated; the generator omits the element
+   rather than inventing a date. Now that they are committed, `npm run build` reports
+   `sitemap.xml: 16 URLs (16 with a real git <lastmod>)`.
 3. **The admin 404-cloak vs. §66's anti-cloaking prohibition.** `/ops` and `/sift-beta`
    serve a 404 to everyone who is not an admin, crawlers included. We kept it: the
    differentiator is *identity, not user-agent* (an anonymous browser sees exactly what
@@ -173,3 +181,45 @@ authenticated session off `/`, `/login` and `/register`.
 9. **Tier-2 keyword gaps with real product behind them** — risk of bias, network
    meta-analysis, PRISMA flow diagram, case-series extraction, living reviews — have no
    public page yet. Prioritised list in `SEO-GROWTH-PLAN.md` §2.
+
+10. **`/features/*` and `/resources/*` were still soft-404 generators — found by
+    review, FIXED.** Both were declared `kind: 'prefix'` in `KNOWN_SPA_PREFIXES`, but
+    neither has a parameterised route in `src/App.jsx`: every real child is an exact
+    registry path. So `classifyRequest('/features/bogus')` returned
+    `{kind:'spa', noindex:false}` — HTTP 200, the `<NotFound/>` body, no
+    `X-Robots-Tag`, and `NotFound.jsx` does not call `usePageHead`, so the shell's
+    title and description too. An unbounded set of duplicate, indexable-looking URLs,
+    open on exactly the two subtrees `sitemap.xml` invites crawlers into.
+
+    Flipping the two rules to `kind: 'exact'` would have been wrong: the
+    registry↔router source scans need the prefix to cover
+    `/features/search-engine` and friends. Instead the rules carry
+    `registryGated: true`, and the classifier asks `isServeableSpaPath` — a
+    registry-gated prefix covers only the children `PUBLIC_PAGES` declares.
+    Parameterised families (`/app/project/:id`, `/invite/:token`, …) are untouched.
+
+11. **Prerendered markup is discarded and re-rendered, not hydrated — the visible
+    flash is fixed, the double render is not.** `src/main.jsx` mounts with
+    `createRoot`, which clears `#root` on its first commit, so the server's markup is
+    thrown away rather than adopted. Review found the consequence: fifteen of the
+    seventeen prerendered routes render through `lazy()`, so that first render
+    *suspended* and the same commit painted the `minHeight: 100vh` `<RouteFallback/>`
+    spinner over the article — content → spinner → content on every content page.
+
+    Fixed by `preloadableLazy` + `preloadPublicRoute` (`src/App.jsx`): when the
+    document arrives with markup in `#root`, main.jsx resolves the matched route's
+    chunk *before* mounting, and the wrapper then renders the component
+    synchronously, so nothing suspends and nothing flashes. Pinned by
+    `tests/unit/seo/prerenderPreload.test.js`.
+
+    **What remains:** this is not hydration. React still renders the whole tree a
+    second time and replaces identical DOM. True `hydrateRoot` needs the SSR tree and
+    the client tree to be the same tree, and today they are not —
+    `scripts/prerender-public.mjs` renders `MemoryRouter > ThemeProvider >
+    AuthProvider > Component`, while the client renders `StrictMode >
+    AppErrorBoundary > BrowserRouter > App`, where `App` adds `DesignModeProvider`,
+    `FocusModeProvider`, `GlobalPresence` and the `Suspense`/`Routes` pair. Making
+    them match means an SSR entry that renders `App` itself with a router injected —
+    a real change to both, worth doing on its own, not as a rider here. The cost of
+    not doing it is one redundant client render on 17 routes; the flash, which was
+    the user-visible half, is gone.

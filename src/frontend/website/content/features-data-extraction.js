@@ -7,7 +7,7 @@
 export default `---
 h1: Data extraction built for traceable evidence
 title: Systematic Review Data Extraction Software | PecanRev
-description: Extract study data beside the PDF, capture values by clicking them, convert medians and confidence intervals with cited formulas, and extract many patient cases from a single case series.
+description: Extract study data beside the PDF, capture values by clicking them, convert medians and confidence intervals with cited formulas, and extract case series.
 slug: features/data-extraction
 published: 2026-08-09
 updated: 2026-08-09

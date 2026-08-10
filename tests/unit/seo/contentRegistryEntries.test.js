@@ -59,10 +59,13 @@ describe('content registry entries', () => {
     }
   });
 
-  it('gives each entry a description in a sane length band', () => {
+  it('gives each entry a description inside the registry contract (110-165 chars)', () => {
+    // This band used to be 90-230, which is why twelve entries drifted past the
+    // documented 165 without anything going red. It now mirrors the ENTRY CONTRACT
+    // in publicPages.js exactly — Google truncates around 155-160.
     for (const entry of contentEntries) {
-      expect(entry.description.length, `${entry.path} description too short`).toBeGreaterThan(90);
-      expect(entry.description.length, `${entry.path} description too long`).toBeLessThan(230);
+      expect(entry.description.length, `${entry.path} description too short`).toBeGreaterThanOrEqual(110);
+      expect(entry.description.length, `${entry.path} description too long`).toBeLessThanOrEqual(165);
     }
   });
 

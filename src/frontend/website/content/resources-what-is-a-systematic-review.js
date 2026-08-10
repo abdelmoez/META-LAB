@@ -7,7 +7,7 @@
 export default `---
 h1: What is a systematic review?
 title: What Is a Systematic Review? Definition, Steps and Standards
-description: A systematic review answers a defined question using a pre-specified, reproducible method. This guide explains what separates it from a literature review, the standard steps, and the reporting rules that govern it.
+description: A systematic review answers a defined question with a pre-specified, reproducible method. What separates it from a literature review, its steps and its standards.
 slug: resources/what-is-a-systematic-review
 published: 2026-08-09
 updated: 2026-08-09

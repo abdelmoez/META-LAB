@@ -6,7 +6,7 @@
 export default `---
 h1: How to run a meta-analysis
 title: How to Run a Meta-Analysis: Models, Heterogeneity and Interpretation
-description: A practical guide to choosing an effect measure, deciding between fixed-effect and random-effects models, reading I-squared honestly, and knowing when not to pool at all.
+description: A practical guide to choosing an effect measure, picking a fixed-effect or random-effects model, reading I-squared honestly, and knowing when not to pool.
 slug: resources/how-to-run-a-meta-analysis
 published: 2026-08-09
 updated: 2026-08-09

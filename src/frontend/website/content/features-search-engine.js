@@ -10,7 +10,7 @@
 export default `---
 h1: Search strategy building for systematic reviews
 title: Systematic Review Search Strategy Builder | PecanRev Search Engine
-description: Build a systematic review search from your research question, add MeSH terms with full scope notes, and compile paste-ready queries for 16 databases with honest per-database vocabulary warnings.
+description: Build a systematic review search from your research question, add MeSH terms with full scope notes, and compile paste-ready queries for 16 databases.
 slug: features/search-engine
 published: 2026-08-09
 updated: 2026-08-09

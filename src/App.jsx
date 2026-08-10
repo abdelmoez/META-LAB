@@ -1,5 +1,6 @@
-import { lazy, Suspense } from 'react';
+import { createElement, lazy, useRef, Suspense } from 'react';
 import { Routes, Route, Navigate, useNavigate, useLocation } from 'react-router-dom';
+import { stripTrailingSlash } from './frontend/website/publicPages.js';
 import { AuthProvider, useAuth } from './frontend/context/AuthContext.jsx';
 import { useGlobalPresence } from './frontend/hooks/useGlobalPresence.js';
 import { ThemeProvider } from './frontend/theme/ThemeContext.jsx';
@@ -17,10 +18,12 @@ import Landing        from './frontend/pages/Landing.jsx';
 // Landing stays eager (first paint of the public page). Everything else is
 // split per route so visitors never download the workspace monolith, the
 // ops console, or the screening module until they navigate there.
+// Routes the build PRERENDERS use `preloadableLazy` instead of `lazy` — see the
+// helper below for why a bare lazy() flashes a spinner over prerendered markup.
 const ProjectLanding = lazy(() => import('./frontend/pages/ProjectLanding.jsx'));
 const AppWorkspace  = lazy(() => import('./frontend/pages/AppWorkspace.jsx'));
-const LoginPage     = lazy(() => import('./frontend/pages/Login.jsx'));
-const RegisterPage  = lazy(() => import('./frontend/pages/Register.jsx'));
+const LoginPage     = preloadableLazy(() => import('./frontend/pages/Login.jsx'));
+const RegisterPage  = preloadableLazy(() => import('./frontend/pages/Register.jsx'));
 const Profile       = lazy(() => import('./frontend/pages/Profile.jsx'));
 const AdminConsole  = lazy(() => import('./frontend/pages/admin/AdminConsole.jsx'));
 const SiftDashboard = lazy(() => import('./frontend/screening/pages/SiftDashboard.jsx'));
@@ -32,23 +35,61 @@ const ResetPassword = lazy(() => import('./frontend/pages/ResetPassword.jsx'));
 const VerifyEmail   = lazy(() => import('./frontend/pages/VerifyEmail.jsx'));
 const Onboarding    = lazy(() => import('./frontend/pages/Onboarding.jsx'));
 const RobPage       = lazy(() => import('./frontend/rob/RobPage.jsx'));
-const Terms         = lazy(() => import('./frontend/pages/Terms.jsx'));
+
+/**
+ * 111.md §3 — a lazy route that can be PRELOADED, used for every route the build
+ * prerenders (see PRERENDERED_ROUTES below).
+ *
+ * WHY this exists rather than a bare `lazy()`. A prerendered document arrives with
+ * the real article already in `<div id="root">`. `createRoot()` discards those
+ * children on its first commit and renders from scratch (this app mounts with
+ * createRoot, not hydrateRoot — see src/main.jsx and §5 of docs/seo-overhaul-111.md).
+ * If the matched route is a plain `lazy()`, that first render SUSPENDS, so the
+ * commit that clears `#root` also paints `<RouteFallback/>` — a full-viewport
+ * spinner where the article was. The visitor sees content → spinner → content on
+ * exactly the pages this round built for Core Web Vitals.
+ *
+ * `preload()` resolves the chunk BEFORE React mounts; the wrapper then renders the
+ * real component synchronously, so nothing suspends and nothing flashes. The choice
+ * is frozen per mount in a ref: switching element type mid-life would remount the
+ * page, so a route that was NOT preloaded keeps using the Suspense path for its
+ * whole life (the normal in-app navigation case, where a spinner is correct).
+ */
+function preloadableLazy(loader) {
+  let loaded = null;
+  const resolve = () => loader().then((mod) => { loaded = mod; return mod; });
+  const Lazy = lazy(resolve);
+  function PreloadableRoute(props) {
+    const pinned = useRef(loaded);
+    return pinned.current
+      ? createElement(pinned.current.default, props)
+      : createElement(Lazy, props);
+  }
+  PreloadableRoute.displayName = 'PreloadableRoute';
+  // A failed preload must never block the mount: fall through to the Suspense path,
+  // where the same import is retried and the error boundary can do its job.
+  PreloadableRoute.preload = () => resolve().catch(() => null);
+  return PreloadableRoute;
+}
+
+const Terms         = preloadableLazy(() => import('./frontend/pages/Terms.jsx'));
 
 // 111.md §§6, 8, 9 — public marketing/education pages. Registered in
 // src/frontend/website/publicPages.js; each is a pure, SSR-safe component so the
-// build-time prerenderer can emit crawlable HTML for it.
-const FeaturesIndexPage        = lazy(() => import('./frontend/website/pages/FeaturesIndexPage.jsx'));
-const SearchEnginePage         = lazy(() => import('./frontend/website/pages/SearchEnginePage.jsx'));
-const ScreeningFeaturePage     = lazy(() => import('./frontend/website/pages/ScreeningPage.jsx'));
-const DataExtractionPage       = lazy(() => import('./frontend/website/pages/DataExtractionPage.jsx'));
-const MetaAnalysisFeaturePage  = lazy(() => import('./frontend/website/pages/MetaAnalysisPage.jsx'));
-const ManuscriptPage           = lazy(() => import('./frontend/website/pages/ManuscriptPage.jsx'));
-const ResourcesIndexPage       = lazy(() => import('./frontend/website/pages/ResourcesIndexPage.jsx'));
-const WhatIsSystematicReviewPage = lazy(() => import('./frontend/website/pages/WhatIsSystematicReviewPage.jsx'));
-const Prisma2020Page           = lazy(() => import('./frontend/website/pages/Prisma2020Page.jsx'));
-const ScreeningGuidePage       = lazy(() => import('./frontend/website/pages/ScreeningGuidePage.jsx'));
-const MetaAnalysisGuidePage    = lazy(() => import('./frontend/website/pages/MetaAnalysisGuidePage.jsx'));
-const AboutPage                = lazy(() => import('./frontend/website/pages/AboutPage.jsx'));
+// build-time prerenderer can emit crawlable HTML for it. All are `preloadableLazy`
+// because all are prerendered (see PRERENDERED_ROUTES).
+const FeaturesIndexPage        = preloadableLazy(() => import('./frontend/website/pages/FeaturesIndexPage.jsx'));
+const SearchEnginePage         = preloadableLazy(() => import('./frontend/website/pages/SearchEnginePage.jsx'));
+const ScreeningFeaturePage     = preloadableLazy(() => import('./frontend/website/pages/ScreeningPage.jsx'));
+const DataExtractionPage       = preloadableLazy(() => import('./frontend/website/pages/DataExtractionPage.jsx'));
+const MetaAnalysisFeaturePage  = preloadableLazy(() => import('./frontend/website/pages/MetaAnalysisPage.jsx'));
+const ManuscriptPage           = preloadableLazy(() => import('./frontend/website/pages/ManuscriptPage.jsx'));
+const ResourcesIndexPage       = preloadableLazy(() => import('./frontend/website/pages/ResourcesIndexPage.jsx'));
+const WhatIsSystematicReviewPage = preloadableLazy(() => import('./frontend/website/pages/WhatIsSystematicReviewPage.jsx'));
+const Prisma2020Page           = preloadableLazy(() => import('./frontend/website/pages/Prisma2020Page.jsx'));
+const ScreeningGuidePage       = preloadableLazy(() => import('./frontend/website/pages/ScreeningGuidePage.jsx'));
+const MetaAnalysisGuidePage    = preloadableLazy(() => import('./frontend/website/pages/MetaAnalysisGuidePage.jsx'));
+const AboutPage                = preloadableLazy(() => import('./frontend/website/pages/AboutPage.jsx'));
 const NotFound      = lazy(() => import('./frontend/pages/NotFound.jsx'));
 // 68.md (P8) — the PUBLIC synthesis page. Unwrapped (no auth): serves both the
 // shareable public page and the chrome-less embed. Same component, `embed` prop.
@@ -56,7 +97,7 @@ const PublicSynthesisPage = lazy(() => import('./features/publicSynthesis/Public
 // prompt48 — Beta Waitlist preview route (noindex). The live homepage swap is
 // handled by BetaWaitlistGate on `/`; this route renders the page regardless of
 // the flag so admins can preview it safely.
-const BetaWaitlistPreview = lazy(() => import('./frontend/pages/waitlist/BetaWaitlistPage.jsx'));
+const BetaWaitlistPreview = preloadableLazy(() => import('./frontend/pages/waitlist/BetaWaitlistPage.jsx'));
 
 // design.md — Stitch (Vivid Enterprise) parallel presentation pages. Lazily
 // imported so legacy/non-admin users never download the Stitch bundle. Each is
@@ -65,6 +106,55 @@ const StitchDashboard       = lazy(() => import('./frontend/stitch/pages/StitchD
 const StitchProfile         = lazy(() => import('./frontend/stitch/pages/StitchProfile.jsx'));
 const StitchProjectOverview = lazy(() => import('./frontend/stitch/pages/StitchProjectOverview.jsx'));
 const StitchProjectWorkspace = lazy(() => import('./frontend/stitch/pages/StitchProjectWorkspace.jsx'));
+
+/**
+ * 111.md §3 — registry path → the route component the build prerenders for it.
+ *
+ * Every entry in PUBLIC_PAGES that renders through a code-split chunk is here; `/`
+ * is deliberately absent because Landing is imported eagerly and therefore never
+ * suspends. tests/unit/seo/prerenderPreload.test.js pins this map against the
+ * registry, so a new prerendered page that forgets to register here fails the suite
+ * rather than silently reintroducing the flash.
+ */
+const PRERENDERED_ROUTES = {
+  '/terms': Terms,
+  '/login': LoginPage,
+  '/register': RegisterPage,
+  '/beta-waitlist': BetaWaitlistPreview,
+  '/features': FeaturesIndexPage,
+  '/features/search-engine': SearchEnginePage,
+  '/features/screening': ScreeningFeaturePage,
+  '/features/data-extraction': DataExtractionPage,
+  '/features/meta-analysis': MetaAnalysisFeaturePage,
+  '/features/manuscript': ManuscriptPage,
+  '/resources': ResourcesIndexPage,
+  '/resources/what-is-a-systematic-review': WhatIsSystematicReviewPage,
+  '/resources/prisma-2020-explained': Prisma2020Page,
+  '/resources/title-and-abstract-screening': ScreeningGuidePage,
+  '/resources/how-to-run-a-meta-analysis': MetaAnalysisGuidePage,
+  '/about': AboutPage,
+};
+
+/**
+ * Resolve the chunk behind a prerendered route BEFORE React mounts.
+ *
+ * src/main.jsx awaits this when the server delivered a prerendered document, so the
+ * first commit — which unavoidably discards the server's markup, since this app uses
+ * createRoot rather than hydrateRoot — can render the real page synchronously instead
+ * of committing the Suspense fallback over it.
+ *
+ * Always resolves (never rejects): a chunk that fails to load must not stop the app
+ * from mounting; the Suspense path retries it and AppErrorBoundary owns the failure.
+ *
+ * @param {string} pathname window.location.pathname
+ * @returns {Promise<unknown>}
+ */
+export function preloadPublicRoute(pathname) {
+  const route = PRERENDERED_ROUTES[stripTrailingSlash(String(pathname || ''))];
+  return route && typeof route.preload === 'function'
+    ? route.preload()
+    : Promise.resolve(null);
+}
 
 /* Minimal theme-token loading state shown while a route chunk downloads. */
 function RouteFallback() {

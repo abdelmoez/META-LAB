@@ -5,13 +5,19 @@
  * runtime navigation and build-time prerendering:
  *
  *   buildHead(entry, ctx)   PURE. registry entry → { title, metas, links, jsonLd }.
+ *                           A NULLISH entry builds an EMPTY head — buildHead must
+ *                           never invent a homepage canonical for a page that is not
+ *                           in the registry (PageShell relies on this: it passes
+ *                           `getPublicPage(pathname) || null`).
  *   renderHeadHtml(head)    PURE. head data → an HTML <head> fragment string.
  *                           Used by scripts/prerender-public.mjs (React effects do
  *                           NOT run under renderToStaticMarkup, so the prerenderer
  *                           must never rely on the hook).
- *   usePageHead(entry, ctx) The CLIENT-SIDE updater. Idempotent: it only touches a
- *                           tag whose value actually differs, restores the previous
- *                           value on unmount, and removes only the tags it created.
+ *   usePageHead(entry, ctx) The CLIENT-SIDE updater. Idempotent: applying the same
+ *                           head twice changes nothing. It restores the previous
+ *                           value of every tag it touched on unmount and removes
+ *                           only the tags it created — with ONE deliberate exception,
+ *                           `meta[name=robots]`, which is module-OWNED (see applyHead).
  *
  * CSP: `<script type="application/ld+json">` is DATA, not an executable script —
  * `script-src` does not apply to it (the browser never executes a non-JS script
@@ -36,8 +42,18 @@ const OG_IMAGE_ALT = `${SITE_NAME} — systematic review and meta-analysis platf
 
 /* ───────────────────────────── pure builders ────────────────────────────── */
 
+/** The head of a page this module has nothing to say about. Frozen: it is shared. */
+export const EMPTY_HEAD = Object.freeze({
+  title: '', metas: Object.freeze([]), links: Object.freeze([]), jsonLd: Object.freeze([]),
+});
+
 /**
  * Build the complete head description for a page.
+ *
+ * A NULLISH `entry` is a genuine NO-OP and returns EMPTY_HEAD. It used to fall back
+ * to `path = '/'`, which meant an unregistered path (PageShell's `|| null`) pointed
+ * its canonical, og:url and og:type at the HOMEPAGE — the loudest possible wrong
+ * answer for a page the registry does not know.
  *
  * @param {object} entry registry entry, or any object with { title, description,
  *   canonicalPath|path, ogType?, ogImage?, indexable?, jsonLd? }
@@ -46,7 +62,8 @@ const OG_IMAGE_ALT = `${SITE_NAME} — systematic review and meta-analysis platf
  * @returns {{title:string, metas:Array, links:Array, jsonLd:Array}}
  */
 export function buildHead(entry, ctx = {}) {
-  const e = entry || {};
+  if (!entry) return EMPTY_HEAD;
+  const e = entry;
   const origin = ctx.origin || SITE_ORIGIN;
   const path = e.canonicalPath || e.path || '/';
   const canonical = absoluteUrl(path, origin);
@@ -148,15 +165,29 @@ export function headSignature(entry, ctx = {}) {
   ].join('|');
 }
 
+/** True when a head asks for nothing at all (buildHead(null) → EMPTY_HEAD). */
+function isEmptyHead(h) {
+  return !h.title
+    && !(h.metas || []).length
+    && !(h.links || []).length
+    && !(h.jsonLd || []).length;
+}
+
 /**
  * Apply head data to the live document. Returns a cleanup function that undoes
  * exactly what was changed (and nothing else).
+ *
+ * An EMPTY head touches nothing — not even the module-owned robots meta — so
+ * `usePageHead(null)` on an unregistered path leaves the document exactly as it
+ * found it, which is what PageShell's header comment promises.
+ *
  * @param {{title:string, metas:Array, links:Array, jsonLd:Array}} head
  * @returns {() => void}
  */
 export function applyHead(head) {
   if (typeof document === 'undefined' || !document.head) return () => {};
   const h = head || {};
+  if (isEmptyHead(h)) return () => {};
   const restores = [];
 
   if (h.title) {
@@ -172,8 +203,12 @@ export function applyHead(head) {
     const existing = document.head.querySelector(selector);
     if (existing) {
       const prev = existing.getAttribute(valueAttr);
-      if (prev === value) return; // already correct → idempotent no-op, nothing to undo
-      existing.setAttribute(valueAttr, value);
+      // The restore is recorded UNCONDITIONALLY, including when the tag already holds
+      // the target value. On a PRERENDERED document every tag is already correct, so
+      // the `prev === value` early-return this replaces meant the page that owns a tag
+      // registered no cleanup at all — cleanup was asymmetric with apply, which is
+      // exactly the shape of bug that leaks one page's head onto the next.
+      if (prev !== value) existing.setAttribute(valueAttr, value);
       restores.push(() => {
         if (existing.getAttribute(valueAttr) !== value) return; // someone else owns it now
         if (prev == null) existing.removeAttribute(valueAttr);
@@ -188,7 +223,30 @@ export function applyHead(head) {
     restores.push(() => { if (el.parentNode) el.parentNode.removeChild(el); });
   };
 
-  for (const m of h.metas || []) {
+  // `meta[name=robots]` is MODULE-OWNED, like JSON-LD below, and deliberately not
+  // upserted. Only `indexable: false` entries emit it, so no later page ever
+  // overwrites it — and on a prerendered noindex document (e.g. /beta-waitlist) the
+  // tag arrives in the server's bytes rather than being created here. "Restore the
+  // previous value" would then mean "keep the noindex", so the directive survived
+  // every subsequent client-side navigation and silently noindexed the whole session.
+  // Instead: drop every robots meta the CURRENT head does not ask for, then create the
+  // requested one fresh and remove it again on unmount. A robots directive is a claim
+  // about one page; it must never outlive that page.
+  const isRobots = (m) => m.attr === 'name' && m.name === 'robots';
+  const robotsWanted = (h.metas || []).filter(isRobots);
+  for (const el of Array.from(document.head.querySelectorAll('meta[name="robots"]'))) {
+    if (el.parentNode) el.parentNode.removeChild(el);
+  }
+  for (const m of robotsWanted) {
+    const el = document.createElement('meta');
+    el.setAttribute('name', 'robots');
+    el.setAttribute('content', m.content);
+    el.setAttribute(MANAGED_ATTR, '');
+    document.head.appendChild(el);
+    restores.push(() => { if (el.parentNode) el.parentNode.removeChild(el); });
+  }
+
+  for (const m of (h.metas || []).filter((m) => !isRobots(m))) {
     upsert(
       `meta[${m.attr}="${String(m.name).replace(/["\\]/g, '\\$&')}"]`,
       () => {
@@ -238,6 +296,9 @@ export function applyHead(head) {
  * Server-render safe — effects do not run under renderToStaticMarkup, so a page
  * that calls this renders identically in the prerenderer (which injects the head
  * itself via renderHeadHtml).
+ *
+ * A NULLISH entry is a true no-op: buildHead returns EMPTY_HEAD and applyHead
+ * short-circuits, so an unregistered path keeps whatever head the shell shipped.
  *
  * @param {object} entry registry entry or an inline { title, description, ... }
  * @param {object} [ctx] { origin }

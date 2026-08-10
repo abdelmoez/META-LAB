@@ -20,8 +20,16 @@
  *    per-page head spliced in before </head>. Everything else — charset, viewport,
  *    theme-color, icons, manifest, preconnects, the font stylesheet, the inline
  *    bootstrap scripts, the critical <style>, the hashed Vite module script — stays
- *    BYTE-EXACT. The SPA must hydrate a prerendered page exactly as it hydrates the
+ *    BYTE-EXACT. The SPA must BOOT on a prerendered page exactly as it boots on the
  *    shell.
+ *
+ *    Note the precise wording: BOOT, not hydrate. src/main.jsx mounts with
+ *    `createRoot`, not `hydrateRoot`, so the markup below is NOT hydrated — React
+ *    discards it on the first commit and renders the same tree again. The markup is
+ *    what a non-JS crawler reads and what the visitor sees before the chunk lands;
+ *    main.jsx preloads the matched route so the re-render is synchronous and nothing
+ *    flashes. See docs/seo-overhaul-111.md §5 for why true hydration is not on the
+ *    table without restructuring both trees.
  *
  * 3. PERMANENT GUARD (step d): server/security/csp.js computes `script-src` SHA-256
  *    hashes from dist/index.html at runtime and applies them to every HTML response,
@@ -339,8 +347,15 @@ async function main() {
         failures.push({ entry, reason: 'rendered an empty body' });
         continue;
       }
-      if (!/<h1[\s>]/i.test(body)) {
-        failures.push({ entry, reason: 'rendered markup contains no <h1> (crawlers need a heading)' });
+      // EXACTLY one <h1>, not merely one-or-more. A page with two h1s tells a crawler
+      // it has two top-level subjects; a presence-only check let that ship green.
+      // e2e/seo/seo.spec.ts asserts the same count on the served document.
+      const h1Count = (body.match(/<h1[\s>]/gi) || []).length;
+      if (h1Count !== 1) {
+        failures.push({
+          entry,
+          reason: `rendered markup contains ${h1Count} <h1> elements — exactly one is required`,
+        });
         continue;
       }
 

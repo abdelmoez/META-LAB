@@ -6,7 +6,7 @@
 export default `---
 h1: PRISMA 2020 explained
 title: PRISMA 2020 Explained: Checklist, Flow Diagram and Common Mistakes
-description: What changed in PRISMA 2020, what the 27-item checklist actually asks for, how to build the flow diagram correctly, and the reporting errors that reviewers catch most often.
+description: What changed in PRISMA 2020, what the 27-item checklist asks for, how to build the flow diagram correctly, and the reporting errors reviewers catch most often.
 slug: resources/prisma-2020-explained
 published: 2026-08-09
 updated: 2026-08-09

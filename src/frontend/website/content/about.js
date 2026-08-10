@@ -8,7 +8,7 @@
 export default `---
 h1: About PecanRev
 title: About PecanRev — Who We Build For and How We Build
-description: PecanRev is an end-to-end systematic review and meta-analysis platform. This page explains what it is, the principles behind how it handles evidence and AI, and where its limits are.
+description: PecanRev is an end-to-end systematic review and meta-analysis platform. What it is, the principles behind how it handles evidence and AI, and where its limits are.
 slug: about
 published: 2026-08-09
 updated: 2026-08-09

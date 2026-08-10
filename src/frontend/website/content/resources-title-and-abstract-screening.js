@@ -6,7 +6,7 @@
 export default `---
 h1: Title and abstract screening: a practical guide
 title: Title and Abstract Screening: A Practical Guide
-description: How to pilot eligibility criteria, decide between single and dual screening, resolve conflicts, use screening automation responsibly, and record decisions so PRISMA reporting works.
+description: How to pilot eligibility criteria, choose between single and dual screening, resolve conflicts, and record decisions so PRISMA reporting works.
 slug: resources/title-and-abstract-screening
 published: 2026-08-09
 updated: 2026-08-09

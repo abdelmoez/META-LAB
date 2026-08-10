@@ -8,7 +8,7 @@
 export default `---
 h1: Meta-analysis, run on the data you extracted
 title: Meta-Analysis Software for Systematic Reviews | PecanRev
-description: Pool effect sizes with fixed and random-effects models, eight tau-squared estimators, HKSJ intervals, subgroup and meta-regression, leave-one-out diagnostics and frequentist network meta-analysis.
+description: Pool effect sizes with fixed and random-effects models, eight tau-squared estimators, HKSJ intervals, subgroup analysis, meta-regression and network meta-analysis.
 slug: features/meta-analysis
 published: 2026-08-09
 updated: 2026-08-09

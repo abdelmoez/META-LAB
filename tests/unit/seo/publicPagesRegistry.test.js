@@ -29,6 +29,7 @@ import {
   isKnownSpaPath,
   isNonIndexablePath,
   isRegistryPath,
+  isServeableSpaPath,
   matchPattern,
   normalizePath,
   organizationJsonLd,
@@ -72,6 +73,28 @@ describe('publicPages registry — entry shape', () => {
       expect(e.title.length, `title length of ${e.path}`).toBeGreaterThan(10);
       expect(e.description.length, `description length of ${e.path}`).toBeGreaterThan(40);
     }
+  });
+
+  /**
+   * The ENTRY CONTRACT at the top of publicPages.js states 110-165 characters, and
+   * that bound is the whole point: Google truncates a description around 155-160, so
+   * an over-long one loses its tail in the SERP. The bound previously existed only as
+   * prose — nothing failed when twelve of seventeen entries blew past it — so it is
+   * asserted here, over EVERY entry, against the documented numbers.
+   */
+  it('every description honours the documented 110-165 character contract', () => {
+    const violations = PUBLIC_PAGES
+      .filter((e) => e.description.length < 110 || e.description.length > 165)
+      .map((e) => `${e.path} (${e.description.length})`);
+    expect(violations, `descriptions outside 110-165 chars: ${violations.join(', ')}`).toEqual([]);
+  });
+
+  it('the documented contract and the asserted bound are the same numbers', () => {
+    // Guards against the other half of the drift: silently widening the prose.
+    const source = fs.readFileSync(
+      path.join(repoRoot, 'src/frontend/website/publicPages.js'), 'utf8',
+    );
+    expect(source).toContain('meta[name=description]. Honest, 110-165 chars.');
   });
 
   it('paths and canonicalPaths are lowercase, rooted and slash-free', () => {
@@ -149,6 +172,51 @@ describe('publicPages registry — pinned to src/App.jsx', () => {
       const hit = routes.some((r) => r === rule.pattern || r.startsWith(`${rule.pattern}/`));
       expect(hit, `${rule.pattern} matches no route in App.jsx (stale entry?)`).toBe(true);
     }
+  });
+
+  /**
+   * A `kind: 'prefix'` rule is a promise that SOMETHING under it is dynamic. When
+   * nothing is, the prefix hands a 200 + <NotFound/> body to every unknown child —
+   * the soft 404 the whole middleware exists to kill. So: a prefix whose App.jsx
+   * children are all static must be registryGated, and a prefix with a real
+   * parameterised child must NOT be (gating it would 404 live routes).
+   */
+  it('a prefix is registryGated exactly when it has no parameterised App.jsx child', () => {
+    const routes = appRoutePaths();
+    for (const rule of KNOWN_SPA_PREFIXES.filter((r) => r.kind === 'prefix')) {
+      const children = routes.filter((r) => r.startsWith(`${rule.pattern}/`));
+      const hasParam = children.some((r) => r.includes(':'));
+      expect(
+        rule.registryGated === true,
+        `${rule.pattern}: registryGated should be ${!hasParam} `
+        + `(children: ${children.join(', ') || 'none'})`,
+      ).toBe(!hasParam);
+    }
+  });
+
+  it('every static child of a registryGated prefix is a registry path', () => {
+    // Otherwise the gate would 404 a route App.jsx genuinely declares.
+    const gated = KNOWN_SPA_PREFIXES.filter((r) => r.registryGated);
+    expect(gated.length, 'the gate must actually be in use').toBeGreaterThan(0);
+    for (const rule of gated) {
+      for (const route of appRoutePaths().filter((r) => r.startsWith(`${rule.pattern}/`))) {
+        expect(isRegistryPath(route), `${route} is routed but not in PUBLIC_PAGES`).toBe(true);
+      }
+    }
+  });
+
+  it('isServeableSpaPath 404s unknown children of a gated prefix, not real ones', () => {
+    for (const p of ['/features', '/features/screening', '/resources',
+      '/resources/prisma-2020-explained']) {
+      expect(isServeableSpaPath(p), `${p} must stay serveable`).toBe(true);
+    }
+    for (const p of ['/features/bogus', '/features/screening/x', '/resources/nope']) {
+      expect(isKnownSpaPath(p), `${p} is still route-covered`).toBe(true);
+      expect(isServeableSpaPath(p), `${p} must not be served a 200`).toBe(false);
+    }
+    // Ungated prefixes are unaffected — their dynamic children are real routes.
+    expect(isServeableSpaPath('/app/project/1')).toBe(true);
+    expect(isServeableSpaPath('/invite/tok')).toBe(true);
   });
 
   it('every NON_INDEXABLE_PATTERNS rule matches at least one App.jsx route', () => {
@@ -269,6 +337,32 @@ describe('publicPages — JSON-LD (honest fields only)', () => {
     const ids = graph['@graph'].map((n) => n['@id']).filter(Boolean);
     expect(new Set(ids).size, 'every @id in a graph must be unique').toBe(ids.length);
     expect(ids.length).toBeGreaterThanOrEqual(3);
+  });
+
+  /**
+   * An @id is a NODE identity, not a page. The builders concatenate the site root
+   * with a JSONLD_IDS anchor; a stray `.slice(1)` used to strip the '#', so the graph
+   * asserted `https://pecanrev.com/organization` — a URL-shaped identity for a page
+   * that does not exist (and, since the registry-gated 404s landed, genuinely 404s).
+   * Fragment identities are also what #webpage/#article already use.
+   */
+  it('every @id is a fragment on a real URL, never a page-shaped URL that 404s', () => {
+    const ids = [
+      organizationJsonLd(ctx)['@id'],
+      webSiteJsonLd(ctx)['@id'],
+      softwareApplicationJsonLd(ctx)['@id'],
+      ...graph['@graph'].map((n) => n['@id']).filter(Boolean),
+      ...PUBLIC_PAGES.filter((e) => typeof e.jsonLd === 'function')
+        .flatMap((e) => e.jsonLd({ ...ctx, path: e.path, entry: e })['@graph'])
+        .map((n) => n['@id']).filter(Boolean),
+    ];
+    for (const id of ids) {
+      expect(id, `${id} must carry a fragment anchor`).toContain('#');
+      expect(id.startsWith(SITE_ORIGIN), `${id} must be absolute`).toBe(true);
+    }
+    expect(organizationJsonLd(ctx)['@id']).toBe(`${SITE_ORIGIN}/#organization`);
+    expect(webSiteJsonLd(ctx)['@id']).toBe(`${SITE_ORIGIN}/#website`);
+    expect(softwareApplicationJsonLd(ctx)['@id']).toBe(`${SITE_ORIGIN}/#software`);
   });
 
   it('SoftwareApplication declares only verifiable fields', () => {

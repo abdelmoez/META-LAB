@@ -1,8 +1,8 @@
 # PecanRev
 
-PecanRev is a systematic review and meta-analysis platform with screening, data
-extraction, risk of bias, search building, project collaboration, and a complete
-review workflow.
+PecanRev is a systematic review and meta-analysis platform: search building,
+screening, data extraction, risk of bias, and project collaboration in one
+workflow.
 
 ## Quickstart (local development)
 

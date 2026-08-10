@@ -10,7 +10,10 @@
  * Five jobs, in decision order (see `classifyRequest`, which is PURE and unit
  * tested against a full path matrix):
  *   (a) real HTTP 404 for a path src/App.jsx does not declare — with the SPA shell
- *       as the BODY, so <NotFound/> still renders exactly as it does today;
+ *       as the BODY, so <NotFound/> still renders exactly as it does today. This
+ *       includes unknown children of the `registryGated` prefixes (/features/*,
+ *       /resources/*), which have no parameterised route and therefore no legitimate
+ *       URL beyond the ones PUBLIC_PAGES declares;
  *   (b) 301 /privacy → /terms#privacy (replaces a client-side <Navigate>, which
  *       could only ever produce a soft 200);
  *   (c) `X-Robots-Tag: noindex, nofollow` on every NON_INDEXABLE_PATTERNS surface
@@ -41,9 +44,9 @@ import {
   NOINDEX_DIRECTIVE,
   findRedirect,
   getPublicPage,
-  isKnownSpaPath,
   isNonIndexablePath,
   isRegistryPath,
+  isServeableSpaPath,
   normalizePath,
 } from '../../src/frontend/website/publicPages.js';
 import {
@@ -157,7 +160,15 @@ export function classifyRequest(pathname, opts = {}) {
   if (isNonIndexablePath(pathname)) return { kind: 'spa', path: pathname, noindex: true };
 
   // Any other route src/App.jsx declares: normal 200 shell, no robots directive.
-  if (isKnownSpaPath(pathname)) return { kind: 'spa', path: pathname, noindex: false };
+  //
+  // isServeableSpaPath — NOT isKnownSpaPath — is the question, and the difference is
+  // load-bearing. /features and /resources are `registryGated` prefixes: they have no
+  // parameterised child, so an unknown child (/features/bogus, /features/screening/x)
+  // is a typo or a crawler probe, not a page. Answering it with a 200 shell would
+  // reopen the soft-404 this file exists to close, on the only two subtrees the
+  // sitemap invites crawlers into. Real children were already served above — they are
+  // registry entries and getPublicPage matched them.
+  if (isServeableSpaPath(pathname)) return { kind: 'spa', path: pathname, noindex: false };
 
   // (a) genuinely unknown → real 404 (shell body, so <NotFound/> renders).
   return { kind: 'not-found', path: pathname, noindex: true };

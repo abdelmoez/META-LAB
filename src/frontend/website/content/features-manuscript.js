@@ -7,7 +7,7 @@
 export default `---
 h1: A manuscript editor that keeps its numbers honest
 title: Systematic Review Manuscript Editor with Live PRISMA Facts | PecanRev
-description: Write your review in an editor where study counts, PRISMA numbers and pooled estimates are live tokens resolved from project data, with change tracking, provenance and Word export.
+description: Write your review in an editor where study counts, PRISMA numbers and pooled estimates are live tokens from project data, with change tracking and Word export.
 slug: features/manuscript
 published: 2026-08-09
 updated: 2026-08-09

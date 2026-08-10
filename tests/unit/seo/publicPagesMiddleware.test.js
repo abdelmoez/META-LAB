@@ -157,6 +157,50 @@ describe('classifyRequest — real 404s (the soft-404 killer)', () => {
   });
 });
 
+describe('classifyRequest — registry-gated prefixes (/features, /resources)', () => {
+  /**
+   * The two indexable content trees are declared `kind: 'prefix'` so a new page only
+   * has to be added to PUBLIC_PAGES — but NEITHER has a parameterised route in
+   * src/App.jsx, so an unknown child is a typo or a crawler probe, never a page.
+   * Before `registryGated`, every one of these answered 200 + <NotFound/> + no
+   * X-Robots-Tag: an unbounded indexable URL space under exactly the two subtrees
+   * sitemap.xml invites crawlers into.
+   */
+  const unknownChildren = [
+    '/features/bogus', '/features/screening-old', '/features/pricing',
+    '/resources/nope', '/resources/what-is-a-systematic-reviews',
+    '/features/screening/anything', '/resources/prisma-2020-explained/x',
+  ];
+  it.each(unknownChildren)('%s → real 404, never a soft 200', (p) => {
+    expect(classifyRequest(p)).toEqual({ kind: 'not-found', path: p, noindex: true });
+  });
+
+  const realChildren = [
+    '/features', '/features/search-engine', '/features/screening',
+    '/features/data-extraction', '/features/meta-analysis', '/features/manuscript',
+    '/resources', '/resources/what-is-a-systematic-review',
+    '/resources/prisma-2020-explained', '/resources/title-and-abstract-screening',
+    '/resources/how-to-run-a-meta-analysis',
+  ];
+  it.each(realChildren)('%s is still served (200, indexable)', (p) => {
+    expect(bare(p)).toEqual({ kind: 'spa', path: p, noindex: false });
+  });
+
+  it('a real child is still served prerendered when the build produced one', () => {
+    expect(withFiles('/features/screening', [`${PRERENDER_DIR}/features/screening/index.html`]))
+      .toMatchObject({ kind: 'prerendered', noindex: false });
+  });
+
+  it('gating does not leak into the parameterised prefixes', () => {
+    // /app, /rob, /invite, /sift-beta, /public/synthesis DO have dynamic segments —
+    // their unknown-looking children are real routes and must stay 200.
+    for (const p of ['/app/project/zzz', '/rob/9', '/invite/anything',
+      '/public/synthesis/tok', '/embed/synthesis/tok']) {
+      expect(classifyRequest(p).kind, p).toBe('spa');
+    }
+  });
+});
+
 describe('isPrerenderDirRequest — the prerender directory is not a URL space', () => {
   it.each([`/${PRERENDER_DIR}`, `/${PRERENDER_DIR}/`, `/${PRERENDER_DIR}/terms/index.html`])(
     'blocks %s', (p) => { expect(isPrerenderDirRequest(p)).toBe(true); },

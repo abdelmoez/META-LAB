@@ -20,7 +20,11 @@
  *                                    the only path that is a bare slash). This is
  *                                    what the router and the middleware match.
  *   title          REQUIRED  string  Full <title> text (already includes the brand).
- *   description    REQUIRED  string  meta[name=description]. Honest, ~110-165 chars.
+ *   description    REQUIRED  string  meta[name=description]. Honest, 110-165 chars.
+ *                                    HARD BOUND, not a suggestion: pinned by
+ *                                    tests/unit/seo/publicPagesRegistry.test.js.
+ *                                    Google truncates around 155-160, so anything
+ *                                    longer loses its tail in the SERP.
  *   canonicalPath  REQUIRED  string  Site-relative path the canonical <link> points
  *                                    at. Usually === path; a duplicate/preview page
  *                                    points at its canonical original.
@@ -53,6 +57,7 @@
  *     original — that is the point of a canonical).
  *   - No registry path may also match NON_INDEXABLE_PATTERNS.
  *   - Every registry path is covered by KNOWN_SPA_PREFIXES.
+ *   - Every `description` is 110-165 characters long.
  */
 
 /* ─────────────────────────────── site facts ─────────────────────────────── */
@@ -82,8 +87,8 @@ export const NOINDEX_DIRECTIVE = 'noindex, nofollow';
  * un-prerendered app shell and one that sees the prerendered '/' read the same text.
  */
 export const SITE_DESCRIPTION =
-  'PecanRev is a systematic review and meta-analysis platform with screening, data extraction, '
-  + 'risk of bias, search building, project collaboration, and a complete review workflow.';
+  'PecanRev is a systematic review and meta-analysis platform: search building, screening, '
+  + 'data extraction, risk of bias, and project collaboration in one workflow.';
 
 /* ─────────────────────────── path helpers (pure) ────────────────────────── */
 
@@ -138,13 +143,25 @@ export function matchPattern(pathname, rule) {
  *
  * `kind: 'prefix'` covers the route AND everything under it, which is how the
  * parameterised families (/app/project/:id, /rob/:projectId, …) are expressed.
+ *
+ * `registryGated: true` narrows a prefix to the children the registry actually
+ * declares. /features and /resources have NO parameterised child in src/App.jsx —
+ * every real child is an exact registry path — so a bare prefix would hand a 200
+ * with the <NotFound/> body to /features/<anything>, i.e. an unbounded indexable
+ * URL space under the only two subtrees the sitemap invites crawlers into. That is
+ * the soft-404 server/middleware/publicPages.js exists to kill. The prefix is kept
+ * (so a new /features/<page> route only has to be added to PUBLIC_PAGES, and so the
+ * App.jsx↔registry source scans still pass), but the classifier 404s any child that
+ * is not a registry path. Pinned by tests/unit/seo/publicPagesRegistry.test.js.
  */
 export const KNOWN_SPA_PREFIXES = [
   { pattern: '/', kind: 'exact' },                       // Landing (BetaWaitlistGate)
   { pattern: '/beta-waitlist', kind: 'exact' },
   { pattern: '/terms', kind: 'exact' },
-  { pattern: '/features', kind: 'prefix' },              // 111.md §8 — feature landing pages
-  { pattern: '/resources', kind: 'prefix' },             // 111.md §9 — methodology guides
+  // 111.md §8 — feature landing pages. Registry-gated: unknown children are 404s.
+  { pattern: '/features', kind: 'prefix', registryGated: true },
+  // 111.md §9 — methodology guides. Registry-gated: unknown children are 404s.
+  { pattern: '/resources', kind: 'prefix', registryGated: true },
   { pattern: '/about', kind: 'exact' },                  // 111.md §11 — E-E-A-T
   // NOTE: /privacy is deliberately absent — it is no longer an App.jsx route. It is
   // owned by PERMANENT_REDIRECTS (301 → /terms#privacy), which is evaluated first.
@@ -224,7 +241,7 @@ export const JSONLD_IDS = {
 export function organizationJsonLd({ origin = SITE_ORIGIN } = {}) {
   return {
     '@type': 'Organization',
-    '@id': absoluteUrl('/', origin) + JSONLD_IDS.organization.slice(1),
+    '@id': absoluteUrl('/', origin) + JSONLD_IDS.organization,
     name: SITE_NAME,
     url: absoluteUrl('/', origin),
     logo: absoluteUrl('/favicon.svg', origin),
@@ -236,12 +253,12 @@ export function organizationJsonLd({ origin = SITE_ORIGIN } = {}) {
 export function webSiteJsonLd({ origin = SITE_ORIGIN } = {}) {
   return {
     '@type': 'WebSite',
-    '@id': absoluteUrl('/', origin) + JSONLD_IDS.website.slice(1),
+    '@id': absoluteUrl('/', origin) + JSONLD_IDS.website,
     name: SITE_NAME,
     url: absoluteUrl('/', origin),
     description: SITE_DESCRIPTION,
     inLanguage: 'en',
-    publisher: { '@id': absoluteUrl('/', origin) + JSONLD_IDS.organization.slice(1) },
+    publisher: { '@id': absoluteUrl('/', origin) + JSONLD_IDS.organization },
   };
 }
 
@@ -265,7 +282,7 @@ export const PRODUCT_FEATURES = [
 export function softwareApplicationJsonLd({ origin = SITE_ORIGIN } = {}) {
   return {
     '@type': 'SoftwareApplication',
-    '@id': absoluteUrl('/', origin) + JSONLD_IDS.software.slice(1),
+    '@id': absoluteUrl('/', origin) + JSONLD_IDS.software,
     name: SITE_NAME,
     url: absoluteUrl('/', origin),
     description: SITE_DESCRIPTION,
@@ -274,7 +291,7 @@ export function softwareApplicationJsonLd({ origin = SITE_ORIGIN } = {}) {
     operatingSystem: 'Web',
     browserRequirements: 'Requires a modern browser with JavaScript enabled.',
     featureList: PRODUCT_FEATURES,
-    publisher: { '@id': absoluteUrl('/', origin) + JSONLD_IDS.organization.slice(1) },
+    publisher: { '@id': absoluteUrl('/', origin) + JSONLD_IDS.organization },
   };
 }
 
@@ -287,7 +304,7 @@ export function webPageJsonLd(entry, { origin = SITE_ORIGIN } = {}) {
     url: absoluteUrl(entry.canonicalPath || entry.path, origin),
     description: entry.description,
     inLanguage: 'en',
-    isPartOf: { '@id': absoluteUrl('/', origin) + JSONLD_IDS.website.slice(1) },
+    isPartOf: { '@id': absoluteUrl('/', origin) + JSONLD_IDS.website },
   };
 }
 
@@ -430,9 +447,9 @@ export function contentArticleJsonLd(entry, { origin = SITE_ORIGIN } = {}) {
     description: entry.description,
     url,
     inLanguage: 'en',
-    isPartOf: { '@id': absoluteUrl('/', origin) + JSONLD_IDS.website.slice(1) },
+    isPartOf: { '@id': absoluteUrl('/', origin) + JSONLD_IDS.website },
     author: { '@type': 'Organization', name: SITE_NAME, url: absoluteUrl('/', origin) },
-    publisher: { '@id': absoluteUrl('/', origin) + JSONLD_IDS.organization.slice(1) },
+    publisher: { '@id': absoluteUrl('/', origin) + JSONLD_IDS.organization },
   };
   if (entry.datePublished) node.datePublished = entry.datePublished;
   if (entry.dateModified) node.dateModified = entry.dateModified;
@@ -516,8 +533,8 @@ export const PUBLIC_PAGES = [
     path: '/register',
     title: 'Create your PecanRev account',
     description:
-      'Create a PecanRev account to start a systematic review project: build searches, screen '
-      + 'studies with a co-reviewer, extract data, and run meta-analyses in one workspace.',
+      'Create a PecanRev account to start a systematic review: build searches, screen studies '
+      + 'with a co-reviewer, extract data and run meta-analyses in one workspace.',
     canonicalPath: '/register',
     component: 'src/frontend/pages/Register.jsx',
     // Same reasoning as /login.
@@ -555,9 +572,8 @@ export const PUBLIC_PAGES = [
     path: '/features/search-engine',
     title: 'Systematic Review Search Strategy Builder | PecanRev Search Engine',
     description:
-      'Build a systematic review search from your research question, add MeSH terms with full scope '
-      + 'notes, and compile paste-ready queries for 16 databases with honest per-database vocabulary '
-      + 'warnings.',
+      'Build a systematic review search from your research question, add MeSH terms with full '
+      + 'scope notes, and compile paste-ready queries for 16 databases.',
     canonicalPath: '/features/search-engine',
     component: 'src/frontend/website/pages/SearchEnginePage.jsx',
     indexable: true,
@@ -577,9 +593,8 @@ export const PUBLIC_PAGES = [
     path: '/features/screening',
     title: 'Title, Abstract & Full-Text Screening Software | PecanRev',
     description:
-      'Screen citations with a keyboard-first workbench, keyword highlighting drawn from your '
-      + 'eligibility criteria, server-side duplicate detection, and optional relevance ranking that '
-      + 'never records a decision for you.',
+      'Screen citations in a keyboard-first workbench with criteria-driven highlighting, '
+      + 'server-side duplicate detection, and optional relevance ranking.',
     canonicalPath: '/features/screening',
     component: 'src/frontend/website/pages/ScreeningPage.jsx',
     indexable: true,
@@ -600,8 +615,7 @@ export const PUBLIC_PAGES = [
     title: 'Systematic Review Data Extraction Software | PecanRev',
     description:
       'Extract study data beside the PDF, capture values by clicking them, convert medians and '
-      + 'confidence intervals with cited formulas, and extract many patient cases from a single case '
-      + 'series.',
+      + 'confidence intervals with cited formulas, and extract case series.',
     canonicalPath: '/features/data-extraction',
     component: 'src/frontend/website/pages/DataExtractionPage.jsx',
     indexable: true,
@@ -622,8 +636,7 @@ export const PUBLIC_PAGES = [
     title: 'Meta-Analysis Software for Systematic Reviews | PecanRev',
     description:
       'Pool effect sizes with fixed and random-effects models, eight tau-squared estimators, HKSJ '
-      + 'intervals, subgroup and meta-regression, leave-one-out diagnostics and frequentist network '
-      + 'meta-analysis.',
+      + 'intervals, subgroup analysis, meta-regression and network meta-analysis.',
     canonicalPath: '/features/meta-analysis',
     component: 'src/frontend/website/pages/MetaAnalysisPage.jsx',
     indexable: true,
@@ -644,7 +657,7 @@ export const PUBLIC_PAGES = [
     title: 'Systematic Review Manuscript Editor with Live PRISMA Facts | PecanRev',
     description:
       'Write your review in an editor where study counts, PRISMA numbers and pooled estimates are '
-      + 'live tokens resolved from project data, with change tracking, provenance and Word export.',
+      + 'live tokens from project data, with change tracking and Word export.',
     canonicalPath: '/features/manuscript',
     component: 'src/frontend/website/pages/ManuscriptPage.jsx',
     indexable: true,
@@ -666,8 +679,8 @@ export const PUBLIC_PAGES = [
     path: '/resources',
     title: 'Systematic Review Methodology Guides | PecanRev Resources',
     description:
-      'Practical, cited guides to systematic review methodology — what a systematic review is, '
-      + 'PRISMA 2020 reporting, title and abstract screening, and running a meta-analysis.',
+      'Practical, cited guides to systematic review methodology: what a systematic review is, '
+      + 'PRISMA 2020 reporting, screening, and running a meta-analysis.',
     canonicalPath: '/resources',
     component: 'src/frontend/website/pages/ResourcesIndexPage.jsx',
     indexable: true,
@@ -687,9 +700,8 @@ export const PUBLIC_PAGES = [
     path: '/resources/what-is-a-systematic-review',
     title: 'What Is a Systematic Review? Definition, Steps and Standards',
     description:
-      'A systematic review answers a defined question using a pre-specified, reproducible method. '
-      + 'This guide explains what separates it from a literature review, the standard steps, and the '
-      + 'reporting rules that govern it.',
+      'A systematic review answers a defined question with a pre-specified, reproducible method. '
+      + 'What separates it from a literature review, its steps and its standards.',
     canonicalPath: '/resources/what-is-a-systematic-review',
     component: 'src/frontend/website/pages/WhatIsSystematicReviewPage.jsx',
     indexable: true,
@@ -709,8 +721,8 @@ export const PUBLIC_PAGES = [
     path: '/resources/prisma-2020-explained',
     title: 'PRISMA 2020 Explained: Checklist, Flow Diagram and Common Mistakes',
     description:
-      'What changed in PRISMA 2020, what the 27-item checklist actually asks for, how to build the '
-      + 'flow diagram correctly, and the reporting errors that reviewers catch most often.',
+      'What changed in PRISMA 2020, what the 27-item checklist asks for, how to build the flow '
+      + 'diagram correctly, and the reporting errors reviewers catch most often.',
     canonicalPath: '/resources/prisma-2020-explained',
     component: 'src/frontend/website/pages/Prisma2020Page.jsx',
     indexable: true,
@@ -730,9 +742,8 @@ export const PUBLIC_PAGES = [
     path: '/resources/title-and-abstract-screening',
     title: 'Title and Abstract Screening: A Practical Guide',
     description:
-      'How to pilot eligibility criteria, decide between single and dual screening, resolve '
-      + 'conflicts, use screening automation responsibly, and record decisions so PRISMA reporting '
-      + 'works.',
+      'How to pilot eligibility criteria, choose between single and dual screening, resolve '
+      + 'conflicts, and record decisions so PRISMA reporting works.',
     canonicalPath: '/resources/title-and-abstract-screening',
     component: 'src/frontend/website/pages/ScreeningGuidePage.jsx',
     indexable: true,
@@ -752,8 +763,8 @@ export const PUBLIC_PAGES = [
     path: '/resources/how-to-run-a-meta-analysis',
     title: 'How to Run a Meta-Analysis: Models, Heterogeneity and Interpretation',
     description:
-      'A practical guide to choosing an effect measure, deciding between fixed-effect and '
-      + 'random-effects models, reading I-squared honestly, and knowing when not to pool at all.',
+      'A practical guide to choosing an effect measure, picking a fixed-effect or random-effects '
+      + 'model, reading I-squared honestly, and knowing when not to pool.',
     canonicalPath: '/resources/how-to-run-a-meta-analysis',
     component: 'src/frontend/website/pages/MetaAnalysisGuidePage.jsx',
     indexable: true,
@@ -775,8 +786,8 @@ export const PUBLIC_PAGES = [
     path: '/about',
     title: 'About PecanRev — Who We Build For and How We Build',
     description:
-      'PecanRev is an end-to-end systematic review and meta-analysis platform. This page explains '
-      + 'what it is, the principles behind how it handles evidence and AI, and where its limits are.',
+      'PecanRev is an end-to-end systematic review and meta-analysis platform. What it is, the '
+      + 'principles behind how it handles evidence and AI, and where its limits are.',
     canonicalPath: '/about',
     component: 'src/frontend/website/pages/AboutPage.jsx',
     indexable: true,
@@ -796,8 +807,8 @@ export const PUBLIC_PAGES = [
     path: '/beta-waitlist',
     title: 'Join the PecanRev Beta Waitlist',
     description:
-      'Request early access to PecanRev — a professional workspace for systematic reviews and '
-      + 'meta-analyses: search building, screening, data extraction, risk of bias, and meta-analysis.',
+      'Request early access to PecanRev — a professional workspace for systematic reviews: search '
+      + 'building, screening, data extraction, risk of bias and meta-analysis.',
     // This route is a PREVIEW of the page that BetaWaitlistGate swaps onto '/' when the
     // betaWaitlist flag is on. It is the same content under a second URL, so it is
     // noindex AND canonicalises to '/'.
@@ -835,9 +846,39 @@ export function isNonIndexablePath(pathname) {
   return NON_INDEXABLE_PATTERNS.some((r) => matchPattern(pathname, r));
 }
 
-/** True when the path is a route src/App.jsx actually declares. */
+/**
+ * The KNOWN_SPA_PREFIXES rule a path matches, or null.
+ *
+ * The classifier needs the RULE, not just a boolean, because a `registryGated`
+ * prefix only covers the children PUBLIC_PAGES declares (see KNOWN_SPA_PREFIXES).
+ */
+export function matchSpaRule(pathname) {
+  return KNOWN_SPA_PREFIXES.find((r) => matchPattern(pathname, r)) || null;
+}
+
+/**
+ * True when the path is covered by a route src/App.jsx actually declares.
+ *
+ * NOTE: this is ROUTE COVERAGE, not "is a real page" — a registry-gated prefix
+ * answers true for its unknown children too. `isServeableSpaPath` is the question
+ * the edge middleware asks.
+ */
 export function isKnownSpaPath(pathname) {
-  return KNOWN_SPA_PREFIXES.some((r) => matchPattern(pathname, r));
+  return matchSpaRule(pathname) != null;
+}
+
+/**
+ * True when the SPA shell should be served for this path with a 200.
+ *
+ * Differs from isKnownSpaPath on exactly one case: a child of a `registryGated`
+ * prefix that PUBLIC_PAGES does not declare (/features/bogus, /resources/nope,
+ * /features/screening/x) is NOT serveable — it is a genuine 404.
+ */
+export function isServeableSpaPath(pathname) {
+  const rule = matchSpaRule(pathname);
+  if (!rule) return false;
+  if (!rule.registryGated) return true;
+  return isRegistryPath(stripTrailingSlash(pathname));
 }
 
 /** The permanent-redirect rule for a path, if any (case/slash-insensitive). */

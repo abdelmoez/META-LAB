@@ -8,7 +8,7 @@
 export default `---
 h1: Screening software for systematic reviews
 title: Title, Abstract & Full-Text Screening Software | PecanRev
-description: Screen citations with a keyboard-first workbench, keyword highlighting drawn from your eligibility criteria, server-side duplicate detection, and optional relevance ranking that never records a decision for you.
+description: Screen citations in a keyboard-first workbench with criteria-driven highlighting, server-side duplicate detection, and optional relevance ranking.
 slug: features/screening
 published: 2026-08-09
 updated: 2026-08-09

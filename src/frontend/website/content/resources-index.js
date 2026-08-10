@@ -7,7 +7,7 @@
 export default `---
 h1: Systematic review methodology guides
 title: Systematic Review Methodology Guides | PecanRev Resources
-description: Practical, cited guides to systematic review methodology — what a systematic review is, PRISMA 2020 reporting, title and abstract screening, and running a meta-analysis.
+description: Practical, cited guides to systematic review methodology: what a systematic review is, PRISMA 2020 reporting, screening, and running a meta-analysis.
 slug: resources
 published: 2026-08-09
 updated: 2026-08-09

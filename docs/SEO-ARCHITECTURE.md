@@ -36,8 +36,15 @@ list to forget.
 - `isRegistryPath` / `getPublicPage` / `indexablePages()`.
 - `isNonIndexablePath(p)` — pattern match over `NON_INDEXABLE_PATTERNS`.
 - `isKnownSpaPath(p)` — `KNOWN_SPA_PREFIXES`, the routes `src/App.jsx` really
-  declares. This is what separates "an app route we simply do not prerender" from
-  "a URL that does not exist".
+  declares. Route COVERAGE only.
+- `isServeableSpaPath(p)` — the question the edge middleware actually asks, and the
+  one that separates "an app route we simply do not prerender" from "a URL that does
+  not exist". It differs from `isKnownSpaPath` on one case: a rule marked
+  `registryGated: true` covers only the children `PUBLIC_PAGES` declares. `/features`
+  and `/resources` are gated because neither has a parameterised route, so
+  `/features/bogus` is a real 404 instead of a 200 shell. Parameterised families
+  (`/app/project/:id`, `/invite/:token`, `/rob/:projectId`, …) are ungated — their
+  unknown-looking children are genuine routes.
 - `findRedirect(p)` — `PERMANENT_REDIRECTS`.
 - `absoluteUrl(p)` over `SITE_ORIGIN` (`https://pecanrev.com`).
 - JSON-LD builders: `jsonLdGraph`, `organizationJsonLd`, `softwareApplicationJsonLd`,
@@ -164,8 +171,13 @@ today. Three rules it exists to enforce:
 2. **The document is the freshly built shell with exactly five head-tag families
    removed** (`title`, `meta[name=description]`, `link[rel=canonical]`,
    `meta[property^=og:]`, `meta[name^=twitter:]`) and the per-page head spliced in
-   before `</head>`. Everything else stays byte-exact so the SPA hydrates a prerendered
-   page exactly as it hydrates the shell.
+   before `</head>`. Everything else stays byte-exact so the SPA **boots** on a
+   prerendered page exactly as it boots on the shell. Note the word: `src/main.jsx`
+   mounts with `createRoot`, not `hydrateRoot`, so the markup below is what a non-JS
+   crawler reads and what the visitor sees before the route chunk lands — React then
+   re-renders the same tree over it. main.jsx preloads the matched route first so that
+   re-render is synchronous and nothing flashes; see `docs/seo-overhaul-111.md` §5.11
+   for why true hydration would mean restructuring both trees.
 3. **The CSP inline-script byte-identity guard.** `server/security/csp.js` computes
    `script-src` SHA-256 hashes from `dist/index.html` and applies them to every HTML
    response, including prerendered ones. If a prerendered page's inline scripts diverged
@@ -174,7 +186,9 @@ today. Three rules it exists to enforce:
    it.** (The JSON-LD block is exempt: `type="application/ld+json"` is never executed, so
    `script-src` does not apply, and it legitimately differs per page.)
 
-A **one-`<h1>` guard** fails the build if a page renders zero or multiple `<h1>`s.
+An **exactly-one-`<h1>` guard** fails the build if a page renders zero or multiple
+`<h1>`s — it counts matches, and `e2e/seo/seo.spec.ts` counts them on the served
+document too.
 An indexable page that fails to render is a **hard build failure** — no silent skips,
 because a missing prerender is invisible in the UI and only surfaces weeks later as a
 page that never got indexed.
