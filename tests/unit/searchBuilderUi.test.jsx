@@ -1104,16 +1104,27 @@ describe('SearchBuilderTab — the canvas is wired to the board (110.md §2, sou
     expect(tabSrc).toContain('@media (max-width:640px){.sb-concept-canvas{'); // narrow viewports shed canvas padding
   });
 
-  it('the plane and the de-emphasis recede toward --t-bg, never --t-surf (Stitch maps surf === card)', () => {
-    // Regression pin: the Stitch legacyRemap sends BOTH --t-surf and --t-card to
-    // p.card, so a surf-derived canvas renders the SAME colour as the cards on it
-    // and the whole hierarchy silently flattens. --t-bg is the one ground that
-    // differs from the card plane in every theme × design-system combination.
+  it('the plane and the de-emphasis ARE --t-bg, never --t-surf and never accent-tinted', () => {
+    // Regression pin, two lessons:
+    //  1. The Stitch legacyRemap sends BOTH --t-surf and --t-card to p.card, so a
+    //     surf-derived canvas renders the SAME colour as the cards on it and the
+    //     whole hierarchy silently flattens. --t-bg is the one ground that differs
+    //     from the card plane in every theme × design-system combination.
+    //  2. (110 review F1/F2) Mixing the ACCENT into that ground undoes lesson 1:
+    //     --t-acc is a LIGHT colour in both dark palettes, so a 5% wash lifted the
+    //     stitch-night plane to rgb(26,28,37) against a rgb(26,29,38) card — Δ2.
+    //     The plane and the de-emphasised card are therefore the RAW --t-bg; the
+    //     accent lives only in the head gradient, capped at alpha '08'.
     // (the stylesheet is a template literal — the pins match the SOURCE form)
-    expect(tabSrc).toContain('background-color:color-mix(in srgb,${C.bg} 95%,${C.acc});');
-    expect(tabSrc).toContain('background:color-mix(in srgb,${C.card} 55%,${C.bg});box-shadow:none;');
+    expect(tabSrc).toContain('background-color:${C.bg};');
+    expect(tabSrc).toContain("linear-gradient(180deg,${alpha(C.acc,'08')} 0,transparent 150px)");
+    expect(tabSrc).toContain("box-shadow:inset 0 1px 0 ${alpha(C.bg,'40')},0 1px 2px var(--t-shadow);");
+    expect(tabSrc).toContain('.sb-card-shell[data-compact="true"]{background:${C.bg};box-shadow:inset 0 1px 3px var(--t-shadow);}');
     const canvasRules = tabSrc.slice(tabSrc.indexOf('.sb-concept-canvas{'), tabSrc.indexOf('@media (max-width:640px)'));
     expect(canvasRules).not.toContain('C.surf');
+    // No accent may re-enter the plane's own colour or the de-emphasis surface.
+    expect(canvasRules).not.toMatch(/background-color:color-mix/);
+    expect(canvasRules).not.toMatch(/\.sb-card-shell\[data-compact="true"\]\{background:color-mix/);
   });
 
   it('the card surface + resting elevation moved to the stylesheet so the state swap can transition', () => {

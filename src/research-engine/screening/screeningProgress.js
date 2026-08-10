@@ -198,10 +198,11 @@ export function computeScreeningProgress(input = {}) {
     s.status = i < currentStageIndex ? 'complete' : (i === currentStageIndex ? (complete ? 'complete' : 'active') : 'pending');
   });
 
-  const summary = buildSummary({
+  const summaryParts = buildSummaryParts({
     poolSize, complete, recordsNotStarted, recordsAwaitingReviewer,
     unresolvedConflicts, requiredReviewers,
   });
+  const summary = formatSummaryParts(summaryParts);
 
   return {
     requiredReviewers,
@@ -224,22 +225,59 @@ export function computeScreeningProgress(input = {}) {
     stages,
     currentStageIndex,
     currentStageLabel: stages[currentStageIndex]?.fullLabel || '',
+    summaryParts,
     summary,
   };
 }
 
-/** One short sentence naming what is actually left — never a wall of text. */
-function buildSummary({ poolSize, complete, recordsNotStarted, recordsAwaitingReviewer, unresolvedConflicts, requiredReviewers }) {
-  if (poolSize === 0) return 'No records to screen yet.';
+/**
+ * One short sentence naming what is actually left — never a wall of text.
+ *
+ * 110 review (F4) — returned as STRUCTURED parts, not a finished string. This
+ * module is imported by the Express controller as well as the UI, so it must not
+ * decide number formatting: `toLocaleString()` on the server picks up the SERVER's
+ * locale (and would bake grouping separators into an API payload). Emitting
+ * `{count, text}` lets `ScreeningProgressStrip` run every figure through the same
+ * `fmt` it already applies to the headline and the stage counters, instead of the
+ * card showing "1,000 of 2,000 reviewer decisions" directly above
+ * "1000 awaiting another reviewer".
+ *
+ * @returns {Array<{count: number|null, text: string}>} `count: null` = a complete
+ *   sentence that carries its own punctuation; otherwise a "<count> <text>" clause.
+ */
+function buildSummaryParts({ poolSize, complete, recordsNotStarted, recordsAwaitingReviewer, unresolvedConflicts, requiredReviewers }) {
+  if (poolSize === 0) return [{ count: null, text: 'No records to screen yet.' }];
   if (complete) {
-    return requiredReviewers === 1
-      ? 'Every record has been screened and no conflicts remain.'
-      : `Every record has ${requiredReviewers} reviewer decisions and no conflicts remain.`;
+    return [{
+      count: null,
+      text: requiredReviewers === 1
+        ? 'Every record has been screened and no conflicts remain.'
+        // requiredReviewers is clamped to 2-10, so it never needs grouping.
+        : `Every record has ${requiredReviewers} reviewer decisions and no conflicts remain.`,
+    }];
   }
   const parts = [];
-  if (recordsNotStarted > 0) parts.push(`${recordsNotStarted} not screened yet`);
-  if (recordsAwaitingReviewer > 0) parts.push(`${recordsAwaitingReviewer} awaiting another reviewer`);
-  if (unresolvedConflicts > 0) parts.push(`${unresolvedConflicts} conflict${unresolvedConflicts === 1 ? '' : 's'} to resolve`);
-  if (parts.length === 0) return 'Screening is finishing up.';
-  return `${parts.join(' · ')}.`;
+  if (recordsNotStarted > 0) parts.push({ count: recordsNotStarted, text: 'not screened yet' });
+  if (recordsAwaitingReviewer > 0) parts.push({ count: recordsAwaitingReviewer, text: 'awaiting another reviewer' });
+  if (unresolvedConflicts > 0) parts.push({ count: unresolvedConflicts, text: `conflict${unresolvedConflicts === 1 ? '' : 's'} to resolve` });
+  if (parts.length === 0) return [{ count: null, text: 'Screening is finishing up.' }];
+  return parts;
+}
+
+/**
+ * Join summary parts into the one sentence the card shows. The ONLY place the
+ * separator and the terminal full stop live, so the raw `summary` string and the
+ * strip's locale-formatted render can never drift apart.
+ *
+ * @param {Array<{count: number|null, text: string}>} parts
+ * @param {(n: number) => string} [fmt] number formatter (the UI passes
+ *   `v => v.toLocaleString()`; the default keeps `summary` locale-independent).
+ */
+export function formatSummaryParts(parts, fmt = String) {
+  if (!Array.isArray(parts) || parts.length === 0) return '';
+  const clauses = parts.map(p => (
+    p && typeof p.count === 'number' ? `${fmt(p.count)} ${p.text}` : String((p && p.text) || '')
+  ));
+  const sentenceOnly = parts.length === 1 && !(parts[0] && typeof parts[0].count === 'number');
+  return sentenceOnly ? clauses[0] : `${clauses.join(' · ')}.`;
 }

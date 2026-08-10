@@ -2911,19 +2911,44 @@ export default function SearchBuilderTab({projectId,question:questionProp,pico,a
    BOTH --t-surf and --t-card onto p.card, so a surf-based canvas renders the
    exact same colour as the cards on it (caught by the e2e computed-style
    assertion — every testid in the suite passed straight through it). --t-bg is
-   the page ground in every theme and design system, so mixing toward it is the
-   one direction guaranteed to recede. Same reason the de-emphasised card mixes
-   toward --t-bg rather than --t-surf. */
+   the page ground in every theme and design system, so it is the one surface
+   guaranteed to sit below the cards. Same reason the de-emphasised card lands
+   on --t-bg rather than --t-surf.
+
+   110 review (F1) — "mixing toward --t-bg" was not enough: the plane was
+   color-mix(--t-bg 95%, --t-acc) and the head wash was 8% --t-acc (alpha '14').
+   In DARK palettes --t-acc is a LIGHT colour (#818cf8 / #cabeff), so both the
+   flat 5% tint and the wash push the plane UP, straight onto the card colour —
+   the flattening this block exists to prevent. The accent now survives ONLY as
+   the head gradient, capped at alpha '08' (3.1%), which is below the share at
+   which the wash can reach --t-card in the darkest shipped combination.
+   Channel-sum |plane − card| (r+g+b) for the raw plane and for the plane at the
+   very TOP of the head wash, computed from theme/tokens.js THEMES and
+   stitchTokens.js STITCH_LIGHT/STITCH_DARK through legacyRemap:
+
+     combo          --t-bg    --t-card   plane Δ   head Δ (3.1% acc)
+     legacy day     #f6f7f9   #ffffff       23         35
+     legacy night   #0b1120   #151e30       39         24
+     stitch light   #f7f9ff   #ffffff       14         27
+     stitch night   #11131a   #1a1d26       31         13
+
+   The old plane gave stitch night Δ2 — rgb(26,28,37) against a rgb(26,29,38)
+   card — and the old 8% wash crossed the card colour outright in BOTH dark
+   themes. The cards start ~43px below the canvas top, where the 150px wash has
+   already decayed to ~2.2% (stitch night Δ18), so 13 is a head-only floor.
+   The inset top hairline is ground-derived rather than --t-txt-derived: a text
+   highlight is near-white in the dark themes, i.e. a RAISED bevel on a plane
+   that is supposed to read recessed. */
 /* Deliberately NOT position:relative / transformed / opacity-faded: every board
    popover (term editor, MeSH details, the add-box listbox) anchors to its own
    local relative wrapper, and a new positioned or filtered ancestor here would
    silently re-anchor or clip them. The de-emphasis is a surface swap for the
    same reason — never an opacity or filter. */
 .sb-concept-canvas{border:1px solid ${C.brd};border-radius:16px;padding:14px 14px 12px;margin:2px 0 4px;
-  background-color:color-mix(in srgb,${C.bg} 95%,${C.acc});
-  background-image:radial-gradient(${alpha(C.txt,'12')} 1px,transparent 1px),linear-gradient(180deg,${alpha(C.acc,'14')} 0,transparent 150px);
+  background-color:${C.bg};
+  background-image:radial-gradient(${alpha(C.txt,'12')} 1px,transparent 1px),linear-gradient(180deg,${alpha(C.acc,'08')} 0,transparent 150px);
   background-size:18px 18px,auto;background-position:-1px -1px,0 0;background-repeat:repeat,no-repeat;
-  box-shadow:inset 0 1px 0 ${alpha(C.txt,'0b')},0 1px 2px var(--t-shadow);}
+  box-shadow:inset 0 1px 0 ${alpha(C.bg,'40')},0 1px 2px var(--t-shadow);}
 /* The head names the surface without stealing weight from the cards: mono
    eyebrow + a real h3 (the workspace h2 is "Pecan Search Engine") + a count. */
 .sb-canvas-head{display:flex;align-items:baseline;gap:9px;flex-wrap:wrap;margin:0 2px 11px;}
@@ -2933,9 +2958,29 @@ export default function SearchBuilderTab({projectId,question:questionProp,pico,a
 /* Cards ON the canvas: the open (working) card is lifted and ringed; the rest
    settle back into the plane while one is open, and come back on hover/focus.
    Both states are plain background/shadow swaps, so the .sb-card-shell
-   transition above cross-fades the expand/collapse instead of snapping. */
+   transition above cross-fades the expand/collapse instead of snapping.
+
+   110 review (F2) — the de-emphasis was color-mix(--t-card 55%, --t-bg), i.e.
+   only 45% of the card→ground distance: channel-sum Δ11 in legacy day and Δ7 in
+   stitch light, which are the DEFAULT light appearances and below the threshold
+   at which a surface swap is visible at all. It now lands ON the ground (the
+   whole distance the token system offers — the card and the plane are the only
+   two surfaces here) and trades the resting drop shadow for an INSET one, so
+   the card reads as pressed into the plane wherever the two grounds are close:
+
+     combo          |open − de-emphasised|   inset shadow (--t-shadow alpha)
+     legacy day               23                       0.08
+     legacy night             39                       0.55
+     stitch light             14                       0.16
+     stitch night             31                       0.50
+
+   stitch light is the floor: its --t-bg #f7f9ff and --t-card #ffffff are 14
+   apart in total and IDENTICAL in blue, so no mix ratio can do better there —
+   which is why the inset shadow (0.16 alpha, the second strongest of the four)
+   carries the rest of the signal in that combination. Still no opacity/filter:
+   see the positioning note above. Hover/focus restores --t-card + the ring. */
 .sb-concept-canvas .sb-card-shell[data-compact="false"]{box-shadow:0 10px 26px var(--t-shadow),0 0 0 1px ${alpha(C.acc,'2e')};}
-.sb-concept-canvas[data-has-active="true"] .sb-card-shell[data-compact="true"]{background:color-mix(in srgb,${C.card} 55%,${C.bg});box-shadow:none;}
+.sb-concept-canvas[data-has-active="true"] .sb-card-shell[data-compact="true"]{background:${C.bg};box-shadow:inset 0 1px 3px var(--t-shadow);}
 .sb-concept-canvas[data-has-active="true"] .sb-card-shell[data-compact="true"]:hover,
 .sb-concept-canvas[data-has-active="true"] .sb-card-shell[data-compact="true"]:focus-within,
 .sb-concept-canvas[data-has-active="true"] .sb-card-shell[data-compact="true"]:focus-visible{background:${C.card};box-shadow:0 0 0 1px ${alpha(C.acc,'66')},0 8px 20px var(--t-shadow);}

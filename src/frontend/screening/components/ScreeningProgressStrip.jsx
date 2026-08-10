@@ -13,6 +13,7 @@
  */
 import { C, MONO, alpha } from '../ui/theme.js';
 import { StatTile } from '../ui/components.jsx';
+import { formatSummaryParts } from '../../../research-engine/screening/screeningProgress.js';
 
 const fmt = (v) => (typeof v === 'number' ? v.toLocaleString() : String(v ?? '0'));
 
@@ -110,7 +111,14 @@ export default function ScreeningProgressStrip({ progress }) {
         <span style={{ color: C.muted, fontFamily: MONO, fontSize: 10, letterSpacing: '0.1em', textTransform: 'uppercase', marginRight: 8 }}>
           {progress.complete ? 'Complete' : 'Remaining'}
         </span>
-        {progress.summary}
+        {/* 110 review (F4) — the sentence is rendered from the model's structured
+            parts through the SAME `fmt` as every other figure on this card, so a
+            large project can no longer read "1,000 of 2,000 reviewer decisions"
+            above "1000 awaiting another reviewer". `summary` (raw, unformatted)
+            stays the fallback for a server response that predates the parts. */}
+        {Array.isArray(progress.summaryParts) && progress.summaryParts.length > 0
+          ? formatSummaryParts(progress.summaryParts, fmt)
+          : progress.summary}
       </div>
     </div>
   );

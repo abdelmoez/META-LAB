@@ -176,13 +176,23 @@ export async function getOverview(req, res) {
       const k = taClosed ? Math.max(observed, effectiveRequired) : observed;
       if (k >= 1) reviewerHistogram[k] = (reviewerHistogram[k] || 0) + 1;
     }
-    const resolvedConflicts = conflicts.filter(c => c.resolvedAt).length;
+    // 110 review (F6) — the conflict counts fed to the progress model must obey the
+    // SAME pool convention as its denominator. `poolSize`/`reviewerHistogram` exclude
+    // duplicate-flagged records, but the project-wide `unresolvedConflicts` above does
+    // not: a disagreement raised before a record was flagged as a duplicate then added
+    // a work unit to `totalUnits` for a record that can never contribute a decision,
+    // pinning the strip at 99% with "Conflict resolution — Now" forever. Scoped here
+    // (from the records already in memory — no extra query) rather than at line ~72,
+    // because `dataSummary.unresolvedConflicts` is the Conflicts TAB badge and must
+    // keep matching `listConflicts`, which lists duplicates' conflicts too.
+    const poolRecordIds = new Set(records.filter(r => !r.isDuplicate).map(r => r.id));
+    const poolConflicts = conflicts.filter(c => poolRecordIds.has(c.recordId));
     const screeningProgress = computeScreeningProgress({
       requiredReviewers: effectiveRequired,
       poolSize: screeningPool,
       reviewerHistogram,
-      unresolvedConflicts,
-      resolvedConflicts,
+      unresolvedConflicts: poolConflicts.filter(c => !c.resolvedAt).length,
+      resolvedConflicts: poolConflicts.filter(c => c.resolvedAt).length,
     });
 
     const memberProgress = members.map(m => {

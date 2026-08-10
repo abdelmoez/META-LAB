@@ -7,8 +7,9 @@
  * still open.
  */
 import { describe, it, expect } from 'vitest';
+import { readFileSync } from 'node:fs';
 import {
-  computeScreeningProgress, honestPct, ordinal, STAGE_KIND,
+  computeScreeningProgress, formatSummaryParts, honestPct, ordinal, STAGE_KIND,
 } from '../../src/research-engine/screening/screeningProgress.js';
 
 const stageByKey = (m, key) => m.stages.find(s => s.key === key);
@@ -256,5 +257,83 @@ describe('computeScreeningProgress — engine-reviewer exclusion contract', () =
     expect(withEngineExcluded.completion).toBe(50);
     expect(withEngineExcluded.complete).toBe(false);
     expect(ifEngineHadCounted.complete).toBe(true);
+  });
+});
+
+describe('summary parts (110 review F4)', () => {
+  // The module is imported by the Express controller as well as the UI, so it must
+  // NOT bake a locale into the payload — it emits {count, text} and the strip runs
+  // every count through the same formatter as the rest of the card.
+  it('emits structured counts alongside the flat, locale-independent sentence', () => {
+    const m = computeScreeningProgress({
+      requiredReviewers: 2, poolSize: 4000, reviewerHistogram: { 1: 1500 }, unresolvedConflicts: 7,
+    });
+    expect(m.summaryParts).toEqual([
+      { count: 2500, text: 'not screened yet' },
+      { count: 1500, text: 'awaiting another reviewer' },
+      { count: 7, text: 'conflicts to resolve' },
+    ]);
+    expect(m.summary).toBe('2500 not screened yet · 1500 awaiting another reviewer · 7 conflicts to resolve.');
+    expect(formatSummaryParts(m.summaryParts, v => v.toLocaleString('en-US')))
+      .toBe('2,500 not screened yet · 1,500 awaiting another reviewer · 7 conflicts to resolve.');
+  });
+
+  it('sentence-only states carry their own punctuation and no count', () => {
+    for (const input of [
+      { requiredReviewers: 2, poolSize: 0 },
+      { requiredReviewers: 2, poolSize: 10, reviewerHistogram: { 2: 10 } },
+      { requiredReviewers: 1, poolSize: 10, reviewerHistogram: { 1: 10 } },
+    ]) {
+      const m = computeScreeningProgress(input);
+      expect(m.summaryParts).toHaveLength(1);
+      expect(m.summaryParts[0].count).toBe(null);
+      // One join for both renderings — the two can never drift apart.
+      expect(formatSummaryParts(m.summaryParts, v => v.toLocaleString('en-US'))).toBe(m.summary);
+      expect(m.summary.endsWith('.')).toBe(true);
+    }
+  });
+
+  it('a single counted clause still gets the terminal full stop', () => {
+    const m = computeScreeningProgress({
+      requiredReviewers: 2, poolSize: 20, reviewerHistogram: { 2: 20 }, unresolvedConflicts: 1,
+    });
+    expect(m.summaryParts).toEqual([{ count: 1, text: 'conflict to resolve' }]);
+    expect(m.summary).toBe('1 conflict to resolve.');
+  });
+
+  it('degrades to an empty string on a malformed parts array', () => {
+    expect(formatSummaryParts(null)).toBe('');
+    expect(formatSummaryParts([])).toBe('');
+  });
+});
+
+describe('conflict counts obey the screening-pool convention (110 review F6)', () => {
+  const controllerSrc = readFileSync(
+    new URL('../../server/controllers/screeningOverviewController.js', import.meta.url), 'utf8');
+
+  // CONSEQUENCE pin: `poolSize` excludes duplicate-flagged records, so a conflict on
+  // one of them is a work unit that can never be paired with a decision — it pinned
+  // the strip below 100% forever.
+  it('an out-of-pool conflict would deadlock the model, so the caller must not pass one', () => {
+    const scoped = computeScreeningProgress({
+      requiredReviewers: 2, poolSize: 40, reviewerHistogram: { 2: 40 },
+    });
+    const leaked = computeScreeningProgress({
+      requiredReviewers: 2, poolSize: 40, reviewerHistogram: { 2: 40 }, unresolvedConflicts: 1,
+    });
+    expect(scoped.complete).toBe(true);
+    expect(scoped.completion).toBe(100);
+    expect(leaked.complete).toBe(false);
+    expect(leaked.completion).toBe(99);
+    expect(leaked.totalUnits).toBe(81); // the inflated denominator
+  });
+
+  it('the overview controller filters conflicts to the non-duplicate records it already loaded', () => {
+    expect(controllerSrc).toContain('const poolRecordIds = new Set(records.filter(r => !r.isDuplicate).map(r => r.id));');
+    expect(controllerSrc).toContain('const poolConflicts = conflicts.filter(c => poolRecordIds.has(c.recordId));');
+    expect(controllerSrc).toContain('unresolvedConflicts: poolConflicts.filter(c => !c.resolvedAt).length,');
+    expect(controllerSrc).toContain('resolvedConflicts: poolConflicts.filter(c => c.resolvedAt).length,');
+    // …while the Conflicts TAB badge stays project-wide, matching `listConflicts`.
+    expect(controllerSrc).toContain('disputedDecisions, unresolvedConflicts,');
   });
 });

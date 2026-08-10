@@ -26,7 +26,32 @@ describe('ScreeningProgressStrip', () => {
     expect(html).toContain('Screening completion across all required reviewers');
     expect(html).toContain('2 independent reviewers per record');
     expect(html).toContain('1,000 of 2,000 reviewer decisions');
-    expect(html).toContain('1000 awaiting another reviewer.');
+    // 110 review (F4) — ONE number format per card: the remaining-work sentence is
+    // rendered from `summaryParts` through the same `fmt` as the headline, so it can
+    // no longer read "1000 awaiting another reviewer" next to "1,000 of 2,000".
+    expect(html).toContain('1,000 awaiting another reviewer.');
+    expect(html).not.toContain('1000 awaiting');
+  });
+
+  it('locale-formats EVERY figure in the remaining-work sentence, not just the first', () => {
+    const html = r(h(ScreeningProgressStrip, {
+      progress: model({
+        requiredReviewers: 2, poolSize: 40000, reviewerHistogram: { 1: 12345 },
+        unresolvedConflicts: 2500,
+      }),
+    }));
+    expect(html).toContain('27,655 not screened yet · 12,345 awaiting another reviewer · 2,500 conflicts to resolve.');
+    // The raw model string stays locale-independent (it is also an API payload field).
+    expect(model({
+      requiredReviewers: 2, poolSize: 40000, reviewerHistogram: { 1: 12345 }, unresolvedConflicts: 2500,
+    }).summary).toBe('27655 not screened yet · 12345 awaiting another reviewer · 2500 conflicts to resolve.');
+  });
+
+  it('falls back to the flat `summary` string when the server predates summaryParts', () => {
+    const legacy = { ...model({ requiredReviewers: 2, poolSize: 10, reviewerHistogram: { 1: 4 } }) };
+    delete legacy.summaryParts;
+    const html = r(h(ScreeningProgressStrip, { progress: legacy }));
+    expect(html).toContain('6 not screened yet · 4 awaiting another reviewer.');
   });
 
   it('renders one segment per required reviewer pass plus conflicts and complete', () => {

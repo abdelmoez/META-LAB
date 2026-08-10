@@ -9,9 +9,12 @@ import React from 'react';
  * frame the board read as one more card in a stack of cards.
  *
  * The hierarchy is inverted instead of shouted: this frame is a recessed BUILD
- * CANVAS (a `--t-surf` plane with a faint accent wash at its head and a whisper
- * of a builder dot-grid) and the concept cards are the raised `--t-card`
- * objects sitting ON it. Depth, not colour, carries "this is the workspace".
+ * CANVAS (the `--t-bg` page ground with a faint accent wash at its head and a
+ * whisper of a builder dot-grid) and the concept cards are the raised
+ * `--t-card` objects sitting ON it. Depth, not colour, carries "this is the
+ * workspace" — see the numeric four-combo proof beside the `.sb-concept-canvas`
+ * rules in SearchBuilderTab for why the plane is the RAW ground and not a
+ * tinted one.
  * All of it rides existing `--t-*` tokens, so day/night and the Stitch remap
  * follow automatically.
  *

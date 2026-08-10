@@ -22,7 +22,7 @@
  * path): at a wide viewport two compact concept cards share one row; at a narrow
  * width they stack (compared via boundingBox y).
  */
-import { type Page } from '@playwright/test';
+import { type Locator, type Page } from '@playwright/test';
 import { test, expect } from '../fixtures/stitch-test';
 import { SearchPage } from '../page-objects/SearchPage';
 
@@ -31,6 +31,54 @@ const WIDTHS = [
   { w: 1024, h: 800, label: 'small laptop (1024)' },
 ];
 const OVERFLOW_TOLERANCE = 2; // px — sub-pixel rounding only
+
+/* 110 review (F3) — the canvas hierarchy is PERCEPTUAL, so it has to be asserted
+   numerically. `expect(a).not.toBe(b)` on two getComputedStyle colour strings
+   passes on rgb(26,29,38) vs rgb(26,28,37): different strings, one surface. The
+   floor below is a channel-sum |Δr|+|Δg|+|Δb|; the weakest shipped combination
+   (Stitch light, --t-bg #f7f9ff against --t-card #ffffff) sits at 14, so 12 is
+   the tightest bar every theme × design-system pair can actually clear. */
+const MIN_SURFACE_DELTA = 12;
+
+function parseRgb(value: string): [number, number, number] {
+  const nums = value.match(/-?[\d.]+/g);
+  if (!nums || nums.length < 3) throw new Error(`unparseable computed colour: ${value}`);
+  return [Number(nums[0]), Number(nums[1]), Number(nums[2])];
+}
+
+/** Total sRGB channel distance between two computed `backgroundColor` strings. */
+function channelDelta(a: string, b: string): number {
+  const [ar, ag, ab] = parseRgb(a);
+  const [br, bg, bb] = parseRgb(b);
+  return Math.abs(ar - br) + Math.abs(ag - bg) + Math.abs(ab - bb);
+}
+
+/** Read `backgroundColor` once the .22s cross-fade has settled (3 identical samples). */
+async function settledBg(loc: Locator, label: string): Promise<string> {
+  let last = '';
+  let stable = -1;
+  await expect
+    .poll(async () => {
+      const now = await loc.evaluate((el) => getComputedStyle(el).backgroundColor);
+      stable = now === last ? stable + 1 : 0;
+      last = now;
+      return stable;
+    }, { message: `${label} background-color settles after the .22s cross-fade` })
+    .toBeGreaterThanOrEqual(2);
+  return last;
+}
+
+/** Flip the app palette exactly the way tokens.js `applyTheme()` does — the
+ *  <html> attribute, the localStorage key ThemeProvider reads, and the
+ *  out-of-band event it listens for, so React state and the DOM stay in step. */
+async function setTheme(page: Page, theme: 'day' | 'night'): Promise<void> {
+  await page.evaluate((t) => {
+    try { window.localStorage.setItem('metalab_theme', t); } catch { /* private mode */ }
+    document.documentElement.dataset.theme = t;
+    window.dispatchEvent(new CustomEvent('metalab:theme-change', { detail: t }));
+  }, theme);
+  await expect.poll(async () => page.locator('html').getAttribute('data-theme')).toBe(theme);
+}
 
 async function expectNoHorizontalOverflow(page: Page, label: string): Promise<void> {
   await expect
@@ -130,7 +178,10 @@ test.describe('96.md/98.md — responsive Select & Build Key Terms workspace', (
      canvas plane, the cards raised on it, and the de-emphasis of the cards
      that are not open must all be genuinely different computed surfaces —
      a stylesheet regression that flattens them would otherwise pass every
-     testid assertion in the suite). AUTHORED, NOT RUN in the 110.md round. */
+     testid assertion in the suite). Executed under the chromium project in the
+     110.md round, where it caught the --t-surf/--t-card token collision on its
+     first live run; the perceptual half was re-armed with numeric deltas in the
+     110-review round (see MIN_SURFACE_DELTA). */
   test('110.md §2 — the board sits on a build canvas: distinct plane, elevated open card, de-emphasis that follows expand/collapse, no overflow', async ({ page, tmpProject }) => {
     await page.setViewportSize({ width: 1280, height: 900 });
     const sp = new SearchPage(page);
@@ -148,8 +199,12 @@ test.describe('96.md/98.md — responsive Select & Build Key Terms workspace', (
     // HIERARCHY: the canvas plane and the cards ON it are different surfaces,
     // and the open card is elevated off the plane.
     const canvasBg = await canvas.evaluate((el) => getComputedStyle(el).backgroundColor);
-    const openBg = await sp.activeConcept.evaluate((el) => getComputedStyle(el).backgroundColor);
-    expect(openBg).not.toBe(canvasBg);
+    const openBg = await settledBg(sp.activeConcept, 'the open card');
+    // 110 review (F3) — a numeric floor, not string inequality: two surfaces one
+    // rgb unit apart are different STRINGS and the same SURFACE.
+    expect(channelDelta(openBg, canvasBg),
+      `the canvas plane (${canvasBg}) and the card on it (${openBg}) must be different surfaces`)
+      .toBeGreaterThanOrEqual(MIN_SURFACE_DELTA);
     const openShadow = await sp.activeConcept.evaluate((el) => getComputedStyle(el).boxShadow);
     expect(openShadow).not.toBe('none');
 
@@ -159,10 +214,10 @@ test.describe('96.md/98.md — responsive Select & Build Key Terms workspace', (
     // "subtle and smooth" part of the contract), so every surface read after a
     // state change must poll — a bare read lands on an intermediate colour.
     await expect(canvas).toHaveAttribute('data-has-active', 'true');
-    await expect
-      .poll(async () => sp.compactCards.nth(0).evaluate((el) => getComputedStyle(el).backgroundColor),
-        { message: 'the inactive card settles back toward the canvas plane' })
-      .not.toBe(openBg);
+    const dimBg = await settledBg(sp.compactCards.nth(0), 'the de-emphasised card');
+    expect(channelDelta(openBg, dimBg),
+      `the open card (${openBg}) and the de-emphasised card (${dimBg}) must be different surfaces`)
+      .toBeGreaterThanOrEqual(MIN_SURFACE_DELTA);
 
     // Click-outside restores every card to equal emphasis (99.md behaviour, kept).
     await page.getByTestId('search-workspace-stage').click({ position: { x: 4, y: 4 } });
@@ -181,5 +236,44 @@ test.describe('96.md/98.md — responsive Select & Build Key Terms workspace', (
     await page.setViewportSize({ width: 480, height: 900 });
     await sp.conceptBoard.scrollIntoViewIfNeeded();
     await expectNoHorizontalOverflow(page, 'canvas @ narrow (480)');
+  });
+
+  /* 110 review (F1/F2/F3) — the SAME perceptual contract, asserted in BOTH
+     palettes. The original guard only ever ran in whichever theme the fixture
+     happened to boot in, and the flattening it was written for is a DARK-palette
+     failure: --t-acc is a light colour there, so any accent mixed into the plane
+     lifts it onto the cards. Both surface pairs are checked per theme; the
+     numbers are derived in the SearchBuilderTab `.sb-concept-canvas` comment
+     (worst case Stitch light, channel-sum 14). */
+  test('110 review — plane vs card and open vs de-emphasised stay perceptibly apart in BOTH day and night', async ({ page, tmpProject }) => {
+    await page.setViewportSize({ width: 1280, height: 900 });
+    const sp = new SearchPage(page);
+    await openTermsWithGroup(sp, tmpProject.id, 'asthma');
+    await sp.addConceptGroup('salbutamol');
+
+    const canvas = page.getByTestId('sb-concept-workspace');
+    await expect(canvas).toHaveAttribute('data-has-active', 'true');
+    await expect(sp.compactCards).toHaveCount(1);
+    // Park the pointer off the board: the de-emphasis is deliberately CANCELLED
+    // on hover, so a cursor left on a compact card would read the restored card
+    // surface and silently defeat the assertion.
+    await page.mouse.move(0, 0);
+
+    for (const theme of ['day', 'night'] as const) {
+      await setTheme(page, theme);
+      const canvasBg = await settledBg(canvas, `${theme}: the canvas plane`);
+      const openBg = await settledBg(sp.activeConcept, `${theme}: the open card`);
+      const dimBg = await settledBg(sp.compactCards.nth(0), `${theme}: the de-emphasised card`);
+
+      expect(channelDelta(openBg, canvasBg),
+        `${theme}: canvas plane ${canvasBg} vs the card ON it ${openBg}`)
+        .toBeGreaterThanOrEqual(MIN_SURFACE_DELTA);
+      expect(channelDelta(openBg, dimBg),
+        `${theme}: open card ${openBg} vs the de-emphasised card ${dimBg}`)
+        .toBeGreaterThanOrEqual(MIN_SURFACE_DELTA);
+      // The de-emphasised card is pressed INTO the plane, never floating on it.
+      const dimShadow = await sp.compactCards.nth(0).evaluate((el) => getComputedStyle(el).boxShadow);
+      expect(dimShadow, `${theme}: the de-emphasised card keeps its inset depression cue`).toContain('inset');
+    }
   });
 });
