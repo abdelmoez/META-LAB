@@ -222,6 +222,42 @@ export const adminApi = {
     clientErrors:        (p)          => req(`${BASE}/research/client-errors${qs(p)}`),
   },
 
+  // ── 112.md follow-up — Ops › Email (templates + delivery) ────────────────────
+  // Reads (templates/template/delivery) take view_email_delivery (admin + mod);
+  // everything else takes manage_email_templates (admin only).
+  //  templates()            → { templates:[{ key, category, description,
+  //    requiredVariables, optionalVariables, disableable, defaultFields,
+  //    overrideFields|null, effectiveFields, hasOverride, enabled,
+  //    overrideUpdatedAt }], emailConfigured }
+  //  saveTemplate(key, fields, reason) PUTs { fields, reason? }; only the diff vs
+  //    the registry defaults is stored (an edit back to defaults deletes the
+  //    override). 400 { error, missing? } names any absent required [token].
+  //  restoreTemplate(key, reason) DELETEs the override row → registry defaults.
+  //  setEnabled(key, enabled, reason) → 400 unless the registry says disableable.
+  //  preview(key, fields?)  → { subject, html, text, missingRequired,
+  //    sampleVariables } rendered with DETERMINISTIC samples; fields previews an
+  //    unsaved draft, omitted previews the stored override.
+  //  testSend(key, reason?) → { ok, outboxId, recipient, emailConfigured } —
+  //    enqueues to the CALLING admin only; 429 over 5/hour/admin.
+  //  delivery(p) ?status&templateKey&from&to&page&limit → { deliveries, total,
+  //    page, limit, hasMore, counts, emailConfigured } (bodies are never stored;
+  //    variablesJson is never returned).
+  email: {
+    templates:       ()         => req(`${BASE}/email/templates`),
+    template:        (key)      => req(`${BASE}/email/templates/${encodeURIComponent(key)}`),
+    saveTemplate:    (key, fields, reason) =>
+      req(`${BASE}/email/templates/${encodeURIComponent(key)}`, { method: 'PUT', ...json({ fields, ...(reason ? { reason } : {}) }) }),
+    restoreTemplate: (key, reason) =>
+      req(`${BASE}/email/templates/${encodeURIComponent(key)}`, { method: 'DELETE', ...json(reason ? { reason } : {}) }),
+    setEnabled:      (key, enabled, reason) =>
+      req(`${BASE}/email/templates/${encodeURIComponent(key)}/enabled`, { method: 'POST', ...json({ enabled, ...(reason ? { reason } : {}) }) }),
+    preview:         (key, fields) =>
+      req(`${BASE}/email/templates/${encodeURIComponent(key)}/preview`, { method: 'POST', ...json(fields !== undefined ? { fields } : {}) }),
+    testSend:        (key, reason) =>
+      req(`${BASE}/email/templates/${encodeURIComponent(key)}/test-send`, { method: 'POST', ...json(reason ? { reason } : {}) }),
+    delivery:        (p)        => req(`${BASE}/email/delivery${qs(p)}`),
+  },
+
   // 66.md P5/P6 — global extraction-AI + living-review policy (admin-only).
   extractionAi: {
     get:          ()         => req(`${BASE}/extraction-ai/settings`),

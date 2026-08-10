@@ -47,6 +47,9 @@ import UsersDirectory from './users/UsersDirectory.jsx';
 // intelligence, extraction/analysis governance, interaction, client errors) is its
 // own extracted package, same precedent as users/ above.
 import ResearchGovernanceSection from './research/ResearchGovernanceSection.jsx';
+// 112.md follow-up — Ops › Email (templates + delivery), extracted package like
+// research/ so it stays SSR-testable in isolation.
+import EmailSection from './email/EmailSection.jsx';
 // 109.md §9 — the sidebar registry lives in its own module so the section-id sync
 // with the server's getConsole allow-list is unit-testable.
 import { NAV_SECTIONS, roleSections } from './opsSections.js';
@@ -9332,6 +9335,9 @@ export default function AdminConsole() {
     extractionAi:  <ExtractionAiSection />,
     livingReviews: <LivingReviewsSection />,
     messages:   <MessagesSection onUnreadChange={setUnread} />,
+    // 112.md follow-up — admin-only in the sidebar (getConsole omits it for
+    // mods) even though view_email_delivery grants mods API read access.
+    email:      <EmailSection />,
     security:   <SecuritySection />,
     health:     <HealthSection />,
     engineVersions: <EngineVersionsSection />,

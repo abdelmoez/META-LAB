@@ -41,6 +41,7 @@ import screeningRouter    from './routes/screening.js';
 import notificationsRouter from './routes/notifications.js';
 import invitesRouter      from './routes/invites.js';
 import acceptInvitationRouter from './routes/acceptInvitation.js';
+import emailPublicRouter  from './routes/emailPublic.js';
 import eventsRouter       from './routes/events.js';
 import robRouter          from './routes/rob.js';
 import onboardingRouter   from './routes/onboarding.js';
@@ -75,6 +76,7 @@ import { startCitationChaseWorker } from './citationMining/citationChaseWorker.j
 // 62.md — durable, off-event-loop workers for AI scoring + large async exports.
 import { startAiJobsWorker } from './services/screeningAiJobs.js';
 import { startExportWorker } from './services/screeningExportWorker.js';
+import { startEmailOutboxWorker } from './services/emailOutboxWorker.js';
 import { startDuplicateWorker } from './services/screeningDuplicateWorker.js';
 import { startEligibilityJobsWorker } from './services/screeningEligibilityService.js';
 // 68.md P9 — durable, off-event-loop worker for automated OA full-text retrieval.
@@ -491,6 +493,13 @@ app.use('/api/auth', authLimiter, authRouter);
 // ── Public settings ────────────────────────────────────────────────────────────
 app.use('/api/settings', settingsRouter);
 
+// ── Public email endpoints — the List-Unsubscribe landing page. Followed from a
+// mail client with NO session, so it must stay outside every auth mount, and it
+// MUST be registered before the bare '/api' importExport router below (which
+// applies requireAuth at router level and would 401 the unsubscribe link). The
+// signed token in the query string is the only credential.
+app.use('/api/email', emailPublicRouter);
+
 // ── Protected route mounting ───────────────────────────────────────────────────
 app.use('/api/profile',              profileRouter);
 app.use('/api/presence',             presenceRouter);
@@ -768,6 +777,12 @@ const server = app.listen(PORT, () => {
       // (large exports stream to a file instead of buffering in one request → no 504).
       startAiJobsWorker().catch(err => console.error('[ai-worker] start failed:', err.message));
       startExportWorker().catch(err => console.error('[export-worker] start failed:', err.message));
+      // Durable outbound-email drain: request handlers only enqueue an EmailOutbox
+      // row, so an SMTP round-trip can never stall a response and a crash mid-send
+      // leaves a claimable row behind. Recovers stuck/parked rows under the shared
+      // retry cap, arms an unref'd sweep, then drains. EMAIL_OUTBOX_WORKER_ENABLED=false
+      // keeps a process enqueueing without competing for the queue.
+      startEmailOutboxWorker().catch(err => console.error('[email-outbox] start failed:', err.message));
       // 92.md — start the durable duplicate-detection worker (detection runs off the
       // request thread in yielding batches; crash-interrupted jobs resume under the
       // shared retry cap).

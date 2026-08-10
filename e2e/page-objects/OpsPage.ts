@@ -44,7 +44,10 @@ export const OPS_SECTION_IDS = [
   'searchProviders', 'waitlist', 'content', 'settings', 'style', 'flags',
   // 67.md + 66.md P5/P6 — product tiers, extraction-AI and living-review policy.
   'tiers', 'extractionAi', 'livingReviews',
-  'messages', 'security', 'health', 'engineVersions',
+  'messages',
+  // 112.md follow-up — outbound email templates + delivery history.
+  'email',
+  'security', 'health', 'engineVersions',
 ] as const;
 
 export type OpsSectionId = (typeof OPS_SECTION_IDS)[number];
@@ -74,6 +77,7 @@ export class OpsPage {
     livingReviews: /Living Reviews/i,
     tiers: /^Tiers$/i,
     messages: /Contact Messages/i,
+    email: /^Email$/i,
     security: /Security/i,
     health: /System Health/i,
     engineVersions: /Engine Versions/i,
@@ -134,6 +138,25 @@ export class OpsPage {
   /** Open a Research Governance sub-tab and wait for its first card to mount. */
   async openResearchTab(id: 'duplicates' | 'keywords' | 'extraction' | 'interaction' | 'errors'): Promise<void> {
     await this.researchTab(id).click();
+  }
+
+  // ── Email section (112.md follow-up) ─────────────────────────────────────────
+  emailTab(id: 'templates' | 'delivery'): Locator { return this.page.getByTestId(`em-tab-${id}`); }
+  get emailTemplatesTable(): Locator { return this.page.getByTestId('em-templates-table'); }
+  emailTemplateRow(key: string): Locator { return this.page.getByTestId(`em-template-row-${key}`); }
+  emailEdit(key: string): Locator { return this.page.getByTestId(`em-edit-${key}`); }
+  get emailEditor(): Locator { return this.page.getByTestId('em-editor'); }
+  emailVarChip(name: string): Locator { return this.page.getByTestId(`em-var-${name}`); }
+  get emailPreviewButton(): Locator { return this.page.getByTestId('em-preview-btn'); }
+  get emailPreviewFrame(): Locator { return this.page.getByTestId('em-preview-frame'); }
+  get emailEnabledToggle(): Locator { return this.page.getByTestId('em-enabled-toggle'); }
+  get emailDeliveryTable(): Locator { return this.page.getByTestId('em-delivery-table'); }
+  get emailDeliveryFilterStatus(): Locator { return this.page.getByTestId('em-delivery-filter-status'); }
+  get emailDeliveryFilterTemplate(): Locator { return this.page.getByTestId('em-delivery-filter-template'); }
+
+  /** Open an Email sub-tab. */
+  async openEmailTab(id: 'templates' | 'delivery'): Promise<void> {
+    await this.emailTab(id).click();
   }
 
   // ── Settings tab ─────────────────────────────────────────────────────────────

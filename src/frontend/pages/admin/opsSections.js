@@ -39,6 +39,11 @@ export const NAV_SECTIONS = [
   { id: 'extractionAi',   icon: 'clipboard', label: 'Extraction Assist'  },
   { id: 'livingReviews',  icon: 'activity',  label: 'Living Reviews' },
   { id: 'messages',   icon: 'mail',      label: 'Messages'      },
+  // 112.md follow-up — outbound email control plane: registry-backed template
+  // management (overrides + enable/disable + test-send) and the outbox delivery
+  // history. Admin-only in the sidebar, same asymmetry as 'research' (mods hold
+  // view_email_delivery at the API layer with no console UI for it).
+  { id: 'email',      icon: 'send',      label: 'Email'         },
   { id: 'security',   icon: 'shield',    label: 'Security'      },
   { id: 'health',     icon: 'activity',  label: 'Health'        },
   { id: 'engineVersions', icon: 'layers', label: 'Engine Versions' },

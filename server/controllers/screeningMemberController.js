@@ -14,7 +14,8 @@ import { PERMISSION_KEYS, GLOBAL_PERMISSION_KEYS, resolvePreset, fullPermissions
 import { createNotification, notifyProjectInvite } from '../services/notificationService.js';
 import { emitToProjectMembers, emitToUsers } from '../realtime/bus.js';
 import { getMetaSiftSettings } from '../screening/settings.js';
-import { isEmailConfigured, sendEmail, renderInviteEmail } from '../services/emailService.js';
+import { isEmailConfigured, formatEmailDate } from '../services/emailService.js';
+import { enqueueEmail } from '../services/emailOutboxService.js';
 import { isValidEmail } from '../utils/validators.js';
 import { recordUsage, USAGE } from '../utils/usage.js';
 // 67.md — product-tier enforcement: the member quota binds to the PROJECT
@@ -248,6 +249,13 @@ export async function addMember(req, res) {
     // fallback. Email failure NEVER fails the request — the response carries
     // {emailConfigured, emailSent} so the inviter UI can show the right notice
     // (contact-reply precedent). The plaintext token lives only in `link`.
+    //
+    // The email is now HANDED OFF to the durable EmailOutbox instead of being
+    // rendered and pushed through SMTP inside this request: adding a member no
+    // longer waits on a mail relay, and a crash between the member row and the
+    // send no longer loses the invitation. `emailSent` keeps its meaning for the
+    // UI ("we have accepted responsibility for delivering this") and its boolean
+    // shape; actual delivery state lives on the outbox row (entityId = member.id).
     let invite;
     if (!user) {
       const base = (process.env.APP_BASE_URL || 'http://127.0.0.1:3000').replace(/\/+$/, '');
@@ -258,23 +266,30 @@ export async function addMember(req, res) {
         const appSettings = await getAppSettings();
         if (appSettings.emailInvitesEnabled !== false && emailConfigured) {
           const inviterName = req.user.name || (req.user.email || '').split('@')[0] || 'A project manager';
-          const { html, text } = renderInviteEmail({
-            projectName: access.project.title,
-            inviterName,
-            roleLabel: presetName,
-            link,
-            expiresAt: inviteExpiresAt,
+          // EMAIL_SENT / EMAIL_FAILED usage is recorded inside sendEmail itself
+          // (prompt9, single chokepoint) — the worker calls it, so it stays
+          // recorded exactly once and must NOT be double-recorded here.
+          // Variable names + the value-level fallbacks match the registry entry
+          // 'invite.projectMember' (required: link; optional: appName,
+          // projectName, inviterName, roleLabel, expiresAtText).
+          const queued = await enqueueEmail({
+            templateKey: 'invite.projectMember',
+            recipient: normEmail,
+            category: 'transactional',
+            variables: {
+              projectName: access.project.title || 'a research project',
+              inviterName,
+              roleLabel: presetName || 'member',
+              link,
+              expiresAtText: formatEmailDate(inviteExpiresAt),
+            },
+            // The member row IS the invite (it carries the token hash + expiry);
+            // re-issuing mints a new row, so a double-clicked Invite dedupes while
+            // a genuine re-invite still sends.
+            entityId: member.id,
+            discriminator: inviteExpiresAt ? new Date(inviteExpiresAt).toISOString() : '',
           });
-          // EMAIL_SENT / EMAIL_FAILED usage is recorded inside sendEmail
-          // itself (prompt9, single chokepoint) — do NOT double-record here.
-          const result = await sendEmail({
-            to: normEmail,
-            subject: `You're invited to join "${access.project.title || 'a project'}" on PecanRev`,
-            html,
-            text,
-            context: 'invite',
-          });
-          emailSent = !!result.sent;
+          emailSent = queued.enqueued === true || queued.reason === 'duplicate';
         }
       } catch { /* invite email is best-effort — never fail addMember */ }
       invite = { link, emailConfigured, emailSent, expiresAt: inviteExpiresAt };

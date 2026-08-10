@@ -6,6 +6,12 @@
  * so callers can persist a draft and surface a "not configured" notice instead of
  * a 500. This keeps the console fully usable in dev/preview environments.
  *
+ * COPY LIVES IN ./emailTemplates.js. The render* functions below are thin
+ * adapters: they keep their historical signatures (and their {html,text} return
+ * shape, so every existing call site is untouched), translate their arguments
+ * into template variables, and delegate to renderTemplate(). Nothing in this
+ * file writes email markup any more.
+ *
  * Env vars:
  *   EMAIL_PROVIDER  — informational label (e.g. "smtp", "resend", "sendgrid"). Optional.
  *   SMTP_HOST       — SMTP server host. Required to actually send.
@@ -31,8 +37,15 @@
  */
 
 import { recordUsage, USAGE } from '../utils/usage.js';
+import { renderTemplate } from './emailTemplates.js';
 // NOTE on imports: usage.js imports ONLY the prisma client — no controller or
-// service imports — so this cannot create a circular dependency.
+// service imports — so this cannot create a circular dependency. emailTemplates
+// imports nothing at all.
+
+// The shared email chrome moved to emailTemplates.js (it is copy, not transport)
+// but stays exported from here: it is part of this module's public surface and
+// existing tests / callers import it from emailService.
+export { renderBaseEmailLayout, escapeHtml } from './emailTemplates.js';
 
 function env(key) {
   const v = process.env[key];
@@ -180,11 +193,17 @@ let stagingVarsInProductionWarned = false;
  *     permanent SMTP rejects (5xx) are never retried. The delivery-failure
  *     logging contract is unchanged: one console.error + one EMAIL_FAILED
  *     usage event for the FINAL outcome.
- * @param {{to:string, subject:string, html?:string, text?:string, context?:string}} opts
+ * @param {{to:string, subject:string, html?:string, text?:string, context?:string,
+ *          headers?:Record<string,string>}} opts
  *        `context` is an optional metrics label (e.g. 'invite', 'contact_reply').
+ *        `headers` is an optional map of extra RFC-5322 headers passed straight
+ *        through to the transport — this is how List-Unsubscribe rides along on
+ *        the disableable emails (see emailUnsubscribe.unsubscribeHeaders). It is
+ *        purely additive: omit it and the transport call is byte-identical to
+ *        what it was before.
  * @returns {Promise<{sent:boolean, id?:string, reason?:string, error?:string}>}
  */
-export async function sendEmail({ to, subject, html, text, context } = {}) {
+export async function sendEmail({ to, subject, html, text, context, headers } = {}) {
   if (!isEmailConfigured()) {
     return { sent: false, reason: 'not_configured' };
   }
@@ -218,6 +237,7 @@ export async function sendEmail({ to, subject, html, text, context } = {}) {
   }
   const finalTo = policy.to;
   const finalSubject = policy.subject || '(no subject)';
+  const extraHeaders = headers && typeof headers === 'object' && Object.keys(headers).length ? headers : null;
 
   let nodemailer;
   try {
@@ -248,6 +268,7 @@ export async function sendEmail({ to, subject, html, text, context } = {}) {
         subject: finalSubject,
         ...(text ? { text } : {}),
         ...(html ? { html } : {}),
+        ...(extraHeaders ? { headers: extraHeaders } : {}),
       });
 
       recordUsage({ type: USAGE.EMAIL_SENT, meta: { context: context || null } });
@@ -269,105 +290,64 @@ export async function sendEmail({ to, subject, html, text, context } = {}) {
   return { sent: false, reason: 'send_failed', error: lastErr.message };
 }
 
-function escapeHtml(s) {
-  return String(s || '')
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;');
+// ── Template adapters ─────────────────────────────────────────────────────────
+// Each function keeps the signature its call sites already use and returns
+// { html, text }. Everything they do is (a) turn a Date into the display string
+// the copy expects and (b) resolve the small value-level fallbacks the old
+// hand-written bodies had inline. The copy itself is in emailTemplates.js.
+
+/** "20 July 2026, 10:00" — the datetime form used by expiry/change notices. */
+function formatDateTime(value) {
+  if (!value) return '';
+  const d = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(d.getTime())) return '';
+  return d.toLocaleString('en-GB', {
+    day: 'numeric', month: 'long', year: 'numeric', hour: '2-digit', minute: '2-digit',
+  });
 }
+
+/** "20 July 2026" — the date-only form used by the project-invite expiry line. */
+function formatDate(value) {
+  if (!value) return '';
+  const d = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(d.getTime())) return '';
+  return d.toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' });
+}
+
+/** "Hi Jane," / "Hello," — one salutation rule for every template. */
+function salutation(name) {
+  return name ? `Hi ${name},` : 'Hello,';
+}
+
+// The three value-shaping helpers above are the copy contract, not transport
+// detail: a template variable is a STRING, so whoever builds the variables has
+// to format the date and the salutation exactly the way the render adapters do.
+// Call sites that enqueue through emailOutboxService build those variables
+// themselves, so they get the same helpers rather than a second, drifting copy.
+export {
+  formatDate as formatEmailDate,
+  formatDateTime as formatEmailDateTime,
+  salutation as emailSalutation,
+};
 
 /**
- * renderBaseEmailLayout — the shared META·LAB email chrome (prompt14): the 600px
- * white card with the wordmark header and the footer link, into which each
- * template injects its inner body HTML. Inline hex styles are intentional — CSS
- * variables / external stylesheets don't work in mail clients. The caller is
- * responsible for escaping every value inside `bodyHtml`.
- *
- * @param {{appName?:string, bodyHtml:string}} opts
- * @returns {string} full HTML document
- */
-export function renderBaseEmailLayout({ appName = 'PecanRev', bodyHtml = '' } = {}) {
-  const appBase = env('APP_BASE_URL');
-  const year = new Date().getFullYear();
-  const footerLink = appBase
-    ? `<a href="${escapeHtml(appBase)}" style="color:#6366f1;text-decoration:none;">${escapeHtml(appBase)}</a>`
-    : `${escapeHtml(appName)}`;
-
-  return `<!DOCTYPE html>
-<html>
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"></head>
-<body style="margin:0;padding:0;background:#f3f4f6;font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;color:#1f2937;">
-  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#f3f4f6;padding:24px 0;">
-    <tr><td align="center">
-      <table role="presentation" width="600" cellpadding="0" cellspacing="0" style="max-width:600px;width:100%;background:#ffffff;border:1px solid #e5e7eb;border-radius:10px;overflow:hidden;">
-        <!-- Header -->
-        <tr><td style="padding:22px 32px;border-bottom:1px solid #e5e7eb;">
-          <span style="font-size:18px;font-weight:700;letter-spacing:0.04em;color:#111827;">PecanRev</span>
-        </td></tr>
-        <!-- Body -->
-        <tr><td style="padding:28px 32px;">
-${bodyHtml}
-        </td></tr>
-        <!-- Footer -->
-        <tr><td style="padding:18px 32px;border-top:1px solid #e5e7eb;background:#fafafa;">
-          <div style="font-size:12px;color:#9ca3af;line-height:1.5;">
-            Sent by the ${escapeHtml(appName)} team &#183; ${footerLink}<br>
-            &#169; ${year} ${escapeHtml(appName)}
-          </div>
-        </td></tr>
-      </table>
-    </td></tr>
-  </table>
-</body>
-</html>`;
-}
-
-/** Shared inline-styled CTA button (escaped href + label). */
-function ctaButton(href, label) {
-  return `<table role="presentation" cellpadding="0" cellspacing="0" style="margin:0 auto;">
-            <tr><td style="border-radius:8px;background:#6366f1;">
-              <a href="${escapeHtml(href)}" style="display:inline-block;padding:12px 28px;font-size:14px;font-weight:600;color:#ffffff;text-decoration:none;border-radius:8px;">${escapeHtml(label)}</a>
-            </td></tr>
-          </table>`;
-}
-
-/**
- * renderReplyEmail — clean, professional META·LAB-styled reply email.
+ * renderReplyEmail — clean, professional PecanRev-styled reply email.
  * Returns both an HTML body and a plain-text fallback.
  *
- * @param {{appName?:string, toName?:string, bodyText:string, originalSubject?:string}} opts
+ * @param {{appName?:string, toName?:string, bodyText:string, originalSubject?:string, fromName?:string}} opts
  * @returns {{html:string, text:string}}
  */
 export function renderReplyEmail({ appName = 'PecanRev', toName = '', bodyText = '', originalSubject = '', fromName = '' } = {}) {
-  const greeting = toName ? `Hi ${escapeHtml(toName)},` : 'Hello,';
-  const safeBodyHtml = escapeHtml(bodyText).replace(/\n/g, '<br>');
-  const appBase = env('APP_BASE_URL');
-
-  const refLine = originalSubject
-    ? `<div style="font-size:12px;color:#6b7280;margin-bottom:18px;">In reply to: ${escapeHtml(originalSubject)}</div>`
-    : '';
-
-  // The signature shows the NAME of the staff member who wrote this — never their email
-  // address (which is the shared no-reply mailbox). Falls back to the team name.
-  const signoff = fromName
-    ? `<div style="font-size:14px;color:#1f2937;line-height:1.6;margin-top:22px;">Best regards,<br><strong>${escapeHtml(fromName)}</strong><br><span style="color:#6b7280;">${escapeHtml(appName)} team</span></div>`
-    : `<div style="font-size:14px;color:#6b7280;line-height:1.6;margin-top:22px;">— The ${escapeHtml(appName)} team</div>`;
-
-  const bodyHtml = `          ${refLine}
-          <div style="font-size:14px;color:#1f2937;line-height:1.6;margin-bottom:16px;">${greeting}</div>
-          <div style="font-size:14px;color:#1f2937;line-height:1.7;">${safeBodyHtml}</div>
-          ${signoff}`;
-
-  const html = renderBaseEmailLayout({ appName, bodyHtml });
-
-  const textParts = [];
-  if (originalSubject) textParts.push(`In reply to: ${originalSubject}`, '');
-  textParts.push(toName ? `Hi ${toName},` : 'Hello,', '', bodyText, '', fromName ? `Best regards,\n${fromName}\n${appName} team` : `— The ${appName} team`);
-  if (appBase) textParts.push(appBase);
-  const text = textParts.join('\n');
-
+  const { html, text } = renderTemplate('contact.reply', {
+    appName,
+    greeting: salutation(toName),
+    bodyText,
+    originalSubject,
+    refLine: originalSubject ? `In reply to: ${originalSubject}` : '',
+    // The signature shows the NAME of the staff member who wrote this — never
+    // their email address (which is the shared no-reply mailbox).
+    signoff: fromName ? `Best regards,\n${fromName}\n${appName} team` : `— The ${appName} team`,
+  });
   return { html, text };
 }
 
@@ -380,65 +360,25 @@ export const renderContactReplyEmail = renderReplyEmail;
 
 /**
  * renderBetaWaitlistConfirmationEmail — branded confirmation that an applicant
- * joined the PecanRev BETA WAITLIST (prompt48 §6). This is explicitly NOT an
- * account-creation email and NOT a beta-access invitation: it contains NO
- * password, login link, or onboarding link. Joining the waitlist does not
- * guarantee access. Returns both HTML and a plain-text fallback.
+ * joined the PecanRev BETA WAITLIST (prompt48 §6). Explicitly NOT an
+ * account-creation email and NOT a beta-access invitation.
  *
  * @param {{appName?:string, firstName?:string, supportEmail?:string}} opts
  * @returns {{html:string, text:string}}
  */
 export function renderBetaWaitlistConfirmationEmail({ appName = 'PecanRev', firstName = '', supportEmail = '' } = {}) {
-  const greeting = firstName ? `Hi ${escapeHtml(firstName)},` : 'Hello,';
-  const appBase = env('APP_BASE_URL');
-  const siteLink = appBase
-    ? `<a href="${escapeHtml(appBase)}" style="color:#6366f1;text-decoration:none;">${escapeHtml(appBase)}</a>`
-    : escapeHtml(appName);
-  const supportHtml = supportEmail
-    ? `<a href="mailto:${escapeHtml(supportEmail)}" style="color:#6366f1;text-decoration:none;">${escapeHtml(supportEmail)}</a>`
-    : siteLink;
-
-  const bodyHtml = `          <div style="font-size:17px;font-weight:700;color:#111827;margin-bottom:14px;">You're on the ${escapeHtml(appName)} beta waitlist</div>
-          <div style="font-size:14px;color:#1f2937;line-height:1.6;margin-bottom:14px;">${greeting}</div>
-          <div style="font-size:14px;color:#1f2937;line-height:1.7;margin-bottom:16px;">
-            Thanks for your interest — we've added you to the waitlist for the ${escapeHtml(appName)} beta.
-            ${escapeHtml(appName)} is a professional workspace for systematic reviews and meta-analyses:
-            search building, title &amp; abstract screening, data extraction, risk-of-bias assessment, and
-            meta-analysis with publication-ready reporting, all in one place.
-          </div>
-          <div style="font-size:13px;color:#374151;line-height:1.7;background:#f9fafb;border:1px solid #e5e7eb;border-radius:8px;padding:14px 16px;margin-bottom:16px;">
-            This is a <strong>waitlist confirmation only</strong>. It does not create an account and is not a
-            beta invitation — joining the waitlist does not guarantee immediate access. If a place opens up,
-            we'll email you separately with the next steps.
-          </div>
-          <div style="font-size:13px;color:#6b7280;line-height:1.7;">
-            We may occasionally send you beta updates. Questions? Visit ${siteLink} or contact us at ${supportHtml}.
-          </div>`;
-
-  const html = renderBaseEmailLayout({ appName, bodyHtml });
-
-  const textParts = [
-    `You're on the ${appName} beta waitlist`,
-    '',
-    firstName ? `Hi ${firstName},` : 'Hello,',
-    '',
-    `Thanks for your interest — we've added you to the waitlist for the ${appName} beta. ${appName} is a professional workspace for systematic reviews and meta-analyses: search building, title & abstract screening, data extraction, risk-of-bias assessment, and meta-analysis with publication-ready reporting, all in one place.`,
-    '',
-    'This is a waitlist confirmation only. It does not create an account and is not a beta invitation — joining the waitlist does not guarantee immediate access. If a place opens up, we\'ll email you separately with the next steps.',
-    '',
-    `We may occasionally send you beta updates. Questions? Contact us${supportEmail ? ` at ${supportEmail}` : appBase ? ` via ${appBase}` : ''}.`,
-    '',
-    `— The ${appName} team`,
-  ];
-  if (appBase && !supportEmail) textParts.push(appBase);
-
-  return { html, text: textParts.join('\n') };
+  const { html, text } = renderTemplate('waitlist.confirmation', {
+    appName,
+    greeting: salutation(firstName),
+    siteLink: env('APP_BASE_URL') || appName,
+    supportEmail,
+  });
+  return { html, text };
 }
 
 /**
- * renderPasswordResetEmail — META·LAB-styled password-reset email (prompt14 Task 4).
- * The link carries the single-use reset token; the body never reveals account
- * details. Every interpolated value is escaped. Returns HTML + plain text.
+ * renderPasswordResetEmail — PecanRev-styled password-reset email (prompt14 Task 4).
+ * `initiatedByOperator` selects the administrator-started copy variant.
  *
  * @param {{appName?:string, toName?:string, link:string,
  *          expiresAt?:Date|string|null, initiatedByOperator?:boolean}} opts
@@ -451,117 +391,37 @@ export function renderPasswordResetEmail({
   expiresAt = null,
   initiatedByOperator = false,
 } = {}) {
-  const greeting = toName ? `Hi ${escapeHtml(toName)},` : 'Hello,';
-  const appBase = env('APP_BASE_URL');
-
-  let expiryText = '';
-  if (expiresAt) {
-    const d = expiresAt instanceof Date ? expiresAt : new Date(expiresAt);
-    if (!Number.isNaN(d.getTime())) {
-      expiryText = d.toLocaleString('en-GB', {
-        day: 'numeric', month: 'long', year: 'numeric', hour: '2-digit', minute: '2-digit',
-      });
-    }
-  }
-  const expiryHtml = expiryText
-    ? `<div style="font-size:12px;color:#6b7280;margin-top:18px;">This link expires on ${escapeHtml(expiryText)}. After that, request a new one.</div>`
-    : '';
-
-  const intro = initiatedByOperator
-    ? `A ${escapeHtml(appName)} administrator started a password reset for your account.`
-    : `We received a request to reset the password for your ${escapeHtml(appName)} account.`;
-
-  const bodyHtml = `          <div style="font-size:16px;font-weight:600;color:#111827;margin-bottom:14px;">Reset your password</div>
-          <div style="font-size:14px;color:#1f2937;line-height:1.6;margin-bottom:8px;">${greeting}</div>
-          <div style="font-size:14px;color:#1f2937;line-height:1.7;margin-bottom:24px;">
-            ${intro} Click the button below to choose a new password.
-          </div>
-          ${ctaButton(link, 'Reset password')}
-          <div style="font-size:12px;color:#6b7280;margin-top:22px;line-height:1.6;">
-            If the button doesn&#39;t work, copy and paste this link into your browser:<br>
-            <a href="${escapeHtml(link)}" style="color:#6366f1;text-decoration:none;word-break:break-all;">${escapeHtml(link)}</a>
-          </div>
-          ${expiryHtml}
-          <div style="font-size:12px;color:#9ca3af;margin-top:18px;line-height:1.5;">
-            If you didn&#39;t request this, you can safely ignore this email &#8212; your password won&#39;t change.
-          </div>`;
-
-  const html = renderBaseEmailLayout({ appName, bodyHtml });
-
-  const textParts = [
-    'Reset your password',
-    '',
-    toName ? `Hi ${toName},` : 'Hello,',
-    '',
-    initiatedByOperator
-      ? `A ${appName} administrator started a password reset for your account.`
-      : `We received a request to reset the password for your ${appName} account.`,
-    '',
-    `Reset your password: ${link}`,
-  ];
-  if (expiryText) textParts.push('', `This link expires on ${expiryText}.`);
-  textParts.push('', `If you didn't request this, you can safely ignore this email — your password won't change.`, '', '—', `Sent by the ${appName} team`);
-  if (appBase) textParts.push(appBase);
-  const text = textParts.join('\n');
-
+  const { html, text } = renderTemplate('password.reset', {
+    appName,
+    greeting: salutation(toName),
+    link,
+    expiresAtText: formatDateTime(expiresAt),
+    initiatedByOperator: Boolean(initiatedByOperator),
+  });
   return { html, text };
 }
 
 /**
- * renderEmailVerificationEmail — META·LAB-styled email-verification email (prompt26).
- * The link carries the single-use verify token; every value is escaped.
+ * renderEmailVerificationEmail — email-verification email (prompt26).
  * @param {{appName?:string, toName?:string, link:string, expiresAt?:Date|string|null}} opts
  * @returns {{html:string, text:string}}
  */
 export function renderEmailVerificationEmail({ appName = 'PecanRev', toName = '', link = '', expiresAt = null } = {}) {
-  const greeting = toName ? `Hi ${escapeHtml(toName)},` : 'Hello,';
-  const appBase = env('APP_BASE_URL');
-
-  let expiryText = '';
-  if (expiresAt) {
-    const d = expiresAt instanceof Date ? expiresAt : new Date(expiresAt);
-    if (!Number.isNaN(d.getTime())) {
-      expiryText = d.toLocaleString('en-GB', { day: 'numeric', month: 'long', year: 'numeric', hour: '2-digit', minute: '2-digit' });
-    }
-  }
-  const expiryHtml = expiryText
-    ? `<div style="font-size:12px;color:#6b7280;margin-top:18px;">This link expires on ${escapeHtml(expiryText)}. After that, request a new one.</div>`
-    : '';
-
-  const bodyHtml = `          <div style="font-size:16px;font-weight:600;color:#111827;margin-bottom:14px;">Confirm your email</div>
-          <div style="font-size:14px;color:#1f2937;line-height:1.6;margin-bottom:8px;">${greeting}</div>
-          <div style="font-size:14px;color:#1f2937;line-height:1.7;margin-bottom:24px;">
-            Welcome to ${escapeHtml(appName)}. Confirm your email address to activate your research workspace.
-          </div>
-          ${ctaButton(link, 'Verify email')}
-          <div style="font-size:12px;color:#6b7280;margin-top:22px;line-height:1.6;">
-            If the button doesn&#39;t work, copy and paste this link into your browser:<br>
-            <a href="${escapeHtml(link)}" style="color:#6366f1;text-decoration:none;word-break:break-all;">${escapeHtml(link)}</a>
-          </div>
-          ${expiryHtml}
-          <div style="font-size:12px;color:#9ca3af;margin-top:18px;line-height:1.5;">
-            If you didn&#39;t create this account, you can safely ignore this email.
-          </div>`;
-
-  const html = renderBaseEmailLayout({ appName, bodyHtml });
-  const textParts = [
-    'Confirm your email', '', toName ? `Hi ${toName},` : 'Hello,', '',
-    `Welcome to ${appName}. Confirm your email to activate your workspace.`, '',
-    `Verify your email: ${link}`,
-  ];
-  if (expiryText) textParts.push('', `This link expires on ${expiryText}.`);
-  textParts.push('', `If you didn't create this account, you can safely ignore this email.`, '', '—', `Sent by the ${appName} team`);
-  if (appBase) textParts.push(appBase);
-  return { html, text: textParts.join('\n') };
+  const { html, text } = renderTemplate('email.verification', {
+    appName,
+    greeting: salutation(toName),
+    link,
+    expiresAtText: formatDateTime(expiresAt),
+  });
+  return { html, text };
 }
 
 /**
- * renderInviteEmail — build the META·LAB-styled project invite email (prompt9).
- * Same 600px white-card table layout as renderReplyEmail; inline hex styles are
- * the correct convention for email HTML (CSS variables don't work in clients).
- * Every interpolated value is escaped. The link carries the single-use invite
- * token — the email body never mentions account existence or permissions
- * beyond the role label.
+ * renderInviteEmail — the PROJECT invite email (prompt9). Historically this was
+ * the one template that duplicated the whole HTML document (header, card,
+ * footer, its own CTA clone) instead of using the shared layout; it now goes
+ * through the same registry + base layout as everything else, so the chrome can
+ * only ever drift in one place.
  *
  * @param {{appName?:string, projectName?:string, inviterName?:string,
  *          roleLabel?:string, link:string, expiresAt?:Date|string|null}} opts
@@ -575,99 +435,21 @@ export function renderInviteEmail({
   link = '',
   expiresAt = null,
 } = {}) {
-  const safeProject = escapeHtml(projectName || 'a research project');
-  const safeInviter = escapeHtml(inviterName || 'A project manager');
-  const safeRole = escapeHtml(roleLabel || 'member');
-  const safeLink = escapeHtml(link);
-  const appBase = env('APP_BASE_URL');
-  const year = new Date().getFullYear();
-
-  let expiryDateText = '';
-  if (expiresAt) {
-    const d = expiresAt instanceof Date ? expiresAt : new Date(expiresAt);
-    if (!Number.isNaN(d.getTime())) {
-      expiryDateText = d.toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' });
-    }
-  }
-  const expiryHtml = expiryDateText
-    ? `<div style="font-size:12px;color:#6b7280;margin-top:18px;">This invitation expires on ${escapeHtml(expiryDateText)}. If it has expired, ask ${safeInviter} to send a new one.</div>`
-    : '';
-
-  const footerLink = appBase
-    ? `<a href="${escapeHtml(appBase)}" style="color:#6366f1;text-decoration:none;">${escapeHtml(appBase)}</a>`
-    : `${escapeHtml(appName)}`;
-
-  const html = `<!DOCTYPE html>
-<html>
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"></head>
-<body style="margin:0;padding:0;background:#f3f4f6;font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;color:#1f2937;">
-  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#f3f4f6;padding:24px 0;">
-    <tr><td align="center">
-      <table role="presentation" width="600" cellpadding="0" cellspacing="0" style="max-width:600px;width:100%;background:#ffffff;border:1px solid #e5e7eb;border-radius:10px;overflow:hidden;">
-        <!-- Header -->
-        <tr><td style="padding:22px 32px;border-bottom:1px solid #e5e7eb;">
-          <span style="font-size:18px;font-weight:700;letter-spacing:0.04em;color:#111827;">PecanRev</span>
-        </td></tr>
-        <!-- Body -->
-        <tr><td style="padding:28px 32px;">
-          <div style="font-size:16px;font-weight:600;color:#111827;margin-bottom:14px;">You&#39;ve been invited to a research project</div>
-          <div style="font-size:14px;color:#1f2937;line-height:1.7;margin-bottom:8px;">
-            ${safeInviter} has invited you to join <strong>&#8220;${safeProject}&#8221;</strong> on ${escapeHtml(appName)} as <strong>${safeRole}</strong>.
-          </div>
-          <div style="font-size:14px;color:#1f2937;line-height:1.7;margin-bottom:24px;">
-            Accept the invitation to start collaborating on screening, data extraction and analysis with the project team.
-          </div>
-          <!-- CTA -->
-          <table role="presentation" cellpadding="0" cellspacing="0" style="margin:0 auto;">
-            <tr><td style="border-radius:8px;background:#6366f1;">
-              <a href="${safeLink}" style="display:inline-block;padding:12px 28px;font-size:14px;font-weight:600;color:#ffffff;text-decoration:none;border-radius:8px;">Accept invitation</a>
-            </td></tr>
-          </table>
-          <div style="font-size:12px;color:#6b7280;margin-top:22px;line-height:1.6;">
-            If the button doesn&#39;t work, copy and paste this link into your browser:<br>
-            <a href="${safeLink}" style="color:#6366f1;text-decoration:none;word-break:break-all;">${safeLink}</a>
-          </div>
-          ${expiryHtml}
-          <div style="font-size:12px;color:#9ca3af;margin-top:18px;line-height:1.5;">
-            If you weren&#39;t expecting this invitation, you can safely ignore this email.
-          </div>
-        </td></tr>
-        <!-- Footer -->
-        <tr><td style="padding:18px 32px;border-top:1px solid #e5e7eb;background:#fafafa;">
-          <div style="font-size:12px;color:#9ca3af;line-height:1.5;">
-            Sent by the ${escapeHtml(appName)} team &#183; ${footerLink}<br>
-            &#169; ${year} ${escapeHtml(appName)}
-          </div>
-        </td></tr>
-      </table>
-    </td></tr>
-  </table>
-</body>
-</html>`;
-
-  const textParts = [
-    `You've been invited to a research project`,
-    '',
-    `${inviterName || 'A project manager'} has invited you to join "${projectName || 'a research project'}" on ${appName} as ${roleLabel || 'member'}.`,
-    '',
-    `Accept the invitation: ${link}`,
-  ];
-  if (expiryDateText) textParts.push('', `This invitation expires on ${expiryDateText}.`);
-  textParts.push('', `If you weren't expecting this invitation, you can safely ignore this email.`, '', '—', `Sent by the ${appName} team`);
-  if (appBase) textParts.push(appBase);
-  const text = textParts.join('\n');
-
+  const { html, text } = renderTemplate('invite.projectMember', {
+    appName,
+    projectName: projectName || 'a research project',
+    inviterName: inviterName || 'A project manager',
+    roleLabel: roleLabel || 'member',
+    link,
+    expiresAtText: formatDate(expiresAt),
+  });
   return { html, text };
 }
 
 /**
- * renderWaitlistInvitationEmail — 80.md Phase 7. The professional PecanRev email
- * sent when an admin converts a WAITLIST entry into an account invitation. This is
- * distinct from renderInviteEmail (a PROJECT-membership invite for an existing
- * account) and from renderBetaWaitlistConfirmationEmail (a non-account waitlist
- * receipt): here the CTA creates the person's PASSWORD and activates a real
- * account. The link carries the single-use invitation token; every interpolated
- * value is escaped. Returns HTML + plain text (both, per Phase 7).
+ * renderWaitlistInvitationEmail — 80.md Phase 7. Sent when an admin converts a
+ * WAITLIST entry into an account invitation: the CTA creates the person's
+ * PASSWORD and activates a real account.
  *
  * @param {{appName?:string, toName?:string, link:string,
  *          expiresAt?:Date|string|null, supportEmail?:string}} opts
@@ -680,204 +462,50 @@ export function renderWaitlistInvitationEmail({
   expiresAt = null,
   supportEmail = '',
 } = {}) {
-  const greeting = toName ? `Hi ${escapeHtml(toName)},` : 'Hello,';
-  const appBase = env('APP_BASE_URL');
-  const supportHtml = supportEmail
-    ? `<a href="mailto:${escapeHtml(supportEmail)}" style="color:#6366f1;text-decoration:none;">${escapeHtml(supportEmail)}</a>`
-    : (appBase
-      ? `<a href="${escapeHtml(appBase)}" style="color:#6366f1;text-decoration:none;">${escapeHtml(appBase)}</a>`
-      : escapeHtml(appName));
-
-  let expiryText = '';
-  if (expiresAt) {
-    const d = expiresAt instanceof Date ? expiresAt : new Date(expiresAt);
-    if (!Number.isNaN(d.getTime())) {
-      expiryText = d.toLocaleString('en-GB', {
-        day: 'numeric', month: 'long', year: 'numeric', hour: '2-digit', minute: '2-digit',
-      });
-    }
-  }
-  const expiryHtml = expiryText
-    ? `<div style="font-size:12px;color:#6b7280;margin-top:18px;">This invitation link expires on ${escapeHtml(expiryText)}. After that, ask the ${escapeHtml(appName)} team for a new one.</div>`
-    : '';
-
-  const bodyHtml = `          <div style="font-size:17px;font-weight:700;color:#111827;margin-bottom:14px;">You're invited to ${escapeHtml(appName)}</div>
-          <div style="font-size:14px;color:#1f2937;line-height:1.6;margin-bottom:8px;">${greeting}</div>
-          <div style="font-size:14px;color:#1f2937;line-height:1.7;margin-bottom:22px;">
-            A spot has opened up on the ${escapeHtml(appName)} beta and we'd love to have you. You joined the
-            waitlist &mdash; now you can create your account. Click below to set your password and activate access
-            to search building, screening, data extraction, risk-of-bias assessment, and meta-analysis, all in one place.
-          </div>
-          ${ctaButton(link, 'Create your password')}
-          <div style="font-size:12px;color:#6b7280;margin-top:22px;line-height:1.6;">
-            If the button doesn&#39;t work, copy and paste this link into your browser:<br>
-            <a href="${escapeHtml(link)}" style="color:#6366f1;text-decoration:none;word-break:break-all;">${escapeHtml(link)}</a>
-          </div>
-          ${expiryHtml}
-          <div style="font-size:12px;color:#9ca3af;margin-top:18px;line-height:1.6;">
-            This link is personal to you &mdash; please don&#39;t share it. If you didn&#39;t join the ${escapeHtml(appName)}
-            waitlist or weren&#39;t expecting this, you can safely ignore this email, and feel free to reach us at ${supportHtml}.
-          </div>`;
-
-  const html = renderBaseEmailLayout({ appName, bodyHtml });
-
-  const textParts = [
-    `You're invited to ${appName}`,
-    '',
-    toName ? `Hi ${toName},` : 'Hello,',
-    '',
-    `A spot has opened up on the ${appName} beta and we'd love to have you. You joined the waitlist — now you can create your account. Open the link below to set your password and activate access to search building, screening, data extraction, risk-of-bias assessment, and meta-analysis, all in one place.`,
-    '',
-    `Create your password: ${link}`,
-  ];
-  if (expiryText) textParts.push('', `This invitation link expires on ${expiryText}. After that, ask the ${appName} team for a new one.`);
-  textParts.push(
-    '',
-    `This link is personal to you — please don't share it. If you didn't join the ${appName} waitlist or weren't expecting this, you can safely ignore this email${supportEmail ? `, or contact us at ${supportEmail}` : ''}.`,
-    '',
-    '—',
-    `Sent by the ${appName} team`,
-  );
-  if (appBase) textParts.push(appBase);
-
-  return { html, text: textParts.join('\n') };
+  const { html, text } = renderTemplate('invite.waitlist', {
+    appName,
+    greeting: salutation(toName),
+    link,
+    expiresAtText: formatDateTime(expiresAt),
+    supportEmail,
+  });
+  return { html, text };
 }
 
 /**
  * renderWelcomeEmail — 93.md §6.3. Welcome / getting-started email sent ONCE per
- * user (idempotency via User.welcomeEmailSentAt, claimed atomically by the
- * caller) after a waitlist-invitation acceptance completes. Guides the new beta
- * user to first value (create a project → import or search records → make the
- * first screening decision), states the beta status honestly, and points at the
- * feedback path. Every interpolated value is escaped; sender/support address are
- * env-configurable (EMAIL_FROM / SUPPORT_EMAIL or WAITLIST_SUPPORT_EMAIL).
+ * user after a waitlist-invitation acceptance completes. This is the one
+ * DISABLEABLE email (registry category 'optional') — see emailTemplates.js.
  *
  * @param {{appName?:string, toName?:string, supportEmail?:string}} opts
  * @returns {{html:string, text:string}}
  */
 export function renderWelcomeEmail({ appName = 'PecanRev', toName = '', supportEmail = '' } = {}) {
-  const greeting = toName ? `Hi ${escapeHtml(toName)},` : 'Hello,';
-  const appBase = env('APP_BASE_URL');
-  const supportHtml = supportEmail
-    ? `<a href="mailto:${escapeHtml(supportEmail)}" style="color:#6366f1;text-decoration:none;">${escapeHtml(supportEmail)}</a>`
-    : 'the in-app <strong>Help &amp; Feedback</strong> page';
-
-  const steps = [
-    ['Create your first project', 'Set the review question and scope — one project per systematic review.'],
-    ['Bring in records', 'Import a RIS/CSV export from your library, or run an automated search across open databases.'],
-    ['Make your first screening decision', 'Open Screening and include/exclude your first title &amp; abstract — everything else builds from there.'],
-  ];
-  const stepsHtml = steps.map(([t, d], i) => `
-            <tr>
-              <td style="vertical-align:top;padding:0 12px 14px 0;"><span style="display:inline-block;width:24px;height:24px;border-radius:50%;background:#eef2ff;color:#6366f1;font-size:13px;font-weight:700;text-align:center;line-height:24px;">${i + 1}</span></td>
-              <td style="padding:0 0 14px 0;">
-                <div style="font-size:14px;font-weight:600;color:#111827;">${t}</div>
-                <div style="font-size:13px;color:#4b5563;line-height:1.6;">${d}</div>
-              </td>
-            </tr>`).join('');
-
-  const openLink = appBase
-    ? ctaButton(appBase, `Open ${appName}`)
-    : '';
-
-  const bodyHtml = `          <div style="font-size:17px;font-weight:700;color:#111827;margin-bottom:14px;">Welcome to the ${escapeHtml(appName)} beta</div>
-          <div style="font-size:14px;color:#1f2937;line-height:1.6;margin-bottom:8px;">${greeting}</div>
-          <div style="font-size:14px;color:#1f2937;line-height:1.7;margin-bottom:18px;">
-            Your account is active. ${escapeHtml(appName)} is a professional workspace for systematic reviews and
-            meta-analyses — here's the fastest way to your first result:
-          </div>
-          <table role="presentation" cellpadding="0" cellspacing="0" style="margin-bottom:8px;">
-${stepsHtml}
-          </table>
-          ${openLink}
-          <div style="font-size:13px;color:#374151;line-height:1.7;background:#f9fafb;border:1px solid #e5e7eb;border-radius:8px;padding:12px 14px;margin-top:20px;">
-            <strong>You're on the beta.</strong> Things will improve fast, and occasionally change under you.
-            When something breaks or feels wrong, tell us — every report is read. Use ${supportHtml}${supportEmail ? '' : ' inside the app'}
-            and quote the reference code you receive so we can follow up.
-          </div>`;
-
-  const html = renderBaseEmailLayout({ appName, bodyHtml });
-
-  const textParts = [
-    `Welcome to the ${appName} beta`,
-    '',
-    toName ? `Hi ${toName},` : 'Hello,',
-    '',
-    `Your account is active. Here's the fastest way to your first result:`,
-    '',
-    `1. Create your first project — set the review question and scope.`,
-    `2. Bring in records — import a RIS/CSV export, or run an automated search across open databases.`,
-    `3. Make your first screening decision — open Screening and include/exclude your first title & abstract.`,
-    '',
-    `You're on the beta. When something breaks or feels wrong, tell us — every report is read.`,
-    supportEmail ? `Feedback: ${supportEmail}` : `Feedback: use the in-app Help & Feedback page.`,
-    '',
-    '—',
-    `Sent by the ${appName} team`,
-  ];
-  if (appBase) textParts.push(appBase);
-
-  return { html, text: textParts.join('\n') };
+  const { html, text } = renderTemplate('welcome', {
+    appName,
+    greeting: salutation(toName),
+    supportEmail,
+    appBaseUrl: env('APP_BASE_URL'),
+  });
+  return { html, text };
 }
 
 /**
- * renderPasswordChangedEmail — 93.md §6.3. Small security notice sent
- * BEST-EFFORT after a successful password change (token reset OR profile
- * change). Contains no links to click (deliberately — a security notice that
- * trains users to click links is a phishing template) beyond the standard
- * footer; tells the user what to do if it wasn't them.
+ * renderPasswordChangedEmail — 93.md §6.3. Best-effort security notice sent
+ * after a successful password change. Contains no links to click (deliberately —
+ * a security notice that trains users to click links is a phishing template).
  *
  * @param {{appName?:string, toName?:string, changedAt?:Date|string|null, supportEmail?:string}} opts
  * @returns {{html:string, text:string}}
  */
 export function renderPasswordChangedEmail({ appName = 'PecanRev', toName = '', changedAt = null, supportEmail = '' } = {}) {
-  const greeting = toName ? `Hi ${escapeHtml(toName)},` : 'Hello,';
-  const appBase = env('APP_BASE_URL');
-
-  let whenText = '';
-  if (changedAt) {
-    const d = changedAt instanceof Date ? changedAt : new Date(changedAt);
-    if (!Number.isNaN(d.getTime())) {
-      whenText = d.toLocaleString('en-GB', { day: 'numeric', month: 'long', year: 'numeric', hour: '2-digit', minute: '2-digit' });
-    }
-  }
-  const supportHtml = supportEmail
-    ? `contact us immediately at <a href="mailto:${escapeHtml(supportEmail)}" style="color:#6366f1;text-decoration:none;">${escapeHtml(supportEmail)}</a>`
-    : 'contact the team immediately via the in-app Help &amp; Feedback page';
-
-  const bodyHtml = `          <div style="font-size:16px;font-weight:600;color:#111827;margin-bottom:14px;">Your password was changed</div>
-          <div style="font-size:14px;color:#1f2937;line-height:1.6;margin-bottom:8px;">${greeting}</div>
-          <div style="font-size:14px;color:#1f2937;line-height:1.7;margin-bottom:16px;">
-            The password for your ${escapeHtml(appName)} account was changed${whenText ? ` on ${escapeHtml(whenText)}` : ''}.
-            All other signed-in sessions have been signed out.
-          </div>
-          <div style="font-size:13px;color:#374151;line-height:1.7;background:#fef2f2;border:1px solid #fecaca;border-radius:8px;padding:12px 14px;">
-            <strong>Didn't do this?</strong> Someone else may have access to your account —
-            reset your password from the sign-in page right away and ${supportHtml}.
-          </div>
-          <div style="font-size:12px;color:#9ca3af;margin-top:18px;line-height:1.5;">
-            If this was you, no action is needed.
-          </div>`;
-
-  const html = renderBaseEmailLayout({ appName, bodyHtml });
-
-  const textParts = [
-    'Your password was changed',
-    '',
-    toName ? `Hi ${toName},` : 'Hello,',
-    '',
-    `The password for your ${appName} account was changed${whenText ? ` on ${whenText}` : ''}. All other signed-in sessions have been signed out.`,
-    '',
-    `Didn't do this? Reset your password from the sign-in page right away and ${supportEmail ? `contact us immediately at ${supportEmail}` : 'contact the team immediately via the in-app Help & Feedback page'}.`,
-    '',
-    'If this was you, no action is needed.',
-    '',
-    '—',
-    `Sent by the ${appName} team`,
-  ];
-  if (appBase) textParts.push(appBase);
-
-  return { html, text: textParts.join('\n') };
+  const { html, text } = renderTemplate('password.changed', {
+    appName,
+    greeting: salutation(toName),
+    whenText: formatDateTime(changedAt),
+    supportEmail,
+  });
+  return { html, text };
 }
 
 /** Env-configurable support address (93.md §6.3). Empty string when unset. */

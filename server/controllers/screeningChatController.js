@@ -21,6 +21,7 @@ import { resolveMetaLabChatScope } from '../screening/chatScope.js';
 import { getMetaSiftSettings } from '../screening/settings.js';
 import { emitToProjectMembers } from '../realtime/bus.js';
 import { canPostProjectChat } from '../../src/research-engine/screening/chatPolicy.js';
+import { recordChatMessage } from '../services/chatDigestService.js';
 
 const MAX_LEN = 4000;
 
@@ -149,6 +150,24 @@ async function postMessageCore(access, req, res) {
   const event = { type: 'chat.message' };
   if (access.project.linkedMetaLabProjectId) event.metaLabProjectId = access.project.linkedMetaLabProjectId;
   emitToProjectMembers(access.project.id, event, { exclude: req.user.id });
+  // 112.md §2 — accumulate email-digest pending rows for opted-in recipients
+  // (active members + owner, matching the realtime audience). Strictly
+  // best-effort and fire-and-forget: a digest failure must never fail a post.
+  (async () => {
+    const [memberRows, project] = await Promise.all([
+      prisma.screenProjectMember.findMany({
+        where: { projectId: access.project.id, status: 'active', userId: { not: null } },
+        select: { userId: true, user: { select: { emailNotifications: true } } },
+      }),
+      prisma.screenProject.findUnique({
+        where: { id: access.project.id },
+        select: { owner: { select: { id: true, emailNotifications: true } } },
+      }),
+    ]);
+    const members = memberRows.map(m => ({ userId: m.userId, emailNotifications: m.user?.emailNotifications ?? null }));
+    if (project?.owner) members.push({ userId: project.owner.id, emailNotifications: project.owner.emailNotifications });
+    await recordChatMessage({ projectId: access.project.id, senderId: req.user.id, senderName, members });
+  })().catch(err => console.error('[chat] digest record error:', err.message));
   res.status(201).json({
     message: {
       id: created.id, senderId: created.senderId, senderName: created.senderName,

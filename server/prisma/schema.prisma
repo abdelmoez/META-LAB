@@ -82,6 +82,12 @@ model User {
   // Nullable → `prisma db push` stays additive-safe. Mirrors dashboardPreferences;
   // cross-device, server-backed.
   screeningShortcuts            String?
+  // 112.md §2 — per-user email-notification preferences as a small JSON blob:
+  // { projectChat: boolean }. Opt-IN (null/absent ⇒ all optional categories OFF)
+  // so nobody receives chat-digest email they never asked for. Nullable →
+  // `prisma db push` stays additive-safe. Mirrors dashboardPreferences;
+  // cross-device, server-backed.
+  emailNotifications            String?
   // prompt39 Task 5 — per-user left workflow-menu mode: "pinned" (stay open, never
   // auto-collapse on workflow navigation) | "auto" (auto-collapse on workflow
   // steps). null ⇒ "auto" (current default). Nullable → `prisma db push` stays
@@ -2947,4 +2953,62 @@ model ScreenResetEvent {
   createdAt        DateTime @default(now())
 
   @@index([projectId, createdAt])
+}
+
+// ── 112.md Email & Notification system ─────────────────────────────────────────
+// Outbox rows never store email bodies (PII-minimal: subject only after render).
+// idempotencyKey is enforced in code (findFirst-then-insert inside the enqueue
+// transaction), NOT by a unique constraint — adding @@unique to a live table
+// breaks the non-interactive `prisma db push` deploy (see ScreenDuplicateJob).
+// EmailTemplate stores admin OVERRIDES only; code owns canonical defaults, so
+// Restore Default = delete the row.
+
+model EmailOutbox {
+  id              String    @id @default(cuid())
+  templateKey     String
+  recipient       String
+  recipientUserId String?
+  category        String    @default("transactional")
+  status          String    @default("pending")
+  idempotencyKey  String
+  entityId        String?
+  variablesJson   String    @default("{}")
+  renderedSubject String?
+  attempts        Int       @default(0)
+  lastError       String?
+  heartbeatAt     DateTime?
+  sentAt          DateTime?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  @@index([status, createdAt])
+  @@index([idempotencyKey])
+  @@index([recipientUserId])
+}
+
+model EmailTemplate {
+  id          String   @id @default(cuid())
+  templateKey String
+  fieldsJson  String   @default("{}")
+  enabled     Boolean  @default(true)
+  updatedById String?
+  updatedAt   DateTime @updatedAt
+  createdAt   DateTime @default(now())
+
+  @@index([templateKey])
+}
+
+model ChatDigestPending {
+  id              String   @id @default(cuid())
+  userId          String
+  projectId       String
+  firstMessageAt  DateTime
+  lastMessageAt   DateTime
+  messageCount    Int      @default(0)
+  senderNamesJson String   @default("[]")
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@index([userId, projectId])
+  @@index([lastMessageAt])
 }

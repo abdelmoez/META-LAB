@@ -31,10 +31,12 @@ import { getDefaultTierId, recordTierAssignment } from './entitlementService.js'
 import {
   sendEmail,
   isEmailConfigured,
-  renderWaitlistInvitationEmail,
   renderWelcomeEmail,
   configuredSupportEmail,
+  formatEmailDateTime,
+  emailSalutation,
 } from './emailService.js';
+import { enqueueEmail } from './emailOutboxService.js';
 import { normalizeEmail } from '../../src/shared/betaWaitlist.js';
 import {
   validateInvitePassword,
@@ -268,10 +270,27 @@ export async function recordInvitationEmailResult(invitationId, result) {
 }
 
 /**
- * Render + send the invitation email and persist the delivery result. Never
- * throws. `baseUrl` should be the proxy-safe public origin derived by the caller
- * (falls back to APP_BASE_URL). status mapping mirrors the waitlist confirmation:
- * sent → 'sent'; provider error → 'failed'; SMTP unconfigured → 'skipped'.
+ * Hand the invitation email to the durable EmailOutbox and persist the handoff
+ * result. Never throws. `baseUrl` should be the proxy-safe public origin derived
+ * by the caller (falls back to APP_BASE_URL).
+ *
+ * WHY THIS NO LONGER SENDS. Minting an invitation and delivering it used to be
+ * one synchronous unit: the admin's bulk-invite request waited on an SMTP
+ * round-trip per applicant, and a crash between the token row and the send left
+ * a live invitation nobody was ever told about. The row is now enqueued instead
+ * (entityId = invitation.id, discriminator = the expiry timestamp, so re-issuing
+ * a fresh token sends while a duplicate request for the SAME link dedupes).
+ *
+ * STATUS MAPPING (WaitlistInvitation.emailStatus):
+ *   SMTP unconfigured   → 'skipped'  (unchanged — nothing to hand off to, and
+ *                                     the dev/preview 'invited_no_email' code
+ *                                     the admin UI shows depends on it)
+ *   enqueued/duplicate  → 'queued'   (NEW: handed off, not yet delivered)
+ *   refused by outbox   → 'failed'
+ * Authoritative DELIVERY state — sent/failed/skipped_*, attempts, lastError —
+ * now lives on the EmailOutbox row for entityId = invitation.id. `emailSentAt`
+ * on the invitation therefore stays null for outbox-delivered invites, and
+ * invitationMetrics().failedEmail no longer counts provider failures.
  *
  * @returns {Promise<{sent:boolean, emailStatus:string, emailConfigured:boolean}>}
  */
@@ -282,35 +301,31 @@ export async function sendInvitationEmail({ invitation, token, baseUrl = '', toN
   }
   const base = String(baseUrl || process.env.APP_BASE_URL || '').replace(/\/+$/, '');
   const link = `${base}${inviteAcceptPath(token)}`;
-  const { html, text } = renderWaitlistInvitationEmail({
-    appName: 'PecanRev',
-    toName: toName || invitation.name || '',
-    link,
-    expiresAt: invitation.expiresAt,
-    supportEmail: supportEmail(),
+  // Variable names + formatting match the registry entry 'invite.waitlist'
+  // (required: link; optional: appName, greeting, expiresAtText, supportEmail).
+  const queued = await enqueueEmail({
+    templateKey: 'invite.waitlist',
+    recipient: invitation.email,
+    category: 'transactional',
+    variables: {
+      greeting: emailSalutation(toName || invitation.name || ''),
+      link,
+      expiresAtText: formatEmailDateTime(invitation.expiresAt),
+      supportEmail: supportEmail(),
+    },
+    entityId: invitation.id,
+    discriminator: invitation.expiresAt ? new Date(invitation.expiresAt).toISOString() : '',
   });
-  let result;
-  try {
-    result = await sendEmail({
-      to: invitation.email,
-      subject: "You're invited to PecanRev — create your account",
-      html,
-      text,
-      context: 'waitlist_invitation',
-    });
-  } catch (e) {
-    result = { sent: false, reason: 'send_failed', error: e?.message };
+  if (queued.enqueued || queued.reason === 'duplicate') {
+    await recordInvitationEmailResult(invitation.id, { status: 'queued' });
+    return { sent: false, emailStatus: 'queued', emailConfigured: true };
   }
-  if (result.sent === true) {
-    await recordInvitationEmailResult(invitation.id, { status: 'sent' });
-    return { sent: true, emailStatus: 'sent', emailConfigured: true };
-  }
-  const safeReason = result.reason === 'send_failed' ? 'Provider temporarily unavailable' : (result.reason || 'unknown');
-  // 93.md §6.1 — 'recipients_skipped' means the staging allowlist dropped every
-  // recipient: nothing was attempted, so it records as 'skipped', not 'failed'.
-  const status = (result.reason === 'not_configured' || result.reason === 'recipients_skipped') ? 'skipped' : 'failed';
-  await recordInvitationEmailResult(invitation.id, { status, error: safeReason });
-  return { sent: false, emailStatus: status, emailConfigured: isEmailConfigured() };
+  // 'paused' is reachable even though the admin controllers gate on it first
+  // (defence in depth, and the enqueue layer is the one every future caller
+  // shares) — surface it as a SAFE short reason, never a raw error string.
+  const safeReason = queued.reason === 'paused' ? 'Invitations are paused' : (queued.reason || 'unknown');
+  await recordInvitationEmailResult(invitation.id, { status: 'failed', error: safeReason });
+  return { sent: false, emailStatus: 'failed', emailConfigured: true };
 }
 
 // ── High-level invite orchestration (MAIN-DB side only) ─────────────────────────

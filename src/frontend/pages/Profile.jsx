@@ -113,6 +113,7 @@ const NAV_ITEMS = [
   { id: 'name',        label: 'Edit Name' },
   { id: 'institution', label: 'Institution' },
   { id: 'shortcuts',   label: 'Screening Shortcuts' },
+  { id: 'email',       label: 'Email Notifications' },
   { id: 'password',    label: 'Change Password' },
   { id: 'danger',      label: 'Danger Zone' },
 ];
@@ -361,6 +362,66 @@ function ScreeningShortcutsSection() {
           {saving ? 'Saving…' : status === 'saved' ? 'Saved ✓' : 'Save shortcuts'}
         </PrimaryBtn>
       </div>
+    </SectionCard>
+  );
+}
+
+// 112.md §2 — optional email category preferences ({ projectChat: boolean } JSON
+// blob on the profile). Default OFF when absent: project-chat digests are a new
+// email class, so existing users must opt in rather than be surprised by mail.
+// Saves on toggle (a single switch needs no separate Save button); transactional
+// emails (invites, password resets…) are not governed here and cannot be disabled.
+export function EmailNotificationsSection() {
+  const [projectChat, setProjectChat] = useState(false);
+  const [loaded, setLoaded]   = useState(false);
+  const [saving, setSaving]   = useState(false);
+  const [status, setStatus]   = useState(null); // null | 'saved' | 'error'
+  const [errMsg, setErrMsg]   = useState('');
+
+  useEffect(() => {
+    api.profile.get()
+      .then(r => {
+        let raw = r?.user?.emailNotifications ?? null;
+        if (typeof raw === 'string') { try { raw = JSON.parse(raw); } catch { raw = null; } }
+        setProjectChat(raw && typeof raw === 'object' ? raw.projectChat === true : false);
+      })
+      .catch(() => { /* keep default OFF */ })
+      .finally(() => setLoaded(true));
+  }, []);
+
+  async function toggle(next) {
+    if (saving) return;
+    setProjectChat(next); setSaving(true); setStatus(null); setErrMsg('');
+    try {
+      await api.profile.update({ emailNotifications: { projectChat: next } });
+      setStatus('saved');
+    } catch (err) {
+      setProjectChat(!next); // revert — the server did not accept the change
+      setStatus('error'); setErrMsg(err.message || 'Failed to save email preferences.');
+    } finally { setSaving(false); }
+  }
+
+  return (
+    <SectionCard title="Email Notifications">
+      <div style={{ fontSize: 12.5, color: C.txt2, lineHeight: 1.6, marginBottom: 16 }}>
+        Choose which optional emails PecanRev sends you. Account emails (invitations, password
+        resets, security notices) are always delivered.
+      </div>
+      <label style={{ display: 'flex', alignItems: 'center', gap: 10, cursor: loaded ? 'pointer' : 'default', userSelect: 'none', opacity: loaded ? 1 : 0.6 }}>
+        <input
+          type="checkbox"
+          checked={projectChat}
+          disabled={!loaded || saving}
+          onChange={e => toggle(e.target.checked)}
+          style={{ width: 16, height: 16, accentColor: C.acc }}
+        />
+        <span style={{ fontSize: 13, color: C.txt }}>Email notifications for project chat</span>
+      </label>
+      <div style={{ fontSize: 12, color: C.txt2, marginTop: 8, marginLeft: 26 }}>
+        A digest when teammates message a project chat while you're away — never one email per message.
+      </div>
+      {status === 'saved' && <div style={{ fontSize: 12, color: C.grn, marginTop: 12 }}>Preference saved.</div>}
+      {status === 'error' && <div style={{ fontSize: 12, color: C.red, marginTop: 12 }}>{errMsg}</div>}
     </SectionCard>
   );
 }
@@ -678,6 +739,10 @@ export default function Profile() {
           {/* ── Screening Shortcuts (prompt25 Task 7) ────────────────── */}
           <div id="section-shortcuts">
             <ScreeningShortcutsSection />
+          </div>
+
+          <div id="section-email">
+            <EmailNotificationsSection />
           </div>
 
           {/* ── Change Password ──────────────────────────────────────── */}

@@ -7,6 +7,13 @@ import {
   listDuplicateJobs, getDuplicateJobHealth, getDuplicateJob, requeueDuplicateJob,
   listClientErrors,
 } from '../controllers/researchOpsJobsController.js';
+// 112.md follow-up — Ops › Email: registry-backed template management + the
+// EmailOutbox delivery history.
+import {
+  listEmailTemplatesAdmin, getEmailTemplateAdmin, updateEmailTemplateAdmin,
+  restoreEmailTemplateAdmin, setEmailTemplateEnabledAdmin,
+  previewEmailTemplateAdmin, testSendEmailTemplateAdmin, listEmailDeliveryAdmin,
+} from '../controllers/emailAdminController.js';
 import { requireAdminOrMod, requireTargetEditable } from '../middleware/requireRole.js';
 // 95.md — user-management surface (metrics/timeline/notes/actions/bulk/export).
 import {
@@ -332,6 +339,20 @@ router.get('/research/duplicate-jobs', requirePermission('view_research_diagnost
 router.get('/research/duplicate-jobs/:jobId', requirePermission('view_research_diagnostics'), getDuplicateJob);
 router.post('/research/duplicate-jobs/:jobId/requeue', requirePermission('manage_research_jobs'), requeueDuplicateJob);
 router.get('/research/client-errors', requirePermission('view_research_diagnostics'), listClientErrors);
+
+// ── Ops › Email — template management + delivery history ──────────────────────
+// Capability seam mirrors Research Governance: reads take view_email_delivery
+// (admin + mod), every write — and the editor's preview/test-send actions — take
+// manage_email_templates (admin only, by omission from MOD_PERMISSIONS).
+// Static '/email/templates' is declared before '/email/templates/:key'.
+router.get('/email/templates', requirePermission('view_email_delivery'), listEmailTemplatesAdmin);
+router.get('/email/delivery', requirePermission('view_email_delivery'), listEmailDeliveryAdmin);
+router.get('/email/templates/:key', requirePermission('view_email_delivery'), getEmailTemplateAdmin);
+router.put('/email/templates/:key', requirePermission('manage_email_templates'), updateEmailTemplateAdmin);
+router.delete('/email/templates/:key', requirePermission('manage_email_templates'), restoreEmailTemplateAdmin);
+router.post('/email/templates/:key/enabled', requirePermission('manage_email_templates'), setEmailTemplateEnabledAdmin);
+router.post('/email/templates/:key/preview', requirePermission('manage_email_templates'), previewEmailTemplateAdmin);
+router.post('/email/templates/:key/test-send', requirePermission('manage_email_templates'), testSendEmailTemplateAdmin);
 
 router.get('/audit-log', requireAdmin, getAuditLog);
 router.get('/security-events', requireAdmin, getSecurityEvents);

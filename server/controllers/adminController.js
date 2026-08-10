@@ -2846,8 +2846,11 @@ export async function getConsole(req, res) {
   // layer (§39 capability seam, server/middleware/requireAdmin.js), but widening
   // the mod console beyond users+messages is a product decision outside 109's
   // scope — see the 109 report's limitations.
+  // 112.md follow-up — 'email' (template management + delivery history) is
+  // admin-only in the sidebar, mirroring 'research': mods hold the
+  // view_email_delivery capability at the API layer with no console UI for it.
   const sections = role === 'admin'
-    ? ['overview', 'users', 'projects', 'sift', 'research', 'rob', 'searchProviders', 'waitlist', 'onboarding', 'content', 'settings', 'style', 'flags', 'extractionAi', 'livingReviews', 'tiers', 'messages', 'security', 'health', 'engineVersions']
+    ? ['overview', 'users', 'projects', 'sift', 'research', 'rob', 'searchProviders', 'waitlist', 'onboarding', 'content', 'settings', 'style', 'flags', 'extractionAi', 'livingReviews', 'tiers', 'messages', 'email', 'security', 'health', 'engineVersions']
     : role === 'mod'
       ? ['users', 'messages']
       : [];

@@ -20,7 +20,7 @@ const SESSION_COOKIE = sessionCookieName();
 // self-service profile (in addition to the legacy onboarding write path).
 const PROFILE_SELECT = {
   id: true, email: true, name: true, createdAt: true, lastActive: true,
-  themePreference: true, workflowMenuMode: true, projectSidebarPinned: true, uiDesignMode: true, dashboardPreferences: true, screeningShortcuts: true,
+  themePreference: true, workflowMenuMode: true, projectSidebarPinned: true, uiDesignMode: true, dashboardPreferences: true, screeningShortcuts: true, emailNotifications: true,
   primaryRole: true, researchField: true, mainUseCase: true, country: true,
   institutionOriginal: true, institutionCanonicalName: true, institutionRorId: true,
   institutionCity: true, institutionCountryName: true, institutionCountryCode: true,
@@ -53,7 +53,7 @@ export async function getProfile(req, res) {
  */
 export async function updateProfile(req, res) {
   try {
-    const { name, themePreference, workflowMenuMode, projectSidebarPinned, uiDesignMode, dashboardPreferences, screeningShortcuts, institution, country } = req.body || {};
+    const { name, themePreference, workflowMenuMode, projectSidebarPinned, uiDesignMode, dashboardPreferences, screeningShortcuts, emailNotifications, institution, country } = req.body || {};
     if (name !== undefined && typeof name !== 'string') {
       return res.status(400).json({ error: 'name must be a string' });
     }
@@ -121,6 +121,24 @@ export async function updateProfile(req, res) {
         return res.status(400).json({ error: 'screeningShortcuts must be an object' });
       }
     }
+    // 112.md §2 — per-user email notification prefs ({ projectChat: boolean }),
+    // same JSON-blob pattern as dashboardPreferences (object or JSON string; null
+    // clears). Absent/null means every optional email category stays OFF (opt-in:
+    // a brand-new email class must never surprise existing users).
+    let emailPrefPatch = {};
+    if (emailNotifications !== undefined) {
+      let obj = emailNotifications;
+      if (typeof obj === 'string') { try { obj = JSON.parse(obj); } catch { return res.status(400).json({ error: 'emailNotifications must be valid JSON' }); } }
+      if (obj === null) {
+        emailPrefPatch = { emailNotifications: null };
+      } else if (typeof obj === 'object' && !Array.isArray(obj)) {
+        const json = JSON.stringify(obj);
+        if (json.length > 500) return res.status(400).json({ error: 'emailNotifications is too large' });
+        emailPrefPatch = { emailNotifications: json };
+      } else {
+        return res.status(400).json({ error: 'emailNotifications must be an object' });
+      }
+    }
     // prompt35 — institution: accepts a canonical selection object (ROR/local) or a
     // custom string; the service preserves the typed text and links/flags as needed.
     // `country` is the free-text onboarding-stated country (≠ IP-derived registration).
@@ -144,6 +162,7 @@ export async function updateProfile(req, res) {
         ...uiDesignPatch,
         ...dashPatch,
         ...shortcutPatch,
+        ...emailPrefPatch,
         ...instPatch,
         ...countryPatch,
         lastActive: new Date(),

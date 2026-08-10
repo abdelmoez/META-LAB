@@ -38,6 +38,10 @@ const MOD_PERMISSIONS = new Set([
   // 109.md §39 — read-only operational diagnostics. NOT granted:
   // manage_research_jobs (requeue), flag writes, safety-setting writes.
   'view_research_diagnostics',
+  // 112.md follow-up — read-only email template/delivery inspection. NOT granted:
+  // manage_email_templates (copy edits, enable/disable, restore, test-send) —
+  // mods may LOOK at what the product sends, they may not change it.
+  'view_email_delivery',
 ]);
 
 /** Exported for the authorization unit test — the grant list IS the contract. */
