@@ -36,7 +36,7 @@
  * Extraction and coming back continues the Screening stack (108.md §16). Only a
  * projectId change wipes everything, which HistoryProvider does on its own.
  */
-import { useEffect, useRef } from 'react';
+import { useEffect, useMemo, useRef } from 'react';
 import HistoryProvider, { useProjectHistory } from './HistoryContext.jsx';
 import UndoFeedbackProvider, { useUndoFeedback } from './useUndoFeedback.jsx';
 import ShortcutProvider, { useShortcut, TIER } from '../shortcuts/ShortcutProvider.jsx';
@@ -46,6 +46,13 @@ import { isBlobScope } from '../../research-engine/interaction/projectScopes.js'
 import {
   isUndoChord, isRedoChord, historyShortcutAllowed,
 } from '../../research-engine/interaction/undoChords.js';
+// 109.md §§5, 16 — the Ops control plane for the interaction layer.
+import { setHistoryCap } from '../../research-engine/interaction/historyStacks.js';
+import { useGovernanceFlags, useOpsGovernance } from '../featureAccess/opsGovernance.js';
+import { reportAutosaveConflict } from '../monitoring/opsErrorReporter.js';
+
+/** Module-level so the flag hook's effect keys on a stable identity. */
+const INTERACTION_FLAGS = Object.freeze(['projectUndoRedo']);
 
 /**
  * HistoryGlobals — the two global bindings (108.md §2). Tier 5: any engine or
@@ -53,15 +60,24 @@ import {
  * wins, and a focused editor wins before either because the adapter skips events a
  * nearer React handler already cancelled.
  */
-function HistoryGlobals() {
+function HistoryGlobals({ ctrlYRedoAlias }) {
   const hist = useProjectHistory();
+  // 109.md §16 — `interaction.ctrlYRedoAlias`. Read through the same render-assigned
+  // ref pattern the availability terms use, so the binding is registered ONCE and
+  // still sees the current setting.
+  const live = useRef({});
+  live.current = { ctrlYRedoAlias };
 
   useShortcut({
     id: 'history.undo',
     tier: TIER.GLOBAL,
+    // 109.md §15 — declarative metadata for the read-only Ops inventory.
+    chord: 'Ctrl/Cmd + Z', label: 'Undo the last change on this page', scopeLabel: 'Project (all engines)',
     match: isUndoChord,
     // `hist.canUndo` is false while an undo is already in flight (the per-scope
     // pending slot), so holding the chord cannot stack two undos on one entry.
+    // 109.md §5 — it is ALSO false when `projectUndoRedo` is off, which is what
+    // releases Ctrl/Cmd+Z back to the browser: `when` false ⇒ no preventDefault.
     when: (ctx) => historyShortcutAllowed(ctx) && hist.canUndo,
     run: () => { hist.undo(); return true; },
   }, []);
@@ -69,7 +85,9 @@ function HistoryGlobals() {
   useShortcut({
     id: 'history.redo',
     tier: TIER.GLOBAL,
-    match: isRedoChord,
+    chord: 'Ctrl/Cmd + Shift + Z', label: 'Redo the last undone change', scopeLabel: 'Project (all engines)',
+    // Ctrl/Cmd+Shift+Z is unconditional; only the Windows Ctrl+Y alias is optional.
+    match: (e) => isRedoChord(e, { ctrlYAlias: live.current.ctrlYRedoAlias }),
     when: (ctx) => historyShortcutAllowed(ctx) && hist.canRedo,
     run: () => { hist.redo(); return true; },
   }, []);
@@ -120,6 +138,10 @@ function HistoryConflictWatch({ projectId }) {
     if (typeof window === 'undefined') return undefined;
     const onConflict = (e) => {
       if (!conflictTargetsProject(e && e.detail, pid.current)) return;
+      // 109.md §46 — an autosave compare-and-set refusal is one of the three
+      // operational failures Ops captures. Only OUR project's conflicts are
+      // reported, for the same reason only ours clear the stacks.
+      reportAutosaveConflict({ scope: 'autosave' });
       clearScopes(isBlobScope);
     };
     window.addEventListener('metalab:autosave-conflict', onConflict);
@@ -143,21 +165,28 @@ function HistoryConflictWatch({ projectId }) {
 export function HistorySaveStatusWatch({ saveStatus }) {
   const { clearScopes } = useProjectHistory();
   useEffect(() => {
-    if (saveStatus === 'conflict') clearScopes(isBlobScope);
+    if (saveStatus !== 'conflict') return;
+    reportAutosaveConflict({ scope: 'autosave' });   // 109.md §46 — see above
+    clearScopes(isBlobScope);
   }, [saveStatus, clearScopes]);
   return null;
 }
 
-function HistoryHost({ projectId, scope, saveStatus, idFn, now, children }) {
+function HistoryHost({ projectId, scope, saveStatus, idFn, now, gov, undoRedoOn, children }) {
   const { notify } = useUndoFeedback();
   return (
-    <HistoryProvider projectId={projectId} scope={scope} onFeedback={notify} idFn={idFn} now={now}>
+    <HistoryProvider
+      projectId={projectId} scope={scope} onFeedback={notify} idFn={idFn} now={now}
+      enabled={undoRedoOn}
+      redoEnabled={gov.redoEnabled !== false}
+      toastEnabled={gov.undoToastEnabled !== false}
+    >
       <ShortcutProvider
         getScope={() => scope}
         isModalOpen={isAnyModalOpen}
         isEditable={isEditableDomTarget}
       >
-        <HistoryGlobals />
+        <HistoryGlobals ctrlYRedoAlias={gov.ctrlYRedoAlias === true} />
         <HistoryConflictWatch projectId={projectId} />
         <HistorySaveStatusWatch saveStatus={saveStatus} />
         {children}
@@ -180,9 +209,30 @@ function HistoryHost({ projectId, scope, saveStatus, idFn, now, children }) {
 export function ProjectInteractionProvider({
   projectId, scope, saveStatus, idFn, now, initialNotes, children,
 }) {
+  // 109.md §§5, 16. Both hooks resolve to the CATALOGUE DEFAULTS on the first render
+  // and under renderToStaticMarkup (effects never run there), so the shipped
+  // behaviour is what an SSR test sees and what the user sees before the shared
+  // /api/settings/public snapshot lands.
+  const flags = useGovernanceFlags(INTERACTION_FLAGS);
+  const gov = useOpsGovernance();
+  const undoRedoOn = flags.projectUndoRedo !== false;
+
+  // `interaction.historyCap`. Applied to the pure stack module rather than passed
+  // down, because the cap has to govern every push site (see historyStacks.js).
+  const cap = gov.historyCap;
+  useEffect(() => { setHistoryCap(cap); }, [cap]);
+
+  const toastMs = useMemo(() => {
+    const v = Number(gov.undoToastMs);
+    return Number.isFinite(v) ? v : undefined;
+  }, [gov.undoToastMs]);
+
   return (
-    <UndoFeedbackProvider idFn={idFn} initialNotes={initialNotes}>
-      <HistoryHost projectId={projectId} scope={scope} saveStatus={saveStatus} idFn={idFn} now={now}>
+    <UndoFeedbackProvider idFn={idFn} initialNotes={initialNotes} dismissMs={toastMs}>
+      <HistoryHost
+        projectId={projectId} scope={scope} saveStatus={saveStatus} idFn={idFn} now={now}
+        gov={gov} undoRedoOn={undoRedoOn}
+      >
         {children}
       </HistoryHost>
     </UndoFeedbackProvider>

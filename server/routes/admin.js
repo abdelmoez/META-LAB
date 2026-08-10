@@ -1,6 +1,12 @@
 import { Router } from 'express';
 import rateLimit from 'express-rate-limit';
-import { requireAdmin } from '../middleware/requireAdmin.js';
+import { requireAdmin, requirePermission } from '../middleware/requireAdmin.js';
+// 109.md §§8-10/46-47 — Ops › Research Governance: duplicate-job telemetry + safe
+// requeue, and the persisted client-error feed.
+import {
+  listDuplicateJobs, getDuplicateJobHealth, getDuplicateJob, requeueDuplicateJob,
+  listClientErrors,
+} from '../controllers/researchOpsJobsController.js';
 import { requireAdminOrMod, requireTargetEditable } from '../middleware/requireRole.js';
 // 95.md — user-management surface (metrics/timeline/notes/actions/bulk/export).
 import {
@@ -43,6 +49,7 @@ import {
   updateLandingContent,
   getFeatureFlags,
   updateFeatureFlags,
+  setFeatureFlag,
   getAuditLog,
   getSecurityEvents,
   getSecuritySummary,
@@ -89,6 +96,10 @@ import {
 import {
   getEligibilityScreeningSettings,
   updateEligibilityScreeningSettings,
+  // 109.md §3 — catalogue-driven research-governance settings (typed, audited).
+  getResearchGovernanceSettings,
+  updateResearchGovernanceSettings,
+  resetResearchGovernanceSettings,
 } from '../controllers/settingsController.js';
 
 import {
@@ -296,11 +307,31 @@ router.put('/landing-content', requireAdmin, updateLandingContent);
 
 router.get('/feature-flags', requireAdmin, getFeatureFlags);
 router.put('/feature-flags', requireAdmin, updateFeatureFlags);
+// 109.md §5 — dedicated single-flag writer (read-merge-write + per-flag from→to
+// audit), so a stale Flags tab can never revert someone else's flip. The PUT
+// above stays for the existing whole-form save and is now validated too.
+router.patch('/feature-flags/:key', requireAdmin, setFeatureFlag);
+
+// 109.md §3 — research-governance settings (screening navigation, keyword
+// intelligence, keyboard/history, proportion display, analysis override policy).
+// Typed + catalogue-validated; every write logs a per-setting from→to diff.
+router.get('/research-governance/settings', requireAdmin, getResearchGovernanceSettings);
+router.put('/research-governance/settings', requireAdmin, updateResearchGovernanceSettings);
+router.post('/research-governance/settings/reset', requireAdmin, resetResearchGovernanceSettings);
 
 // ── Pecan Search Engine (P1) provider management + queue/worker health ─────────
 router.get('/search-providers', requireAdmin, getSearchProviders);
 router.patch('/search-providers', requireAdmin, updateSearchProviders);
 router.post('/search-providers/jobs/:jobId/requeue', requireAdmin, requeueSearchJob);
+
+// ── 109.md — Research Governance (duplicate-job ops + client-error telemetry) ──
+// The §39 capability seam: reads take view_research_diagnostics (admin + mod),
+// writes take manage_research_jobs (admin only). Static paths BEFORE :jobId.
+router.get('/research/duplicate-jobs/health', requirePermission('view_research_diagnostics'), getDuplicateJobHealth);
+router.get('/research/duplicate-jobs', requirePermission('view_research_diagnostics'), listDuplicateJobs);
+router.get('/research/duplicate-jobs/:jobId', requirePermission('view_research_diagnostics'), getDuplicateJob);
+router.post('/research/duplicate-jobs/:jobId/requeue', requirePermission('manage_research_jobs'), requeueDuplicateJob);
+router.get('/research/client-errors', requirePermission('view_research_diagnostics'), listClientErrors);
 
 router.get('/audit-log', requireAdmin, getAuditLog);
 router.get('/security-events', requireAdmin, getSecurityEvents);

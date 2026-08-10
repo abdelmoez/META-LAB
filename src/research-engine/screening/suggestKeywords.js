@@ -141,9 +141,78 @@ function denegateText(text) {
     .join('\n');
 }
 
+/* ══════════════════════════════════════════════════════════════════════════
+   109.md §§11-13 — the Ops keyword-intelligence knobs.
+   ══════════════════════════════════════════════════════════════════════════
+   Every option defaults to the value this module shipped with in 107, so
+   `suggestCriteriaKeywords(pico)` with no options is byte-identical to v4.13.0.
+   The GENERIC blocklist above is never edited in place: additions and removals are
+   applied to a COPY per call, which is what makes "Restore system defaults" in Ops
+   an honest promise (109.md §13) — clearing the two lists restores the shipped
+   behaviour exactly, because the shipped list was never touched. */
+
+/** How a concept found on both sides is handled (109.md §12). */
+export const CONFLICT_BEHAVIOR = Object.freeze({
+  FLAG: 'flag_for_review',
+  OMIT: 'omit_ambiguous',
+  PREVENT_DUPLICATE: 'prevent_duplicate_activation',
+});
+
+export const SUGGESTION_DEFAULTS = Object.freeze({
+  maxSuggestionsPerList: MAX_SUGGESTIONS_PER_SIDE,
+  preferPhrases: true,
+  allowAmbiguousSingleWords: false,
+  conflictBehavior: CONFLICT_BEHAVIOR.FLAG,
+  stopListAdditions: [],
+  stopListRemovals: [],
+});
+
+const asList = (v) => (Array.isArray(v) ? v : []);
+
+/**
+ * resolveSuggestionOptions(opts) — clamp/normalise the Ops settings into the shape
+ * the pipeline uses. Exported so the bounds are unit-tested directly; mirrors the
+ * catalogue's min/max rather than trusting the caller (a stale client could hold a
+ * value the server has since re-clamped).
+ */
+export function resolveSuggestionOptions(opts) {
+  const o = (opts && typeof opts === 'object' && !Array.isArray(opts)) ? opts : {};
+  const rawMax = (o.maxSuggestionsPerList == null || o.maxSuggestionsPerList === '')
+    ? NaN : Number(o.maxSuggestionsPerList);
+  const max = Number.isFinite(rawMax)
+    ? Math.min(24, Math.max(1, Math.round(rawMax)))
+    : SUGGESTION_DEFAULTS.maxSuggestionsPerList;
+  const behavior = Object.values(CONFLICT_BEHAVIOR).includes(o.conflictBehavior)
+    ? o.conflictBehavior
+    : SUGGESTION_DEFAULTS.conflictBehavior;
+  return {
+    maxSuggestionsPerList: max,
+    preferPhrases: o.preferPhrases !== false,
+    allowAmbiguousSingleWords: o.allowAmbiguousSingleWords === true,
+    conflictBehavior: behavior,
+    stopListAdditions: asList(o.stopListAdditions),
+    stopListRemovals: asList(o.stopListRemovals),
+  };
+}
+
+/**
+ * The effective generic blocklist for one call: the shipped set, minus the terms this
+ * installation re-allowed, plus the terms it added. Returns the SHARED frozen default
+ * set when neither list contributes anything, so the common path allocates nothing.
+ */
+export function effectiveStopList({ stopListAdditions, stopListRemovals } = {}) {
+  const add = asList(stopListAdditions).map(normalizeKeywordKey).filter(Boolean);
+  const remove = asList(stopListRemovals).map(normalizeKeywordKey).filter(Boolean);
+  if (!add.length && !remove.length) return GENERIC_STANDALONE;
+  const next = new Set(GENERIC_STANDALONE);
+  for (const t of remove) next.delete(t);
+  for (const t of add) next.add(t);
+  return next;
+}
+
 /** A concept is blocked when the WHOLE concept is a generic standalone word. */
-function isGeneric(concept) {
-  return GENERIC_STANDALONE.has(normalizeKeywordKey(concept));
+function isGeneric(concept, stopList = GENERIC_STANDALONE) {
+  return stopList.has(normalizeKeywordKey(concept));
 }
 
 /**
@@ -161,7 +230,7 @@ function dropSubsumed(concepts) {
 }
 
 /** Concepts → suggested display terms (concept first, then ≤2 curated synonyms). */
-function toTerms(concepts) {
+function toTerms(concepts, stopList) {
   const out = [];
   const seen = new Set();
   const push = (t) => {
@@ -173,7 +242,7 @@ function toTerms(concepts) {
   for (const c of concepts) {
     push(c);
     for (const syn of expandSynonyms(c).slice(0, MAX_SYNONYMS_PER_CONCEPT)) {
-      if (!isGeneric(syn)) push(syn);
+      if (!isGeneric(syn, stopList)) push(syn);
     }
   }
   return out;
@@ -185,9 +254,19 @@ function toTerms(concepts) {
  * kept apart because cross-polarity conflicts must be judged on the concepts only —
  * see suggestCriteriaKeywords.
  */
-function sideSuggestions(text) {
-  const concepts = dropSubsumed(extractConcepts(denegateText(text)).filter(c => !isGeneric(c)));
-  return { concepts, terms: toTerms(concepts) };
+function sideSuggestions(text, opts) {
+  const stopList = opts.stopList;
+  // `allowAmbiguousSingleWords` only relaxes the SINGLE-WORD case (109.md §11's
+  // wording): a multi-word phrase was never blocked, and a stop-listed word inside
+  // one still is not. `preferPhrases` off keeps the bare concept next to the
+  // qualified one instead of dropping it.
+  const raw = extractConcepts(denegateText(text)).filter((c) => {
+    if (!isGeneric(c, stopList)) return true;
+    if (!opts.allowAmbiguousSingleWords) return false;
+    return normalizeKeywordKey(c).split(' ').filter(Boolean).length === 1;
+  });
+  const concepts = opts.preferPhrases ? dropSubsumed(raw) : raw;
+  return { concepts, terms: toTerms(concepts, stopList) };
 }
 
 function parseSnapshot(picoSnapshot) {
@@ -213,10 +292,12 @@ function parseSnapshot(picoSnapshot) {
  * @param {object|string|null} picoSnapshot
  * @returns {{ include: string[], exclude: string[], conflicts: Array<{term:string, reason:string}> }}
  */
-export function suggestCriteriaKeywords(picoSnapshot) {
+export function suggestCriteriaKeywords(picoSnapshot, options) {
+  const opts = resolveSuggestionOptions(options);
+  opts.stopList = effectiveStopList(opts);
   const pico = parseSnapshot(picoSnapshot);
-  const inc = sideSuggestions(typeof pico.incl === 'string' ? pico.incl : '');
-  const exc = sideSuggestions(typeof pico.excl === 'string' ? pico.excl : '');
+  const inc = sideSuggestions(typeof pico.incl === 'string' ? pico.incl : '', opts);
+  const exc = sideSuggestions(typeof pico.excl === 'string' ? pico.excl : '', opts);
 
   // Cross-polarity conflicts: emitted on NEITHER side, flagged for user review.
   //
@@ -232,13 +313,26 @@ export function suggestCriteriaKeywords(picoSnapshot) {
   const excludeConceptKeys = new Set(exc.concepts.map(normalizeKeywordKey));
   const conflictKeys = new Set([...includeConceptKeys].filter(k => excludeConceptKeys.has(k)));
 
+  // 109.md §12 — `keywords.conflictBehavior`. There is deliberately no option that
+  // silently activates an ambiguous term on both sides; the three legal values only
+  // choose HOW the ambiguity is surfaced:
+  //   flag_for_review (default)      — off both sides, reported for arbitration.
+  //   omit_ambiguous                 — off both sides, reported to nobody.
+  //   prevent_duplicate_activation   — offered on both sides as a SUGGESTION, still
+  //                                    reported; the "not in both at once" rule is
+  //                                    enforced where activation happens (the
+  //                                    cross-list prompt in ScreeningTab and the
+  //                                    server's keyword reducer), not here.
+  const behavior = opts.conflictBehavior;
   const conflicts = [];
-  for (const term of inc.concepts) {
-    if (!conflictKeys.has(normalizeKeywordKey(term))) continue;
-    conflicts.push({
-      term,
-      reason: 'Appears in both inclusion and exclusion criteria — the polarity is ambiguous.',
-    });
+  if (behavior !== CONFLICT_BEHAVIOR.OMIT) {
+    for (const term of inc.concepts) {
+      if (!conflictKeys.has(normalizeKeywordKey(term))) continue;
+      conflicts.push({
+        term,
+        reason: 'Appears in both inclusion and exclusion criteria — the polarity is ambiguous.',
+      });
+    }
   }
 
   // The expanded term lists are still filtered by those keys, so a genuinely
@@ -250,14 +344,15 @@ export function suggestCriteriaKeywords(picoSnapshot) {
   // it is a concept on neither).
   const incTermKeys = new Set(inc.terms.map(normalizeKeywordKey));
   const excTermKeys = new Set(exc.terms.map(normalizeKeywordKey));
+  const keepConflicts = behavior === CONFLICT_BEHAVIOR.PREVENT_DUPLICATE;
   const trim = (list, ownConcepts) => list
     .filter((t) => {
       const k = normalizeKeywordKey(t);
-      if (conflictKeys.has(k)) return false;
+      if (!keepConflicts && conflictKeys.has(k)) return false;
       if (!incTermKeys.has(k) || !excTermKeys.has(k)) return true;
-      return ownConcepts.has(k);
+      return keepConflicts ? true : ownConcepts.has(k);
     })
-    .slice(0, MAX_SUGGESTIONS_PER_SIDE);
+    .slice(0, opts.maxSuggestionsPerList);
 
   return {
     include: trim(inc.terms, includeConceptKeys),

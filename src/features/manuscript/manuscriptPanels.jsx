@@ -1027,6 +1027,8 @@ export function EditorPanel({ m, exporters, sectionRequest }) {
   useShortcut({
     id: 'manuscript.stepPlaceholder',
     tier: TIER.ENGINE,
+    // 109.md §15 — descriptive metadata for the read-only Ops shortcut inventory.
+    chord: 'Ctrl/Cmd + Enter', label: 'Jump to the next unresolved placeholder', scopeLabel: 'Manuscript editor',
     match: (e) => (e.ctrlKey || e.metaKey) && e.key === 'Enter',
     run: (e) => { stepToPlaceholder(e.shiftKey ? -1 : 1); return true; },
   }, []);

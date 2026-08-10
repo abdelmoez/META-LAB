@@ -17,6 +17,8 @@ import { requireAuth }   from './middleware/auth.js';
 import { requireAdmin }  from './middleware/requireAdmin.js';
 import { maintenanceGate } from './middleware/maintenance.js';
 import { spaEnabled, serveSpa, distDir } from './middleware/spaTheme.js';
+// 109.md §6 — bounded persistence for the client-error beacon (below).
+import { recordClientErrorReport } from './controllers/researchOpsJobsController.js';
 
 import authRouter        from './routes/auth.js';
 import authGoogleRouter  from './routes/authGoogle.js'; // 94.md — Google OAuth
@@ -202,9 +204,15 @@ app.post(CSP_REPORT_PATH, cspReportLimiter, (req, res, next) => {
 // The SPA's installGlobalErrorHandlers() sendBeacon()s render crashes, chunk-load
 // failures and unhandled rejections here. The route was missing, so every client
 // crash 404'd and crash telemetry was fiction. Mounted early (before maintenance +
-// the global JSON parser) with its own tight limiter + tiny body cap; log-only, it
-// never persists or reflects. No auth: crashes happen pre-auth too, and the beacon
-// carries only a correlation id + a truncated message (never a stack).
+// the global JSON parser) with its own tight limiter + tiny body cap. No auth:
+// crashes happen pre-auth too, and the beacon carries only a correlation id + a
+// truncated message (never a stack).
+//
+// 109.md §6/§46 — it now ALSO persists a bounded, deduped row (ClientErrorReport)
+// so Ops › Research Governance › Client Errors renders real captured crashes
+// instead of an invented metric. The write is fire-and-forget after the 204: the
+// beacon must never be delayed, and a DB outage must never turn one client crash
+// into two. Reflection is still zero — the response body stays empty.
 const clientErrorLimiter = rateLimit({
   windowMs: 60 * 1000,
   max: process.env.NODE_ENV === 'production' ? 120 : 1000,
@@ -228,6 +236,13 @@ app.post('/api/client-errors', clientErrorLimiter, (req, res) => {
         release: s(e.release, 60),
         browser: s(e.browser, 120),
       }));
+    } catch { /* never throw from the telemetry sink */ }
+    // 109.md §6 — bounded capture. Awaiting this would let a slow database stall
+    // the crash beacon, so it is intentionally detached; recordClientErrorReport
+    // swallows every error internally and returns null on failure.
+    try {
+      const body = req.body;
+      void recordClientErrorReport(body, { userId: req.user?.id || null });
     } catch { /* never throw from the telemetry sink */ }
     return res.status(204).end();
   });

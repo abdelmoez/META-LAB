@@ -11,6 +11,13 @@ import {
   ELIGIBILITY_SETTINGS_KEY, ELIGIBILITY_GLOBAL_DEFAULTS,
   getGlobalEligibilitySettings, saveGlobalEligibilitySettings,
 } from '../services/screeningEligibilityService.js';
+// 109.md §3 — the typed Ops settings catalogue. It owns the DEFAULTS for the new
+// researchGovernanceSettings block, the whitelist coercion for its PUT and the
+// per-setting audit diff, so none of those are hand-copied here.
+import {
+  RESEARCH_GOVERNANCE_KEY, defaultsForDomain, mergeDomainDefaults,
+  coerceDomainPatch, diffDomainValues, resetDomainToDefaults,
+} from '../../src/shared/opsSettingsCatalog.js';
 
 // Default settings keys and their initial JSON-serialised values
 const DEFAULTS = {
@@ -238,6 +245,27 @@ const DEFAULTS = {
     // (default off → deterministic offline resolution, no external calls). Surfaces
     // in Ops › Flags automatically.
     citationMining: false,
+    // ── 109.md §5 — 107/108 research-workflow flags. ALL DEFAULT **true**. ──────
+    // These gate behaviour that already SHIPPED (v4.12/v4.13); defaulting them OFF
+    // would silently regress every existing install on upgrade, so each is an
+    // operator kill switch rather than a rollout gate. Turning one off hides the
+    // affordance and stops new writes — it NEVER deletes the keywords, decisions or
+    // history it governs. Full label/description text lives once, in
+    // src/shared/opsSettingsCatalog.js OPS_FLAGS (the Ops UI + the drift gate read
+    // it there); keep this block and the catalogue in sync — the unit test
+    // tests/unit/opsSettingsCatalog.test.js fails the build if they diverge.
+    //
+    // keywordSuggestions        — generated inclusion/exclusion keyword suggestions.
+    // abstractKeywordShortcuts  — Ctrl/Cmd+I / Ctrl/Cmd+E on an abstract selection.
+    //   The flag gates AVAILABILITY only; the contextual guard chain (valid
+    //   selection, active abstract, screening owns the shortcut, not editing, action
+    //   can complete) is NEVER bypassed — 109.md §17 / 108 invariant 3.
+    // keywordContextMenu        — right-click actions on manually added keywords.
+    // projectUndoRedo           — the page-scoped project history + undo/redo chords.
+    keywordSuggestions: true,
+    abstractKeywordShortcuts: true,
+    keywordContextMenu: true,
+    projectUndoRedo: true,
     // 96.md — DEPRECATED/IGNORED. 71.md introduced this flag to gate the staged
     // SearchWorkspace against the legacy 3-step SearchWizard; 96.md retired the
     // wizard, and the workspace now renders whenever `searchEngine` is ON — the
@@ -315,6 +343,14 @@ const DEFAULTS = {
       semanticscholar: { enabled: true },
     },
   }),
+  // 109.md §3 — research-governance policy for the 107/108 systems (screening
+  // navigation, keyword intelligence, keyboard/history, proportion display,
+  // analysis-override policy). ADDITIVE SiteSetting; the shape is NOT hand-written
+  // here — it is derived from the typed catalogue so the defaults, the coercion,
+  // the audit diff and the Ops UI can never disagree. Merged under the stored row
+  // by every reader (initDefaultSettings never overwrites), so a key added in a
+  // later release lands on an existing install with its shipped default.
+  [RESEARCH_GOVERNANCE_KEY]: JSON.stringify(defaultsForDomain(RESEARCH_GOVERNANCE_KEY)),
 };
 
 /**
@@ -365,7 +401,7 @@ export async function initDefaultSettings() {
 export async function getPublicSettings(req, res) {
   try {
     const rows = await prisma.siteSetting.findMany({
-      where: { key: { in: ['appSettings', 'landingContent', 'featureFlags', 'onboardingSettings', 'robSettings', 'themeSettings', 'designSettings'] } },
+      where: { key: { in: ['appSettings', 'landingContent', 'featureFlags', 'onboardingSettings', 'robSettings', 'themeSettings', 'designSettings', RESEARCH_GOVERNANCE_KEY] } },
     });
 
     const result = {};
@@ -417,6 +453,17 @@ export async function getPublicSettings(req, res) {
     let designDefaults = {};
     try { designDefaults = JSON.parse(DEFAULTS.designSettings); } catch { /* keep {} */ }
     result.designSettings = { ...designDefaults, ...(result.designSettings || {}) };
+
+    // 109.md §§3, 55 — the research-governance block rides the EXISTING public
+    // settings payload rather than a new endpoint, so the client's shared
+    // featureFlagState snapshot serves flags and these knobs from ONE fetch (the
+    // repo already had ~14 independent /api/settings/public callers; adding a
+    // fifteenth would be the wrong direction). Every value here is a non-sensitive
+    // UI default — the enforcement for anything safety-related stays server-side.
+    // Defaults merged UNDER the stored row so a newly-added key always surfaces.
+    result[RESEARCH_GOVERNANCE_KEY] = mergeDomainDefaults(
+      RESEARCH_GOVERNANCE_KEY, result[RESEARCH_GOVERNANCE_KEY],
+    );
 
     // prompt9 — additive top-level conveniences for the frontend ThemeContext
     // and maintenance banner (existing consumers of the nested keys unaffected).
@@ -472,6 +519,143 @@ export async function getEligibilityScreeningSettings(req, res) {
     return res.json({ settings, defaults: ELIGIBILITY_GLOBAL_DEFAULTS });
   } catch (err) {
     console.error('[settings] getEligibilityScreeningSettings error:', err.message);
+    return res.status(500).json({ error: 'Internal server error' });
+  }
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
+   109.md §§3, 42, 43 — the research-governance settings block.
+
+   The house pattern (researchOpsAdminController) is: hand-write a coerce*()
+   whitelister per domain, save, then audit `{next}`. This block keeps the same
+   shape but drives coercion AND the audit diff from the typed catalogue, which
+   is what closes the §42 gap — the previous settings writers logged only WHICH
+   keys changed, never their values, so "restore the previous value" was
+   impossible to reconstruct from the ledger.
+
+   Routes (mount behind requireAdmin in server/routes/admin.js):
+     GET    /api/admin/research-governance/settings
+     PUT    /api/admin/research-governance/settings
+     POST   /api/admin/research-governance/settings/reset
+   ══════════════════════════════════════════════════════════════════════════ */
+
+/** Read the stored governance blob merged under the catalogue defaults. */
+export async function readResearchGovernance() {
+  try {
+    const row = await prisma.siteSetting.findUnique({ where: { key: RESEARCH_GOVERNANCE_KEY } });
+    let stored = {};
+    if (row) { try { stored = JSON.parse(row.value); } catch { stored = {}; } }
+    return mergeDomainDefaults(RESEARCH_GOVERNANCE_KEY, stored);
+  } catch {
+    return defaultsForDomain(RESEARCH_GOVERNANCE_KEY);
+  }
+}
+
+async function writeResearchGovernance(value, userId) {
+  await prisma.siteSetting.upsert({
+    where: { key: RESEARCH_GOVERNANCE_KEY },
+    create: { key: RESEARCH_GOVERNANCE_KEY, value: JSON.stringify(value), updatedBy: userId || null },
+    update: { value: JSON.stringify(value), updatedBy: userId || null },
+  });
+}
+
+/**
+ * Build the audit details for a settings write. `changes` is the rich
+ * catalogue-labelled diff; `before`/`after` are the flat maps that
+ * auditFormat.extractChanges() already renders in the Ops Security table without
+ * needing a new renderer. Scope is recorded per 109.md §42.
+ */
+function settingsAuditDetails(domain, changes) {
+  const before = {}; const after = {};
+  for (const c of changes) { before[c.key] = c.from; after[c.key] = c.to; }
+  return {
+    domain, scope: 'global',
+    updatedKeys: changes.map((c) => c.key),
+    changes, before, after,
+  };
+}
+
+/** A caller-supplied change reason (109.md §42). Trimmed; never required here. */
+function auditReason(req) {
+  const r = req?.body?.reason;
+  return typeof r === 'string' && r.trim() ? r.trim().slice(0, 500) : undefined;
+}
+
+/** GET /api/admin/research-governance/settings  (admin-only) */
+export async function getResearchGovernanceSettings(req, res) {
+  try {
+    const settings = await readResearchGovernance();
+    // `defaults` alongside `settings` mirrors getEligibilityScreeningSettings and
+    // is what the Ops UI needs to render "differs from default" + a reset preview.
+    return res.json({ settings, defaults: defaultsForDomain(RESEARCH_GOVERNANCE_KEY) });
+  } catch (err) {
+    console.error('[settings] getResearchGovernanceSettings error:', err.message);
+    return res.status(500).json({ error: 'Internal server error' });
+  }
+}
+
+/**
+ * PUT /api/admin/research-governance/settings  (admin-only)
+ * Body: a patch keyed by catalogue key OR stored path, plus an optional `reason`.
+ * Read-merge-write: keys the caller omits keep their stored value, so two admins
+ * editing different sections cannot clobber each other the way the whole-blob
+ * settings PUT does.
+ */
+export async function updateResearchGovernanceSettings(req, res) {
+  try {
+    const body = { ...(req.body || {}) };
+    delete body.reason; // the audit reason is metadata, not a setting
+    const current = await readResearchGovernance();
+    const { next, changed, rejected } = coerceDomainPatch(RESEARCH_GOVERNANCE_KEY, body, current);
+    if (rejected.length && changed.length === 0) {
+      return res.status(400).json({ error: 'No valid settings provided', rejected });
+    }
+    const changes = diffDomainValues(RESEARCH_GOVERNANCE_KEY, current, next);
+    if (changes.length) {
+      await writeResearchGovernance(next, req.user?.id);
+      try {
+        const { logAdminAction } = await import('../utils/audit.js');
+        await logAdminAction(
+          req, 'UPDATE_RESEARCH_GOVERNANCE', 'SiteSetting', RESEARCH_GOVERNANCE_KEY,
+          settingsAuditDetails(RESEARCH_GOVERNANCE_KEY, changes), { reason: auditReason(req) },
+        );
+      } catch { /* audit is best-effort and must never fail the write */ }
+    }
+    return res.json({
+      ok: true, settings: next, defaults: defaultsForDomain(RESEARCH_GOVERNANCE_KEY), changed, rejected,
+    });
+  } catch (err) {
+    console.error('[settings] updateResearchGovernanceSettings error:', err.message);
+    return res.status(500).json({ error: 'Internal server error' });
+  }
+}
+
+/**
+ * POST /api/admin/research-governance/settings/reset  (admin-only) — 109.md §43.
+ * `{ preview: true }` returns the list of settings that WOULD change without
+ * writing anything, so the confirmation modal can show them before the admin
+ * commits. Resetting configuration never touches research data.
+ */
+export async function resetResearchGovernanceSettings(req, res) {
+  try {
+    const current = await readResearchGovernance();
+    const { next, changes } = resetDomainToDefaults(RESEARCH_GOVERNANCE_KEY, current);
+    if (req.body?.preview === true) {
+      return res.json({ preview: true, changes, settings: current, defaults: next });
+    }
+    if (changes.length) {
+      await writeResearchGovernance(next, req.user?.id);
+      try {
+        const { logAdminAction } = await import('../utils/audit.js');
+        await logAdminAction(
+          req, 'RESET_SETTINGS_GROUP', 'SiteSetting', RESEARCH_GOVERNANCE_KEY,
+          settingsAuditDetails(RESEARCH_GOVERNANCE_KEY, changes), { reason: auditReason(req) },
+        );
+      } catch { /* best-effort */ }
+    }
+    return res.json({ ok: true, settings: next, defaults: next, changes });
+  } catch (err) {
+    console.error('[settings] resetResearchGovernanceSettings error:', err.message);
     return res.status(500).json({ error: 'Internal server error' });
   }
 }

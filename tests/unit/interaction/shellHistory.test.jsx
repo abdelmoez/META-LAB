@@ -230,7 +230,10 @@ describe('§23 — the migrated listeners', () => {
     expect(s).toContain('when: (ctx) => historyShortcutAllowed(ctx) && hist.canRedo');
     // 108.md §15 — the blob-conflict handler, both channels.
     expect(s).toContain("window.addEventListener('metalab:autosave-conflict', onConflict)");
-    expect(s).toContain("if (saveStatus === 'conflict') clearScopes(isBlobScope)");
+    // 109.md §46 — the saveStatus channel now also files a client-error report, so
+    // the guard and the clear are two statements rather than one line.
+    expect(s).toContain("if (saveStatus !== 'conflict') return;");
+    expect(s).toContain('clearScopes(isBlobScope);');
     // 108 review — …and the window channel is filtered by the event's project id.
     expect(s).toContain('if (!conflictTargetsProject(e && e.detail, pid.current)) return;');
   });

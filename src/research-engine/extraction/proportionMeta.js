@@ -178,14 +178,29 @@ function num(v) {
  * @param {*} total   raw row value
  * @returns {string|null}  e.g. '39.0%', or null when nothing should be shown
  */
-export function formatProportionDisplay(events, total) {
+export function formatProportionDisplay(events, total, decimals) {
   const e = num(events);
   const t = num(total);
   if (e === null || t === null) return null;
   if (!(t > 0)) return null;          // total blank/0/negative
   if (e < 0) return null;             // negative events
   if (e > t) return null;             // impossible — the validator explains why
-  return `${fmtPct((e / t) * 100, undefined, PCT_DEFAULT_DECIMALS)}%`;
+  return `${fmtPct((e / t) * 100, undefined, percentDecimals(decimals))}%`;
+}
+
+/**
+ * 109.md §29 — `extraction.percentDisplayDecimals`. PURELY presentational: Events,
+ * Total, the stored row and every statistical computation are untouched (calcES
+ * still owns the logit transform at full precision). Absent/invalid falls back to
+ * the repo-wide PCT_DEFAULT_DECIMALS, and the value is clamped to the catalogue's
+ * 0-3 here as well, because a caller cannot be trusted to have re-read a value the
+ * server may since have re-clamped.
+ */
+export function percentDecimals(decimals) {
+  if (decimals == null || decimals === '') return PCT_DEFAULT_DECIMALS;
+  const v = Number(decimals);
+  if (!Number.isFinite(v)) return PCT_DEFAULT_DECIMALS;
+  return Math.min(3, Math.max(0, Math.round(v)));
 }
 
 /**
@@ -194,8 +209,8 @@ export function formatProportionDisplay(events, total) {
  * the reviewer typed them (trimmed), so the line always matches the two inputs.
  * @returns {string|null}
  */
-export function proportionEquation(events, total) {
-  const pct = formatProportionDisplay(events, total);
+export function proportionEquation(events, total, decimals) {
+  const pct = formatProportionDisplay(events, total, decimals);
   if (pct === null) return null;
   return `${raw(events)} / ${raw(total)} = ${pct}`;
 }

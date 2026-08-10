@@ -7,12 +7,20 @@
  * object owns all of that.
  *
  * Selectors are the stable data-testids already in AdminConsole.jsx:
- *   - Sidebar nav: `nav-{section}` for each of the 16 sections.
+ *   - Sidebar nav: `nav-{section}` for each section in OPS_SECTION_IDS.
  *   - Appearance tab: `appearance-hex-input`, `appearance-save`,
  *     `design-allow-all-toggle`, `design-default-mode` (a native <select>),
  *     `design-settings-save` (label "Save rollout", disabled until the rollout
  *     settings are dirty).
- *   - Flags tab: `flag-toggle-{key}`, `flags-save`.
+ *   - Flags tab: `flag-toggle-{key}` + the 109.md confirmation modal
+ *     (`flags-confirm-modal`, `flags-reason`, `flags-confirm`, `flags-cancel`)
+ *     and `flags-search`. NOTE: the whole-form `flags-save` button is GONE —
+ *     each flag is now written on its own through PATCH /feature-flags/:key.
+ *   - Research Governance: `rg-tab-{id}` sub-tabs, `rg-search-input`,
+ *     `rg-setting-{catalogueKey}` rows, `rg-toggle-/rg-number-/rg-enum-{key}`
+ *     controls, `rg-dup-health-badge`, `rg-requeue-{jobId}`.
+ *   - Screening › Audit: `sift-audit-{project,action,entity,actor,from,to}`,
+ *     `sift-audit-{prev,next,refresh}`.
  *   - Settings tab: `settings-appname`, `settings-defaulttheme`,
  *     `settings-registration`, `settings-save`.
  *   - Messages nav: `messages-unread-badge` (only when unread > 0).
@@ -22,12 +30,20 @@
  */
 import { Page, Locator, expect } from '@playwright/test';
 
-/** The 16 Ops sections in sidebar order (NAV_SECTIONS in AdminConsole.jsx). */
+/**
+ * The Ops sections in sidebar order. MUST stay in lockstep with NAV_SECTIONS in
+ * src/frontend/pages/admin/opsSections.js AND the server-side allow-list in
+ * getConsole (server/controllers/adminController.js) — tests/unit/opsSectionSync.test.js
+ * fails the build if any of the three drift apart.
+ */
 export const OPS_SECTION_IDS = [
-  'overview', 'users', 'onboarding', 'projects', 'sift', 'rob',
+  'overview', 'users', 'onboarding', 'projects', 'sift',
+  // 109.md §4 — one section (with sub-tabs) for the research control plane.
+  'research',
+  'rob',
   'searchProviders', 'waitlist', 'content', 'settings', 'style', 'flags',
-  // 66.md P5/P6 + 67.md — extraction-AI, living-review policy, product tiers.
-  'extractionAi', 'livingReviews', 'tiers',
+  // 67.md + 66.md P5/P6 — product tiers, extraction-AI and living-review policy.
+  'tiers', 'extractionAi', 'livingReviews',
   'messages', 'security', 'health', 'engineVersions',
 ] as const;
 
@@ -46,6 +62,7 @@ export class OpsPage {
     onboarding: /^Onboarding$/i,
     projects: /^Projects$/i,
     sift: /Screening/i,
+    research: /Research Governance/i,
     rob: /Risk of Bias/i,
     searchProviders: /Pecan Search Engine — Providers/i,
     waitlist: /Beta Waitlist/i,
@@ -82,8 +99,42 @@ export class OpsPage {
   get designSettingsSave(): Locator { return this.page.getByTestId('design-settings-save'); }
 
   // ── Flags tab ────────────────────────────────────────────────────────────────
+  // 109.md §§40-42 — a flag change is a per-key PATCH behind a confirmation modal
+  // with an optional audit reason. There is no whole-form save any more.
   flagToggle(key: string): Locator { return this.page.getByTestId(`flag-toggle-${key}`); }
-  get flagsSave(): Locator { return this.page.getByTestId('flags-save'); }
+  get flagsConfirmModal(): Locator { return this.page.getByTestId('flags-confirm-modal'); }
+  get flagsConfirm(): Locator { return this.page.getByTestId('flags-confirm'); }
+  get flagsCancel(): Locator { return this.page.getByTestId('flags-cancel'); }
+  get flagsReason(): Locator { return this.page.getByTestId('flags-reason'); }
+  get flagsSearch(): Locator { return this.page.getByTestId('flags-search'); }
+
+  /** Flip a flag through the confirmation modal (the only supported UI path). */
+  async setFlag(key: string, reason?: string): Promise<void> {
+    await this.flagToggle(key).click();
+    await expect(this.flagsConfirmModal).toBeVisible({ timeout: 10000 });
+    if (reason) await this.flagsReason.fill(reason);
+    await this.flagsConfirm.click();
+    await expect(this.flagsConfirmModal).toHaveCount(0, { timeout: 15000 });
+  }
+
+  // ── Research Governance section (109.md §4) ─────────────────────────────────
+  researchTab(id: 'duplicates' | 'keywords' | 'extraction' | 'interaction' | 'errors'): Locator {
+    return this.page.getByTestId(`rg-tab-${id}`);
+  }
+  get researchSearch(): Locator { return this.page.getByTestId('rg-search-input'); }
+  get researchSearchResults(): Locator { return this.page.getByTestId('rg-search-results'); }
+  get researchReset(): Locator { return this.page.getByTestId('rg-reset'); }
+  get dupHealthBadge(): Locator { return this.page.getByTestId('rg-dup-health-badge'); }
+  /** A catalogue row, by its stable catalogue key (e.g. 'interaction.historyCap'). */
+  rgSetting(key: string): Locator { return this.page.getByTestId(`rg-setting-${key}`); }
+  rgToggle(key: string): Locator { return this.page.getByTestId(`rg-toggle-${key}`); }
+  rgNumber(key: string): Locator { return this.page.getByTestId(`rg-number-${key}`); }
+  rgEnum(key: string): Locator { return this.page.getByTestId(`rg-enum-${key}`); }
+
+  /** Open a Research Governance sub-tab and wait for its first card to mount. */
+  async openResearchTab(id: 'duplicates' | 'keywords' | 'extraction' | 'interaction' | 'errors'): Promise<void> {
+    await this.researchTab(id).click();
+  }
 
   // ── Settings tab ─────────────────────────────────────────────────────────────
   get settingsAppName(): Locator { return this.page.getByTestId('settings-appname'); }

@@ -26,6 +26,9 @@ import { kickImportWorker } from '../services/screeningImportWorker.js';
 // racing the delete transaction (see server/screening/resetLock.js).
 import { isResetLocked } from '../screening/resetLock.js';
 import { getProjectAccess, ensureLeaderMember, writeAudit, QUORUM } from '../screening/access.js';
+// 109.md §22 — keyword mutations were completely unaudited; the pure row builder
+// lives beside the other screening helpers so its shape is unit-testable.
+import { keywordAuditRows, normalizeKeywordVia, KEYWORD_AUDIT_VIA } from '../screening/keywordAudit.js';
 import { rankItems } from '../../src/research-engine/screening/ai/ranking.js';
 import { splitBySource } from '../../src/research-engine/screening/sourceClassify.js';
 import { fastListEligible, buildFastListQuery } from '../../src/research-engine/screening/recordListQuery.js';
@@ -1193,6 +1196,13 @@ export async function keywordOps(req, res) {
     }
 
     const body = req.body || {};
+    // 109.md §22/§23 — optional provenance hint so the ledger can distinguish a
+    // deliberate edit from a 108 history replay. Additive and back-compatible: a
+    // pre-109 client omits it and every row is recorded as via:'user'.
+    if (body.via !== undefined && !KEYWORD_AUDIT_VIA.includes(body.via)) {
+      return res.status(400).json({ error: `via must be one of ${KEYWORD_AUDIT_VIA.join(', ')}` });
+    }
+    const via = normalizeKeywordVia(body.via);
     const batch = body.ops !== undefined;
     if (batch && !Array.isArray(body.ops)) return res.status(400).json({ error: 'ops must be an array' });
     const rawOps = batch ? body.ops : [body];
@@ -1299,6 +1309,16 @@ export async function keywordOps(req, res) {
     if (result.wrote) {
       void touchProjectActivity(access.project.linkedMetaLabProjectId);
       emitToProjectMembers(pidVal, { type: 'project.updated' }, { exclude: req.user.id });
+      // 109.md §22 — append-only ledger rows for the ops that actually changed
+      // state. writeAudit never throws (audit must not break the flow) and the
+      // batch is capped at MAX_KEYWORD_OPS, so this is at most six small inserts.
+      // §50: an undo appends a NEW row, it never rewrites the original.
+      const auditRows = keywordAuditRows(ops, result.results, { via });
+      await Promise.all(auditRows.map((row) => writeAudit(pidVal, req.user, row.action, {
+        entityType: row.entityType,
+        entityId: row.entityId,
+        details: row.details,
+      })));
     }
     const payload = {
       changed: !!result.changed,

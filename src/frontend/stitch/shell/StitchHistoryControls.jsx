@@ -26,6 +26,8 @@
  * populated in a unit test).
  */
 import { useProjectHistory } from '../../history/HistoryContext.jsx';
+// 109.md §5/§16 — the `projectUndoRedo` kill switch and `interaction.redoEnabled`.
+import { useGovernanceFlag, useOpsGovernance } from '../../featureAccess/opsGovernance.js';
 import { StitchIconButton } from '../primitives/core.jsx';
 import { StitchTooltip } from '../primitives/overlay.jsx';
 
@@ -43,7 +45,7 @@ export function historyControlLabel(direction, blocked) {
 }
 
 /** Pure presentation — no context, no state. */
-export function HistoryControlsView({ canUndo, canRedo, onUndo, onRedo, undoBlocked, redoBlocked }) {
+export function HistoryControlsView({ canUndo, canRedo, onUndo, onRedo, undoBlocked, redoBlocked, showRedo = true }) {
   const btn = (on) => ({
     opacity: on ? 1 : 0.38,
     cursor: on ? 'pointer' : 'not-allowed',
@@ -63,17 +65,19 @@ export function HistoryControlsView({ canUndo, canRedo, onUndo, onRedo, undoBloc
           style={btn(canUndo)}
         />
       </StitchTooltip>
-      <StitchTooltip label={redoLabel} hint="Ctrl+Shift+Z">
-        <StitchIconButton
-          icon="redo" label="Redo" size="sm"
-          data-testid="stitch-history-redo"
-          disabled={!canRedo}
-          aria-disabled={!canRedo}
-          title={redoLabel}
-          onClick={canRedo ? onRedo : undefined}
-          style={btn(canRedo)}
-        />
-      </StitchTooltip>
+      {showRedo && (
+        <StitchTooltip label={redoLabel} hint="Ctrl+Shift+Z">
+          <StitchIconButton
+            icon="redo" label="Redo" size="sm"
+            data-testid="stitch-history-redo"
+            disabled={!canRedo}
+            aria-disabled={!canRedo}
+            title={redoLabel}
+            onClick={canRedo ? onRedo : undefined}
+            style={btn(canRedo)}
+          />
+        </StitchTooltip>
+      )}
     </div>
   );
 }
@@ -91,10 +95,21 @@ export function StitchHistoryControls() {
   const {
     canUndo, canRedo, undo, redo, undoBlocked, redoBlocked,
   } = useProjectHistory();
+  /* 109.md §5 — `projectUndoRedo` OFF removes the AFFORDANCE, not just its
+     availability: two permanently-greyed buttons read as a broken feature, and §5
+     says a disabled feature "hides the affordance". The provider already forces
+     canUndo/canRedo false, so nothing here can act even if it were rendered.
+     109.md §16 — `interaction.redoEnabled` OFF drops the Redo button alone; Undo is
+     untouched ("Off keeps undo working"). Both hooks resolve to the shipped defaults
+     on the first render, so the pair is unchanged at defaults. */
+  const undoRedoOn = useGovernanceFlag('projectUndoRedo');
+  const gov = useOpsGovernance();
+  if (!undoRedoOn) return null;
   return (
     <HistoryControlsView
       canUndo={canUndo} canRedo={canRedo}
       undoBlocked={undoBlocked} redoBlocked={redoBlocked}
+      showRedo={gov.redoEnabled !== false}
       onUndo={() => { undo(); }} onRedo={() => { redo(); }}
     />
   );

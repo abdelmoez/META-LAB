@@ -47,6 +47,8 @@ import {
   denominatorPopulationPatch,
 } from '../../../research-engine/extraction/proportionMeta.js';
 import { studyDocApi } from '../unified/studyDocApi.js';
+// 109.md §29 — Ops-configured percentage DISPLAY precision (presentational only).
+import { useOpsGovernance } from '../../../frontend/featureAccess/opsGovernance.js';
 // 108.md §5/§12/§13 — every extraction field mutation records ONE logical history
 // entry at the MUTATION SITE. Nothing else records: autosave, the 800 ms debounce and
 // the server's ack are not user actions (§12). The hook is inert outside a provider.
@@ -140,6 +142,9 @@ export default function ArticleWorkspace({
   // 106.md — patient-level variable definitions (project-wide) + their editor.
   caseVariables = [], onSetCaseVariables,
 }) {
+  // 109.md §29 — display precision for derived proportions. Defaults on the first
+  // render (and under renderToStaticMarkup), so nothing changes at the shipped value.
+  const opsGov = useOpsGovernance();
   const [method, setMethod] = useState('click');      // click (Pick from PDF) | manual
   const [activeField, setActiveField] = useState('smart');  // the field the next PDF click fills
   const [status, setStatus] = useState('');
@@ -602,7 +607,11 @@ export default function ArticleWorkspace({
      107.md §8 — the two classifications read through the SELF-HEALING readers, so a row
      carrying an unknown value falls back to "not classified" instead of a broken select. */
   const isProp = ((study && study.esType) || '') === 'PROP';
-  const propPct = isProp ? formatProportionDisplay((study || {}).events, (study || {}).total) : null;
+  // 109.md §29 — Ops-configured DISPLAY precision. Presentational only; the stored
+  // events/total and every computation are untouched. Defaults to the shipped 1 dp.
+  const propPct = isProp
+    ? formatProportionDisplay((study || {}).events, (study || {}).total, opsGov.percentDisplayDecimals)
+    : null;
   const propEquation = propPct === null ? '' : `${String((study || {}).events).trim()} / ${String((study || {}).total).trim()} = ${propPct}`;
   const denomPop = effectiveDenominatorPopulation(study || {});
   const actionStatus = effectiveActionStatus(study || {});

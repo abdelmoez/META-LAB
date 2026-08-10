@@ -99,6 +99,11 @@ import {
   clearScopes as clearScopesPure, clearAll as clearAllPure, counts, isValidEntry,
   isPendingEntry, scopeOfUndoTop, peekUndo, peekRedo, TAKE_REASON,
 } from '../../research-engine/interaction/historyStacks.js';
+// 109.md §46 — bounded, deduped operational capture. Import cost is a few lines;
+// the reporter itself never blocks and swallows every error internally.
+import {
+  reportHistoryPersistFailure, reportStaleMutationRefusal,
+} from '../monitoring/opsErrorReporter.js';
 
 /** Why an undo()/redo() call did not complete. */
 export const HISTORY_FAIL = Object.freeze({
@@ -334,6 +339,17 @@ export function historyAvailability(hist, scope, signature, delegate) {
 export function HistoryProvider({
   projectId, scope, children, onFeedback, idFn, now,
   initialHistory, initialExecutors, initialDelegates,
+  // 109.md §5/§16 — the Ops control plane. All three default to the shipped
+  // behaviour, so a provider mounted without them is byte-identical to v4.13.0.
+  //   enabled     `projectUndoRedo` OFF → no recording, no availability, the chords
+  //               are never claimed (the bindings' `when` reads canUndo/canRedo).
+  //   redoEnabled `interaction.redoEnabled` OFF → undo keeps working; the redo stack
+  //               is simply never offered.
+  //   toastEnabled `interaction.undoToastEnabled` OFF → the provider's own SUCCESS
+  //               confirmations are suppressed. Refusals/errors are NOT: silently
+  //               doing nothing after a Ctrl+Z is worse than a toast the operator
+  //               turned off, and §52 forbids trading correctness for tidiness.
+  enabled = true, redoEnabled = true, toastEnabled = true,
 }) {
   // Rendered copy (drives canUndo/canRedo) + a ref that is the SYNCHRONOUS truth.
   // undo() must read and write the stacks between awaits, where React state has
@@ -349,7 +365,7 @@ export function HistoryProvider({
   // see screening/hooks/useAbstractSelectionShortcuts.js) so every callback below
   // can stay referentially stable.
   const live = useRef({});
-  live.current = { projectId, scope, onFeedback, idFn, now };
+  live.current = { projectId, scope, onFeedback, idFn, now, enabled, redoEnabled, toastEnabled };
 
   const executorsRef = useRef(null);
   if (executorsRef.current === null) {
@@ -407,6 +423,9 @@ export function HistoryProvider({
 
   const emitNote = useCallback((note) => {
     if (!note) return;
+    // 109.md §16 — `interaction.undoToastEnabled`. Only the plain confirmations go
+    // quiet; a 'warn'/'error' note is a refusal the reviewer must see.
+    if (live.current.toastEnabled === false && (!note.tone || note.tone === 'info')) return;
     const fn = live.current.onFeedback;
     if (typeof fn !== 'function') return;
     const mkId = typeof live.current.idFn === 'function' ? live.current.idFn : DEFAULT_ID_FN;
@@ -423,6 +442,11 @@ export function HistoryProvider({
 
   /** record(entry) → the stamped entry, or null when the entry was malformed. */
   const record = useCallback((entry) => {
+    // 109.md §5 — `projectUndoRedo` OFF is pre-108 behaviour: the engines keep
+    // calling record(), and nothing is captured. Returning null (the malformed-entry
+    // contract) is what every caller already handles: ScreeningTab posts a plain
+    // note instead of an undoable one, so no surface offers an Undo that cannot run.
+    if (live.current.enabled === false) return null;
     const stamped = stamp(entry);
     if (!isValidEntry(stamped)) return null;
     applyHist(recordAction(histRef.current, stamped));
@@ -442,6 +466,7 @@ export function HistoryProvider({
    * id for `undoEntry(id)` need the one that is actually on the stack.
    */
   const coalesce = useCallback((entry, canMerge, mergeOps) => {
+    if (live.current.enabled === false) return null;   // 109.md §5 — see record()
     const stamped = stamp(entry);
     if (!isValidEntry(stamped)) return null;
     const next = coalesceOrRecord(histRef.current, stamped, canMerge, mergeOps);
@@ -501,6 +526,14 @@ export function HistoryProvider({
   }, [syncDelegates]);
 
   const run = useCallback(async (direction, opts) => {
+    // 109.md §5/§16 — the gates again, this time on the ACTION. The chords already
+    // decline through `canUndo/canRedo`, but a note's Undo button or a stale header
+    // click must not slip past them. Refuse silently and take nothing: the stacks
+    // are untouched, so flipping the setting back makes them usable again.
+    if (live.current.enabled === false
+      || (direction === 'redo' && live.current.redoEnabled === false)) {
+      return { ok: false, reason: HISTORY_FAIL.NO_ENTRY, entry: null };
+    }
     const o = opts && typeof opts === 'object' ? opts : null;
     const sc = o && typeof o.scope === 'string' && o.scope
       ? o.scope
@@ -593,6 +626,15 @@ export function HistoryProvider({
     }
 
     if (!outcome.ok) {
+      // 109.md §46 — capture the two failures Ops is asked to see. A refusal is the
+      // collaboration path (a teammate moved first); FAILED means the inverse could
+      // not be persisted at all, which is the one an operator has to investigate.
+      // Bounded, deduped and fire-and-forget inside the reporter — never awaited.
+      if (outcome.reason === HISTORY_FAIL.FAILED) {
+        reportHistoryPersistFailure({ scope: sc, kind: entry.kind, reason: direction });
+      } else if (outcome.reason === HISTORY_FAIL.REFUSED) {
+        reportStaleMutationRefusal({ scope: sc, kind: entry.kind, detail: outcome.detail });
+      }
       // 108 review — REFUSAL-DROP POLICY. Normally the entry goes back where it
       // came from (108.md §8.6: never silently lost). But an entry whose
       // precondition can never hold again would be handed back on every press,
@@ -667,12 +709,23 @@ export function HistoryProvider({
   }, [applyHist]);
 
   const activeScope = String(scope == null ? '' : scope);
-  const avail = historyAvailability(hist, activeScope, execSig, delegateFlags[activeScope]);
+  const rawAvail = historyAvailability(hist, activeScope, execSig, delegateFlags[activeScope]);
+  // 109.md §5/§16 — the two governance gates are applied to AVAILABILITY, not to the
+  // stacks. Nothing is discarded: turning `projectUndoRedo` back on inside the same
+  // session leaves whatever was recorded before it went off exactly where it was
+  // ("a feature being disabled must never delete its saved data").
+  const avail = (enabled && redoEnabled) ? rawAvail : {
+    ...rawAvail,
+    canUndo: enabled ? rawAvail.canUndo : false,
+    canRedo: (enabled && redoEnabled) ? rawAvail.canRedo : false,
+  };
   // 108 review §22 — "the stack is not empty, this page just cannot run it" is a
   // different state from "there is nothing to undo", and the header control has to
   // say so rather than looking broken. Exposed as a flag so the view stays pure.
-  const undoBlocked = !avail.canUndo && !avail.pending && avail.undo > 0;
-  const redoBlocked = !avail.canRedo && !avail.pending && avail.redo > 0;
+  // "Turned off" is not "you are on the wrong page": a disabled feature must not
+  // render the §22 blocked hint, so both flags collapse to false with the gate.
+  const undoBlocked = enabled && !avail.canUndo && !avail.pending && avail.undo > 0;
+  const redoBlocked = enabled && redoEnabled && !avail.canRedo && !avail.pending && avail.redo > 0;
 
   const value = useMemo(() => ({
     scope: activeScope,

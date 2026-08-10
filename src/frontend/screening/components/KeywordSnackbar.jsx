@@ -11,14 +11,31 @@
 import { useEffect } from 'react';
 import { C, FONT, alpha } from '../ui/theme.js';
 
-const AUTO_DISMISS_MS = 8000;
+export const AUTO_DISMISS_MS = 8000;
+/** 109.md §16 — `interaction.undoToastMs` bounds, mirrored from the catalogue entry. */
+const DISMISS_MIN_MS = 2000;
+const DISMISS_MAX_MS = 30000;
 
-export default function KeywordSnackbar({ message, tone = 'info', onUndo, onDismiss }) {
+/**
+ * 109.md §16 — `dismissMs` is the Ops-configured auto-dismiss. Absent/invalid falls
+ * back to the shipped 8 s, and the value is clamped here too: this component owns a
+ * real timer, and a 0 (or a 10-minute) countdown is a UI defect whichever layer
+ * produced it.
+ */
+export function dismissDelayMs(dismissMs) {
+  if (dismissMs == null || dismissMs === '') return AUTO_DISMISS_MS;
+  const v = Number(dismissMs);
+  if (!Number.isFinite(v)) return AUTO_DISMISS_MS;
+  return Math.min(DISMISS_MAX_MS, Math.max(DISMISS_MIN_MS, Math.round(v)));
+}
+
+export default function KeywordSnackbar({ message, tone = 'info', onUndo, onDismiss, dismissMs }) {
+  const delay = dismissDelayMs(dismissMs);
   useEffect(() => {
     if (!message || typeof onDismiss !== 'function') return undefined;
-    const t = setTimeout(onDismiss, AUTO_DISMISS_MS);
+    const t = setTimeout(onDismiss, delay);
     return () => clearTimeout(t);
-  }, [message, onDismiss]);
+  }, [message, onDismiss, delay]);
   if (!message) return null;
   const accent = tone === 'warn' ? C.gold : tone === 'error' ? C.red : C.acc;
   return (

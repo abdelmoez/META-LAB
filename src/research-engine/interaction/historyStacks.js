@@ -57,6 +57,41 @@
 /** Per-scope cap. Matches undoStack.js's UNDO_STACK_CAP — one number, one story. */
 export const HISTORY_CAP = 20;
 
+/**
+ * 109.md §16 — `interaction.historyCap` makes that number an Ops setting.
+ *
+ * It is deliberately module state and NOT a per-call argument. The cap is a global
+ * install setting (`scope:'global'` in the catalogue), and it must apply identically
+ * to EVERY push site: `recordAction`, the redo push in `completeUndo` and the
+ * restore push in `restoreFailed`. Threading it through only the recording paths
+ * would let a raised cap fill the undo stack with 100 entries and then silently
+ * discard 80 of them the moment they moved to the redo stack.
+ *
+ * `setHistoryCap` is called once from the interaction provider when the public
+ * settings snapshot lands; until then — and in every unit test that does not call it
+ * — the value is the shipped 20, so nothing changes at defaults. The stack functions
+ * remain pure with respect to their arguments: same inputs + same configured cap →
+ * same output, and no function here reads a clock, an id source or the DOM.
+ */
+const CAP_MIN = 5;
+const CAP_MAX = 100;
+let configuredCap = HISTORY_CAP;
+
+/** The cap currently in force. */
+export function historyCap() { return configuredCap; }
+
+/** Clamp + apply an Ops-configured cap. A non-finite value restores the default. */
+export function setHistoryCap(n) {
+  if (n == null || n === '') { configuredCap = HISTORY_CAP; return configuredCap; }
+  const v = Number(n);
+  if (!Number.isFinite(v)) { configuredCap = HISTORY_CAP; return configuredCap; }
+  configuredCap = Math.min(CAP_MAX, Math.max(CAP_MIN, Math.round(v)));
+  return configuredCap;
+}
+
+/** Test/HMR hook — back to the shipped default. */
+export function resetHistoryCap() { configuredCap = HISTORY_CAP; }
+
 /** Why takeUndo/takeRedo did not hand back an entry. */
 export const TAKE_REASON = Object.freeze({
   OK: 'ok',
@@ -102,8 +137,9 @@ function withScope(hist, scope, next) {
 
 /** Push onto a stack, trimming the OLDEST entries beyond the cap (undoStack.js). */
 function pushCapped(stack, entry) {
+  const cap = configuredCap;
   const next = [...asArr(stack), entry];
-  return next.length > HISTORY_CAP ? next.slice(next.length - HISTORY_CAP) : next;
+  return next.length > cap ? next.slice(next.length - cap) : next;
 }
 
 /**

@@ -16,6 +16,9 @@ import { alpha as themeAlpha } from "../../theme/tokens.js";
 // 108.md §6 — the page-scoped Undo/Redo history. Inert outside a provider, so the
 // analysis builder behaves identically in any shell that has not mounted one.
 import { useProjectHistory } from "../../history/HistoryContext.jsx";
+// 109.md §§30-32 — the Ops compatibility-override policy (the guard itself has no
+// off switch; only the documented-override affordance is governable).
+import { useOpsGovernance } from "../../featureAccess/opsGovernance.js";
 import { useTheme } from "../../theme/ThemeContext.jsx";
 import { rasterizeSvg, downloadBlob, downloadText } from "../../components/exportCore.js";
 import { fmtNum, fmtES, fmtP, fmtPct, fmtI2, fmtWeight, normalizePrecision, DECIMAL_OPTIONS } from "../../../research-engine/format/precision.js";
@@ -390,6 +393,20 @@ export const PROP_RESOLVE_HINT="Resolve this on the Meta-Analysis tab — filter
  *  per-category filter buttons and no override form — those live on the Meta-Analysis tab. */
 export function ProportionCompatibilityPanel({check,filters,override,stale,onSetFilter,onClearFilter,onRecordOverride,onClearOverride,compact}){
   const[note,setNote]=useState("");
+  /* 109.md §§30-32 — the two Ops override-policy knobs. Both resolve to the shipped
+     defaults on the first render and under renderToStaticMarkup, so the panel is
+     byte-identical at defaults.
+       allowCompatibilityOverride OFF → the override FORM disappears for NEW analyses.
+         An override already recorded on this outcome is still honoured and still
+         clearable ("analyses that already carry an override are never retroactively
+         altered"), and the warning itself never goes away — the guard has no off
+         switch (§31, catalogue rationale).
+       requireOverrideRationale ON   → the rationale stops being optional. Enforced
+         here in the UI; the stored record shape is unchanged. */
+  const opsGov=useOpsGovernance();
+  const overrideAllowed=opsGov.allowCompatibilityOverride!==false;
+  const rationaleRequired=opsGov.requireOverrideRationale===true;
+  const rationaleMissing=rationaleRequired&&!note.trim();
   const c=check||{applicable:false,blocking:false,infoOnly:false,issues:[]};
   const filterEntries=compact?[]:activeProportionFilters(filters);
   const honored=!!override&&!stale;
@@ -495,20 +512,30 @@ export function ProportionCompatibilityPanel({check,filters,override,stale,onSet
           <li><strong style={{color:C.txt}}>Correct the extraction metadata</strong> — open the estimate in Data Extraction and set its denominator population / action status if it was recorded wrongly or never classified.</li>
           <li><strong style={{color:C.txt}}>Exclude the problematic estimates</strong> — untick “include in analysis” on those rows in Data Extraction; they stay extracted but leave every pool.</li>
         </ul>
-        {onRecordOverride&&(
+        {onRecordOverride&&overrideAllowed&&(
           <div style={{marginTop:12,paddingTop:12,borderTop:`1px solid ${C.brd}`}}>
             <div style={{fontSize:11,fontWeight:700,color:C.yel,letterSpacing:0.8,marginBottom:6}}>OR RECORD AN EXPLICIT OVERRIDE</div>
             <div style={{fontSize:11,color:C.muted,marginBottom:8,lineHeight:1.6}}>
               Only if combining them is scientifically intended. The override is stored with the analysis, shown every time this outcome is opened, and exported with the reproducibility configuration.
             </div>
             <textarea value={note} onChange={(e)=>setNote(e.target.value)} rows={2}
-              placeholder="Rationale (optional) — why these estimates measure the same quantity"
-              aria-label="Override rationale"
+              placeholder={rationaleRequired?"Rationale (required) — why these estimates measure the same quantity":"Rationale (optional) — why these estimates measure the same quantity"}
+              aria-label="Override rationale" aria-required={rationaleRequired?"true":undefined}
               style={{...inp,fontSize:12,resize:"vertical",marginBottom:8}}/>
-            <button onClick={()=>{onRecordOverride(note);setNote("");}}
-              style={{...btnS("ghost"),fontSize:11,color:C.red,borderColor:themeAlpha(C.red,'55')}}>
+            <button onClick={()=>{if(rationaleMissing) return;onRecordOverride(note);setNote("");}}
+              disabled={rationaleMissing} data-testid="proportion-override-record"
+              title={rationaleMissing?"A written rationale is required for a compatibility override":undefined}
+              style={{...btnS("ghost"),fontSize:11,color:C.red,borderColor:themeAlpha(C.red,'55'),opacity:rationaleMissing?0.5:1,cursor:rationaleMissing?"not-allowed":"pointer"}}>
               Pool anyway (record override)
             </button>
+          </div>
+        )}
+        {/* 109.md §32 — policy OFF. Say so plainly rather than leaving a warning with
+            no visible way forward; the other three resolutions above still apply. */}
+        {onRecordOverride&&!overrideAllowed&&(
+          <div style={{marginTop:12,paddingTop:12,borderTop:`1px solid ${C.brd}`,fontSize:11,color:C.muted,lineHeight:1.6}}
+            data-testid="proportion-override-disabled">
+            Recording a compatibility override is disabled for this installation. Resolve the incompatibility using one of the options above.
           </div>
         )}
       </div>

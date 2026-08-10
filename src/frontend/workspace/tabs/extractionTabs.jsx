@@ -41,6 +41,8 @@ import { isCaseRow, caseInfoOf, caseDisplayName, caseVarKey, normalizeCaseVariab
 // (PecanExtractionEngine) registers its own executor; only one of the two is mounted at
 // a time, so the `extraction.field` kind always resolves to the surface in view.
 import { useProjectHistory } from "../../history/HistoryContext.jsx";
+// 109.md §29 — Ops-configured percentage DISPLAY precision (presentational only).
+import { useOpsGovernance } from "../../featureAccess/opsGovernance.js";
 import {
   buildExtractionEntry, canMergeExtractionEdit, mergeExtractionOps, applyRowPatch, findStudyRow,
   matchesExpected, isExtractionRowLocked, EXTRACTION_LOCKED_REFUSAL,
@@ -61,7 +63,9 @@ function ESCalcInline({s,ch,chFields}){
   const[err,setErr]=useState("");
   const[note,setNote]=useState("");
   // 107.md §9 — derived at render (no state), so it tracks events/total live.
-  const propPct=formatProportionDisplay(s.events,s.total);
+  // 109.md §29 — DISPLAY precision only; events/total and every computation are
+  // untouched, and the hook resolves to the shipped 1 dp until the snapshot lands.
+  const propPct=formatProportionDisplay(s.events,s.total,useOpsGovernance().percentDisplayDecimals);
   // Read raw values straight from the study object so they persist & are auditable
   const sp=(k,v)=>ch(k,v);
   // 108.md §13 — "Calculate & Apply" is ONE user action. Writing its five fields through

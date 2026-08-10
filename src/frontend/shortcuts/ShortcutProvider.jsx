@@ -54,7 +54,7 @@ import {
   createContext, useCallback, useContext, useEffect, useMemo, useRef,
 } from 'react';
 import {
-  createRegistry, registerBinding, routeKeydown, TIER,
+  createRegistry, registerBinding, routeKeydown, shortcutInventory, TIER,
 } from '../../research-engine/interaction/shortcutRouter.js';
 import { isEditableTarget } from '../../research-engine/interaction/editableTarget.js';
 
@@ -117,6 +117,13 @@ export function ShortcutProvider({
   live.current = { getScope, isModalOpen, isEditable, getContext, onRouted };
 
   const register = useCallback((binding) => registerBinding(regRef.current, binding), []);
+  /**
+   * 109.md §15 — the read-only shortcut inventory. A FUNCTION, not a value: the
+   * registry is a ref (routeKeydown must read it synchronously), so publishing a
+   * snapshot would either be stale or force a re-render on every mount/unmount.
+   * Callers read it on demand — an Ops diagnostic, never a hot path.
+   */
+  const inventory = useCallback(() => shortcutInventory(regRef.current), []);
 
   const buildContext = useCallback((target) => {
     const { getScope: gs, isModalOpen: im, isEditable: ie, getContext: gc } = live.current;
@@ -163,7 +170,7 @@ export function ShortcutProvider({
     return () => window.removeEventListener('keydown', onKey);
   }, [buildContext]);
 
-  const value = useMemo(() => ({ register, buildContext }), [register, buildContext]);
+  const value = useMemo(() => ({ register, buildContext, inventory }), [register, buildContext, inventory]);
   return <ShortcutContext.Provider value={value}>{children}</ShortcutContext.Provider>;
 }
 
@@ -171,6 +178,7 @@ const noop = () => {};
 const NO_SHORTCUTS = Object.freeze({
   register: () => noop,
   buildContext: () => buildShortcutContext({}),
+  inventory: () => [],
 });
 
 /**
@@ -195,12 +203,21 @@ export function useShortcut(binding, deps = []) {
   const id = binding && binding.id;
   const tier = binding && binding.tier;
   const allowRepeat = !!(binding && binding.allowRepeat);
+  // 109.md §15 — descriptive metadata for the read-only Ops inventory. Part of the
+  // re-registration key so a renamed label is reflected without a remount; never
+  // consulted when routing a key.
+  const chord = (binding && binding.chord) || '';
+  const label = (binding && binding.label) || '';
+  const scopeLabel = (binding && binding.scopeLabel) || '';
   useEffect(() => {
     if (!id) return undefined;
     return register({
       id,
       tier,
       allowRepeat,
+      chord,
+      label,
+      scopeLabel,
       match: (e) => {
         const m = ref.current && ref.current.match;
         return typeof m === 'function' ? !!m(e) : false;
@@ -215,7 +232,7 @@ export function useShortcut(binding, deps = []) {
       },
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [register, id, tier, allowRepeat, ...deps]);
+  }, [register, id, tier, allowRepeat, chord, label, scopeLabel, ...deps]);
 }
 
 export default ShortcutProvider;

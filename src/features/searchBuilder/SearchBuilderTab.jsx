@@ -1838,6 +1838,8 @@ export default function SearchBuilderTab({projectId,question:questionProp,pico,a
   useShortcut({
     id:'searchBuilder.undo',
     tier:TIER.ENGINE,
+    // 109.md §15 — descriptive metadata for the read-only Ops shortcut inventory.
+    chord:'Ctrl/Cmd + Z', label:'Undo the last strategy change', scopeLabel:'Search Builder',
     match:isUndoChord,
     when:(ctx)=>embedded&&visible&&!readOnly&&undoAvailable
       &&(!ctx.scope||ctx.scope===SCOPE_SEARCH)&&historyShortcutAllowed(ctx),

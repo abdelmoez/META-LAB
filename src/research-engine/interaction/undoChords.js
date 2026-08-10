@@ -47,13 +47,25 @@ export function isUndoChord(e) {
   return k === 'z' || k === 'Z';
 }
 
-/** Ctrl/Cmd+Shift+Z, or the legacy Windows Ctrl+Y (108.md §2). */
-export function isRedoChord(e) {
+/**
+ * Ctrl/Cmd+Shift+Z, or the legacy Windows Ctrl+Y (108.md §2).
+ *
+ * 109.md §16 — the Ctrl+Y alias became the `interaction.ctrlYRedoAlias` Ops setting,
+ * so it is now an OPTION rather than an unconditional second chord. The option
+ * DEFAULTS TO TRUE here, which keeps this pure predicate byte-identical to v4.13.0
+ * for every caller that does not pass one; the binding site passes the configured
+ * value. Ctrl/Cmd+Shift+Z is unconditional and can never be turned off.
+ *
+ * @param {object} e
+ * @param {{ctrlYAlias?: boolean}} [opts]
+ */
+export function isRedoChord(e, opts) {
   if (!isObj(e)) return false;
   if (e.altKey) return false;
+  const ctrlYAlias = isObj(opts) && opts.ctrlYAlias !== undefined ? !!opts.ctrlYAlias : true;
   const k = String(e.key || '');
   if ((k === 'z' || k === 'Z') && (e.ctrlKey || e.metaKey) && e.shiftKey) return true;
-  if ((k === 'y' || k === 'Y') && e.ctrlKey && !e.metaKey && !e.shiftKey) return true;
+  if (ctrlYAlias && (k === 'y' || k === 'Y') && e.ctrlKey && !e.metaKey && !e.shiftKey) return true;
   return false;
 }
 

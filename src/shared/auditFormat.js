@@ -36,6 +36,28 @@ function fieldList(d) {
   return '';
 }
 
+// ── 109.md §42 helpers — the Ops settings writers log a `changes` array of
+// {key, label, scope, from, to}. These render it without assuming it is present,
+// so an older row (key names only) still produces a sensible sentence.
+function changeRows(d) {
+  return Array.isArray(d?.changes) ? d.changes : [];
+}
+function countChanges(d) {
+  const rows = changeRows(d);
+  if (rows.length) return rows.length;
+  const f = d?.updatedKeys;
+  return Array.isArray(f) ? f.length : 0;
+}
+function flagLabel(d, log) {
+  const row = changeRows(d)[0];
+  return row?.label || log?.entityId || 'a';
+}
+function onOffPhrase(d) {
+  const row = changeRows(d)[0];
+  if (!row || typeof row.to !== 'boolean') return 'changed';
+  return row.to ? 'enabled' : 'DISABLED';
+}
+
 /**
  * Catalogue of known admin audit actions. severity is static; describe(d, log)
  * returns a sentence (without the actor prefix, which the caller may add).
@@ -61,6 +83,31 @@ export const AUDIT_ACTIONS = {
     describe: (d) => `updated settings${fieldList(d) ? ` (${fieldList(d)})` : ''}` },
   APP_THEME_UPDATED: { severity: 'low', category: 'settings', label: 'Changed appearance',
     describe: (d) => `changed the app theme${d.newPreset ? ` to "${d.newPreset}"` : ''}` },
+  DESIGN_SETTINGS_UPDATED: { severity: 'medium', category: 'settings', label: 'Changed UI design rollout',
+    describe: (d) => `changed the Ops-governed UI design${d.defaultMode ? ` (default: ${d.defaultMode})` : ''}` },
+  // ── 109.md §§42, 23 — Ops control-plane actions ────────────────────────────
+  // Registering them here is what gives them a stable severity + a real sentence
+  // in the Ops Security table; an unregistered action degrades to a humanised
+  // INFO label and is unreachable from the severity filter.
+  UPDATE_FEATURE_FLAG: { severity: 'high', category: 'settings', label: 'Changed a feature flag',
+    describe: (d, log) => `${onOffPhrase(d)} the ${flagLabel(d, log)} feature flag` },
+  UPDATE_FEATURE_FLAGS: { severity: 'high', category: 'settings', label: 'Changed feature flags',
+    describe: (d) => `changed ${countChanges(d)} feature flag${countChanges(d) === 1 ? '' : 's'}${fieldList(d) ? ` (${fieldList(d)})` : ''}` },
+  UPDATE_RESEARCH_GOVERNANCE: { severity: 'medium', category: 'settings', label: 'Updated research governance settings',
+    describe: (d) => `updated the research governance settings${fieldList(d) ? ` (${fieldList(d)})` : ''}` },
+  RESET_SETTINGS_GROUP: { severity: 'high', category: 'settings', label: 'Reset settings to defaults',
+    describe: (d, log) => `reset ${d.domain || log?.entityId || 'a settings group'} to system defaults${fieldList(d) ? ` (${fieldList(d)})` : ''}` },
+  // W1-B note: this is the action string the Research Governance requeue endpoint
+  // writes (server/controllers/researchOpsJobsController.js). `previousStatus` is
+  // rendered when present so an admin can tell a stuck-job recovery from a
+  // failed-job retry without opening the details JSON.
+  DUPLICATE_JOB_REQUEUE: { severity: 'medium', category: 'jobs', label: 'Requeued duplicate-detection job',
+    describe: (d, log) => `requeued duplicate-detection job ${log?.entityId || d.jobId || ''}`.trim()
+      + (d.previousStatus ? ` (was ${d.previousStatus})` : '') },
+  DUPLICATE_JOB_RERUN: { severity: 'high', category: 'jobs', label: 'Force-reran duplicate detection',
+    describe: (d, log) => `force-reran duplicate detection for project ${d.projectId || log?.entityId || ''}`.trim() },
+  DUPLICATE_JOB_CANCEL: { severity: 'medium', category: 'jobs', label: 'Cancelled duplicate-detection job',
+    describe: (d, log) => `cancelled duplicate-detection job ${log?.entityId || d.jobId || ''}`.trim() },
   UPDATE_AI_SCREENING: { severity: 'low', category: 'settings', label: 'Updated screening engine policy',
     describe: () => 'updated the screening engine policy' },
   UPDATE_SIFT_SETTINGS: { severity: 'low', category: 'settings', label: 'Updated screening settings',

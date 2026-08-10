@@ -146,10 +146,13 @@ function activeTerms(stored, defaults, edited) {
  */
 export function resolveKeywordState({
   storedInclude, storedExclude, defaultInclude, defaultExclude, picoSnapshot, keywordMeta,
+  suggestionOptions,
 } = {}) {
   const meta = normalizeKeywordMeta(keywordMeta);
   const defaults = { include: defaultInclude || [], exclude: defaultExclude || [] };
-  const suggestions = suggestCriteriaKeywords(picoSnapshot);
+  // 109.md §§11-13 — the Ops keyword-intelligence knobs. Omitted (server, tests,
+  // any caller that has no settings snapshot) ⇒ the shipped 107 behaviour exactly.
+  const suggestions = suggestCriteriaKeywords(picoSnapshot, suggestionOptions);
 
   const active = {
     include: activeTerms(storedInclude, defaults.include, isSideSeeded(meta, 'include')),

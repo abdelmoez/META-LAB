@@ -25,27 +25,30 @@
  * A ready-to-drop hint component ships alongside as AdminOnlyFeatureHint.jsx.
  */
 
+// 109.md §5 — the dependency graphs are now DERIVED from the shared typed
+// catalogue, which the server imports too. They used to be hand-copied byte-for-
+// byte between this file and server/services/featureAccess.js (plus a partial
+// third copy in AdminConsole's FLAG_META), so the two could silently diverge.
+// Importing the same frozen object makes divergence impossible by construction.
+import {
+  FEATURE_DEPS as CATALOG_FEATURE_DEPS,
+  FEATURE_RUNTIME_DEPS as CATALOG_FEATURE_RUNTIME_DEPS,
+  RESEARCH_GOVERNANCE_KEY, mergeDomainDefaults,
+} from '../../shared/opsSettingsCatalog.js';
+
 /**
- * HARD existence-gate dependency graph — byte-mirror of FEATURE_DEPS in
- * server/services/featureAccess.js. A flag is only 'on' when it AND every
- * (transitive) dependency is on. Keep this in sync with the server table.
+ * HARD existence-gate dependency graph — the same frozen object the server's
+ * featureAccess.js exports. A flag is only 'on' when it AND every (transitive)
+ * dependency is on. Source of truth: OPS_FLAGS[].requires in the catalogue.
  */
-export const FEATURE_DEPS = Object.freeze({
-  pecanSearch: ['searchEngine'],
-  searchStrategyStudio: ['searchEngine', 'pecanSearch'],
-  guidedRobAppraisal: ['rob_engine_v2'],
-  // 96.md — searchWorkspaceV2 removed: the flag is retired (stored key ignored;
-  // the staged workspace ships with searchEngine), so no dependency remains.
-});
+export const FEATURE_DEPS = CATALOG_FEATURE_DEPS;
 
 /**
  * Advisory (NON-gate) co-dependencies — mirror of the server's FEATURE_RUNTIME_DEPS.
  * livingReview stays viewable with pecanSearch OFF; its pecan requirement is a
  * RUNTIME concern (auto-runs), surfaced only as a hint, never as an existence gate.
  */
-export const FEATURE_RUNTIME_DEPS = Object.freeze({
-  livingReview: ['pecanSearch'],
-});
+export const FEATURE_RUNTIME_DEPS = CATALOG_FEATURE_RUNTIME_DEPS;
 
 /** Admin-only predicate for FLAGS (narrower than tier/staff — excludes mods). */
 export function isFlagAdmin(user) {
@@ -73,15 +76,40 @@ function now() {
   return (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
 }
 
-/** Fetch (and briefly cache) the public feature-flag snapshot. Fail-closed → {}. */
-export function publicFeatureFlags() {
+/**
+ * Fetch (and briefly cache) the WHOLE public settings payload.
+ * 109.md §55 — the snapshot now backs both the flag reader and the Ops
+ * research-governance knobs, so a screening page still issues ONE request rather
+ * than adding a fifteenth independent /api/settings/public caller. Fail-closed.
+ */
+function publicSettingsSnapshot() {
   if (_cache && (now() - _cacheAt) < TTL_MS) return _cache;
   _cacheAt = now();
   _cache = fetch('/api/settings/public', { credentials: 'include' })
     .then((res) => (res.ok ? res.json() : null))
-    .then((data) => (data && data.featureFlags) || {})
+    .then((data) => data || {})
     .catch(() => { _cache = null; return {}; });
   return _cache;
+}
+
+/** Fetch (and briefly cache) the public feature-flag snapshot. Fail-closed → {}. */
+export function publicFeatureFlags() {
+  return publicSettingsSnapshot().then((data) => (data && data.featureFlags) || {});
+}
+
+/**
+ * 109.md §3 — the Ops research-governance knobs (screening navigation, keyword
+ * suggestion policy, undo/redo history limits, proportion display precision,
+ * analysis override policy), merged UNDER the catalogue defaults so a client
+ * running against an older server, or one whose fetch failed, still gets the
+ * shipped defaults rather than `undefined`. Consumers MUST also keep their own
+ * hardcoded fallback for the synchronous path — these are UI defaults, not
+ * enforcement; anything safety-related is enforced server-side.
+ */
+export function publicOpsSettings() {
+  return publicSettingsSnapshot()
+    .then((data) => mergeDomainDefaults(RESEARCH_GOVERNANCE_KEY, data && data[RESEARCH_GOVERNANCE_KEY]))
+    .catch(() => mergeDomainDefaults(RESEARCH_GOVERNANCE_KEY, null));
 }
 
 /** Test/HMR hook: drop the cached snapshot so the next read re-fetches. */

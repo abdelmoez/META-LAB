@@ -30,6 +30,10 @@ import { useProjectHistory } from '../../history/HistoryContext.jsx';
 import { useUndoFeedback } from '../../history/useUndoFeedback.jsx';
 import { SCOPE_SCREENING } from '../../../research-engine/interaction/projectScopes.js';
 import KeywordContextMenu, { canOpenKeywordMenu } from '../components/KeywordContextMenu.jsx';
+// 109.md §§5, 7, 11-13, 36 — the Ops control plane. Both hooks resolve to the shared
+// catalogue defaults on the first render and under renderToStaticMarkup, so every
+// gate below is a no-op at the shipped settings.
+import { useGovernanceFlags, useOpsGovernance, governanceSettings } from '../../featureAccess/opsGovernance.js';
 import {
   SCREENING_KIND,
   previousDecision, decisionEntry, decisionPrecondition, decisionAlreadyApplied,
@@ -79,6 +83,36 @@ function fmtDecisionDate(iso) {
 }
 
 const LIMIT = 50;
+
+// 109.md §5 — the three screening kill switches. Module-level + frozen so the flag
+// hook's effect keys on a stable identity.
+const SCREENING_FLAGS = Object.freeze([
+  'keywordSuggestions', 'abstractKeywordShortcuts', 'keywordContextMenu',
+]);
+
+// Shared frozen empty suggestion set — returning the SAME object when suggestions are
+// switched off keeps the memo referentially stable (the repo's byte-stability rule).
+const NO_SUGGESTIONS = Object.freeze({
+  include: Object.freeze([]), exclude: Object.freeze([]), conflicts: Object.freeze([]),
+});
+
+/**
+ * 109.md §36 — `screening.autoLoadMoreBatchSize`, clamped to the catalogue's 10-200.
+ *
+ * The page size is LATCHED, never live: `pageWindow` and the resume jump
+ * (`firstPage + floor(idx / limit)`) do arithmetic across ALREADY-LOADED pages, so a
+ * value that changed between two fetches would compute a page number for a window
+ * that does not exist. It is therefore re-read only where the whole window is being
+ * thrown away — the reset load — and read from the SYNCHRONOUS snapshot
+ * (`governanceSettings()`), which is the shipped 50 until the shared
+ * /api/settings/public fetch resolves.
+ */
+export function resolveBatchSize(raw) {
+  if (raw == null || raw === '') return LIMIT;
+  const v = Number(raw);
+  if (!Number.isFinite(v)) return LIMIT;
+  return Math.min(200, Math.max(10, Math.round(v)));
+}
 
 // 100.md §14 — this workbench IS the Title & Abstract stage; Final Review lives in
 // SecondReviewTab. Resume progress is kept per user + project + STAGE, so the stage id
@@ -131,6 +165,20 @@ export default function ScreeningTab({ pid, project, access, refreshProject, use
   const isLeader = !!access?.isLeader;
   const canScreen = !!access?.canScreen;
   const blindMode = !!project?.blindMode;
+
+  // 109.md §§5, 7, 11-13, 36 — Ops governance. Defaults on the first render.
+  const govFlags = useGovernanceFlags(SCREENING_FLAGS);
+  const gov = useOpsGovernance();
+  const suggestionsOn = govFlags.keywordSuggestions !== false;
+  const contextMenuOn = govFlags.keywordContextMenu !== false;
+  const keyboardNavOn = gov.keyboardNavigationEnabled !== false;
+  const autoLoadMoreOn = gov.autoLoadMoreEnabled !== false;
+  const blockNavWhileLoading = gov.blockNavigationWhileLoading !== false;
+  // The LATCHED page size (see resolveBatchSize). The ref is what the request paths
+  // read; the state copy exists only so `pageWindow` re-renders when a reset adopts a
+  // new value. Both start at the shipped 50.
+  const pageLimitRef = useRef(LIMIT);
+  const [pageLimit, setPageLimit] = useState(LIMIT);
 
   // 107.md §2 — keyword ops answer with the FULL updated keyword columns, so a
   // single-term edit updates in place instead of refetching the whole project. Held
@@ -202,6 +250,19 @@ export default function ScreeningTab({ pid, project, access, refreshProject, use
   // them, and a concept whose polarity is ambiguous lands in `conflicts` instead of
   // silently appearing on both sides. Nothing derived is persisted, so editing the
   // criteria updates the suggestions and regeneration can never overwrite a manual term.
+  // 109.md §§11-13 — the generation knobs (cap, phrase preference, ambiguous single
+  // words, conflict behaviour, the two stop-list deltas) travel to the pure suggester.
+  // Every one of them defaults to the value 107 shipped, so this is inert at defaults.
+  const suggestionOptions = useMemo(() => ({
+    maxSuggestionsPerList: gov.maxSuggestionsPerList,
+    preferPhrases: gov.preferPhrases,
+    allowAmbiguousSingleWords: gov.allowAmbiguousSingleWords,
+    conflictBehavior: gov.conflictBehavior,
+    stopListAdditions: gov.stopListAdditions,
+    stopListRemovals: gov.stopListRemovals,
+  }), [gov.maxSuggestionsPerList, gov.preferPhrases, gov.allowAmbiguousSingleWords,
+    gov.conflictBehavior, gov.stopListAdditions, gov.stopListRemovals]);
+
   const kw = useMemo(() => resolveKeywordState({
     storedInclude: storedIncl,
     storedExclude: storedExcl,
@@ -209,11 +270,21 @@ export default function ScreeningTab({ pid, project, access, refreshProject, use
     defaultExclude: DEFAULT_EXCLUDE_KEYWORDS,
     picoSnapshot: project?.picoSnapshot,
     keywordMeta: kwSrc.keywordMeta,
-  }), [storedIncl.join('|'), storedExcl.join('|'), project?.picoSnapshot, kwSrc.keywordMeta]); // eslint-disable-line react-hooks/exhaustive-deps
+    suggestionOptions,
+  }), [storedIncl.join('|'), storedExcl.join('|'), project?.picoSnapshot, kwSrc.keywordMeta, suggestionOptions]); // eslint-disable-line react-hooks/exhaustive-deps
   const inclusion = kw.include.terms;
   const exclusion = kw.exclude.terms;
   const inclSource = kw.include.sourceByTerm;
   const exclSource = kw.exclude.sourceByTerm;
+
+  /* 109.md §5 — the `keywordSuggestions` kill switch. It hides the PROPOSAL surface
+     only: `kw.include.terms` / `kw.exclude.terms` (the ACTIVE keywords, including
+     ones accepted from a suggestion long ago) are untouched, and nothing stored is
+     deleted. Gating the derived lists here rather than at each render site means the
+     per-suggestion article-count fetch below stops firing too. */
+  const suggested = useMemo(() => (suggestionsOn
+    ? { include: kw.include.pending, exclude: kw.exclude.pending, conflicts: kw.conflicts }
+    : NO_SUGGESTIONS), [suggestionsOn, kw]);
 
   // ── Keyboard shortcut prefs (per-user, persisted to /api/profile) ────────
   const lsKey = userId ? `metalab.screeningShortcuts.${userId}` : null;
@@ -411,12 +482,17 @@ export default function ScreeningTab({ pid, project, access, refreshProject, use
    * Runs on the same send chain as the forward ops so it can never read a pre-image from
    * the middle of one.
    */
-  const keywordExecutor = useCallback((op) => enqueueKeywordOp(async () => {
+  const keywordExecutor = useCallback((op, { direction } = {}) => enqueueKeywordOp(async () => {
     const body = keywordOpBody(op && op.ops);
     if (!body) return { ok: false, reason: 'no-executor' };
     const refuse = keywordPrecondition(keywordExpectState(kwRawRef.current, op.expect), op.expect);
     if (refuse) return { ok: false, reason: 'refused', detail: refuse };
-    const r = await runKeywordOp(body);
+    // 109.md §14 — a replay is labelled at the top level of the ops body so the
+    // ScreenAuditLog row records UNDO/REDO instead of a second, indistinguishable
+    // KEYWORD_REMOVED. Forward ops send nothing (the server defaults to 'user'); an
+    // unrecognised value is a hard 400, so only the two literals are ever sent.
+    const via = direction === 'redo' ? 'redo' : 'undo';
+    const r = await runKeywordOp({ ...body, via });
     if (!r) return { ok: false, reason: 'failed' };
     if (!r.changed) return { ok: false, reason: 'refused' };
     return true;
@@ -454,7 +530,14 @@ export default function ScreeningTab({ pid, project, access, refreshProject, use
   // Cmd/Ctrl+I / Cmd/Ctrl+E over a selection inside the abstract.
   const abstractRef = useRef(null);
   const kwCtxRef = useRef({});
-  kwCtxRef.current = { inclusion, exclusion, canEditKeywords, runKeywordOp: runKeywordOpTracked };
+  // 109.md §5 — `abstractKeywordShortcuts` and `keywordContextMenu` ride the SAME ref
+  // as the permission bit, so the guard chain sees the current value without the
+  // listener ever being re-bound.
+  kwCtxRef.current = {
+    inclusion, exclusion, canEditKeywords, runKeywordOp: runKeywordOpTracked,
+    shortcutsEnabled: govFlags.abstractKeywordShortcuts !== false,
+    contextMenuEnabled: contextMenuOn,
+  };
 
   const onSelectionKeyword = useCallback(({ list, phrase }) => {
     const { inclusion: inc, exclusion: exc, runKeywordOp: run } = kwCtxRef.current;
@@ -490,7 +573,12 @@ export default function ScreeningTab({ pid, project, access, refreshProject, use
     // changes mid-session must not keep (or keep losing) the chord. A `false` here
     // means the guard chain never reaches preventDefault, so the browser keeps its own
     // Ctrl/Cmd+I behaviour instead of the press being silently swallowed.
-    canHandle: () => kwCtxRef.current.canEditKeywords,
+    // 109.md §5/§17 — the flag is a term IN the guard chain, never a bypass of it.
+    // `canHandle` false ⇒ selectionShortcut never reaches preventDefault, so Ctrl/Cmd+I
+    // and Ctrl/Cmd+E fall through to the browser exactly as they did before 107. The
+    // interception guarantee (`interaction.shortcutInterceptionContextual`) is a
+    // read-only catalogue entry precisely because there is no way to switch it off.
+    canHandle: () => kwCtxRef.current.canEditKeywords && kwCtxRef.current.shortcutsEnabled,
   });
 
   const confirmKeywordMove = useCallback(() => {
@@ -513,6 +601,10 @@ export default function ScreeningTab({ pid, project, access, refreshProject, use
    * the same discipline §1 applies to Ctrl/Cmd+I).
    */
   const openKeywordMenu = useCallback((e, { term, list, origin, keyboard } = {}) => {
+    // 109.md §5 — the `keywordContextMenu` kill switch is one more term in the same
+    // predicate. Off ⇒ no preventDefault ⇒ the browser's own menu opens, which is the
+    // §18/§19 discipline applied to an operator decision rather than a permission.
+    if (!kwCtxRef.current.contextMenuEnabled) return;
     if (!canOpenKeywordMenu({ origin, canEdit: kwCtxRef.current.canEditKeywords })) return;
     e.preventDefault();
     const el = e.currentTarget;
@@ -654,12 +746,21 @@ export default function ScreeningTab({ pid, project, access, refreshProject, use
     const pageNum = reset ? (p ?? 1) : (p ?? (direction === 'prev' ? firstPage - 1 : page + 1));
     if (!reset && (pageNum < 1)) return false;
     const gen = reset ? (loadGenRef.current += 1) : loadGenRef.current;
+    // 109.md §36 — adopt a changed `autoLoadMoreBatchSize` ONLY on a reset, i.e. only
+    // where the whole window is being discarded. See resolveBatchSize's header: page
+    // arithmetic spans already-loaded pages, so the size must be constant across them.
+    if (reset) {
+      const nextLimit = resolveBatchSize(governanceSettings().autoLoadMoreBatchSize);
+      pageLimitRef.current = nextLimit;
+      setPageLimit(nextLimit);
+    }
+    const limit = pageLimitRef.current;
     const searchVal = s !== undefined ? s : searchRef.current;
     const filterVal = f !== undefined ? f : filterRef.current;
     reset ? setLoading(true) : setLoadingMore(true);
     setListError(null);
     try {
-      const params = { page: pageNum, limit: LIMIT };
+      const params = { page: pageNum, limit };
       if (searchVal) params.search = searchVal;
       if (filterVal && filterVal !== 'all') params.filter = filterVal;
       if (keywordsRef.current) params.keywords = keywordsRef.current;
@@ -707,8 +808,8 @@ export default function ScreeningTab({ pid, project, access, refreshProject, use
   const refreshRow = useCallback(async (rid) => {
     try {
       const idx = recordsRef.current.findIndex(r => r.id === rid);
-      const targetPage = idx >= 0 ? firstPage + Math.floor(idx / LIMIT) : firstPage;
-      const params = { page: targetPage, limit: LIMIT };
+      const targetPage = idx >= 0 ? firstPage + Math.floor(idx / pageLimitRef.current) : firstPage;
+      const params = { page: targetPage, limit: pageLimitRef.current };
       if (searchRef.current) params.search = searchRef.current;
       if (filterRef.current && filterRef.current !== 'all') params.filter = filterRef.current;
       if (keywordsRef.current) params.keywords = keywordsRef.current;
@@ -795,7 +896,7 @@ export default function ScreeningTab({ pid, project, access, refreshProject, use
   // 107.md §2 — pending suggestions are counted too (the review UI shows an article
   // count per suggestion), so they belong in the refresh trigger.
   useEffect(() => { loadKwStats(); /* eslint-disable-next-line */ },
-    [pid, inclusion.join('|'), exclusion.join('|'), kw.include.pending.join('|'), kw.exclude.pending.join('|')]);
+    [pid, inclusion.join('|'), exclusion.join('|'), suggested.include.join('|'), suggested.exclude.join('|')]);
 
   // Re-filter the list when the keyword selection changes (skip first mount).
   const kwFirst = useRef(true);
@@ -830,7 +931,7 @@ export default function ScreeningTab({ pid, project, access, refreshProject, use
   // 100.md §13 / 107.md §7 — what is still loadable around the contiguous run of pages
   // currently held. Hoisted out of the LeftColumn props because keyboard navigation
   // needs `hasMore` too (and the middle column's end-of-list note reads it as well).
-  const pageWin = pageWindow({ firstPage, page, pages, total, limit: LIMIT });
+  const pageWin = pageWindow({ firstPage, page, pages, total, limit: pageLimit });
 
   function loadMore() {
     if (loadingMore) return;
@@ -873,17 +974,31 @@ export default function ScreeningTab({ pid, project, access, refreshProject, use
   // `loadingMore` was consulted, so a keystroke during a reset (Resume Screening, a
   // filter change, the realtime `decision.saved` refresh) still returned 'load-next'
   // and issued an append computed from the pre-reset `page`.
-  navCtxRef.current = { hasMore: pageWin.hasMore, loadingMore, loading };
+  // 109.md §§7/§36 — `screening.autoLoadMore` and `screening.blockNavigationWhileLoading`
+  // ride the same ref as the in-flight flags: the nav callbacks are stable, so the
+  // settings have to arrive through the ref rather than a closure.
+  navCtxRef.current = {
+    hasMore: pageWin.hasMore, loadingMore, loading,
+    autoLoadMore: autoLoadMoreOn, blockWhileLoading: blockNavWhileLoading,
+  };
   const advanceLockRef = useRef(false);
   const pendingAdvanceRef = useRef(null);
 
   function moveSelection(dir) {
     const recs = displayRecordsRef.current;
     const idx = recs.findIndex(r => r.id === selectedIdRef.current);
-    const { hasMore, loadingMore: busy, loading: resetting } = navCtxRef.current;
+    const {
+      hasMore, loadingMore: busy, loading: resetting, autoLoadMore, blockWhileLoading,
+    } = navCtxRef.current;
+    // 109.md §36 — with `blockNavigationWhileLoading` OFF, a keystroke during a fetch
+    // is no longer swallowed. It still cannot fan out into concurrent page requests:
+    // `advanceLockRef` is the request lock and is ALWAYS part of the in-flight input.
+    // The setting only governs whether a plain in-list move is allowed to proceed
+    // while a batch happens to be arriving, which is the behaviour it describes.
+    const inFlight = advanceLockRef.current || (blockWhileLoading && (busy || resetting));
     const intent = moveIntent({
       index: idx, dir, count: recs.length,
-      hasMore, loadingMore: busy || resetting || advanceLockRef.current,
+      hasMore, loadingMore: inFlight,
     });
     if (intent === 'move') {
       const next = recs[idx + (Number(dir) < 0 ? -1 : 1)];
@@ -891,6 +1006,10 @@ export default function ScreeningTab({ pid, project, access, refreshProject, use
       return;
     }
     if (intent !== 'load-next') return;   // 'end' → stay put; 'noop' → already loading
+    // 109.md §7 — `screening.autoLoadMore` OFF: arrowing past the end stays put and
+    // the reviewer clicks "Load more". No record is hidden either way.
+    if (!autoLoadMore) return;
+    if (busy || resetting) return;        // never append onto an in-flight/reset window
     advanceLockRef.current = true;
     // Stamp the DATASET this advance was armed against (107.md rec): the effect below
     // fires on the first render where `loadingMore` is false — whichever load that was
@@ -947,7 +1066,7 @@ export default function ScreeningTab({ pid, project, access, refreshProject, use
   const resumeTimerRef = useRef(null);
   const runRefreshResume = useCallback(() => {
     resumeAtRef.current = Date.now();
-    screeningApi.getResumePoint(pid, { stage: SCREENING_STAGE, limit: LIMIT })
+    screeningApi.getResumePoint(pid, { stage: SCREENING_STAGE, limit: pageLimitRef.current })
       .then(r => setResume(r || null))
       .catch(() => { /* non-fatal — the control just stays out of the way */ });
   }, [pid]);
@@ -972,7 +1091,7 @@ export default function ScreeningTab({ pid, project, access, refreshProject, use
     setResuming(true);
     setResumeNote('');
     try {
-      const r = await screeningApi.getResumePoint(pid, { stage: SCREENING_STAGE, limit: LIMIT });
+      const r = await screeningApi.getResumePoint(pid, { stage: SCREENING_STAGE, limit: pageLimitRef.current });
       setResume(r || null);
       if (!r || !r.recordId) {
         setResumeNote((r && r.message) || 'There is nothing left to screen here.');
@@ -1316,8 +1435,13 @@ export default function ScreeningTab({ pid, project, access, refreshProject, use
   useScreeningShortcuts({
     enabled: shortcutPrefs.enabled && !!canScreen,
     keys: shortcutPrefs.keys,
-    onNext:    () => moveSelection(1),
-    onPrev:    () => moveSelection(-1),
+    // 109.md §7 — `screening.keyboardNavigation` governs the two MOVE keys only.
+    // Mouse navigation (the record list, the Prev/Next footer buttons) and the
+    // decision keys are deliberately unaffected: "Off leaves mouse navigation
+    // unchanged". The callback becomes a no-op rather than being unregistered so the
+    // decision shortcuts keep working from the same listener.
+    onNext:    () => { if (keyboardNavOn) moveSelection(1); },
+    onPrev:    () => { if (keyboardNavOn) moveSelection(-1); },
     onInclude: () => onDecisionClick('include'),
     onExclude: () => onDecisionClick('exclude'),
     onMaybe:   () => onDecisionClick('maybe'),
@@ -1365,6 +1489,9 @@ export default function ScreeningTab({ pid, project, access, refreshProject, use
           resume={resume} resuming={resuming} resumeNote={resumeNote} onResume={doResume}
           canScreen={canScreen}
           scrollToSelected={scrollToSelected} onScrolledToSelected={clearScrollToSelected}
+          /* 109.md §7 — presentation-only Ops knobs. */
+          decisionIndicators={gov.decisionIndicatorsEnabled !== false}
+          autoScrollSelected={gov.selectedRowAutoScroll !== false}
         />
       )}
 
@@ -1413,12 +1540,15 @@ export default function ScreeningTab({ pid, project, access, refreshProject, use
           ai={ai}
           elig={elig}
           /* 107.md §2 — suggestion review + single-term ops */
-          kwPendingIncl={kw.include.pending} kwPendingExcl={kw.exclude.pending}
-          kwConflicts={kw.conflicts}
+          kwPendingIncl={suggested.include} kwPendingExcl={suggested.exclude}
+          kwConflicts={suggested.conflicts}
+          suggestionsDefaultOpen={gov.keywordSuggestionsDefaultOn !== false}
           canEditKeywords={canEditKeywords}
           runKeywordOp={runKeywordOpTracked} kwOpError={kwOpError}
           /* 108.md §18 — the same menu opener for BOTH keyword surfaces */
-          onKeywordMenu={openKeywordMenu}
+          /* 109.md §5 — withholding the handler is what removes the chips'
+             aria-haspopup/menu affordance too, not just the menu itself. */
+          onKeywordMenu={contextMenuOn ? openKeywordMenu : undefined}
         />
       )}
 
@@ -1493,6 +1623,9 @@ function LeftColumn({
   ai, queueMode, onQueueMode, aiBand, onAiBand, onRefreshRankings,
   resume, resuming, resumeNote, onResume, canScreen,
   scrollToSelected, onScrolledToSelected,
+  // 109.md §7 — presentation knobs. Both default to the shipped behaviour so a
+  // LeftColumn rendered by an older caller (or an SSR test) is unchanged.
+  decisionIndicators = true, autoScrollSelected = true,
 }) {
   const k = shortcutPrefs?.keys ?? DEFAULT_SCREENING_SHORTCUTS.keys;
 
@@ -1602,6 +1735,10 @@ function LeftColumn({
   useEffect(() => {
     if (navSelRef.current !== selectedId) { navSelRef.current = selectedId; navPendingRef.current = true; }
     if (!navPendingRef.current) return;
+    // 109.md §7 — `screening.selectedRowAutoScroll` OFF: the selection still moves and
+    // the abstract still changes; the list simply stops repositioning itself. The
+    // pending flag is cleared so a later re-enable does not fire a stale catch-up.
+    if (!autoScrollSelected) { navPendingRef.current = false; return; }
     if (scrollToSelected) return;                 // the resume one-shot owns this pass
     const el = scrollRef.current;
     const vh = el ? (el.clientHeight || 0) : 0;
@@ -1635,7 +1772,7 @@ function LeftColumn({
     const next = nearestScrollTop({ rowTop: idx * rowH, rowHeight: rowH, scrollTop: el.scrollTop, viewportHeight: vh, insetBottom });
     if (next == null) { navPendingRef.current = false; return; }
     el.scrollTop = next;
-  }, [selectedId, scrollToSelected, windowed, records, rowH, scrollTop, hasMore]);
+  }, [selectedId, scrollToSelected, windowed, records, rowH, scrollTop, hasMore, autoScrollSelected]);
 
   return (
     <div style={{ width: 300, flexShrink: 0, borderRight: `1px solid ${C.brd}`, display: 'flex', flexDirection: 'column', background: C.surf, overflow: 'hidden', minHeight: 0 }}>
@@ -1714,7 +1851,7 @@ function LeftColumn({
             {windowed && <div aria-hidden="true" style={{ height: win.topPad, flexShrink: 0 }} />}
             <div ref={rowsRef} style={{ flexShrink: 0 }}>
               {visibleRecords.map(r => (
-                <RecordRow key={r.id} record={r} selected={r.id === selectedId} onClick={() => onSelect(r.id)} blindMode={blindMode} scoreInfo={ai?.enabled ? (r.aiScore || ai.scores[r.id]) : null} />
+                <RecordRow key={r.id} record={r} selected={r.id === selectedId} onClick={() => onSelect(r.id)} blindMode={blindMode} scoreInfo={ai?.enabled ? (r.aiScore || ai.scores[r.id]) : null} decisionIndicators={decisionIndicators} />
               ))}
             </div>
             {windowed && <div aria-hidden="true" style={{ height: win.bottomPad, flexShrink: 0 }} />}
@@ -1819,7 +1956,7 @@ export function ResumeBar({ resume, resuming, note, onResume, canScreen }) {
 // 107.md §6 — the left-list decision indicator. Exported so the glyph contract (one
 // compact mark per row, driven by the optimistic `myDecision` patch) is regression-
 // locked alongside the decision bar it has to agree with.
-export function RecordRow({ record, selected, onClick, blindMode, scoreInfo }) {
+export function RecordRow({ record, selected, onClick, blindMode, scoreInfo, decisionIndicators = true }) {
   const [hover, setHover] = useState(false);
   const my = record.myDecision?.decision;
   const myDc = DECISION_COLORS[my] || DECISION_COLORS.undecided;
@@ -1869,9 +2006,14 @@ export function RecordRow({ record, selected, onClick, blindMode, scoreInfo }) {
           {record.title || <span style={{ fontStyle: 'italic', color: C.muted }}>Untitled record</span>}
         </div>
         {record.disputed && <span title="Reviewers disagree — disputed" style={{ fontSize: 13, flexShrink: 0, marginTop: 0 }}>⚠️</span>}
-        <span style={{ fontSize: 12, fontFamily: MONO, fontWeight: 700, color: myDc.txt, flexShrink: 0, marginTop: 1 }}>
-          {DECISION_GLYPH[my] || '·'}
-        </span>
+        {/* 109.md §7 — `screening.decisionIndicators`. PRESENTATION ONLY: hiding the
+            glyph never changes, clears or hides a decision, and the decision bar,
+            the reviewer chips and every filter are unaffected. */}
+        {decisionIndicators && (
+          <span style={{ fontSize: 12, fontFamily: MONO, fontWeight: 700, color: myDc.txt, flexShrink: 0, marginTop: 1 }}>
+            {DECISION_GLYPH[my] || '·'}
+          </span>
+        )}
       </div>
 
       {/* Author · year (hidden in blind mode) */}
@@ -2416,6 +2558,7 @@ function RightColumn({
   kwStats, loadKwStats, selectedIncl, setSelectedIncl, selectedExcl, setSelectedExcl,
   clearKeywordFilters, shownCount, projectTotal, onCollapse, ai, elig,
   kwPendingIncl, kwPendingExcl, kwConflicts, canEditKeywords, runKeywordOp, kwOpError,
+  suggestionsDefaultOpen = true,
   onKeywordMenu,
 }) {
   const [open, setOpen] = useState({
@@ -2474,6 +2617,7 @@ function RightColumn({
           inclusion={inclusion} exclusion={exclusion}
           inclSource={inclSource} exclSource={exclSource}
           kwPendingIncl={kwPendingIncl} kwPendingExcl={kwPendingExcl} kwConflicts={kwConflicts}
+          suggestionsDefaultOpen={suggestionsDefaultOpen}
           canEditKeywords={canEditKeywords} runKeywordOp={runKeywordOp} kwOpError={kwOpError}
           kwStats={kwStats} loadKwStats={loadKwStats}
           selectedIncl={selectedIncl} setSelectedIncl={setSelectedIncl}
@@ -2599,9 +2743,13 @@ function KeywordPanel({
   showInclusion, setShowInclusion, showExclusion, setShowExclusion,
   kwPendingIncl = [], kwPendingExcl = [], kwConflicts = [],
   canEditKeywords, runKeywordOp, kwOpError, onKeywordMenu,
+  // 109.md §11 — `keywords.suggestionsDefaultOn`. Only the INITIAL disclosure state;
+  // the reviewer's own toggle wins from then on, and the master availability switch
+  // is the `keywordSuggestions` feature flag (which empties the lists entirely).
+  suggestionsDefaultOpen = true,
 }) {
   const [editing, setEditing] = useState(false);
-  const [reviewOpen, setReviewOpen] = useState(false);
+  const [reviewOpen, setReviewOpen] = useState(() => suggestionsDefaultOpen !== false);
   const anySelected = selectedIncl.length + selectedExcl.length > 0;
   const suggestionCount = kwPendingIncl.length + kwPendingExcl.length + kwConflicts.length;
 

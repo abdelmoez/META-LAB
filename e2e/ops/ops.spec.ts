@@ -2,7 +2,7 @@
  * ops.spec.ts — the Ops / Admin console at `/ops` (LEGACY chrome, admin-only).
  *
  * Covers:
- *   1. The console loads for an admin and all 16 nav sections are reachable
+ *   1. The console loads for an admin and every nav section is reachable
  *      (each section renders its own <h2> heading).
  *   2. Appearance tab — the Stitch-rollout `design-default-mode` round-trips
  *      through a real save and is asserted via the API, then restored.
@@ -15,26 +15,30 @@
  * GLOBAL-STATE SAFETY: design-settings and feature flags are global SiteSettings.
  * Tests that mutate them capture the original value first and ALWAYS restore it
  * (try/finally + an API restore) so sibling specs are never poisoned.
+ *
+ * 109.md — the section COUNT is interpolated from OPS_SECTION_IDS instead of being
+ * hardcoded in the titles: the two counts that used to be written out ("16", "19")
+ * had already drifted apart from each other and from the real list.
  */
 import { test, expect } from '../fixtures/stitch-test';
 import { OpsPage, OPS_SECTION_IDS } from '../page-objects/OpsPage';
 import * as api from '../helpers/api';
 
 test.describe('Ops console — admin', () => {
-  test('@smoke /ops loads for an admin with all 16 nav sections present', async ({ page }) => {
+  test(`@smoke /ops loads for an admin with all ${OPS_SECTION_IDS.length} nav sections present`, async ({ page }) => {
     const ops = new OpsPage(page);
     await ops.goto();
 
     // The admin default section is Overview — its heading proves the console mounted.
     await expect(ops.sectionHeading('overview')).toBeVisible({ timeout: 15000 });
 
-    // All 16 sidebar nav buttons are present for an admin.
+    // Every sidebar nav button is present for an admin.
     for (const id of OPS_SECTION_IDS) {
       await expect(ops.nav(id), `nav-${id} should be visible for admin`).toBeVisible();
     }
   });
 
-  test('every one of the 19 nav sections is reachable and renders its content', async ({ page }) => {
+  test(`every one of the ${OPS_SECTION_IDS.length} nav sections is reachable and renders its content`, async ({ page }) => {
     const ops = new OpsPage(page);
     await ops.goto();
 
@@ -99,7 +103,7 @@ test.describe('Ops console — admin', () => {
     expect(after.allowAllUsers).toBe(original.allowAllUsers);
   });
 
-  test('Flags tab: a benign feature flag toggles, persists, and is restored', async ({ page, request }) => {
+  test('Flags tab: a benign feature flag toggles through the confirm modal, persists, and is restored', async ({ page, request }) => {
     const ops = new OpsPage(page);
     await ops.goto();
 
@@ -116,8 +120,9 @@ test.describe('Ops console — admin', () => {
       // loading spinner), so clicking flips real loaded state — not an empty object.
       await expect(toggle).toBeVisible({ timeout: 15000 });
 
-      await toggle.click(); // flip
-      await ops.flagsSave.click();
+      // 109.md §§40-42 — the flip goes through the impact-preview confirmation and
+      // writes a single-key PATCH carrying the reason.
+      await ops.setFlag(FLAG, 'e2e round-trip check');
 
       // The Toggle has no `checked` attr — assert the flip via a follow-up GET.
       await expect
@@ -128,6 +133,24 @@ test.describe('Ops console — admin', () => {
       await api.setFeatureFlags(request, { [FLAG]: original });
     }
 
+    expect(!!(await api.getFeatureFlags(request))[FLAG]).toBe(original);
+  });
+
+  test('Flags tab: cancelling the confirmation leaves the flag untouched', async ({ page, request }) => {
+    const ops = new OpsPage(page);
+    await ops.goto();
+
+    const FLAG = 'projectDuplication';
+    const original = !!(await api.getFeatureFlags(request))[FLAG];
+
+    await ops.openSection('flags');
+    await expect(ops.flagToggle(FLAG)).toBeVisible({ timeout: 15000 });
+    await ops.flagToggle(FLAG).click();
+    await expect(ops.flagsConfirmModal).toBeVisible();
+    await ops.flagsCancel.click();
+    await expect(ops.flagsConfirmModal).toHaveCount(0);
+
+    // No write happened — the global flag is exactly as it was.
     expect(!!(await api.getFeatureFlags(request))[FLAG]).toBe(original);
   });
 
@@ -171,7 +194,9 @@ test.describe('Ops console — mod (limited)', () => {
     await expect(ops.nav('messages')).toBeVisible();
 
     // Admin-only sections must not even render as dead links in the mod sidebar.
-    for (const id of ['overview', 'flags', 'settings', 'style', 'security', 'health', 'projects'] as const) {
+    // 109.md §39 — `research` is admin-only in the SIDEBAR even though a mod holds
+    // view_research_diagnostics at the API layer (the documented asymmetry).
+    for (const id of ['overview', 'flags', 'settings', 'style', 'security', 'health', 'projects', 'research'] as const) {
       await expect(ops.nav(id), `nav-${id} must be absent for a mod`).toHaveCount(0);
     }
   });

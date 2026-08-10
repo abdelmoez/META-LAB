@@ -548,6 +548,37 @@ model SecurityEvent {
   @@index([userId])
 }
 
+/// 109.md §6/§46/§47 — bounded, deduped persistence for the SPA's client-error
+/// beacon (POST /api/client-errors, previously console.warn-only). Ops asked for
+/// undo/redo + autosave health cards; §46 forbids inventing metrics with no data
+/// source, so this table is the CAPTURE half — the honest minimum that lets the
+/// Ops "Client Errors" view show real rows instead of a fabricated success rate.
+///
+/// Deliberately NOT a full error store: no stacks, no payloads, no request bodies.
+/// `message` and `context` are hard-truncated by the writer, identical reports
+/// collapse onto one row via `fingerprint`, and the distinct-row count is capped so
+/// a spraying client cannot grow the table without bound. `userId` is a plain
+/// nullable string (no FK/relation) because the beacon endpoint is unauthenticated
+/// by design — crashes happen before login too.
+model ClientErrorReport {
+  id          String   @id @default(uuid())
+  /// sha1(kind|message|context) — the dedupe key. Safe as @unique because the
+  /// column is created WITH the table (the "never add @unique to an existing
+  /// table" rule protects non-interactive `prisma db push`, which is unaffected
+  /// by a brand-new table).
+  fingerprint String   @unique
+  kind        String   @default("") // error name / beacon kind, <= 80 chars
+  message     String   @default("") // truncated message, <= 500 chars
+  context     String   @default("") // route + engine + release + browser, <= 500 chars
+  userId      String? // best-effort; null for the unauthenticated beacon path
+  count       Int      @default(1) // occurrences collapsed onto this row
+  firstSeenAt DateTime @default(now())
+  lastSeenAt  DateTime @default(now())
+
+  @@index([lastSeenAt])
+  @@index([kind, lastSeenAt])
+}
+
 // ─── META·SIFT Beta ──────────────────────────────────────────────────
 
 // Per-user notification (prompt6 Task 1). The "Review Workspace" is the

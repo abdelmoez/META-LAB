@@ -43,6 +43,17 @@ import { WORLD_COUNTRIES, WORLD_VIEWBOX } from './worldGeo.js';
 // metrics strip, bulk actions, and the detail drawer; this module keeps the
 // surrounding Users sub-tabs (Growth/Analytics/Institutions + the country map).
 import UsersDirectory from './users/UsersDirectory.jsx';
+// 109.md §4 — the Research Governance control plane (duplicate detection, keyword
+// intelligence, extraction/analysis governance, interaction, client errors) is its
+// own extracted package, same precedent as users/ above.
+import ResearchGovernanceSection from './research/ResearchGovernanceSection.jsx';
+// 109.md §9 — the sidebar registry lives in its own module so the section-id sync
+// with the server's getConsole allow-list is unit-testable.
+import { NAV_SECTIONS, roleSections } from './opsSections.js';
+// 109.md §5 — the Flags section is driven by the shared typed catalogue instead of
+// a hand-maintained FLAG_META copy (which had already drifted: relationalProjectStore,
+// researchProvenance and aiExtraction were live server flags with no Ops row).
+import { VISIBLE_FLAGS, FEATURE_DEPS, FEATURE_RUNTIME_DEPS, flagEntry } from '../../../shared/opsSettingsCatalog.js';
 const SIDEBAR_W = 220;
 const TOPBAR_H  = 52;
 
@@ -4180,82 +4191,218 @@ function StyleSection() {
 }
 
 /* ════════════════════════════════════════════════════════════════════════
-   SECTION: FEATURE FLAGS (unchanged)
+   SECTION: FEATURE FLAGS — 109.md §§5, 6, 40-42.
+
+   REGISTRY-DRIVEN. The rows come from VISIBLE_FLAGS in the shared typed
+   catalogue (src/shared/opsSettingsCatalog.js) — the same declaration the server
+   derives its defaults and its dependency graph from. The old hand-maintained
+   FLAG_META copy had already drifted: relationalProjectStore, researchProvenance
+   and aiExtraction were live server flags with NO Ops row at all, so they could
+   only be flipped by editing the database. Deprecated keys (searchWorkspaceV2)
+   are excluded by the catalogue, because a toggle that silently does nothing is
+   a dead button.
+
+   PER-FLAG WRITES. Each change is a PATCH /api/admin/feature-flags/:key
+   read-merge-write with a from→to audit entry and an optional reason, instead of
+   the whole-blob PUT where two admins with this tab open clobbered each other.
+   The PUT still exists for back-compat (and is validated now), but nothing here
+   uses it.
    ════════════════════════════════════════════════════════════════════════ */
 
-const FLAG_META = [
-  { key: 'autosave',             label: 'Autosave',              desc: 'Automatically save project changes as the user types.' },
-  { key: 'contactForm',          label: 'Contact Form',          desc: 'Show the public contact form on the landing page.' },
-  { key: 'projectDuplication',   label: 'Project Duplication',   desc: 'Allow users to clone existing projects.' },
-  { key: 'advancedMetaAnalysis', label: 'Advanced Meta-Analysis',desc: "Enable trim-and-fill, Egger's test, and influence diagnostics." },
-  { key: 'exportTools',          label: 'Export Tools',          desc: 'Allow project and data exports in various formats.' },
-  { key: 'rob_engine_v2',        label: 'Risk of Bias (RoB 2)',  desc: 'Enable the PecanRev RoB 2 assessment workspace (beta). Off by default until validated.' },
-  { key: 'guidedRobAppraisal',   label: 'Guided RoB Appraisal (P14)', requires: 'rob_engine_v2', desc: 'Enable guided risk-of-bias appraisal on top of the RoB workspace: adds ROBINS-I (for non-randomized studies) alongside RoB 2, reads a study\'s abstract/full text to SUGGEST per-domain signalling answers with a quoted supporting sentence, source location and confidence, and proposes a domain judgment — always as a reviewer suggestion that never overwrites a human judgment (accept / modify / reject). Includes a validation view comparing suggestions to human decisions (domain agreement + weighted kappa) and traffic-light visuals. Requires Risk of Bias (RoB 2). Off by default.' },
-  { key: 'serverBackedWorkflowState', label: 'Server-Backed Workflow State', desc: 'Persist migrated workflow modules (Protocol, Search Builder) server-side with revision-based conflict detection. Off keeps the legacy whole-project autosave.' },
-  { key: 'searchEngine',         label: 'Pecan Search Engine — Strategy Builder', desc: 'The Strategy Builder layer of the Pecan Search Engine: the concept→multi-database strategy builder (MeSH lookup + live PubMed counts via the NLM proxy). One of the two layers of a single product — this builds the strategy, the Automated Run executes it. Off keeps the legacy in-app search builder.' },
-  { key: 'aiScreening',          label: 'Screening Engine',   desc: 'Enable the PecanRev Screening Intelligence Engine: deterministic TF-IDF + active-learning relevance scoring, ranking, explanations, and validation metrics inside the screening workbench. Assistive only — human decisions are never automated. Off by default until validated. Configure global policy in Screening → Engine policy.' },
-  { key: 'eligibilityScreening', label: 'Criteria Screener (P10)', desc: 'Enable the criteria-based Eligibility Screener in the screening workbench: reviewers define structured yes/no inclusion/exclusion questions and the engine evaluates each record against them (suggested answer + confidence + quoted evidence sentence), with reviewer adjudication and an optional governed auto-apply that never overwrites a human decision. Deterministic and zero-training — designed for cold-start before enough labels exist. Off by default. Configure the global policy in Screening → Eligibility.' },
-  { key: 'pecanSearch',          label: 'Pecan Search Engine — Automated Run',   requires: 'searchEngine', desc: 'The Automated Run layer of the Pecan Search Engine — the second of the two layers of a single product. Requires the Strategy Builder (above), which it runs. Executes the strategy across multiple databases (PubMed, Europe PMC, ClinicalTrials.gov, Crossref, DOAJ, OpenAlex, Semantic Scholar) with query translation, count previews, deduplicated runs, and exportable reports. Off by default until provisioned. Configure providers, caps, concurrency, and queue health in Search Providers.' },
-  { key: 'searchStrategyStudio', label: 'Strategy Studio (P11)',  requires: 'pecanSearch', desc: 'Enable the guided Boolean Strategy Studio: turn your concept groups into database-specific search strategies, test them with real PubMed/OpenAlex hit counts in a generate → critic → refine loop, keep every iteration, estimate recall against seed studies, and export PRISMA-S search documentation. Requires the Pecan Search Engine (Strategy Builder + Automated Run). Off by default.' },
-  { key: 'betaWaitlist',         label: 'Beta Waitlist Landing Page', desc: 'When ON, unauthenticated visitors to the homepage ( / ) see the Beta Waitlist sign-up page instead of the standard landing page. Signed-in users and the login/register pages are unaffected. The existing landing page is preserved and returns when this is OFF. Manage applicants in the Beta Waitlist tab. Preview at /beta-waitlist.' },
-  { key: 'networkMetaAnalysis',  label: 'Network Meta-Analysis', desc: 'Enable the Network Meta-Analysis workspace tab: compare 3+ treatments via direct + indirect evidence (league table, P-score ranking, network geometry, node-split + global inconsistency, contribution matrix). Deterministic frequentist engine, validated against the pairwise engine; runs server-side via /api/nma. Off by default. Bayesian NMA is a planned follow-on.' },
-  { key: 'metaRegression',       label: 'Meta-Regression (P13)', desc: 'Enable random-effects meta-regression + bubble plots in the Analysis tab: explore whether a study-level covariate (year, sample size, follow-up, dose, region, design, …) explains heterogeneity. Reports coefficient, SE, 95% CI, p-value, tau² before/after, residual heterogeneity and an R² analog, with a bubble plot (weighted, fitted line + CI band) and statistical guardrails (small k, too many covariates, ecological bias, multiple testing — associations are observational). Deterministic engine (method-of-moments + REML). Off by default.' },
-  // 96.md — the `searchWorkspaceV2` row is REMOVED: the legacy 3-step wizard was
-  // deleted, the staged Search Workspace always renders with `searchEngine` ON,
-  // and the server documents the stored key as DEPRECATED/IGNORED
-  // (settingsController). A toggle that silently does nothing is a dead button.
-  { key: 'citationMining',       label: 'Citation Mining & Study Maps (P15)', desc: 'Enable bibliomine citation mining + study visualizations: upload seed-review PDFs to extract their reference list, resolve references via CrossRef/PubMed/OpenAlex, deduplicate and import them into screening with seed provenance, chase backward/forward citations through the OpenAlex graph (queued, depth/limit-capped, cancellable), and visualize included studies on a choropleth map plus characteristic histograms (study type, sample size, year, region, design, risk of bias). Reuses the existing database connectors and dedup engine. Off by default.' },
-  { key: 'manuscriptEditor',     label: 'Manuscript Editor (P3)', desc: 'Enable the full manuscript authoring workspace in the project Manuscript tab: structured IMRAD draft generation, data-linked tables (study characteristics / summary-of-findings / PRISMA / risk-of-bias / search), citation engine (Vancouver/JAMA + BibTeX/RIS) with inline citations, inline PRISMA 2020 diagram, one-click Word (.docx) export, PRISMA & PRISMA-S checklists, and a reproducibility .zip. All artifacts are generated in the browser from live project data. Off keeps the legacy textarea drafter. Off by default.' },
-  { key: 'gradeCertainty',       label: 'GRADE Certainty Workspace (P12)', desc: 'Enable the per-outcome GRADE certainty-of-evidence workspace: it prefills domain suggestions (risk of bias, inconsistency, indirectness, imprecision, publication bias) from the data the app already computes (RoB summary, I², effect/CI, Egger), requires human confirmation for the final High/Moderate/Low/Very-low rating, records an audit trail, supports locking a finalized judgment, and generates a Summary-of-Findings table (with footnotes) that also populates the manuscript SoF certainty column. Suggestions are never final without reviewer confirmation. Off keeps the existing single-outcome GRADE tab unchanged. Off by default.' },
-  { key: 'extractionAssist',     label: 'Structured Extraction + Guided Assist (P5)', desc: 'Enable the structured data-extraction workspace: data-element forms (templates for RCT / diagnostic / cohort / 2×2 / continuous / NMA arm-level), dual independent extraction with side-by-side adjudication, provenance-first values, table parsing, guided extraction suggestions (heuristic self-hosted by default; optional server-configured external LLM), and consensus → meta-analysis handoff. Suggestions NEVER auto-commit — human review is mandatory. Off keeps the classic extraction table. Off by default. Configure the suggestion provider in Extraction Assist.' },
-  { key: 'extractionEngine',     label: 'Pecan Extraction Engine (76.md)', desc: 'Replace the Data Extraction tab with the Pecan Extraction Engine: a full-screen, article-centred workspace. An article list (statuses, progress, validation counts, PDF availability, analysis-sync state, search / sort / filters, continue-where-you-left-off) opens each article into a resizable split — PDF on the left, a structured extraction form on the right — with three methods (intelligent Table Extractor, Click-to-Capture, Manual Entry), per-value provenance and one-click jump-to-source, honest autosave status, three-tier validation, a completion/reopen workflow with a durable audit trail, and per-article analysis-sync status with "updated since sync" change detection. Independent of Structured Extraction — reads the same project studies. Off keeps the current split-screen extraction workspace unchanged. Off by default.' },
-  { key: 'livingReview',         label: 'Living Reviews (P6)',   requires: 'pecanSearch', desc: 'Enable the Living Review module: saved searches with exact query snapshots, scheduled re-runs through the Pecan Search engine (requires Pecan Search + Search Builder flags), a "new since last update" screening queue pre-scored by the project screening model, versioned review snapshots, and cautious evidence-shift alerts. Manual snapshots work without Pecan Search; automated re-runs need it. Off by default. Configure the scheduler in Living Reviews.' },
-  { key: 'publicSynthesis',      label: 'Public Synthesis Pages (P8)', desc: 'Enable shareable, embeddable, read-only public synthesis pages: project owners/leaders can explicitly publish a sanitized snapshot (PRISMA, included studies, interactive forest plots, risk-of-bias summary) to a stable tokenized URL with QR code and iframe embed. Every project stays PRIVATE until published; unpublishing takes effect immediately. Off by default.' },
-  { key: 'fullTextRetrieval',    label: 'Full-Text Retrieval (P9)', desc: 'Enable automated open-access full-text retrieval for screening records: one action resolves DOIs/PMIDs against Unpaywall, OpenAlex, Europe PMC and ClinicalTrials.gov, fetches legally available OA PDFs into the record PDF store with provenance, and provides a link-out/request workflow for paywalled items. Bulk PDF upload with auto-matching included. No paywall bypassing — ever. Off by default.' },
+// Catalogue `group` → the heading it renders under, in display order.
+const FLAG_GROUPS = [
+  { id: 'core',        label: 'Core platform' },
+  { id: 'screening',   label: 'Screening' },
+  { id: 'interaction', label: 'Interaction & history' },
+  { id: 'extraction',  label: 'Extraction' },
+  { id: 'analysis',    label: 'Analysis' },
+  { id: 'appraisal',   label: 'Risk of bias' },
+  { id: 'search',      label: 'Search' },
+  { id: 'reporting',   label: 'Reporting & synthesis' },
+  { id: 'platform',    label: 'Platform' },
 ];
+
+const flagLabelFor = key => (flagEntry(key)?.label || key);
+
+/**
+ * 109.md §§40-41 — flipping a flag changes behaviour for every project on the
+ * install, so it goes through a confirmation carrying the Current → New preview
+ * and an optional reason (recorded in AdminAuditLog.reason next to the per-flag
+ * diff). Local to this section: AdminConsole's shared ConfirmModal has no reason
+ * field and is used by a dozen other callers.
+ */
+function FlagConfirmModal({ open, entry, next, reason, onReason, busy, onConfirm, onCancel }) {
+  if (!open || !entry) return null;
+  return (
+    <div style={{ position: 'fixed', inset: 0, background: alpha(C.bg, 0.65), zIndex: 9999, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16 }}>
+      <div data-testid="flags-confirm-modal" style={{ background: C.card, border: `1px solid ${C.brd2}`, borderRadius: 12, padding: '24px 26px', maxWidth: 540, width: '100%', boxShadow: `0 24px 64px ${C.shadow}`, maxHeight: '86vh', overflowY: 'auto' }}>
+        <div style={{ fontSize: 15, fontWeight: 700, color: C.txt, marginBottom: 12 }}>
+          {next ? 'Enable' : 'Disable'} “{entry.label}”?
+        </div>
+        <div style={{ fontSize: 12.5, color: C.txt2, lineHeight: 1.65, marginBottom: 14 }}>{entry.description}</div>
+        <div style={{ display: 'flex', gap: 18, fontFamily: MONO, fontSize: 12, marginBottom: 14 }}>
+          <span><span style={{ color: C.muted }}>current </span>{next ? 'Disabled' : 'Enabled'}</span>
+          <span style={{ color: C.muted }}>→</span>
+          <span><span style={{ color: C.muted }}>new </span><strong style={{ color: C.txt }}>{next ? 'Enabled' : 'Disabled'}</strong></span>
+        </div>
+        <div style={{ fontSize: 11.5, color: C.muted, lineHeight: 1.6, marginBottom: 16 }}>
+          {next
+            ? 'The feature becomes available to every user. Server enforcement is immediate; browser tabs that are already open pick the change up on their next settings read or reload.'
+            : 'The surface is hidden from ordinary users and its API existence-hides with a 404; admins keep access so the feature can be verified before it is re-enabled. No saved data is deleted — keywords, decisions, history and analyses are all preserved.'}
+        </div>
+        <div style={{ marginBottom: 18 }}>
+          <label style={{ display: 'block', fontSize: 10, fontFamily: MONO, color: C.muted, letterSpacing: '0.08em', textTransform: 'uppercase', marginBottom: 6 }}>Reason (optional — recorded in the audit log)</label>
+          <textarea
+            data-testid="flags-reason"
+            value={reason}
+            maxLength={500}
+            rows={2}
+            onChange={e => onReason(e.target.value)}
+            style={{ ...inputStyle, resize: 'vertical' }}
+          />
+        </div>
+        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10 }}>
+          <button data-testid="flags-cancel" onClick={onCancel} style={{ padding: '8px 16px', background: 'transparent', border: `1px solid ${C.brd2}`, borderRadius: 7, color: C.txt2, fontSize: 13, cursor: 'pointer', fontFamily: FONT }}>Cancel</button>
+          <button
+            data-testid="flags-confirm"
+            onClick={onConfirm}
+            disabled={busy}
+            style={{ padding: '8px 16px', background: next ? C.acc2 : C.red, border: 'none', borderRadius: 7, color: C.accText, fontSize: 13, fontWeight: 600, cursor: busy ? 'not-allowed' : 'pointer', fontFamily: FONT, opacity: busy ? 0.6 : 1 }}
+          >
+            {busy ? 'Saving…' : (next ? 'Enable feature' : 'Disable feature')}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 function FlagsSection() {
   const [flags,   setFlags]   = useState({});
   const [loading, setLoading] = useState(true);
-  const [status,  setStatus]  = useState('idle');
+  const [error,   setError]   = useState('');
+  const [pending, setPending] = useState(null); // { entry, next }
+  const [reason,  setReason]  = useState('');
+  const [busy,    setBusy]    = useState(false);
+  const [query,   setQuery]   = useState('');
 
-  useEffect(() => { adminApi.featureFlags.get().then(d => setFlags(d)).catch(() => {}).finally(() => setLoading(false)); }, []);
+  useEffect(() => {
+    adminApi.featureFlags.get()
+      .then(d => setFlags(d || {}))
+      .catch(e => setError(e.message || 'Could not load the feature flags.'))
+      .finally(() => setLoading(false));
+  }, []);
 
-  async function save() {
-    setStatus('saving');
-    try { await adminApi.featureFlags.save(flags); setStatus('saved'); setTimeout(() => setStatus('idle'), 3000); }
-    catch { setStatus('error'); setTimeout(() => setStatus('idle'), 3000); }
+  async function commit() {
+    if (!pending) return;
+    setBusy(true);
+    setError('');
+    try {
+      const res = await adminApi.featureFlags.setOne(pending.entry.key, pending.next, reason.trim());
+      // The server returns the whole merged map, so the UI reflects exactly what
+      // was stored (including any key another admin changed in the meantime).
+      setFlags(res?.flags || {});
+      setPending(null);
+      setReason('');
+    } catch (e) {
+      setError(e.message || 'Could not save the flag.');
+      setPending(null);
+    } finally {
+      setBusy(false);
+    }
   }
 
   if (loading) return <div style={{ padding: 40, textAlign: 'center' }}><Spinner size={20} /></div>;
 
+  const q = query.trim().toLowerCase();
+  const matches = f => !q || `${f.key} ${f.label} ${f.description}`.toLowerCase().includes(q);
+  const groups = FLAG_GROUPS
+    .map(g => ({ ...g, rows: VISIBLE_FLAGS.filter(f => f.group === g.id && matches(f)) }))
+    .filter(g => g.rows.length > 0);
+  // A catalogue group nobody listed above still renders — never silently drop a flag.
+  const known = new Set(FLAG_GROUPS.map(g => g.id));
+  const orphans = VISIBLE_FLAGS.filter(f => !known.has(f.group) && matches(f));
+  if (orphans.length) groups.push({ id: 'other', label: 'Other', rows: orphans });
+
   return (
     <div>
-      <h2 style={{ fontSize: 16, fontWeight: 700, color: C.txt, margin: '0 0 20px' }}>Feature Flags</h2>
-      <SectionCard>
-        {FLAG_META.map((f, i) => {
-          // Prompt 60 — surface an unmet flag dependency (e.g. Pecan Search requires
-          // the Search Builder Engine). The toggle stays clickable (so flags remain
-          // independently togglable for tests/ops), but the feature is inert server-side
-          // until its dependency is ON, and we say so plainly.
-          const depUnmet = f.requires && !flags[f.requires];
-          return (
-          <div key={f.key} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '16px 20px', borderBottom: i < FLAG_META.length - 1 ? `1px solid ${C.brd}` : 'none', gap: 20 }}>
-            <div>
-              <div style={{ fontSize: 13, color: C.txt, fontWeight: 600 }}>{f.label}</div>
-              <div style={{ fontSize: 11, color: C.muted, marginTop: 3 }}>{f.desc}</div>
-              {depUnmet && !!flags[f.key] && (
-                <div style={{ fontSize: 11, color: C.yel, marginTop: 5, fontWeight: 600 }}>
-                  ⚠ Inactive: enable “{(FLAG_META.find(x => x.key === f.requires) || {}).label || f.requires}” first — this feature stays off until then.
+      <h2 style={{ fontSize: 16, fontWeight: 700, color: C.txt, margin: '0 0 8px' }}>Feature Flags</h2>
+      <p style={{ fontSize: 12.5, color: C.muted, margin: '0 0 16px', lineHeight: 1.6, maxWidth: 820 }}>
+        {VISIBLE_FLAGS.length} flags, from the shared catalogue the server validates against. A flag that is OFF
+        existence-hides its API from ordinary users (404) while <strong>admins keep access</strong> — that is the
+        &ldquo;admins only&rdquo; rollout tier. Turning a feature off never deletes the data it produced. Each change is saved
+        on its own with a before → after audit entry.
+      </p>
+
+      {error && <ErrorBox msg={error} />}
+
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 14 }}>
+        <Icon name="search" size={14} />
+        <input
+          data-testid="flags-search"
+          value={query}
+          placeholder="Filter flags…"
+          onChange={e => setQuery(e.target.value)}
+          style={{ ...inputStyle, maxWidth: 320 }}
+        />
+      </div>
+
+      {groups.map(group => (
+        <SectionCard key={group.id} title={group.label}>
+          {group.rows.map((f, i) => {
+            const on = flags[f.key] === true;
+            const deps = FEATURE_DEPS[f.key] || [];
+            const unmetDeps = deps.filter(d => flags[d] !== true);
+            const runtimeDeps = FEATURE_RUNTIME_DEPS[f.key] || [];
+            const unmetRuntime = runtimeDeps.filter(d => flags[d] !== true);
+            return (
+              <div key={f.key} style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', padding: '15px 20px', borderBottom: i < group.rows.length - 1 ? `1px solid ${C.brd}` : 'none', gap: 20 }}>
+                <div style={{ minWidth: 0 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                    <span style={{ fontSize: 13, color: C.txt, fontWeight: 600 }}>{f.label}</span>
+                    <Badge text={on ? 'enabled for everyone' : 'admins only'} color={on ? C.grn : C.muted} />
+                    <span style={{ fontFamily: MONO, fontSize: 10, color: C.dim }}>{f.key}</span>
+                  </div>
+                  <div style={{ fontSize: 11.5, color: C.muted, marginTop: 4, maxWidth: 720, lineHeight: 1.6 }}>{f.description}</div>
+                  {deps.length > 0 && (
+                    <div style={{ fontSize: 11, color: unmetDeps.length ? C.yel : C.muted, marginTop: 5 }}>
+                      {unmetDeps.length
+                        ? `⚠ Inactive: requires ${unmetDeps.map(flagLabelFor).join(' + ')} — this feature stays off until then.`
+                        : `Requires ${deps.map(flagLabelFor).join(' + ')} (satisfied).`}
+                    </div>
+                  )}
+                  {unmetRuntime.length > 0 && (
+                    <div style={{ fontSize: 11, color: C.muted, marginTop: 4 }}>
+                      Advisory: automated runs also need {unmetRuntime.map(flagLabelFor).join(' + ')}. The surface stays
+                      visible either way — this is a runtime requirement, not an existence gate.
+                    </div>
+                  )}
                 </div>
-              )}
-            </div>
-            <Toggle checked={!!flags[f.key]} onChange={v => setFlags(fl => ({ ...fl, [f.key]: v }))} testId={`flag-toggle-${f.key}`} />
-          </div>
-          );
-        })}
-      </SectionCard>
-      <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 4 }}><SaveButton onClick={save} status={status} testId="flags-save" /></div>
+                <Toggle
+                  checked={on}
+                  onChange={v => { setReason(''); setPending({ entry: f, next: v }); }}
+                  testId={`flag-toggle-${f.key}`}
+                />
+              </div>
+            );
+          })}
+        </SectionCard>
+      ))}
+
+      {groups.length === 0 && (
+        <SectionCard><div style={{ padding: 24, fontSize: 12.5, color: C.muted }}>No flag matches “{query}”.</div></SectionCard>
+      )}
+
+      <FlagConfirmModal
+        open={!!pending}
+        entry={pending?.entry}
+        next={pending?.next}
+        reason={reason}
+        onReason={setReason}
+        busy={busy}
+        onConfirm={commit}
+        onCancel={() => { setPending(null); setReason(''); }}
+      />
     </div>
   );
 }
@@ -7026,21 +7173,42 @@ function SiftHandoff() {
   );
 }
 
-/* ── (F) Audit panel ── */
+/* ── (F) Audit panel — 109.md §24 ──────────────────────────────────────────
+   The old panel called GET /screening/audit with no params: the server capped it
+   at 200 rows, the UI could never reach entry 201, and a large install pulled a
+   slab of ledger into the browser on every visit. §24 forbids that outright.
+   The endpoint is now filtered + paginated server-side, so this renders one page
+   at a time and `total` is the FILTERED total behind the pager. */
+
+const SIFT_AUDIT_PER_PAGE = 25;
+
+// Entity types the screening ledger writes today. Free-text is still accepted for
+// anything a future writer adds — the filter is a convenience, not an allow-list.
+const SIFT_AUDIT_ENTITIES = ['record', 'keyword', 'decision', 'member', 'project', 'duplicateJob', 'import'];
+
 function SiftAudit() {
   const [entries, setEntries] = useState([]);
+  const [meta,    setMeta]    = useState({ total: 0, page: 1, limit: SIFT_AUDIT_PER_PAGE, hasMore: false });
   const [loading, setLoading] = useState(true);
   const [error,   setError]   = useState('');
+  const [filters, setFilters] = useState({ projectId: '', action: '', entityType: '', actorId: '', from: '', to: '' });
+  const [page,    setPage]    = useState(1);
 
   const load = useCallback(async () => {
     setLoading(true); setError('');
-    try { const d = await adminApi.screening.getAudit(); setEntries(d.entries || []); }
-    catch (e) { setError(e.message); setEntries([]); }
+    try {
+      const d = await adminApi.screening.getAudit({ ...filters, page, limit: SIFT_AUDIT_PER_PAGE });
+      setEntries(d.entries || []);
+      setMeta({ total: d.total || 0, page: d.page || 1, limit: d.limit || SIFT_AUDIT_PER_PAGE, hasMore: !!d.hasMore });
+    } catch (e) { setError(e.message); setEntries([]); }
     finally { setLoading(false); }
-  }, []);
+  }, [filters, page]);
   useEffect(() => { load(); }, [load]);
 
+  const setFilter = (k, v) => { setPage(1); setFilters(f => ({ ...f, [k]: v })); };
+
   const actionColor = a => {
+    if (/UNDO|REDO/.test(a || '')) return C.purp;
     if (/ACCEPTED|ADDED|ON|RESOLVED|UPLOADED/.test(a || '')) return C.grn;
     if (/REJECTED|REMOVED|OFF/.test(a || '')) return C.red;
     return C.acc;
@@ -7055,15 +7223,54 @@ function SiftAudit() {
     { key: 'details',      label: 'Details', width: '30%', render: v => <span style={{ fontFamily: MONO, fontSize: 10, color: C.muted, display: 'block', maxWidth: 320, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={typeof v === 'string' ? v : JSON.stringify(v)}>{typeof v === 'string' ? v : JSON.stringify(v || {})}</span> },
   ];
 
+  const fieldLabel = { display: 'block', fontSize: 9.5, fontFamily: MONO, color: C.muted, letterSpacing: '0.08em', textTransform: 'uppercase', marginBottom: 4 };
+  const smallInput = { ...inputStyle, padding: '6px 9px', fontSize: 12 };
+
   return (
     <div>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 }}>
-        <span style={{ fontSize: 13, fontWeight: 700, color: C.txt }}>Audit Log ({entries.length})</span>
-        <button onClick={load} style={{ padding: '6px 14px', background: 'transparent', border: `1px solid ${C.brd2}`, borderRadius: 7, color: C.txt2, fontSize: 12, cursor: 'pointer', fontFamily: FONT }}>↻ Refresh</button>
+        <span style={{ fontSize: 13, fontWeight: 700, color: C.txt }}>Audit Log ({meta.total} matching)</span>
+        <button data-testid="sift-audit-refresh" onClick={load} style={{ padding: '6px 14px', background: 'transparent', border: `1px solid ${C.brd2}`, borderRadius: 7, color: C.txt2, fontSize: 12, cursor: 'pointer', fontFamily: FONT }}>↻ Refresh</button>
       </div>
       {error && <ErrorBox msg={error} />}
       <SectionCard>
-        <DataTable columns={cols} rows={entries} loading={loading} emptyMessage="No audit entries yet." />
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, padding: '12px 16px', borderBottom: `1px solid ${C.brd}` }}>
+          <div>
+            <label style={fieldLabel}>Project id</label>
+            <input data-testid="sift-audit-project" value={filters.projectId} placeholder="screening project id" onChange={e => setFilter('projectId', e.target.value)} style={{ ...smallInput, width: 210 }} />
+          </div>
+          <div>
+            <label style={fieldLabel}>Action</label>
+            <input data-testid="sift-audit-action" value={filters.action} placeholder="e.g. KEYWORD_REMOVED" onChange={e => setFilter('action', e.target.value)} style={{ ...smallInput, width: 210 }} />
+          </div>
+          <div>
+            <label style={fieldLabel}>Entity</label>
+            <select data-testid="sift-audit-entity" value={filters.entityType} onChange={e => setFilter('entityType', e.target.value)} style={{ ...smallInput, width: 150, appearance: 'none', cursor: 'pointer' }}>
+              <option value="">All entities</option>
+              {SIFT_AUDIT_ENTITIES.map(t => <option key={t} value={t}>{t}</option>)}
+            </select>
+          </div>
+          <div>
+            <label style={fieldLabel}>Actor id</label>
+            <input data-testid="sift-audit-actor" value={filters.actorId} placeholder="user id" onChange={e => setFilter('actorId', e.target.value)} style={{ ...smallInput, width: 170 }} />
+          </div>
+          <div>
+            <label style={fieldLabel}>From</label>
+            <input data-testid="sift-audit-from" type="date" value={filters.from} onChange={e => setFilter('from', e.target.value)} style={{ ...smallInput, width: 145 }} />
+          </div>
+          <div>
+            <label style={fieldLabel}>To</label>
+            <input data-testid="sift-audit-to" type="date" value={filters.to} onChange={e => setFilter('to', e.target.value)} style={{ ...smallInput, width: 145 }} />
+          </div>
+        </div>
+        <DataTable columns={cols} rows={entries} loading={loading} emptyMessage="No audit entries match these filters." />
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 8, padding: '10px 16px', borderTop: `1px solid ${C.brd}` }}>
+          <span style={{ fontSize: 11, color: C.muted, fontFamily: MONO }}>
+            Page {meta.page} of {Math.max(1, Math.ceil(meta.total / (meta.limit || SIFT_AUDIT_PER_PAGE)))}
+          </span>
+          <button data-testid="sift-audit-prev" onClick={() => setPage(p => Math.max(1, p - 1))} disabled={meta.page <= 1} style={{ padding: '4px 10px', background: C.card, border: `1px solid ${C.brd2}`, borderRadius: 5, color: C.txt2, fontSize: 12, cursor: meta.page <= 1 ? 'not-allowed' : 'pointer', opacity: meta.page <= 1 ? 0.4 : 1, fontFamily: FONT }}>‹</button>
+          <button data-testid="sift-audit-next" onClick={() => setPage(p => p + 1)} disabled={!meta.hasMore} style={{ padding: '4px 10px', background: C.card, border: `1px solid ${C.brd2}`, borderRadius: 5, color: C.txt2, fontSize: 12, cursor: !meta.hasMore ? 'not-allowed' : 'pointer', opacity: !meta.hasMore ? 0.4 : 1, fontFamily: FONT }}>›</button>
+        </div>
       </SectionCard>
     </div>
   );
@@ -9050,34 +9257,9 @@ function EngineVersionsSection() {
   );
 }
 
-const NAV_SECTIONS = [
-  { id: 'overview',   icon: 'grid',      label: 'Overview'      },
-  { id: 'users',      icon: 'users',     label: 'Users'         },
-  { id: 'onboarding', icon: 'clipboard', label: 'Onboarding'    },
-  { id: 'projects',   icon: 'folders',   label: 'Projects'      },
-  { id: 'sift',       icon: 'hexagon',   label: 'Screening'     },
-  { id: 'rob',        icon: 'scale',     label: 'Risk of Bias'  },
-  { id: 'searchProviders', icon: 'search', label: 'Search Providers' },
-  { id: 'waitlist',   icon: 'flask',     label: 'Beta Waitlist' },
-  { id: 'content',    icon: 'fileText',  label: 'Content'       },
-  { id: 'settings',   icon: 'settings',  label: 'Settings'      },
-  { id: 'style',      icon: 'eye',       label: 'Appearance'    },
-  { id: 'flags',      icon: 'sliders',   label: 'Flags'         },
-  { id: 'tiers',      icon: 'award',     label: 'Tiers'         },
-  { id: 'extractionAi',   icon: 'clipboard', label: 'Extraction Assist'  },
-  { id: 'livingReviews',  icon: 'activity',  label: 'Living Reviews' },
-  { id: 'messages',   icon: 'mail',      label: 'Messages'      },
-  { id: 'security',   icon: 'shield',    label: 'Security'      },
-  { id: 'health',     icon: 'activity',  label: 'Health'        },
-  { id: 'engineVersions', icon: 'layers', label: 'Engine Versions' },
-];
-
-// Role-derived section sets — mirror of server getConsole (the server descriptor
-// stays the source of truth; these are the bootstrap/failure fallback ONLY).
-// Mod: user support (messages + replies) and limited user management. Mods never
-// get metrics/settings/flags/security/health/database or screening admin tabs.
-const MOD_SECTIONS = ['users', 'messages'];
-const roleSections = r => (r === 'admin' ? NAV_SECTIONS.map(s => s.id) : MOD_SECTIONS);
+// 109.md §9 — the sidebar registry moved to opsSections.js so a unit test can pin
+// it against the server's getConsole allow-list without importing this module.
+// NAV_SECTIONS / MOD_SECTIONS / roleSections are imported at the top of the file.
 
 export default function AdminConsole() {
   const { user }   = useAuth();
@@ -9135,6 +9317,10 @@ export default function AdminConsole() {
     onboarding: <OnboardingSection />,
     projects:   <ProjectsSection />,
     sift:       <SiftAdminSection />,
+    // 109.md §4 — admin-only in the sidebar (server getConsole omits it for mods),
+    // even though the §39 capability seam gives mods API read access to the
+    // duplicate-job + client-error diagnostics. See opsSections.js for why.
+    research:   <ResearchGovernanceSection onNavigate={setActive} />,
     rob:        <RobAdminSection />,
     searchProviders: <SearchProvidersSection />,
     waitlist:   <WaitlistSection />,

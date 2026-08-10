@@ -148,6 +148,37 @@ export async function enableEngineFlags(request: APIRequestContext): Promise<Rec
   return setFeatureFlags(request, ENGINE_FLAGS);
 }
 
+/* ─── Admin: research governance settings (109.md §3) ──────────────────────── */
+
+// The typed catalogue block behind Ops › Research Governance. Keys in `settings`
+// are the STORED paths ('historyCap'); a patch may use either the stored path or
+// the catalogue key ('interaction.historyCap') — the server coerces both.
+export interface ResearchGovernance {
+  settings: Record<string, unknown>;
+  defaults: Record<string, unknown>;
+}
+
+export async function getResearchGovernance(request: APIRequestContext): Promise<ResearchGovernance> {
+  const res = await request.get('/api/admin/research-governance/settings');
+  expect(res.ok(), `getResearchGovernance failed: ${res.status()}`).toBeTruthy();
+  return res.json();
+}
+
+/**
+ * PUT a partial patch (read-merge-write server-side — omitted keys keep their
+ * stored value). Pass `reason` to exercise the audit path. Returns the stored
+ * settings the server actually persisted, so a clamped value is visible.
+ */
+export async function setResearchGovernance(
+  request: APIRequestContext,
+  patch: Record<string, unknown>,
+): Promise<Record<string, unknown>> {
+  const res = await request.put('/api/admin/research-governance/settings', { data: patch });
+  expect(res.ok(), `setResearchGovernance failed: ${res.status()} ${await res.text().catch(() => '')}`).toBeTruthy();
+  const body = await res.json();
+  return body.settings || {};
+}
+
 /* ─── Admin: design (Ops-governed UI) settings ─────────────────────────────── */
 
 // 65.md — `defaultMode` is the interface every non-admin renders;

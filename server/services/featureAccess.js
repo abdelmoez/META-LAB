@@ -25,6 +25,16 @@
  * features to moderators. See DECISIONS in the 75.md Workstream-C report.
  */
 import { getEffectiveFeatureFlags } from '../controllers/settingsController.js';
+// 109.md §5 — both dependency graphs are now DERIVED from the shared typed
+// catalogue instead of hand-copied. Before 109 this table existed three times
+// (here, src/frontend/featureAccess/featureFlagState.js, and a partial third copy
+// as `requires:` inside AdminConsole's FLAG_META) and had to be edited in
+// lockstep. Re-exported under the original names so every existing importer and
+// the byte-consistency tests are unaffected.
+import {
+  FEATURE_DEPS as CATALOG_FEATURE_DEPS,
+  FEATURE_RUNTIME_DEPS as CATALOG_FEATURE_RUNTIME_DEPS,
+} from '../../src/shared/opsSettingsCatalog.js';
 
 /**
  * HARD existence-gate dependency graph. A flag is only "on" when it AND every
@@ -39,23 +49,20 @@ import { getEffectiveFeatureFlags } from '../controllers/settingsController.js';
  * stay viewable with pecanSearch OFF, exactly as today; encoding it as a hard dep
  * here would 404 that surface and change existing gate semantics. The advisory
  * co-dependency is documented in FEATURE_RUNTIME_DEPS for the client hint + wave 2.
+ *
+ * Source of truth: OPS_FLAGS[].requires in src/shared/opsSettingsCatalog.js.
  */
-export const FEATURE_DEPS = Object.freeze({
-  pecanSearch: ['searchEngine'],
-  searchStrategyStudio: ['searchEngine', 'pecanSearch'],
-  guidedRobAppraisal: ['rob_engine_v2'],
-  // 96.md — searchWorkspaceV2 removed: the flag is retired (stored key ignored).
-});
+export const FEATURE_DEPS = CATALOG_FEATURE_DEPS;
 
 /**
  * Advisory (NON-gate) co-dependencies. These do NOT affect the existence decision
  * in featureAccess(); they exist so the client can render an accurate "needs X too"
  * hint and wave-2 UI can surface it. livingReview's pecan requirement is enforced
  * at RUNTIME (the 409 in livingService), not at the existence gate.
+ *
+ * Source of truth: OPS_FLAGS[].runtimeRequires in the shared catalogue.
  */
-export const FEATURE_RUNTIME_DEPS = Object.freeze({
-  livingReview: ['pecanSearch'],
-});
+export const FEATURE_RUNTIME_DEPS = CATALOG_FEATURE_RUNTIME_DEPS;
 
 /** Admin-only bypass predicate for FLAGS (narrower than the tier bypass). */
 export function isFlagAdmin(user) {

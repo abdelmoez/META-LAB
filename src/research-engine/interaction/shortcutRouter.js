@@ -131,6 +131,15 @@ export function registerBinding(reg, binding) {
     when: typeof b.when === 'function' ? b.when : null,
     run: typeof b.run === 'function' ? b.run : null,
     allowRepeat: b.allowRepeat === true,
+    // 109.md §15 (decision 10) — OPTIONAL, purely descriptive metadata for the
+    // read-only Ops shortcut inventory. It is never consulted by `routeKeydown`:
+    // a binding with no descriptor routes exactly as before, and a WRONG descriptor
+    // can only mislabel an inventory row, never mis-route a key. Declaring it at the
+    // registration site is what makes the inventory truthful — a hand-written list
+    // in Ops would drift the moment a binding moved.
+    chord: typeof b.chord === 'string' ? b.chord : '',
+    label: typeof b.label === 'string' ? b.label : '',
+    scopeLabel: typeof b.scopeLabel === 'string' ? b.scopeLabel : '',
     seq: reg.seq++,
   };
   reg.bindings = [...reg.bindings.filter((x) => x.id !== entry.id), entry];
@@ -146,6 +155,30 @@ export function registerBinding(reg, binding) {
 /** How many bindings are currently registered (tests / diagnostics). */
 export function bindingCount(reg) {
   return reg && Array.isArray(reg.bindings) ? reg.bindings.length : 0;
+}
+
+/**
+ * shortcutInventory(reg) — 109.md §15. Every currently-registered binding, in the
+ * precedence order `routeKeydown` actually uses, as PLAIN DATA (no functions), so
+ * Ops can render an inventory that is derived rather than maintained.
+ *
+ * It reports what is registered RIGHT NOW in one shell. Bindings owned by an
+ * unmounted page are absent by construction — which is honest: a shortcut whose
+ * page is not open genuinely does nothing.
+ *
+ * @returns {Array<{id, tier, tierName, chord, label, scopeLabel, allowRepeat}>}
+ */
+export function shortcutInventory(reg) {
+  if (!reg || !Array.isArray(reg.bindings)) return [];
+  return [...reg.bindings].sort(byPriority).map((b) => ({
+    id: b.id,
+    tier: b.tier,
+    tierName: TIER_NAME[b.tier] || 'unknown',
+    chord: b.chord || '',
+    label: b.label || '',
+    scopeLabel: b.scopeLabel || '',
+    allowRepeat: !!b.allowRepeat,
+  }));
 }
 
 /** Ids in priority order — the precedence a developer can print while debugging. */

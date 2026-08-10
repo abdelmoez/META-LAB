@@ -11,18 +11,37 @@ import { requireRole } from './requireRole.js';
 export const requireAdmin = requireRole(['admin']);
 
 /**
- * requirePermission — placeholder for finer-grained, action-level checks.
- * Currently maps a small set of named permissions to a role set. Admins always pass.
- * Mods pass for permissions explicitly granted to them.
+ * requirePermission — finer-grained, action-level checks. Maps a named permission
+ * to a role set. Admins always pass. Mods pass for permissions explicitly granted
+ * to them.
  *
- * @param {string} permission - e.g. 'manage_users', 'reply_messages'
+ * 109.md §39 — this is the capability seam. PecanRev has exactly three system roles
+ * (admin | mod | user) and 109 asks for capability SPLITS, not new roles. Rather
+ * than inventing a role hierarchy, the Research Governance routes are gated by two
+ * named capabilities so the read/write boundary is explicit and enforced by the
+ * backend (§56), not by hiding buttons:
+ *
+ *   view_research_diagnostics  — admin + mod. Read-only job/telemetry inspection.
+ *   manage_research_jobs       — admin ONLY. Requeue and any other state change.
+ *
+ * The mod grant deliberately matches `isFlagAdmin`'s narrower shape (mods never get
+ * the feature-flag bypass, featureAccess.js) — mods may LOOK at operational health,
+ * they may not change system state.
+ *
+ * @param {string} permission - e.g. 'manage_users', 'view_research_diagnostics'
  */
 const MOD_PERMISSIONS = new Set([
   'manage_users',     // edit name/email, status, reset password (NOT role/delete)
   'view_users',
   'reply_messages',
   'manage_messages',
+  // 109.md §39 — read-only operational diagnostics. NOT granted:
+  // manage_research_jobs (requeue), flag writes, safety-setting writes.
+  'view_research_diagnostics',
 ]);
+
+/** Exported for the authorization unit test — the grant list IS the contract. */
+export const MOD_GRANTED_PERMISSIONS = Object.freeze([...MOD_PERMISSIONS]);
 
 export function requirePermission(permission) {
   return async function permissionGuard(req, res, next) {

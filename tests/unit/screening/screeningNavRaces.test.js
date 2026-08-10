@@ -28,7 +28,12 @@ const SRC = readFileSync(
 describe('moveSelection counts an in-flight RESET as loading', () => {
   it('threads `loading` into the nav context and into moveIntent', () => {
     expect(SRC).toMatch(/navCtxRef\.current\s*=\s*\{[^}]*\bloading\b[^}]*\}/);
-    expect(SRC).toMatch(/loadingMore:\s*busy\s*\|\|\s*resetting\s*\|\|\s*advanceLockRef\.current/);
+    // 109.md §36 — `blockNavigationWhileLoading` made the swallow configurable, so the
+    // in-flight input is assembled one line earlier. The REQUEST LOCK stays
+    // unconditional (only the busy/resetting half sits behind the setting), and
+    // moveIntent still receives the combined value.
+    expect(SRC).toMatch(/const\s+inFlight\s*=\s*advanceLockRef\.current\s*\|\|\s*\(blockWhileLoading\s*&&\s*\(busy\s*\|\|\s*resetting\)\)/);
+    expect(SRC).toMatch(/loadingMore:\s*inFlight/);
   });
 
   it('does not fall back to the loadingMore-only check', () => {

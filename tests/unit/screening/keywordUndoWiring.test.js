@@ -68,7 +68,9 @@ describe('ScreeningTab never hand-rolls a keyword inverse (source pin)', () => {
     // destroyed a collaborator's verdict", so the entry's own expect is the first gate.
     expect(SRC).toMatch(/keywordPrecondition\(keywordExpectState\(kwRawRef\.current,\s*op\.expect\),\s*op\.expect\)/);
     const preAt = SRC.indexOf('const refuse = keywordPrecondition(');
-    const callAt = SRC.indexOf('const r = await runKeywordOp(body);');
+    // 109.md §14 — the replay now labels its body with `via`, so the call reads
+    // `runKeywordOp({ ...body, via })`. The ORDER is what this pins, not the literal.
+    const callAt = SRC.indexOf('const r = await runKeywordOp({ ...body, via });');
     expect(preAt).toBeGreaterThan(-1);
     expect(callAt).toBeGreaterThan(preAt);
     expect(SRC).toMatch(/if\s*\(refuse\)\s*return\s*\{\s*ok:\s*false,\s*reason:\s*'refused',\s*detail:\s*refuse\s*\};/);
@@ -263,7 +265,9 @@ describe('keyword ops are serialized per project (source pin, 108 review)', () =
     // (the decChainRef rule, applied to keywords).
     expect(SRC).toMatch(/kwChainRef\.current\s*=\s*run\.then\(\(\)\s*=>\s*\{\},\s*\(\)\s*=>\s*\{\}\);/);
     expect(SRC).toMatch(/const\s+runKeywordOpTracked\s*=\s*useCallback\(\(op,\s*opts\s*=\s*\{\}\)\s*=>\s*enqueueKeywordOp\(/);
-    expect(SRC).toMatch(/const\s+keywordExecutor\s*=\s*useCallback\(\(op\)\s*=>\s*enqueueKeywordOp\(/);
+    // 109.md §14 — the executor now also destructures `direction` (undo vs redo)
+    // from the provider's second argument so it can stamp `via` on the replay.
+    expect(SRC).toMatch(/const\s+keywordExecutor\s*=\s*useCallback\(\(op,\s*\{\s*direction\s*\}\s*=\s*\{\}\)\s*=>\s*enqueueKeywordOp\(/);
   });
 
   it('adopts the response into kwRawRef SYNCHRONOUSLY, before React commits kwLocal', () => {

@@ -126,11 +126,13 @@ export function feedbackClearScope(queue, scope) {
 /**
  * @param {object} props
  * @param {() => string} [props.idFn]         injectable note-id source (tests)
+ * @param {number} [props.dismissMs]          109.md §16 — the Ops-configured
+ *   `interaction.undoToastMs`. Undefined keeps the shipped 8 s; the snackbar clamps.
  * @param {Array} [props.initialNotes]        seed queue. Mirrors FocusModeProvider's
  *   `initial` prop: the seam that lets a static-markup test render the surface,
  *   since effects and clicks do not run under renderToStaticMarkup.
  */
-export function UndoFeedbackProvider({ children, idFn, initialNotes }) {
+export function UndoFeedbackProvider({ children, idFn, initialNotes, dismissMs }) {
   const [queue, setQueue] = useState(() => (
     Array.isArray(initialNotes)
       ? initialNotes.map((n) => stampNote(n, { idFn })).filter((n) => n && n.message)
@@ -206,6 +208,7 @@ export function UndoFeedbackProvider({ children, idFn, initialNotes }) {
             tone={head.tone}
             onUndo={head.undo ? onUndo : undefined}
             onDismiss={onDismiss}
+            dismissMs={dismissMs}
           />
         </div>
       )}

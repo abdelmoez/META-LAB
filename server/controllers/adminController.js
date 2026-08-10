@@ -16,6 +16,9 @@ import { USAGE, recordUsage } from '../utils/usage.js';
 import { forceCloseStreams } from '../realtime/bus.js';
 import { invalidateAuthState } from '../middleware/auth.js';
 import { buildUserUpdate } from '../../src/shared/editableUserFields.js';
+// 109.md §§2, 5 — the typed catalogue drives feature-flag validation (key
+// allow-list + boolean coercion) and the per-flag before/after audit diff.
+import { coerceFlagPatch, flagEntry, flagDefaults } from '../../src/shared/opsSettingsCatalog.js';
 import {
   AUDIT_ACTIONS, SECURITY_TYPES,
   auditActionWhereForSeverity, securityTypeWhereForSeverity,
@@ -1533,6 +1536,24 @@ export async function updateAdminSettings(req, res) {
       body.appSettings = { ...body.appSettings, invitationsPaused: storedPaused };
     }
 
+    // 109.md §5 — this endpoint can also write `featureFlags`, so it must go
+    // through the SAME catalogue validation as PUT /feature-flags; otherwise the
+    // allow-list is trivially bypassed by posting flags through /settings.
+    let flagChanged = [];
+    let flagsBefore = null;
+    if (body.featureFlags !== undefined) {
+      flagsBefore = await readEffectiveFlags();
+      const coerced = coerceFlagPatch(body.featureFlags, flagsBefore);
+      body.featureFlags = coerced.next;
+      flagChanged = coerced.changed;
+    }
+
+    // 109.md §42 — capture the previous values so the audit entry can record
+    // from→to per field instead of only the key names. Cheap: one read of the
+    // three settings rows, which the invitations-paused guard above may already
+    // have done.
+    const before = await getAllSettings();
+
     for (const key of SETTING_KEYS) {
       if (body[key] !== undefined) {
         await upsertSetting(key, body[key], req.user.id);
@@ -1548,7 +1569,43 @@ export async function updateAdminSettings(req, res) {
     // 10s cache so toggling maintenance takes effect immediately.
     if (updated.includes('appSettings')) bustMaintenanceCache();
 
-    await logAdminAction(req, 'UPDATE_SETTING', 'SiteSetting', null, { updatedKeys: updated });
+    // Per-field diff for the audit ledger. Only scalar fields are diffed — the
+    // nested landingContent copy blocks are reported by key name only, so a long
+    // marketing paragraph never bloats an audit row.
+    const changedFields = [];
+    for (const key of updated) {
+      const b = before[key]; const a = body[key];
+      if (b && a && typeof b === 'object' && typeof a === 'object' && !Array.isArray(a)) {
+        for (const f of new Set([...Object.keys(b), ...Object.keys(a)])) {
+          const bv = b[f]; const av = a[f];
+          if (bv === av) continue;
+          const scalar = (v) => v == null || ['boolean', 'number', 'string'].includes(typeof v);
+          changedFields.push(scalar(bv) && scalar(av)
+            ? { key: `${key}.${f}`, scope: 'global', from: bv, to: av }
+            : { key: `${key}.${f}`, scope: 'global' });
+        }
+      }
+    }
+    const auditBefore = {}; const auditAfter = {};
+    for (const c of changedFields) {
+      if ('from' in c) { auditBefore[c.key] = c.from; auditAfter[c.key] = c.to; }
+    }
+    const reason = typeof body.reason === 'string' && body.reason.trim()
+      ? body.reason.trim().slice(0, 500) : undefined;
+
+    await logAdminAction(req, 'UPDATE_SETTING', 'SiteSetting', null, {
+      scope: 'global', updatedKeys: updated, changes: changedFields,
+      before: auditBefore, after: auditAfter,
+    }, { reason });
+
+    // A flag flip that arrived through this endpoint gets its own per-flag entry
+    // so the Flags history is complete regardless of which writer was used.
+    if (flagChanged.length) {
+      await logAdminAction(
+        req, 'UPDATE_FEATURE_FLAGS', 'SiteSetting', 'featureFlags',
+        flagAuditDetails(flagsBefore, body.featureFlags, flagChanged), { reason },
+      );
+    }
 
     const settings = await getAllSettings();
     return res.json(settings);
@@ -1635,20 +1692,109 @@ export async function getFeatureFlags(req, res) {
   }
 }
 
+// ── Feature-flag writers (109.md §§5, 42) ────────────────────────────────────
+// Before 109 the flags PUT wrote req.body VERBATIM — no key allow-list, no
+// boolean coercion, no shape check — audited as the single string
+// `{updatedKeys:['featureFlags']}`, and as a whole-blob last-write-wins it let
+// two admins on the Flags tab clobber each other. Both writers below now go
+// through the shared catalogue (allow-list + boolean coercion) and read-merge-
+// write against the stored row, and both log a per-flag from→to diff.
+
+/** Stored featureFlags row merged over the catalogue defaults. Never throws. */
+async function readEffectiveFlags() {
+  try {
+    const row = await prisma.siteSetting.findUnique({ where: { key: 'featureFlags' } });
+    let stored = {};
+    if (row) { try { stored = JSON.parse(row.value); } catch { stored = {}; } }
+    if (!stored || typeof stored !== 'object' || Array.isArray(stored)) stored = {};
+    return { ...defaultFeatureFlags(), ...stored };
+  } catch { return defaultFeatureFlags(); }
+}
+
+/** Per-flag audit details: rich `changes` plus the flat before/after maps that
+ *  auditFormat.extractChanges() already renders in the Ops Security table. */
+function flagAuditDetails(before, after, changed) {
+  const changes = changed.map((k) => ({
+    key: k, label: flagEntry(k)?.label || k, scope: 'global',
+    from: before[k] === true, to: after[k] === true,
+  }));
+  const b = {}; const a = {};
+  for (const c of changes) { b[c.key] = c.from; a[c.key] = c.to; }
+  return { domain: 'featureFlags', scope: 'global', updatedKeys: changed, changes, before: b, after: a };
+}
+
 // ── PUT /api/admin/feature-flags ─────────────────────────────────────────────
+// BACKWARD COMPATIBLE with the existing Ops Flags form, which GETs the merged
+// object and PUTs the whole thing back: unknown/non-boolean keys are now dropped
+// (and reported) instead of persisted, and keys the body omits keep their stored
+// value rather than vanishing.
 
 export async function updateFeatureFlags(req, res) {
   try {
-    const body = req.body || {};
-    await upsertSetting('featureFlags', body, req.user.id);
-    await logAdminAction(req, 'UPDATE_SETTING', 'SiteSetting', 'featureFlags', { updatedKeys: ['featureFlags'] });
-    const row = await prisma.siteSetting.findUnique({ where: { key: 'featureFlags' } });
-    return res.json(JSON.parse(row.value));
+    const body = { ...(req.body || {}) };
+    const reason = typeof body.reason === 'string' && body.reason.trim()
+      ? body.reason.trim().slice(0, 500) : undefined;
+    delete body.reason;
+
+    const current = await readEffectiveFlags();
+    const { next, changed, rejected } = coerceFlagPatch(body, current);
+    if (changed.length === 0 && rejected.length && Object.keys(body).length === rejected.length) {
+      return res.status(400).json({ error: 'No valid feature flags provided', rejected });
+    }
+    if (changed.length) {
+      await upsertSetting('featureFlags', next, req.user.id);
+      await logAdminAction(
+        req, 'UPDATE_FEATURE_FLAGS', 'SiteSetting', 'featureFlags',
+        flagAuditDetails(current, next, changed), { reason },
+      );
+    }
+    // Flag reads are uncached server-side (getEffectiveFeatureFlags hits the DB
+    // per call), so a flip is authoritative immediately. Mounted browser tabs
+    // still hold the 5s public-settings snapshot plus their own per-feature
+    // caches — the change lands on the next read, not by push. Documented, not
+    // claimed as live propagation (109.md §55).
+    return res.json(next);
   } catch (err) {
     console.error('[admin] updateFeatureFlags error:', err.message);
     return res.status(500).json({ error: 'Internal server error' });
   }
 }
+
+// ── PATCH /api/admin/feature-flags/:key ──────────────────────────────────────
+// 109.md §5 — the dedicated single-flag writer, modelled on setInvitationsPaused:
+// read-merge-write ONE key so a stale Flags tab can never revert a flag someone
+// else flipped in the meantime, with an explicit from→to audit entry.
+
+export async function setFeatureFlag(req, res) {
+  try {
+    const key = String(req.params?.key || '');
+    const entry = flagEntry(key);
+    if (!entry) return res.status(404).json({ error: 'Unknown feature flag' });
+    const enabled = req.body?.enabled;
+    if (typeof enabled !== 'boolean') {
+      return res.status(400).json({ error: 'enabled must be a boolean' });
+    }
+    const reason = typeof req.body?.reason === 'string' && req.body.reason.trim()
+      ? req.body.reason.trim().slice(0, 500) : undefined;
+
+    const current = await readEffectiveFlags();
+    const { next, changed } = coerceFlagPatch({ [key]: enabled }, current);
+    if (changed.length) {
+      await upsertSetting('featureFlags', next, req.user.id);
+      await logAdminAction(
+        req, 'UPDATE_FEATURE_FLAG', 'SiteSetting', key,
+        flagAuditDetails(current, next, changed), { reason },
+      );
+    }
+    return res.json({ key, enabled: next[key] === true, changed: changed.length > 0, flags: next });
+  } catch (err) {
+    console.error('[admin] setFeatureFlag error:', err.message);
+    return res.status(500).json({ error: 'Internal server error' });
+  }
+}
+
+/** Exported for the flag-registry drift unit test. */
+export { flagDefaults as catalogueFlagDefaults };
 
 // ── GET /api/admin/settings/theme ─────────────────────────────────────────────
 // prompt37 — the global brand theme. GET mirrors the public endpoint (admin
@@ -1830,6 +1976,9 @@ export async function getAuditLog(req, res) {
           entityType: true,
           entityId: true,
           details: true,
+          // 109 r1 — settings/flag writers now record an optional admin-supplied reason;
+          // the read API must surface it or the audit trail silently drops it.
+          reason: true,
           ip: true,
           createdAt: true,
           admin: { select: { id: true, email: true, name: true } },
@@ -2678,8 +2827,19 @@ export async function restoreProject(req, res) {
 
 export async function getConsole(req, res) {
   const role = req.user?.role || 'user';
+  // 109.md §4 — ONE new sidebar section ('research' = Research Governance) with
+  // sub-tabs, rather than the thirteen top-level entries the prompt enumerates.
+  // This array is the AUTHORITY: AdminConsole replaces its `allowed` set with it,
+  // so a section listed in NAV_SECTIONS but missing here is invisible even to an
+  // admin (and vice-versa it renders AccessDenied). Keep in lockstep with
+  // NAV_SECTIONS + the sections map + e2e/page-objects/OpsPage.ts.
+  //
+  // Mods are NOT given 'research'. They hold view_research_diagnostics at the API
+  // layer (§39 capability seam, server/middleware/requireAdmin.js), but widening
+  // the mod console beyond users+messages is a product decision outside 109's
+  // scope — see the 109 report's limitations.
   const sections = role === 'admin'
-    ? ['overview', 'users', 'projects', 'sift', 'rob', 'searchProviders', 'waitlist', 'onboarding', 'content', 'settings', 'style', 'flags', 'extractionAi', 'livingReviews', 'tiers', 'messages', 'security', 'health', 'engineVersions']
+    ? ['overview', 'users', 'projects', 'sift', 'research', 'rob', 'searchProviders', 'waitlist', 'onboarding', 'content', 'settings', 'style', 'flags', 'extractionAi', 'livingReviews', 'tiers', 'messages', 'security', 'health', 'engineVersions']
     : role === 'mod'
       ? ['users', 'messages']
       : [];

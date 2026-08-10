@@ -169,6 +169,57 @@ export const adminApi = {
   featureFlags: {
     get:          ()         => req(`${BASE}/feature-flags`),
     save:         (body)     => req(`${BASE}/feature-flags`, { method: 'PUT', ...json(body) }),
+    // 109.md §5 — the dedicated single-flag writer (read-merge-write + a per-flag
+    // from→to audit entry with an optional reason). Preferred over save(): the
+    // whole-blob PUT is last-write-wins, so two admins on the Flags tab clobber
+    // each other. 404 { error } for an unknown key, 400 for a non-boolean.
+    // → { key, enabled, changed, flags }.
+    setOne: (key, enabled, reason) =>
+      req(`${BASE}/feature-flags/${encodeURIComponent(key)}`, {
+        method: 'PATCH', ...json({ enabled, ...(reason ? { reason } : {}) }),
+      }),
+  },
+
+  // ── 109.md §3 — typed research-governance settings (admin only) ──────────────
+  // The catalogue (src/shared/opsSettingsCatalog.js) declares every key; the server
+  // coerces against the SAME catalogue, so a patch may be keyed by catalogue key
+  // ('interaction.historyCap') or stored path ('historyCap').
+  //  get()          → { settings, defaults }
+  //  save(body)     PUTs a partial patch + optional `reason` →
+  //                 { ok, settings, defaults, changed:[catalogueKey], rejected:[{key,error}] }
+  //  reset({preview}) POSTs a reset. preview:true returns { preview, changes, settings,
+  //                 defaults } WITHOUT writing (109.md §43 — show what will change).
+  researchGovernance: {
+    get:   ()      => req(`${BASE}/research-governance/settings`),
+    save:  (body)  => req(`${BASE}/research-governance/settings`, { method: 'PUT', ...json(body) }),
+    reset: (body)  => req(`${BASE}/research-governance/settings/reset`, { method: 'POST', ...json(body || {}) }),
+  },
+
+  // ── 109.md §§8-9, 46-47 — Research Governance diagnostics ────────────────────
+  // CAPABILITY NOTE (the §39 seam): these five routes are guarded by
+  // requirePermission('view_research_diagnostics') (admin + mod) except the
+  // requeue, which takes 'manage_research_jobs' (admin only). The Ops SIDEBAR
+  // still shows `research` to admins only (server getConsole), so a mod holds API
+  // read access it has no UI for. That asymmetry is deliberate and documented at
+  // the NAV_SECTIONS call site in AdminConsole.jsx.
+  //  duplicateJobs(p)      ?status&projectId&from&to&page&limit →
+  //    { jobs:[{ …sanitized job, stale, durationMs, retriesRemaining, maxAttempts,
+  //      stats }], total, page, limit, hasMore }  (cpuMs/heapUsedMb are NEVER sent)
+  //  duplicateJobHealth()  → { health:'healthy'|'degraded'|'disabled', enabled,
+  //    queue:{queued,processing,completed,failed,cancelled,stale}, failures24h,
+  //    durations:{sampleSize,averageMs,medianMs}, recentFailures:[job],
+  //    workerConfig:{ source:'environment', restartRequired, values:{…9 knobs},
+  //    maxAttempts } }
+  //  requeueDuplicateJob(id, reason) → { ok, jobId, previousStatus }; 400 when the
+  //    job is not failed/stuck, 409 on a live job / kill switch / CAS race.
+  //  clientErrors(p)       ?kind&from&to&page&limit → { errors, total, page, limit,
+  //    hasMore, capture:{ distinctRows, maxRows, limits } }
+  research: {
+    duplicateJobs:       (p)          => req(`${BASE}/research/duplicate-jobs${qs(p)}`),
+    duplicateJobHealth:  ()           => req(`${BASE}/research/duplicate-jobs/health`),
+    duplicateJob:        (id)         => req(`${BASE}/research/duplicate-jobs/${id}`),
+    requeueDuplicateJob: (id, reason) => req(`${BASE}/research/duplicate-jobs/${id}/requeue`, { method: 'POST', ...json(reason ? { reason } : {}) }),
+    clientErrors:        (p)          => req(`${BASE}/research/client-errors${qs(p)}`),
   },
 
   // 66.md P5/P6 — global extraction-AI + living-review policy (admin-only).
@@ -260,7 +311,11 @@ export const adminApi = {
     setFlags:     (id, flags) => req(`${BASE}/screening/projects/${id}/status`, { method: 'PATCH', ...json(flags) }),
     getMembers:   (id)       => req(`${BASE}/screening/projects/${id}/members`),
     getHandoffs:  ()         => req(`${BASE}/screening/handoffs`),
-    getAudit:     (p)        => req(`${BASE}/screening/audit?${new URLSearchParams(p || {})}`),
+    // 109.md §24 — the audit feed is paginated + filterable:
+    // ?projectId&action&entityType&actorId&from&to&page&limit →
+    // { entries, total (FILTERED total), page, limit, hasMore }. qs() drops empty
+    // params so an unset filter never becomes `?action=`.
+    getAudit:     (p)        => req(`${BASE}/screening/audit${qs(p)}`),
     // Restore an owner-soft-deleted workspace (clears deletedAt + deletedSource).
     // PATCH /api/admin/screening/projects/:id/restore → { ok:true } | 400 if not deleted.
     restore:      (id)       => req(`${BASE}/screening/projects/${id}/restore`, { method: 'PATCH' }),

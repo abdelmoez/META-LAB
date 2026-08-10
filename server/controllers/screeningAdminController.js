@@ -681,17 +681,49 @@ export async function getHandoffLogs(req, res) {
 
 /* ─── audit log ────────────────────────────────────────────────────────── */
 
-// GET /api/admin/screening/audit?projectId=...
+/**
+ * 109.md §24 — build the Prisma WHERE + paging for the screening audit feed.
+ *
+ * PURE + exported so the filter/paging maths is unit-testable without a database.
+ * The previous handler was `take: 200` with a projectId filter and no paging at
+ * all — §24 explicitly forbids loading whole audit histories into the browser, and
+ * the Ops UI could never reach entry 201.
+ *
+ * Unrecognised/blank filters are IGNORED rather than 400-ing: an Ops filter bar
+ * that returns "bad request" for an empty date box is worse than one that returns
+ * everything. Invalid dates fall into the same bucket.
+ */
+export function buildScreeningAuditQuery(query = {}) {
+  const page = Math.max(1, parseInt(query.page, 10) || 1);
+  const limit = Math.min(100, Math.max(1, parseInt(query.limit, 10) || 50));
+  const skip = (page - 1) * limit;
+
+  const where = {};
+  const str = (v) => (v == null ? '' : String(v).trim());
+  if (str(query.projectId)) where.projectId = str(query.projectId);
+  if (str(query.action)) where.action = str(query.action);
+  if (str(query.entityType)) where.entityType = str(query.entityType);
+  if (str(query.actorId)) where.actorId = str(query.actorId);
+
+  const parseDate = (v) => { const d = new Date(String(v)); return Number.isNaN(d.getTime()) ? null : d; };
+  const from = str(query.from) ? parseDate(query.from) : null;
+  const to = str(query.to) ? parseDate(query.to) : null;
+  if (from || to) where.createdAt = { ...(from ? { gte: from } : {}), ...(to ? { lte: to } : {}) };
+
+  return { where, page, limit, skip };
+}
+
+// GET /api/admin/screening/audit?projectId=&action=&entityType=&actorId=&from=&to=&page=&limit=
 export async function getScreeningAuditLog(req, res) {
   try {
-    const where = {};
-    if (req.query.projectId) where.projectId = String(req.query.projectId);
+    const { where, page, limit, skip } = buildScreeningAuditQuery(req.query);
 
-    const entries = await prisma.screenAuditLog.findMany({
-      where,
-      orderBy: { createdAt: 'desc' },
-      take: 200,
-    });
+    // count + page in parallel; `total` is the FILTERED total so the UI can render
+    // a real pager instead of guessing from the page length.
+    const [total, entries] = await Promise.all([
+      prisma.screenAuditLog.count({ where }),
+      prisma.screenAuditLog.findMany({ where, orderBy: { createdAt: 'desc' }, skip, take: limit }),
+    ]);
 
     const projectIds = [...new Set(entries.map(e => e.projectId))];
     const projects = projectIds.length
@@ -716,7 +748,10 @@ export async function getScreeningAuditLog(req, res) {
       createdAt:    e.createdAt,
     }));
 
-    res.json({ entries: rows, total: rows.length });
+    // `entries` + `total` keep their pre-109 names so the existing Ops Screening
+    // Audit tab keeps rendering while W2-A adds the pager; `total` now means the
+    // filtered total rather than the page length.
+    res.json({ entries: rows, total, page, limit, hasMore: skip + rows.length < total });
   } catch (err) {
     console.error('[admin/screening] getAuditLog:', err.message);
     res.status(500).json({ error: 'Internal server error' });
