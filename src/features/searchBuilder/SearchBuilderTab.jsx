@@ -77,6 +77,7 @@ import { searchVersionsApi } from "../searchWizard/searchVersionsApi.js";
 // 98.md §9 — ConceptNavigator (master-detail pills) is RETIRED: the horizontal
 // concept board renders every group as a card; cards are the drop surface now.
 import ActiveConceptPanel from "./components/ActiveConceptPanel.jsx";
+import ConceptWorkspaceFrame from "./components/ConceptWorkspaceFrame.jsx"; // 110.md §2 — the build-canvas shell around the board
 import TermChipRow from "./components/TermChipRow.jsx";
 import TermEditorPopover from "./components/TermEditorPopover.jsx";
 import AddTermBox from "./components/AddTermBox.jsx";
@@ -2895,9 +2896,50 @@ export default function SearchBuilderTab({projectId,question:questionProp,pico,a
    the chevron rotates; the active card's working surfaces fade-slide in (a soft
    landing wherever the View Transition morph is unavailable). All motion is
    removed under prefers-reduced-motion, matching the pv-* house pattern. */
-.sb-card-shell{transition:box-shadow .18s var(--ease-out,cubic-bezier(.22,.61,.36,1)),transform .18s var(--ease-out,cubic-bezier(.22,.61,.36,1));}
+.sb-card-shell{background:${C.card};box-shadow:0 1px 2px var(--t-shadow);transition:box-shadow .18s var(--ease-out,cubic-bezier(.22,.61,.36,1)),transform .18s var(--ease-out,cubic-bezier(.22,.61,.36,1)),background-color .22s var(--ease-out,cubic-bezier(.22,.61,.36,1)),border-color .22s var(--ease-out,cubic-bezier(.22,.61,.36,1));}
 .sb-card-shell[data-compact="true"]:hover{box-shadow:0 0 0 1px ${alpha(C.acc,'66')},0 6px 16px var(--t-shadow);transform:translateY(-1px);}
 .sb-card-shell[data-compact="true"]:focus-visible{outline:2px solid ${C.acc};outline-offset:2px;}
+/* ── 110.md §2 — the Concepts BUILD CANVAS ───────────────────────────────────
+   The surrounding containers (question card, PICO sources, banners, meaning
+   panel) are informational cards on --t-card. The board is inverted into a
+   RECESSED plane with a faint accent wash at its head and a barely-there
+   builder dot-grid, so the concept cards read as raised objects sitting ON a
+   workspace rather than as one more card in the stack. Depth + plane change
+   carry the hierarchy — no new hue, no loud border.
+
+   The plane is derived from --t-bg, NOT --t-surf: the Stitch legacyRemap maps
+   BOTH --t-surf and --t-card onto p.card, so a surf-based canvas renders the
+   exact same colour as the cards on it (caught by the e2e computed-style
+   assertion — every testid in the suite passed straight through it). --t-bg is
+   the page ground in every theme and design system, so mixing toward it is the
+   one direction guaranteed to recede. Same reason the de-emphasised card mixes
+   toward --t-bg rather than --t-surf. */
+/* Deliberately NOT position:relative / transformed / opacity-faded: every board
+   popover (term editor, MeSH details, the add-box listbox) anchors to its own
+   local relative wrapper, and a new positioned or filtered ancestor here would
+   silently re-anchor or clip them. The de-emphasis is a surface swap for the
+   same reason — never an opacity or filter. */
+.sb-concept-canvas{border:1px solid ${C.brd};border-radius:16px;padding:14px 14px 12px;margin:2px 0 4px;
+  background-color:color-mix(in srgb,${C.bg} 95%,${C.acc});
+  background-image:radial-gradient(${alpha(C.txt,'12')} 1px,transparent 1px),linear-gradient(180deg,${alpha(C.acc,'14')} 0,transparent 150px);
+  background-size:18px 18px,auto;background-position:-1px -1px,0 0;background-repeat:repeat,no-repeat;
+  box-shadow:inset 0 1px 0 ${alpha(C.txt,'0b')},0 1px 2px var(--t-shadow);}
+/* The head names the surface without stealing weight from the cards: mono
+   eyebrow + a real h3 (the workspace h2 is "Pecan Search Engine") + a count. */
+.sb-canvas-head{display:flex;align-items:baseline;gap:9px;flex-wrap:wrap;margin:0 2px 11px;}
+.sb-canvas-eyebrow{font-family:${MONO};font-size:8.5px;font-weight:700;letter-spacing:1.3px;text-transform:uppercase;color:${C.acc};}
+.sb-canvas-title{margin:0;font-size:14.5px;font-weight:700;letter-spacing:-0.2px;color:${C.txt};}
+.sb-canvas-count{font-size:9.5px;font-weight:700;letter-spacing:0.3px;color:${C.muted};background:${C.card2};border:1px solid ${C.brd2};border-radius:999px;padding:1px 8px;}
+/* Cards ON the canvas: the open (working) card is lifted and ringed; the rest
+   settle back into the plane while one is open, and come back on hover/focus.
+   Both states are plain background/shadow swaps, so the .sb-card-shell
+   transition above cross-fades the expand/collapse instead of snapping. */
+.sb-concept-canvas .sb-card-shell[data-compact="false"]{box-shadow:0 10px 26px var(--t-shadow),0 0 0 1px ${alpha(C.acc,'2e')};}
+.sb-concept-canvas[data-has-active="true"] .sb-card-shell[data-compact="true"]{background:color-mix(in srgb,${C.card} 55%,${C.bg});box-shadow:none;}
+.sb-concept-canvas[data-has-active="true"] .sb-card-shell[data-compact="true"]:hover,
+.sb-concept-canvas[data-has-active="true"] .sb-card-shell[data-compact="true"]:focus-within,
+.sb-concept-canvas[data-has-active="true"] .sb-card-shell[data-compact="true"]:focus-visible{background:${C.card};box-shadow:0 0 0 1px ${alpha(C.acc,'66')},0 8px 20px var(--t-shadow);}
+@media (max-width:640px){.sb-concept-canvas{padding:12px 9px 10px;border-radius:14px;}.sb-canvas-head{margin-bottom:9px;}}
 .sb-card-chevron{transition:transform .18s var(--ease-out,cubic-bezier(.22,.61,.36,1));}
 .sb-card-chevron[data-open="true"]{transform:rotate(180deg);}
 .sb-card-body-enter{animation:sbCardBodyIn .2s var(--ease-out,cubic-bezier(.22,.61,.36,1));}
@@ -3080,6 +3122,14 @@ export default function SearchBuilderTab({projectId,question:questionProp,pico,a
                 the AND semantics; each card is its own labelled <section>. */}
             {/* 99.md §3 — beginner-gated one-liner naming the interaction (the design
                 itself — chevron, hover lift, pointer cursor — carries it for everyone). */}
+            {/* 110.md §2 — the board is wrapped in the BUILD CANVAS frame: the
+                informational surfaces above/below stay on C.card, this plane is
+                recessed onto C.surf and the cards rise off it. `hasActive` drives
+                the canvas-scoped de-emphasis of the cards that are not open (the
+                behaviour 110.md asks us to keep, finally given a visual). The
+                board element itself is untouched — its testid is the
+                click-outside exemption selector and every e2e locator. */}
+            <ConceptWorkspaceFrame count={concepts.length} hasActive={!!activeConcept}>
             {beginner&&concepts.length>0&&(
               <p data-testid="sb-board-hint" style={{margin:'0 0 8px',fontSize:11.5,color:C.muted,lineHeight:1.6}}>
                 Click a concept to open it for editing — press Escape or click anywhere else to close it.
@@ -3456,11 +3506,13 @@ export default function SearchBuilderTab({projectId,question:questionProp,pico,a
                   clean primary action. QA M8 — mutating controls hidden for viewers. */}
               {concepts.length===0?(
                 readOnly?(
-                  <div data-testid="sb-empty-board" style={{flex:'1 1 100%',background:C.surf,border:`1px dashed ${C.brd2}`,borderRadius:10,padding:'18px 20px',fontSize:12,color:C.muted}}>
+                  /* 110.md §2 — the empty slot sits ON the canvas now, so it takes the
+                     raised C.card plane (C.surf would dissolve into the canvas). */
+                  <div data-testid="sb-empty-board" style={{flex:'1 1 100%',background:C.card,border:`1px dashed ${C.brd2}`,borderRadius:10,padding:'18px 20px',fontSize:12,color:C.muted}}>
                     No concept groups yet.
                   </div>
                 ):(
-                  <div data-testid="sb-empty-board" style={{flex:'1 1 100%',display:'flex',alignItems:'center',gap:14,flexWrap:'wrap',background:C.surf,border:`1px dashed ${C.brd2}`,borderRadius:10,padding:'18px 20px'}}>
+                  <div data-testid="sb-empty-board" style={{flex:'1 1 100%',display:'flex',alignItems:'center',gap:14,flexWrap:'wrap',background:C.card,border:`1px dashed ${C.brd2}`,borderRadius:10,padding:'18px 20px'}}>
                     <button type="button" data-testid="sb-create-first-concept" onClick={addConcept}
                       style={{...btn("primary"),fontSize:12.5,padding:'9px 18px'}}>
                       Create first concept
@@ -3480,6 +3532,7 @@ export default function SearchBuilderTab({projectId,question:questionProp,pico,a
                 )
               )}
             </div>
+            </ConceptWorkspaceFrame>
 
             {/* ─── 100.md §§1-2/6-11 — ONE panel replaces TWO ───────────────────
                 RETIRED here:

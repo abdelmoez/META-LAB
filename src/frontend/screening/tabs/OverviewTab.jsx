@@ -12,7 +12,7 @@
  *   access         — { isLeader, myRole, canScreen, canChat, canResolveConflicts, blindMode }
  *   refreshProject — () => Promise, re-fetches the shell's project after a mutation
  */
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { C, FONT, MONO, alpha } from '../ui/theme.js';
 import {
@@ -21,6 +21,9 @@ import {
 } from '../ui/components.jsx';
 import { screeningApi } from '../api-client/screeningApi.js';
 import ImportHistory from '../components/ImportHistory.jsx';
+// 110.md §1 — multi-reviewer whole-project progress.
+import ScreeningProgressStrip, { ScreeningProgressTiles } from '../components/ScreeningProgressStrip.jsx';
+import { useRealtime } from '../../hooks/useRealtime.js';
 
 // ── Status model ──────────────────────────────────────────────────────────────
 const STATUS_OPTIONS = [
@@ -67,6 +70,31 @@ export default function OverviewTab({ pid, project, access = {}, refreshProject,
   }, [pid]);
 
   useEffect(() => { load(); }, [load]);
+
+  // 110.md §1 — whole-project progress must move as the team works: a teammate's
+  // decision, a resolved conflict, an import or a duplicate sweep all change the
+  // numerator or the denominator. Same poke contract the Conflicts tab uses
+  // (prompt50 WS3) — the server stays the only source of truth, this only re-reads.
+  //
+  // DEBOUNCED (trailing): `decision.saved` fires for EVERY decision every teammate
+  // makes, and the overview aggregate is a whole-project read — a three-reviewer
+  // burst would otherwise re-run it dozens of times a minute. 1.2s is well inside
+  // "feels live" while collapsing a burst into one refetch.
+  const pokeTimer = useRef(null);
+  const loadRef = useRef(load);
+  useEffect(() => { loadRef.current = load; }, [load]);
+  useEffect(() => () => { if (pokeTimer.current) clearTimeout(pokeTimer.current); }, []);
+  const onPoke = useCallback((ev) => {
+    if (ev && ev.projectId !== undefined && ev.projectId !== pid) return;
+    if (pokeTimer.current) clearTimeout(pokeTimer.current);
+    pokeTimer.current = setTimeout(() => { pokeTimer.current = null; loadRef.current?.(); }, 1200);
+  }, [pid]);
+  useRealtime({
+    'decision.saved':       onPoke,
+    'conflict.changed':     onPoke,
+    'import.completed':     onPoke,
+    'duplicates.completed': onPoke,
+  });
 
   const onStatusChange = useCallback(async (value) => {
     if (saving) return;
@@ -122,6 +150,9 @@ export default function OverviewTab({ pid, project, access = {}, refreshProject,
   const status = proj.progressStatus || 'not_started';
   const completion = n(pp.completion);
   const completeColor = completion >= 100 ? C.grn : C.acc;
+  // 110.md §1 — the multi-reviewer progress model (server-computed). Null on an
+  // older server response → the legacy single-pass display below is the fallback.
+  const sp = ds.screeningProgress && typeof ds.screeningProgress === 'object' ? ds.screeningProgress : null;
   const totalArticles = n(pp.totalArticles ?? ds.totalArticles);
 
   return (
@@ -275,18 +306,29 @@ export default function OverviewTab({ pid, project, access = {}, refreshProject,
       {/* ───────── C) Whole-Project Progress (leader-only, BUG 6) ───────── */}
       {data.isLeader && data.projectProgress && (
       <section style={{ marginBottom: 22 }}>
-        <SectionLabel>Whole-Project Progress</SectionLabel>
+        <SectionLabel right={sp ? (
+          <span style={{ fontSize: 10.5, color: C.muted, fontFamily: MONO }}>
+            {sp.requiredReviewers} reviewer{sp.requiredReviewers === 1 ? '' : 's'} required
+          </span>
+        ) : null}>Whole-Project Progress</SectionLabel>
         <Card>
-          <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 12, marginBottom: 12 }}>
-            <span style={{ fontSize: 12.5, color: C.txt2 }}>
-              Screening completion across all reviewers
-            </span>
-            <span style={{ fontSize: 28, fontWeight: 700, fontFamily: MONO, color: completeColor, lineHeight: 1 }}>
-              {completion}%
-            </span>
-          </div>
-
-          <ProgressBar pct={completion} color={completeColor} height={10} />
+          {/* 110.md §1 — decision-denominated completion + workflow stage strip.
+              The legacy record-denominated `pp.completion` is still served (other
+              consumers read it) but is no longer the headline: it read 100% when a
+              single reviewer had screened everything once. */}
+          {sp ? <ScreeningProgressStrip progress={sp} /> : (
+            <>
+              <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 12, marginBottom: 12 }}>
+                <span style={{ fontSize: 12.5, color: C.txt2 }}>
+                  Screening completion across all reviewers
+                </span>
+                <span style={{ fontSize: 28, fontWeight: 700, fontFamily: MONO, color: completeColor, lineHeight: 1 }}>
+                  {completion}%
+                </span>
+              </div>
+              <ProgressBar pct={completion} color={completeColor} height={10} />
+            </>
+          )}
 
           <div style={{
             marginTop: 16,
@@ -294,14 +336,18 @@ export default function OverviewTab({ pid, project, access = {}, refreshProject,
             gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))',
             gap: 12,
           }}>
-            <StatTile label="Screened" value={fmt(n(pp.screened))} color={C.grn} />
-            <StatTile label="Unscreened" value={fmt(n(pp.unscreened))} color={C.txt2} />
-            <StatTile
-              label="Conflicts"
-              value={fmt(n(pp.conflicts))}
-              color={n(pp.conflicts) > 0 ? C.red : C.txt2}
-              accent={n(pp.conflicts) > 0}
-            />
+            {sp ? <ScreeningProgressTiles progress={sp} /> : (
+              <>
+                <StatTile label="Screened" value={fmt(n(pp.screened))} color={C.grn} />
+                <StatTile label="Unscreened" value={fmt(n(pp.unscreened))} color={C.txt2} />
+                <StatTile
+                  label="Conflicts"
+                  value={fmt(n(pp.conflicts))}
+                  color={n(pp.conflicts) > 0 ? C.red : C.txt2}
+                  accent={n(pp.conflicts) > 0}
+                />
+              </>
+            )}
           </div>
         </Card>
       </section>

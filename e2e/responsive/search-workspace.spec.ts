@@ -123,4 +123,63 @@ test.describe('96.md/98.md — responsive Select & Build Key Terms workspace', (
     expect(narrowB.y).toBeGreaterThan(narrowA.y + narrowA.height - 2);
     await expectNoHorizontalOverflow(page, 'board @ narrow (480)');
   });
+  /* 110.md §2 — the Concepts BUILD CANVAS.
+     The Concepts area is the Search Engine's centrepiece and must read as a
+     WORKSPACE, not as another informational card. The contract is structural
+     (a frame that wraps the board without touching it) and perceptual (the
+     canvas plane, the cards raised on it, and the de-emphasis of the cards
+     that are not open must all be genuinely different computed surfaces —
+     a stylesheet regression that flattens them would otherwise pass every
+     testid assertion in the suite). AUTHORED, NOT RUN in the 110.md round. */
+  test('110.md §2 — the board sits on a build canvas: distinct plane, elevated open card, de-emphasis that follows expand/collapse, no overflow', async ({ page, tmpProject }) => {
+    await page.setViewportSize({ width: 1280, height: 900 });
+    const sp = new SearchPage(page);
+    await openTermsWithGroup(sp, tmpProject.id, 'asthma');
+    await sp.addConceptGroup('salbutamol');
+
+    const canvas = page.getByTestId('sb-concept-workspace');
+    await expect(canvas).toBeVisible();
+    // The frame WRAPS the board — the board keeps its own element and testid
+    // (it is the click-outside exemption selector and every e2e locator).
+    await expect(canvas.getByTestId('sb-concept-board')).toBeVisible();
+    await expect(canvas.getByRole('heading', { name: 'Concepts' })).toBeVisible();
+    await expect(canvas.getByTestId('sb-canvas-count')).toHaveText('2 concepts');
+
+    // HIERARCHY: the canvas plane and the cards ON it are different surfaces,
+    // and the open card is elevated off the plane.
+    const canvasBg = await canvas.evaluate((el) => getComputedStyle(el).backgroundColor);
+    const openBg = await sp.activeConcept.evaluate((el) => getComputedStyle(el).backgroundColor);
+    expect(openBg).not.toBe(canvasBg);
+    const openShadow = await sp.activeConcept.evaluate((el) => getComputedStyle(el).boxShadow);
+    expect(openShadow).not.toBe('none');
+
+    // The newest concept is open, so the canvas advertises the de-emphasis state
+    // and the inactive card settles back toward the plane (its own surface).
+    // NB: the emphasis swap is a .22s background-color TRANSITION (that is the
+    // "subtle and smooth" part of the contract), so every surface read after a
+    // state change must poll — a bare read lands on an intermediate colour.
+    await expect(canvas).toHaveAttribute('data-has-active', 'true');
+    await expect
+      .poll(async () => sp.compactCards.nth(0).evaluate((el) => getComputedStyle(el).backgroundColor),
+        { message: 'the inactive card settles back toward the canvas plane' })
+      .not.toBe(openBg);
+
+    // Click-outside restores every card to equal emphasis (99.md behaviour, kept).
+    await page.getByTestId('search-workspace-stage').click({ position: { x: 4, y: 4 } });
+    await expect(canvas).toHaveAttribute('data-has-active', 'false');
+    await expect
+      .poll(async () => sp.compactCards.nth(0).evaluate((el) => getComputedStyle(el).backgroundColor),
+        { message: 'every card returns to the raised card plane once nothing is open' })
+      .toBe(openBg);
+
+    // Clicking a concept expands/focuses it again.
+    await sp.compactCards.nth(0).click();
+    await expect(canvas).toHaveAttribute('data-has-active', 'true');
+
+    // The canvas padding never buys the body a horizontal scrollbar.
+    await expectNoHorizontalOverflow(page, 'canvas @ wide (1280)');
+    await page.setViewportSize({ width: 480, height: 900 });
+    await sp.conceptBoard.scrollIntoViewIfNeeded();
+    await expectNoHorizontalOverflow(page, 'canvas @ narrow (480)');
+  });
 });

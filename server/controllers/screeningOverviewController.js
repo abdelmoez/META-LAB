@@ -9,6 +9,9 @@ import { mlAccessFromMember } from '../screening/metalabAccess.js';
 import { getEffectiveQuorum } from '../screening/settings.js';
 // 103.md §10 — the canonical, record-derived PRISMA flow.
 import { loadPrismaFlow } from '../screening/prismaFlowService.js';
+// 110.md §1 — multi-reviewer whole-project progress.
+import { computeScreeningProgress } from '../../src/research-engine/screening/screeningProgress.js';
+import { ELIGIBILITY_ENGINE_REVIEWER_ID } from '../services/screeningEligibilityService.js';
 
 /** GET /projects/:pid/overview — summary metrics for the Overview tab. */
 export async function getOverview(req, res) {
@@ -24,7 +27,7 @@ export async function getOverview(req, res) {
     // that found nothing), and the newest record timestamp answers "has the input
     // set changed since?". All three are cheap indexed lookups — never a full
     // record load.
-    const [total, members, decisions, conflicts, dupGroups, records, latestDupJob, lastCompletedDupJob, newestRecordAgg] = await Promise.all([
+    const [total, members, decisions, conflicts, dupGroups, records, latestDupJob, lastCompletedDupJob, newestRecordAgg, taReviewerGroups] = await Promise.all([
       prisma.screenRecord.count({ where: { projectId: pid } }),
       prisma.screenProjectMember.findMany({ where: { projectId: pid }, orderBy: [{ role: 'asc' }, { joinedAt: 'asc' }] }),
       prisma.screenDecision.findMany({ where: { projectId: pid } }),
@@ -42,6 +45,22 @@ export async function getOverview(req, res) {
         select: { id: true, completedAt: true, totalRecords: true, statsJson: true },
       }),
       prisma.screenRecord.aggregate({ where: { projectId: pid }, _max: { createdAt: true } }),
+      // 110.md §1 — DISTINCT non-engine human reviewers per record at title/abstract,
+      // as a GROUP BY (one small row per touched record) rather than a decision load:
+      // @@unique([recordId, reviewerId, stage]) makes the per-recordId row count
+      // exactly the distinct-reviewer count. The eligibility engine writes real
+      // ScreenDecision rows under a non-human reviewerId and must never count toward
+      // the independent-reviewer requirement (same exclusion as the promotion gate in
+      // screeningController.saveDecision).
+      prisma.screenDecision.groupBy({
+        by: ['recordId'],
+        where: {
+          projectId: pid, stage: 'title_abstract',
+          decision: { not: 'undecided' },
+          reviewerId: { not: ELIGIBILITY_ENGINE_REVIEWER_ID },
+        },
+        _count: { _all: true },
+      }),
     ]);
 
     const confirmedDuplicates       = records.filter(r => r.isDuplicate).length;
@@ -134,6 +153,38 @@ export async function getOverview(req, res) {
       (taReviewers[r.id]?.size || 0) < effectiveRequired
     ).length;
 
+    // ── 110.md §1 — whole-project progress across ALL required reviewers ─────
+    // The old headline ("screened at least once / records") read 100% when a single
+    // reviewer worked through the whole library, even with the second required pass
+    // untouched and every conflict open. Progress is now denominated in reviewer
+    // DECISIONS (records x effectiveRequired) plus conflict resolution.
+    //
+    // Denominator conventions match the rest of this endpoint: duplicates are out of
+    // the pool (`screeningPool`, `titleAbstractPending`). A record whose T/A stage has
+    // CLOSED (promoted to full_text, or finalised) is reported at the required count —
+    // the workflow moved past title/abstract for it, so a leader-resolved conflict that
+    // promoted a record on fewer than `effectiveRequired` decisions cannot deadlock the
+    // model below 100% forever.
+    const taReviewerCountByRecord = new Map(
+      (taReviewerGroups || []).map(g => [g.recordId, g?._count?._all || 0])
+    );
+    const reviewerHistogram = {};
+    for (const r of records) {
+      if (r.isDuplicate) continue;
+      const observed = taReviewerCountByRecord.get(r.id) || 0;
+      const taClosed = r.currentStage !== 'title_abstract' || !!r.finalStatus;
+      const k = taClosed ? Math.max(observed, effectiveRequired) : observed;
+      if (k >= 1) reviewerHistogram[k] = (reviewerHistogram[k] || 0) + 1;
+    }
+    const resolvedConflicts = conflicts.filter(c => c.resolvedAt).length;
+    const screeningProgress = computeScreeningProgress({
+      requiredReviewers: effectiveRequired,
+      poolSize: screeningPool,
+      reviewerHistogram,
+      unresolvedConflicts,
+      resolvedConflicts,
+    });
+
     const memberProgress = members.map(m => {
       const md = m.userId ? decisions.filter(d => d.reviewerId === m.userId && d.stage === 'title_abstract') : [];
       const c = { include: 0, exclude: 0, maybe: 0 };
@@ -218,6 +269,10 @@ export async function getOverview(req, res) {
         eligibleSecondReview, acceptedToExtraction, rejectedSecond,
         // prompt21 follow-up — exact, member-visible title/abstract progress.
         screeningPool, titleAbstractPending,
+        // 110.md §1 — additive. The multi-reviewer progress model (stage strip +
+        // decision-denominated completion). Every field above is unchanged; the
+        // legacy `projectProgress.completion` is kept for existing consumers.
+        screeningProgress,
       },
       members: visibleMembers,
       // null for non-leaders (frontend shows only "My Progress")

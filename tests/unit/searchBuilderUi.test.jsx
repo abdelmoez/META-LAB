@@ -23,6 +23,7 @@
  *  - the Regenerate confirmation dialog carries the §8 copy (PICO mention gone).
  */
 import { describe, it, expect } from 'vitest';
+import { readFileSync } from 'node:fs';
 import { createElement as h } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 
@@ -30,6 +31,7 @@ import { termDisplay, termMicroBadges, conceptAccent, opExplainer } from '../../
 import SaveStatusIndicator from '../../src/features/searchBuilder/components/SaveStatusIndicator.jsx';
 import UndoSnackbar from '../../src/features/searchBuilder/components/UndoSnackbar.jsx';
 import ActiveConceptPanel from '../../src/features/searchBuilder/components/ActiveConceptPanel.jsx';
+import ConceptWorkspaceFrame from '../../src/features/searchBuilder/components/ConceptWorkspaceFrame.jsx';
 import TermChipRow, { EXACT_DUP_TOOLTIP } from '../../src/features/searchBuilder/components/TermChipRow.jsx';
 import TermEditorPopover from '../../src/features/searchBuilder/components/TermEditorPopover.jsx';
 import AddTermBox from '../../src/features/searchBuilder/components/AddTermBox.jsx';
@@ -1016,5 +1018,113 @@ describe('SuggestionsDisclosure — §11 round-2 checkbox bulk selection', () =>
     expect(ro).not.toContain('sb-sugg-bulk-bar');
     const noCb = r(h(SuggestionsDisclosure, { suggestions: pending, open: true, onToggleOpen: () => {} }));
     expect(noCb).not.toContain('sb-sugg-bulk-bar');
+  });
+});
+
+/* ── 110.md §2 — the Concepts BUILD CANVAS ───────────────────────────────────
+   The Concepts area is the Search Engine's centrepiece and had to stop reading
+   as one more informational card. The treatment is a recessed canvas plane
+   (ConceptWorkspaceFrame) with the concept cards raised onto it, plus a
+   canvas-scoped de-emphasis of the cards that are not open.
+
+   Two contracts are pinned here:
+    · the FRAME's structural markers (testid + `.sb-concept-canvas` class +
+      `data-has-active`), because the whole visual treatment is a descendant
+      selector keyed on them — losing the class or the attribute silently
+      reverts the hierarchy with no test failing anywhere else;
+    · the WIRING, source-pinned. The board lives inside SearchBuilderTab's
+      2600-line component; the house test style is SSR-only (no jsdom, effects
+      never run), so the frame's mount, the untouched board testid (the
+      click-outside exemption selector) and the surviving expand/collapse
+      handlers are asserted against the source text. */
+describe('ConceptWorkspaceFrame — the build-canvas shell (110.md §2)', () => {
+  it('renders the canvas markers the stylesheet keys off', () => {
+    const html = r(h(ConceptWorkspaceFrame, { count: 3, hasActive: true }, h('div', { 'data-testid': 'sb-concept-board' })));
+    expect(html).toContain('data-testid="sb-concept-workspace"');
+    expect(html).toContain('class="sb-concept-canvas"');
+    expect(html).toContain('data-has-active="true"');
+    expect(html).toContain('data-empty="false"');
+  });
+
+  it('hasActive=false drops the de-emphasis hook (a collapsed board shows every card equally)', () => {
+    const html = r(h(ConceptWorkspaceFrame, { count: 2, hasActive: false }));
+    expect(html).toContain('data-has-active="false"');
+  });
+
+  it('names the surface: mono eyebrow + a real h3 (the workspace h2 is "Pecan Search Engine")', () => {
+    const html = r(h(ConceptWorkspaceFrame, { count: 1 }));
+    expect(html).toContain('class="sb-canvas-eyebrow"');
+    expect(html).toContain('Workspace');
+    expect(html).toContain('<h3 class="sb-canvas-title">Concepts</h3>');
+  });
+
+  it('the count chip pluralises and disappears on an empty board', () => {
+    expect(r(h(ConceptWorkspaceFrame, { count: 1 }))).toContain('1 concept<');
+    expect(r(h(ConceptWorkspaceFrame, { count: 4 }))).toContain('4 concepts<');
+    const empty = r(h(ConceptWorkspaceFrame, { count: 0 }));
+    expect(empty).not.toContain('sb-canvas-count');
+    expect(empty).toContain('data-empty="true"');
+  });
+
+  it('is presentation only — children pass straight through, unwrapped', () => {
+    const html = r(h(ConceptWorkspaceFrame, { count: 1, hasActive: true },
+      h('div', { 'data-testid': 'sb-concept-board', role: 'group', 'aria-label': 'Concept groups' })));
+    expect(html).toContain('data-testid="sb-concept-board"');
+    expect(html).toContain('aria-label="Concept groups"');
+  });
+});
+
+describe('SearchBuilderTab — the canvas is wired to the board (110.md §2, source-pinned)', () => {
+  const tabSrc = readFileSync(new URL('../../src/features/searchBuilder/SearchBuilderTab.jsx', import.meta.url), 'utf8');
+
+  it('the board is mounted INSIDE the frame, driven by the live concept/active state', () => {
+    expect(tabSrc).toContain('import ConceptWorkspaceFrame from "./components/ConceptWorkspaceFrame.jsx"');
+    expect(tabSrc).toContain('<ConceptWorkspaceFrame count={concepts.length} hasActive={!!activeConcept}>');
+    expect(tabSrc).toContain('</ConceptWorkspaceFrame>');
+  });
+
+  it('the board element itself is UNTOUCHED — its testid is the click-outside exemption selector', () => {
+    expect(tabSrc).toContain('<div data-testid="sb-concept-board" role="group" aria-label="Concept groups"');
+    expect(tabSrc).toContain('[data-testid="sb-concept-board"],[role="dialog"],[data-testid="sb-undo"],[data-sb-collapse-exempt]');
+  });
+
+  it('expand / collapse / click-outside stay wired (110.md keeps the behaviour, only the transitions change)', () => {
+    expect(tabSrc).toContain('selectConcept(c.id)');                       // click a compact card → expands it
+    expect(tabSrc).toContain('onCollapse={active?()=>collapseBoard({refocus:true}):null}'); // chevron collapses
+    expect(tabSrc).toMatch(/Escape[\s\S]{0,120}collapseBoard\(\{refocus:true\}\)/); // Escape from inside the board
+    expect(tabSrc).toContain('collapseBoardRef.current({refocus:false})'); // click-outside restores…
+    expect(tabSrc).toContain('document.addEventListener("pointerdown",onDown,true)'); // …on the capture-phase pair
+  });
+
+  it('the canvas stylesheet defines the plane, the raised open card and the de-emphasis + its hover return', () => {
+    expect(tabSrc).toContain('.sb-concept-canvas{');
+    expect(tabSrc).toContain('.sb-concept-canvas .sb-card-shell[data-compact="false"]{box-shadow:');
+    expect(tabSrc).toContain('.sb-concept-canvas[data-has-active="true"] .sb-card-shell[data-compact="true"]{');
+    expect(tabSrc).toMatch(/data-has-active="true"\] \.sb-card-shell\[data-compact="true"\]:hover/);
+    expect(tabSrc).toContain('@media (max-width:640px){.sb-concept-canvas{'); // narrow viewports shed canvas padding
+  });
+
+  it('the plane and the de-emphasis recede toward --t-bg, never --t-surf (Stitch maps surf === card)', () => {
+    // Regression pin: the Stitch legacyRemap sends BOTH --t-surf and --t-card to
+    // p.card, so a surf-derived canvas renders the SAME colour as the cards on it
+    // and the whole hierarchy silently flattens. --t-bg is the one ground that
+    // differs from the card plane in every theme × design-system combination.
+    // (the stylesheet is a template literal — the pins match the SOURCE form)
+    expect(tabSrc).toContain('background-color:color-mix(in srgb,${C.bg} 95%,${C.acc});');
+    expect(tabSrc).toContain('background:color-mix(in srgb,${C.card} 55%,${C.bg});box-shadow:none;');
+    const canvasRules = tabSrc.slice(tabSrc.indexOf('.sb-concept-canvas{'), tabSrc.indexOf('@media (max-width:640px)'));
+    expect(canvasRules).not.toContain('C.surf');
+  });
+
+  it('the card surface + resting elevation moved to the stylesheet so the state swap can transition', () => {
+    expect(tabSrc).toMatch(/\.sb-card-shell\{background:[^;]+;box-shadow:0 1px 2px var\(--t-shadow\);transition:[^}]*background-color[^}]*border-color/);
+    const panelSrc = readFileSync(new URL('../../src/features/searchBuilder/components/ActiveConceptPanel.jsx', import.meta.url), 'utf8');
+    expect(panelSrc).not.toContain('background: C.card,');
+    expect(panelSrc).toContain("border: active ? `2px solid ${C.acc}`");
+  });
+
+  it('every canvas motion is still removed under prefers-reduced-motion', () => {
+    const rm = tabSrc.slice(tabSrc.indexOf('@media (prefers-reduced-motion: reduce)'));
+    expect(rm).toContain('.sb-card-shell,.sb-card-chevron{transition:none!important;}');
   });
 });

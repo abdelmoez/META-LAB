@@ -95,7 +95,12 @@ export default function ActiveConceptPanel({
       aria-describedby={compact && onActivate ? `${bodyId}-hint` : undefined}
       title={compact && onActivate ? 'Select this concept to edit it' : undefined}
       style={{
-        background: C.card, borderRadius: 10, padding: compact ? '10px 12px' : 14, fontFamily: FONT,
+        /* 110.md §2 — `background` and the resting elevation moved OUT of the inline
+           style into the tab stylesheet's `.sb-card-shell` rules: on the build canvas
+           the surface of an inactive card changes while another card is open (and
+           comes back on hover/focus), which an inline background would always win
+           against. The border stays inline — the accent left rail overrides it. */
+        borderRadius: 10, padding: compact ? '10px 12px' : 14, fontFamily: FONT,
         border: active ? `2px solid ${C.acc}` : `1px solid ${C.brd}`,
         borderLeft: `3px solid ${accent}`,
         flex: 1, minWidth: 0, boxSizing: 'border-box',
