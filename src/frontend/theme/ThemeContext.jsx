@@ -82,7 +82,9 @@ function cacheBrand(record) {
 }
 
 export function ThemeProvider({ children }) {
-  const [theme, setThemeState] = useState(() => getSavedTheme() || document.documentElement.dataset.theme || 'day');
+  const [theme, setThemeState] = useState(() => getSavedTheme()
+    || (typeof document !== 'undefined' ? document.documentElement.dataset.theme : null)
+    || 'day');
   // Saved brand (server/localStorage) and a transient preview (Ops live preview).
   const [brand, setBrand] = useState(() => readCachedBrand() || DEFAULT_BRAND_RECORD);
   const [preview, setPreview] = useState(null); // palette | null

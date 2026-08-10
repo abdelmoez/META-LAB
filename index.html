@@ -19,6 +19,13 @@
     <link rel="canonical" href="https://pecanrev.com/" />
     <meta name="theme-color" content="#4f46e5" />
     <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <!--
+      iOS ignores the manifest icons and looks for this link only. The PNG is a
+      FULL-BLEED indigo square (no rounded corners of our own) because iOS masks
+      it itself — transparent corners would composite to black on a home screen.
+      Regenerate with: node scripts/dev/make-og-image.mjs
+    -->
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
     <link rel="manifest" href="/site.webmanifest" />
     <!-- Open Graph -->
     <meta property="og:title" content="PecanRev — Systematic Review &amp; Meta-Analysis Platform" />
@@ -29,17 +36,49 @@
     <meta property="og:type" content="website" />
     <meta property="og:site_name" content="PecanRev" />
     <meta property="og:url" content="https://pecanrev.com" />
+    <!--
+      111.md §4 — shared social image. ABSOLUTE URLs (Open Graph consumers do not
+      resolve relative paths). These are the app-shell DEFAULTS; per-page values
+      are set by src/frontend/website/usePageHead.js at runtime and baked into the
+      prerendered HTML at build time. The 1200x630 PNG itself ships with the asset
+      task; until then crawlers simply find no image (no fallback is faked).
+    -->
+    <meta property="og:image" content="https://pecanrev.com/og-image.png" />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta property="og:image:alt" content="PecanRev — systematic review and meta-analysis platform" />
     <!-- Twitter Card -->
-    <meta name="twitter:card" content="summary" />
+    <meta name="twitter:card" content="summary_large_image" />
     <meta name="twitter:title" content="PecanRev — Systematic Review &amp; Meta-Analysis Platform" />
     <meta
       name="twitter:description"
       content="PecanRev is a systematic review and meta-analysis platform with screening, data extraction, risk of bias, search building, project collaboration, and a complete review workflow."
     />
+    <meta name="twitter:image" content="https://pecanrev.com/og-image.png" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <!--
+      111.md §4 — font subset. Four families really are in use and none can be
+      dropped: Manrope is --t-font under the Stitch theme (the default product
+      UI, src/frontend/stitch/theme/stitchTokens.js STITCH_FONT), Inter is
+      --t-font under the legacy day/night theme AND the fallback in every stack
+      (src/frontend/theme/tokens.js FONT_STACK), and the legacy workspace shell
+      + manuscript editor set 'IBM Plex Sans' / 'IBM Plex Mono' explicitly.
+      What WAS trimmed is dead weights, measured against actual fontWeight /
+      font-weight declarations in src/:
+        IBM Plex Sans  400;500;600;700 -> 400;600;700   (no 500 callsite)
+        IBM Plex Mono  400;500;700     -> 400;600;700   (no 500 callsite; 600
+                                                         IS used and was being
+                                                         synthesised before)
+      Inter and Manrope keep 400-800: 500/600/700/800 all have callsites and
+      these two are the primary faces, so this stays deliberately conservative.
+      Keep this a plain blocking <link>: a JS font-swap would need a new inline
+      script, and every inline script in this file is pinned by a CSP SHA-256
+      hash in server/security/csp.js. Any change here must also update the
+      allow-list pinned in tests/unit/seo/assets.test.js.
+    -->
     <link
-      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=IBM+Plex+Mono:wght@400;500;700&family=IBM+Plex+Sans:wght@400;500;600;700&family=Manrope:wght@400;500;600;700;800&display=swap"
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=IBM+Plex+Mono:wght@400;600;700&family=IBM+Plex+Sans:wght@400;600;700&family=Manrope:wght@400;500;600;700;800&display=swap"
       rel="stylesheet"
     />
     <script>

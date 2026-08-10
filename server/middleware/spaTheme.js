@@ -80,12 +80,30 @@ let cache = { at: 0, tag: null };
 export function bustThemeCache() { cache = { at: 0, tag: null }; }
 
 /**
+ * 111.md §5 — the SPA shell bytes (dist/index.html, uncached-theme). Exported so
+ * server/middleware/publicPages.js can reuse the EXACT shell serveSpa serves.
+ */
+export function getShellHtml() { return getRawHtml(); }
+
+/**
+ * 111.md §5 — the one place the theme <script> is spliced into a document.
+ * Exported + pure so the prerendered-HTML path in server/middleware/publicPages.js
+ * applies byte-identical injection to serveSpa's.
+ */
+export function injectThemeTag(html, tag) {
+  return html.includes('<head>') ? html.replace('<head>', `<head>${tag}`) : tag + html;
+}
+
+/**
  * Resolve the current {themeSettings, defaultTheme}. Cached (~10s TTL) so the
  * SPA request adds no per-request DB cost. The theme TAG itself is built
  * per-response (it carries the per-response CSP nonce), so only the inputs are
  * cached, not the final tag string.
+ *
+ * 111.md §5 — exported (additive) so the public-pages middleware resolves the
+ * same cached inputs instead of opening a second DB path.
  */
-async function getThemeInputs() {
+export async function getThemeInputs() {
   const now = Date.now();
   if (cache.tag != null && now - cache.at < TTL_MS) return cache.tag;
   let themeSettings = defaultThemeSettings();
@@ -125,7 +143,7 @@ export async function serveSpa(req, res, next) {
     const { themeSettings, defaultTheme } = await getThemeInputs();
     const tag = buildThemeInjection(themeSettings, defaultTheme, res.locals && res.locals.cspNonce);
     // Inject right after <head> so the globals exist before the bootstrap runs.
-    const out = html.includes('<head>') ? html.replace('<head>', `<head>${tag}`) : tag + html;
+    const out = injectThemeTag(html, tag);
     res.set('Cache-Control', 'no-cache'); // HTML must revalidate so theme stays fresh
     return res.type('html').send(out);
   } catch {

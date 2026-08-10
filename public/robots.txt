@@ -1,5 +1,15 @@
 User-agent: *
 Allow: /
+Disallow: /api/
+Disallow: /app
+Disallow: /ops
+Disallow: /sift-beta
+Disallow: /invite/
+Disallow: /reset
+Disallow: /verify-email
+Disallow: /accept-invitation
+Disallow: /embed/
+Disallow: /public/synthesis/
+Disallow: /__prerender/
 
-Host: https://pecanrev.com
 Sitemap: https://pecanrev.com/sitemap.xml

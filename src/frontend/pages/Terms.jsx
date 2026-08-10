@@ -10,10 +10,18 @@
 import { useEffect } from 'react';
 import { Link } from 'react-router-dom';
 import { C, FONT, MONO, alpha } from '../theme/tokens.js';
+// 111.md §1/§2 — registry-driven page head. /privacy 301s here (server-side), so
+// this page owns the canonical URL for both the terms and the privacy content.
+import { getPublicPage } from '../website/publicPages.js';
+import { usePageHead } from '../website/usePageHead.js';
+
+const TERMS_ENTRY = getPublicPage('/terms');
 
 const UPDATED = 'June 17, 2026';
 
 export default function Terms() {
+  usePageHead(TERMS_ENTRY);
+
   // Honour the #terms / #privacy anchor on load (router doesn't auto-scroll).
   useEffect(() => {
     const id = (window.location.hash || '').replace('#', '');
@@ -24,7 +32,9 @@ export default function Terms() {
     <div style={{ minHeight: '100vh', background: C.bg, color: C.txt, fontFamily: FONT }}>
       <header style={{ position: 'sticky', top: 0, zIndex: 5, display: 'flex', alignItems: 'center', gap: 14, padding: '14px 22px', borderBottom: `1px solid ${C.brd}`, background: C.card }}>
         <Link to="/" style={{ ...ghost, textDecoration: 'none' }}>← Home</Link>
-        <span style={{ fontWeight: 800, fontSize: 16 }}>Terms &amp; Privacy</span>
+        {/* 111.md — the page h1. /terms is indexable, so it needs exactly one
+            level-1 heading; the sizing is explicit so this renders as before. */}
+        <h1 style={{ fontWeight: 800, fontSize: 16, margin: 0 }}>Terms &amp; Privacy</h1>
         <div style={{ flex: 1 }} />
         <span style={{ fontSize: 11, fontFamily: MONO, color: C.muted }}>Updated {UPDATED}</span>
       </header>

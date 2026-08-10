@@ -1,6 +1,6 @@
 # PecanRev — Playwright E2E Coverage Matrix
 
-Generated for the suite under `e2e/`. **469 tests (all projects) across 33 spec files** (chromium full
+Generated for the suite under `e2e/`. **505 tests (all projects) across 34 spec files** (chromium full
 coverage; `@smoke` also runs on firefox + webkit + mobile/tablet). Validated serially
 (`--workers=1`): all green, with the documented `test.skip`s below for preconditions not
 reachable via the current fixtures. How to run: see `e2e/README.md`.
@@ -28,6 +28,7 @@ Legend: ✅ covered · ⏭️ documented skip (TODO) · 🔒 permission boundary
 | **Files & PDF** (`files/`) | screening record PDF panel (AppPdfViewer) | admin | ✅ per-record PDF empty/upload state; panel stays inside main content (no overflow); non-PDF file rejected client-side | invalid file type rejected | ⏭️ loaded-PDF open/zoom/search/page-nav (no PDF-attachment fixture available) |
 | **Visual** (`visual/`) | landing, app rail, dashboard, project rail, Ops sidebar | anon, admin | ✅ 5 masked screenshot baselines (dynamic content masked) | — | baselines committed (`*-chromium-win32.png`); regenerate with `--update-snapshots` |
 | **Manuscript** (`manuscript/`) | `/app/project/:id?tab=manuscript` (flag `manuscriptEditor` flipped per-test) | admin | ✅ WYSIWYG editor (paper page + toolbar, NO textarea/markdown help); typing + Bold → real `<strong>`, no `**`/`[[cite:` ever visible; Generate All → real heading elements (no `#` tokens) + structured abstract editor with live word count; save pill reaches Saved; one-click Word export downloads a real `.docx` | flag OFF keeps the legacy drafter (rollout gate) | — |
+| **SEO / public surface** (`seo/`) | 16 indexable public routes, `/privacy`, `/app`, `/sitemap.xml`, `/robots.txt`, `/llms.txt`, `/__prerender/**` | anon | ✅ **111.md**, 3 groups / 30 chromium tests, all green: **(1) runtime head** on `:3000` for the 4 routes whose component calls `usePageHead`, gated on `og:url` (web-first — the pages are `lazy()`, so a bare `page.title()` races hydration); **(2) crawler-visible head** on `:3001` for all 16 prerendered routes — distinct `<title>`, meta description, absolute canonical on `SITE_ORIGIN`, exactly one `<h1>`, parseable JSON-LD, titles unique across all 16; **(3) server-owned semantics** on `:3001` — unknown path is a real 404 (not a soft 404), 301 `/privacy`→`/terms#privacy`, slash/case 301s, `X-Robots-Tag: noindex` on `/app`, `sitemap.xml` XML listing `/features/screening`, `robots.txt` `Disallow: /ops` + `Sitemap:`, `llms.txt` 200, prerendered page crawlable with JS off | `/App` (unknown spelling) stays 404 instead of being canonicalised into a 200; `/__prerender/terms/index.html` 404s (no duplicate URL space); `/login`+`/register` exempt from the JSON-LD requirement (registry has none by design) | ⏭️ groups 2+3 self-skip (with reason) when `:3001` does not serve a built `robots.txt` — the Vite dev server implements none of it; ⏭️ group 1 covers only 4 of 16 routes: `ArticlePage`/`PageShell` never call `usePageHead`, so the 12 content pages have no runtime head (app gap, see `docs/seo-overhaul-111.md` §5.7 — extend `RUNTIME_HEAD_PATHS` when fixed) |
 | **Smoke** (`smoke/`) | core + public surfaces | admin, anon | ✅ Stitch renders; project route; flags exposed; landing; login form — runs on **chromium + firefox + webkit** | — | — |
 
 ## Cross-cutting coverage
@@ -48,6 +49,8 @@ Legend: ✅ covered · ⏭️ documented skip (TODO) · 🔒 permission boundary
 | permissions | viewer UI-blocked decision | No viewer browser session via current fixtures (server boundary covered via API). |
 | extraction | edit autosave-persist (some paths) | Reachable only past a full screening flow. |
 | branding | login PecanRev wordmark | `fixme` — login still shows legacy META·LAB wordmark (intentional per rebrand notes). |
+| seo | the "crawler-visible head" + "server crawler semantics" groups | Self-skip when `:3001` does not answer a built `/robots.txt`. Those behaviours (prerendered head, real 404s, slash/case 301s, `X-Robots-Tag`, sitemap/llms) belong to `server/middleware/publicPages.js` + `npm run build`; the Vite dev server mirrors only the `/privacy` 301. |
+| seo | runtime head for the 12 content pages | Not a skip but a scoped list: `RUNTIME_HEAD_PATHS` holds only the 4 routes that call `usePageHead`. `ArticlePage` → `PageShell` never calls it, so those 12 keep the shell head on the dev server and after client-side nav. App fix is one call in `PageShell`; then widen the list to all 16. |
 
 These are the natural next coverage increments: add a study/result seeding helper (unlocks
 RoB deep flows + populated meta-analysis), a PDF-attachment helper (unlocks the loaded-PDF

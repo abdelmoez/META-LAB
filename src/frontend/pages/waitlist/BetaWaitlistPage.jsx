@@ -30,65 +30,14 @@ import { S, salpha } from '../../stitch/theme/stitchTokens.js';
 import StitchStyle from '../../stitch/theme/StitchStyle.jsx';
 import WaitlistFlow from './WaitlistFlow.jsx';
 import { fetchWaitlistCount } from './waitlistApi.js';
+// 111.md §2 — the hand-rolled title/meta/canonical/robots DOM injection this page
+// used to carry is replaced by the shared registry-driven head manager. Same output
+// (title, description, OG/Twitter, canonical → '/', noindex on the preview route),
+// one implementation, plus og:image and a proper restore-on-unmount contract.
+import { getPublicPage } from '../../website/publicPages.js';
+import { usePageHead } from '../../website/usePageHead.js';
 
-const PAGE_TITLE = 'Join the PecanRev Beta Waitlist';
-const PAGE_DESC = 'Request early access to PecanRev — a professional workspace for systematic reviews and meta-analyses: search building, screening, data extraction, risk of bias, and meta-analysis in one place.';
-
-/**
- * Set <title>, <meta description>, Open Graph / Twitter title+description (using
- * REAL brand info — no applicant data in metadata), a canonical link, and (preview
- * only) a noindex robots tag. Everything is restored on unmount.
- */
-function useWaitlistSeo(preview) {
-  useEffect(() => {
-    const restores = [];
-
-    const prevTitle = document.title;
-    document.title = PAGE_TITLE;
-    restores.push(() => { document.title = prevTitle; });
-
-    const setMeta = (selector, content) => {
-      const el = document.querySelector(selector);
-      if (!el) return;
-      const prev = el.getAttribute('content');
-      el.setAttribute('content', content);
-      restores.push(() => { if (prev != null) el.setAttribute('content', prev); });
-    };
-    setMeta('meta[name="description"]', PAGE_DESC);
-    setMeta('meta[property="og:title"]', PAGE_TITLE);
-    setMeta('meta[property="og:description"]', PAGE_DESC);
-    setMeta('meta[name="twitter:title"]', PAGE_TITLE);
-    setMeta('meta[name="twitter:description"]', PAGE_DESC);
-
-    let canonical = document.querySelector('link[rel="canonical"]');
-    let createdCanonical = false;
-    const prevHref = canonical ? canonical.getAttribute('href') : null;
-    try {
-      const canonicalHref = `${window.location.origin}/`;
-      if (!canonical) {
-        canonical = document.createElement('link');
-        canonical.setAttribute('rel', 'canonical');
-        document.head.appendChild(canonical);
-        createdCanonical = true;
-      }
-      canonical.setAttribute('href', canonicalHref);
-      restores.push(() => {
-        if (createdCanonical && canonical.parentNode) canonical.parentNode.removeChild(canonical);
-        else if (prevHref != null) canonical.setAttribute('href', prevHref);
-      });
-    } catch { /* no window — SSR safety */ }
-
-    if (preview) {
-      const robots = document.createElement('meta');
-      robots.setAttribute('name', 'robots');
-      robots.setAttribute('content', 'noindex, nofollow');
-      document.head.appendChild(robots);
-      restores.push(() => { if (robots.parentNode) robots.parentNode.removeChild(robots); });
-    }
-
-    return () => { for (const r of restores.reverse()) r(); };
-  }, [preview]);
-}
+const WAITLIST_ENTRY = getPublicPage('/beta-waitlist');
 
 /**
  * Self-scope into Stitch design mode for the lifetime of this public page.
@@ -108,7 +57,10 @@ function useStitchSelfScope() {
 
 export default function BetaWaitlistPage({ preview = false }) {
   const navigate = useNavigate();
-  useWaitlistSeo(preview);
+  // Two mount points, two robots postures. At `/` (BetaWaitlistGate, flag ON) this
+  // IS the homepage and must stay indexable; at `/beta-waitlist` it is a duplicate
+  // preview of that same content, so it is noindex. Both canonicalise to '/'.
+  usePageHead({ ...WAITLIST_ENTRY, indexable: !preview });
   useStitchSelfScope();
 
   const [currentStep, setCurrentStep] = useState('email');

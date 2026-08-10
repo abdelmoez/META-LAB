@@ -7,6 +7,12 @@ import BrandWordmark from "../components/BrandWordmark.jsx";
 import GoogleAuthButton from "../auth/GoogleAuthButton.jsx";
 import TurnstileWidget from "../components/TurnstileWidget.jsx";
 import { usePublicAuthSettings } from "../auth/publicAuthSettings.js";
+// 111.md §1/§2 — /register is a permanently public page, so it gets a real head
+// (distinct title + description + canonical) instead of inheriting the shell's.
+import { getPublicPage } from "../website/publicPages.js";
+import { usePageHead } from "../website/usePageHead.js";
+
+const REGISTER_ENTRY = getPublicPage("/register");
 
 /* ── Shared input / label tokens ─────────────────────────────────────────── */
 const inputBase = {
@@ -96,6 +102,8 @@ const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
  * user gets the one-click accept with a readable error.
  */
 export default function Register({ onSuccess, onBack }) {
+  usePageHead(REGISTER_ENTRY);
+
   const [name, setName]               = useState("");
   const [email, setEmail]             = useState("");
   const [password, setPassword]       = useState("");
@@ -233,9 +241,12 @@ export default function Register({ onSuccess, onBack }) {
           >
             <BrandWordmark size={26} weight={700} letterSpacing="0.06em" />
           </div>
-          <div style={{ fontSize: 18, fontWeight: 600, color: C.txt, marginTop: 10, lineHeight: 1.3 }}>
+          {/* 111.md — the page h1. /register is indexable, so it needs exactly one
+              level-1 heading; every visual property is set explicitly so the UA
+              heading defaults change nothing on screen. */}
+          <h1 style={{ fontSize: 18, fontWeight: 600, color: C.txt, marginTop: 10, marginBottom: 0, lineHeight: 1.3 }}>
             Create your research workspace
-          </div>
+          </h1>
           <div style={{ fontSize: 13.5, color: C.muted, marginTop: 6, lineHeight: 1.5 }}>
             Start screening, extracting, analyzing, and exporting evidence from one clean workspace.
           </div>

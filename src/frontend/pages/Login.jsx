@@ -7,6 +7,12 @@ import BrandWordmark from "../components/BrandWordmark.jsx";
 import GoogleAuthButton from "../auth/GoogleAuthButton.jsx";
 import { usePublicAuthSettings } from "../auth/publicAuthSettings.js";
 import { googleErrorMessage } from "../auth/googleErrorCopy.js";
+// 111.md §1/§2 — /login is a permanently public page, so it gets a real head
+// (distinct title + description + canonical) instead of inheriting the shell's.
+import { getPublicPage } from "../website/publicPages.js";
+import { usePageHead } from "../website/usePageHead.js";
+
+const LOGIN_ENTRY = getPublicPage("/login");
 
 /* ── Shared input / label tokens ─────────────────────────────────────────── */
 const inputBase = {
@@ -77,6 +83,8 @@ const PrimaryBtn = ({ loading, children, ...rest }) => (
  *                     threaded from the deep-link origin (location.state.from).
  */
 export default function Login({ onSuccess, onRegister, onForgot, returnTo }) {
+  usePageHead(LOGIN_ENTRY);
+
   const [email, setEmail]       = useState("");
   const [password, setPassword] = useState("");
   const [error, setError]       = useState(null);
@@ -172,9 +180,12 @@ export default function Login({ onSuccess, onRegister, onForgot, returnTo }) {
           >
             <BrandWordmark size={26} weight={700} letterSpacing="0.06em" />
           </div>
-          <div style={{ fontSize: 14, color: C.muted, marginTop: 8, lineHeight: 1.5 }}>
+          {/* 111.md — the page h1. /login is indexable, so it needs exactly one
+              level-1 heading; every visual property is set explicitly (including
+              fontWeight) so the UA heading defaults change nothing on screen. */}
+          <h1 style={{ fontSize: 14, fontWeight: 400, color: C.muted, marginTop: 8, marginBottom: 0, lineHeight: 1.5 }}>
             Sign in to your research workspace
-          </div>
+          </h1>
         </div>
 
         {/* Divider ───────────────────────────────────────────────────────── */}

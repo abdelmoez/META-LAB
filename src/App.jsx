@@ -33,6 +33,22 @@ const VerifyEmail   = lazy(() => import('./frontend/pages/VerifyEmail.jsx'));
 const Onboarding    = lazy(() => import('./frontend/pages/Onboarding.jsx'));
 const RobPage       = lazy(() => import('./frontend/rob/RobPage.jsx'));
 const Terms         = lazy(() => import('./frontend/pages/Terms.jsx'));
+
+// 111.md §§6, 8, 9 — public marketing/education pages. Registered in
+// src/frontend/website/publicPages.js; each is a pure, SSR-safe component so the
+// build-time prerenderer can emit crawlable HTML for it.
+const FeaturesIndexPage        = lazy(() => import('./frontend/website/pages/FeaturesIndexPage.jsx'));
+const SearchEnginePage         = lazy(() => import('./frontend/website/pages/SearchEnginePage.jsx'));
+const ScreeningFeaturePage     = lazy(() => import('./frontend/website/pages/ScreeningPage.jsx'));
+const DataExtractionPage       = lazy(() => import('./frontend/website/pages/DataExtractionPage.jsx'));
+const MetaAnalysisFeaturePage  = lazy(() => import('./frontend/website/pages/MetaAnalysisPage.jsx'));
+const ManuscriptPage           = lazy(() => import('./frontend/website/pages/ManuscriptPage.jsx'));
+const ResourcesIndexPage       = lazy(() => import('./frontend/website/pages/ResourcesIndexPage.jsx'));
+const WhatIsSystematicReviewPage = lazy(() => import('./frontend/website/pages/WhatIsSystematicReviewPage.jsx'));
+const Prisma2020Page           = lazy(() => import('./frontend/website/pages/Prisma2020Page.jsx'));
+const ScreeningGuidePage       = lazy(() => import('./frontend/website/pages/ScreeningGuidePage.jsx'));
+const MetaAnalysisGuidePage    = lazy(() => import('./frontend/website/pages/MetaAnalysisGuidePage.jsx'));
+const AboutPage                = lazy(() => import('./frontend/website/pages/AboutPage.jsx'));
 const NotFound      = lazy(() => import('./frontend/pages/NotFound.jsx'));
 // 68.md (P8) — the PUBLIC synthesis page. Unwrapped (no auth): serves both the
 // shareable public page and the chrome-less embed. Same component, `embed` prop.
@@ -197,9 +213,29 @@ export default function App() {
         {/* prompt48 — Beta Waitlist preview (noindex; renders regardless of flag) */}
         <Route path="/beta-waitlist" element={<BetaWaitlistPreview preview />} />
 
+        {/* 111.md §§6, 8, 9 — public marketing + methodology pages. Anonymous-reachable,
+            indexable, and prerendered at build time. Kept above the auth routes so the
+            public information architecture reads as one block. */}
+        <Route path="/features"                                    element={<FeaturesIndexPage />} />
+        <Route path="/features/search-engine"                      element={<SearchEnginePage />} />
+        <Route path="/features/screening"                          element={<ScreeningFeaturePage />} />
+        <Route path="/features/data-extraction"                    element={<DataExtractionPage />} />
+        <Route path="/features/meta-analysis"                      element={<MetaAnalysisFeaturePage />} />
+        <Route path="/features/manuscript"                         element={<ManuscriptPage />} />
+        <Route path="/resources"                                   element={<ResourcesIndexPage />} />
+        <Route path="/resources/what-is-a-systematic-review"       element={<WhatIsSystematicReviewPage />} />
+        <Route path="/resources/prisma-2020-explained"             element={<Prisma2020Page />} />
+        <Route path="/resources/title-and-abstract-screening"      element={<ScreeningGuidePage />} />
+        <Route path="/resources/how-to-run-a-meta-analysis"        element={<MetaAnalysisGuidePage />} />
+        <Route path="/about"                                       element={<AboutPage />} />
+
         {/* Public Terms of Service + Privacy Policy (prompt29) — works signed in or out */}
         <Route path="/terms"    element={<Terms />} />
-        <Route path="/privacy"  element={<Navigate to="/terms#privacy" replace />} />
+        {/* 111.md §5 — /privacy is now a real HTTP 301 to /terms#privacy, owned by
+            server/middleware/publicPages.js (production) and mirrored by the Vite
+            dev server (vite.config.js) so dev + e2e behave identically. The client
+            <Navigate> it replaces could only ever produce a soft 200, which made
+            /privacy look like an indexable duplicate of /terms to crawlers. */}
 
         {/* Auth pages — redirect to /app when already signed in */}
         <Route path="/login"    element={<PublicRoute><LoginRoute /></PublicRoute>} />

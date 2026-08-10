@@ -28,6 +28,18 @@ import { useAuth } from '../context/AuthContext.jsx';
 import { api } from '../api-client/apiClient.js';
 import { C, FONT, MONO, alpha } from '../theme/tokens.js';
 import { Icon, ICON_NAMES } from '../components/icons.jsx';
+// 111.md §7 — the FAQ copy is shared with the '/' registry entry so the FAQPage
+// JSON-LD can never describe questions the page does not show.
+import { HOMEPAGE_FAQ } from '../website/publicPages.js';
+// 111.md §23 — internal linking: the footer link map is shared with every
+// content page's footer so no public page is orphaned.
+import { FEATURE_LINKS, RESOURCE_LINKS } from '../website/siteNav.js';
+// 111.md §1/§2 — registry-driven page head (title/description/canonical/OG/JSON-LD).
+import { getPublicPage } from '../website/publicPages.js';
+import { usePageHead } from '../website/usePageHead.js';
+
+/** The '/' registry entry — the single source of truth for the homepage head. */
+const HOME_ENTRY = getPublicPage('/');
 
 /* ─── Static content ─────────────────────────────────────────────────── */
 
@@ -77,11 +89,16 @@ function resolveCardIcon(icon) {
 /* ─── Default settings ───────────────────────────────────────────────── */
 const DEFAULTS = {
   logoText:          'PecanRev',
+  // 111.md §23 — the default nav now points at the real feature/resource pages
+  // instead of on-page anchors, so the homepage passes link equity to them and a
+  // crawler can reach the whole public IA from '/'. Still admin-overridable: an
+  // operator who has already saved navLinks keeps their own set (useLandingSettings
+  // only substitutes these defaults when the stored array is empty).
   navLinks:          [
-    { label: 'Features', href: '#features' },
-    { label: 'Workflow', href: '#workflow' },
-    { label: 'About',    href: '#about'    },
-    { label: 'Contact',  href: '#contact'  },
+    { label: 'Features', href: '/features'  },
+    { label: 'Guides',   href: '/resources' },
+    { label: 'About',    href: '/about'     },
+    { label: 'Contact',  href: '#contact'   },
   ],
   heroHeadline:      'From screening to meta-analysis,\none clean workspace for evidence synthesis.',
   heroSubtitle:      'Organize citations, screen studies, extract data, run pooled analyses, and export research-ready reports — all in one auditable platform.',
@@ -624,11 +641,15 @@ export default function Landing() {
   const rate         = motionOff ? 1 : (ANIM_RATE[speedSetting] || 1);
   const durMult      = +(1 / rate).toFixed(4);
 
-  useEffect(() => {
-    if (settings.seoTitle) document.title = settings.seoTitle;
-    const meta = document.querySelector('meta[name="description"]');
-    if (meta && settings.seoDescription) meta.setAttribute('content', settings.seoDescription);
-  }, [settings.seoTitle, settings.seoDescription]);
+  // 111.md §2 — the head is now registry-driven (title, description, canonical,
+  // OG/Twitter, Organization+WebSite+SoftwareApplication JSON-LD) instead of the
+  // two-line title/description patch this used to do. The admin SEO overlay from
+  // Ops › Content still WINS: seoTitle/seoDescription override the registry copy.
+  usePageHead({
+    ...HOME_ENTRY,
+    title: settings.seoTitle || HOME_ENTRY.title,
+    description: settings.seoDescription || HOME_ENTRY.description,
+  });
 
   const [navOpen,         setNavOpen]        = useState(false);
   const [activeStep,      setActiveStep]     = useState(0);
@@ -1103,7 +1124,7 @@ export default function Landing() {
                     <Icon name={resolveCardIcon(v.icon)} size={18} />
                   </div>
                   <div style={{ minWidth: 0 }}>
-                    <div style={{ fontSize: 15, fontWeight: 700, color: C.txt, marginBottom: 8 }}>{v.label}</div>
+                    <h3 style={{ fontSize: 15, fontWeight: 700, color: C.txt, margin: '0 0 8px', fontFamily: FONT }}>{v.label}</h3>
                     <div style={{ fontSize: 13.5, color: C.txt2, lineHeight: 1.7 }}>{v.desc}</div>
                   </div>
                 </div>
@@ -1129,7 +1150,7 @@ export default function Landing() {
                     <Icon name={resolveCardIcon(v.icon)} size={18} />
                   </div>
                   <div style={{ minWidth: 0 }}>
-                    <div style={{ fontSize: 15, fontWeight: 700, color: C.txt, marginBottom: 8 }}>{v.label}</div>
+                    <h3 style={{ fontSize: 15, fontWeight: 700, color: C.txt, margin: '0 0 8px', fontFamily: FONT }}>{v.label}</h3>
                     <div style={{ fontSize: 13.5, color: C.txt2, lineHeight: 1.7 }}>{v.desc}</div>
                   </div>
                 </motion.div>
@@ -1248,7 +1269,7 @@ export default function Landing() {
                       <Icon name={icon} size={16} />
                     </div>
                     <div style={{ minWidth: 0 }}>
-                      <div style={{ fontSize: 14, fontWeight: 700, color: C.txt, marginBottom: 6 }}>{title}</div>
+                      <h3 style={{ fontSize: 14, fontWeight: 700, color: C.txt, margin: '0 0 6px', fontFamily: FONT }}>{title}</h3>
                       <div style={{ fontSize: 13.5, color: C.txt2, lineHeight: 1.7 }}>{body}</div>
                     </div>
                   </div>
@@ -1273,7 +1294,7 @@ export default function Landing() {
                       <Icon name={icon} size={16} />
                     </div>
                     <div style={{ minWidth: 0 }}>
-                      <div style={{ fontSize: 14, fontWeight: 700, color: C.txt, marginBottom: 6 }}>{title}</div>
+                      <h3 style={{ fontSize: 14, fontWeight: 700, color: C.txt, margin: '0 0 6px', fontFamily: FONT }}>{title}</h3>
                       <div style={{ fontSize: 13.5, color: C.txt2, lineHeight: 1.7 }}>{body}</div>
                     </div>
                   </motion.div>
@@ -1346,7 +1367,7 @@ export default function Landing() {
                       <Icon name={icon} size={16} />
                     </div>
                     <div style={{ minWidth: 0 }}>
-                      <div style={{ fontSize: 14, fontWeight: 700, color: C.txt, marginBottom: 6 }}>{title}</div>
+                      <h3 style={{ fontSize: 14, fontWeight: 700, color: C.txt, margin: '0 0 6px', fontFamily: FONT }}>{title}</h3>
                       <div style={{ fontSize: 13.5, color: C.txt2, lineHeight: 1.7 }}>{body}</div>
                     </div>
                   </div>
@@ -1371,7 +1392,7 @@ export default function Landing() {
                       <Icon name={icon} size={16} />
                     </div>
                     <div style={{ minWidth: 0 }}>
-                      <div style={{ fontSize: 14, fontWeight: 700, color: C.txt, marginBottom: 6 }}>{title}</div>
+                      <h3 style={{ fontSize: 14, fontWeight: 700, color: C.txt, margin: '0 0 6px', fontFamily: FONT }}>{title}</h3>
                       <div style={{ fontSize: 13.5, color: C.txt2, lineHeight: 1.7 }}>{body}</div>
                     </div>
                   </motion.div>
@@ -1405,7 +1426,7 @@ export default function Landing() {
                     <div style={{ width: 38, height: 38, borderRadius: 10, flexShrink: 0, background: C.accBg, color: C.acc, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
                       <Icon name={b.icon} size={17} />
                     </div>
-                    <div style={{ fontSize: 15, fontWeight: 700, color: C.txt }}>{b.title}</div>
+                    <h3 style={{ fontSize: 15, fontWeight: 700, color: C.txt, margin: 0, fontFamily: FONT }}>{b.title}</h3>
                   </div>
                   <div style={{ fontSize: 13.5, color: C.txt2, lineHeight: 1.75 }}>{b.desc}</div>
                 </div>
@@ -1430,7 +1451,7 @@ export default function Landing() {
                     <div style={{ width: 38, height: 38, borderRadius: 10, flexShrink: 0, background: C.accBg, color: C.acc, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
                       <Icon name={b.icon} size={17} />
                     </div>
-                    <div style={{ fontSize: 15, fontWeight: 700, color: C.txt }}>{b.title}</div>
+                    <h3 style={{ fontSize: 15, fontWeight: 700, color: C.txt, margin: 0, fontFamily: FONT }}>{b.title}</h3>
                   </div>
                   <div style={{ fontSize: 13.5, color: C.txt2, lineHeight: 1.75 }}>{b.desc}</div>
                 </motion.div>
@@ -1455,6 +1476,46 @@ export default function Landing() {
               </div>
             </Reveal>
           )}
+        </div>
+      </section>
+
+      {/* ══════════════════════════════════════════════════════════════
+          8b. FAQ (111.md §7) — real questions, honest answers.
+          Rendered verbatim from HOMEPAGE_FAQ, which also builds the FAQPage
+          JSON-LD on the '/' registry entry, so schema and visible copy cannot
+          diverge. NOT admin-editable: schema parity depends on it.
+          ══════════════════════════════════════════════════════════════ */}
+      <section id="faq" style={{ background: C.bg, padding: '96px 48px', borderBottom: `1px solid ${C.brd}` }}>
+        <div style={{ maxWidth: 880, margin: '0 auto' }}>
+          <Reveal reduced={motionOff}>
+            <SectionTitle pretitle="FAQ" title="Questions researchers ask us">
+              Short, specific answers. Where a capability has a limit, the limit is stated.
+            </SectionTitle>
+          </Reveal>
+          <div style={{ marginTop: 48, display: 'grid', gap: 14 }}>
+            {HOMEPAGE_FAQ.map(item => (
+              <div key={item.question} style={{
+                background: C.surf, border: `1px solid ${C.brd}`, borderRadius: 14,
+                padding: '22px 26px',
+              }}>
+                <h3 style={{
+                  fontSize: 16.5, fontWeight: 700, color: C.txt, margin: '0 0 10px',
+                  fontFamily: FONT, letterSpacing: '-0.01em', lineHeight: 1.35,
+                }}>
+                  {item.question}
+                </h3>
+                <p style={{ fontSize: 15, color: C.txt2, lineHeight: 1.75, margin: 0 }}>
+                  {item.answer}
+                </p>
+              </div>
+            ))}
+          </div>
+          <p style={{ marginTop: 28, fontSize: 14.5, color: C.muted, textAlign: 'center' }}>
+            More detail on the{' '}
+            <a href="/features" style={{ color: C.acc, textDecoration: 'none', fontWeight: 600 }}>feature pages</a>
+            {' '}and in our{' '}
+            <a href="/resources" style={{ color: C.acc, textDecoration: 'none', fontWeight: 600 }}>methodology guides</a>.
+          </p>
         </div>
       </section>
 
@@ -1579,7 +1640,7 @@ export default function Landing() {
           ══════════════════════════════════════════════════════════════ */}
       <footer style={{ borderTop: `1px solid ${C.brd}`, background: C.surf, padding: '64px 48px 40px' }}>
         <div style={{ maxWidth: 1104, margin: '0 auto' }}>
-          <div className="lp-footer-cols" style={{ display: 'flex', gap: 64, marginBottom: 52 }}>
+          <div className="lp-footer-cols" style={{ display: 'flex', gap: 'clamp(28px, 4vw, 56px)', flexWrap: 'wrap', marginBottom: 52 }}>
             {/* Brand */}
             <div style={{ flex: '0 0 220px', minWidth: 0 }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 9, marginBottom: 16 }}>
@@ -1591,17 +1652,39 @@ export default function Landing() {
               </p>
             </div>
 
-            {/* Platform */}
+            {/* Product — 111.md §23. Hardcoded (not admin-editable) so the feature
+                pages can never be orphaned by a content edit. */}
             <div>
               <div style={{ fontSize: 10, fontFamily: MONO, color: C.muted, letterSpacing: '0.15em', textTransform: 'uppercase', marginBottom: 18, fontWeight: 700 }}>
-                Platform
+                Product
               </div>
-              {['Features', 'Workflow', 'About', 'Contact'].map(l => (
-                <a key={l} href={`#${l.toLowerCase()}`} className="lp-footer-link"
+              {FEATURE_LINKS.map(l => (
+                <a key={l.path} href={l.path} className="lp-footer-link"
                   style={{ display: 'block', fontSize: 14, color: C.muted, textDecoration: 'none', marginBottom: 12 }}>
-                  {l}
+                  {l.label}
                 </a>
               ))}
+              <a href="/features" className="lp-footer-link"
+                style={{ display: 'block', fontSize: 14, color: C.muted, textDecoration: 'none', marginBottom: 12 }}>
+                All features
+              </a>
+            </div>
+
+            {/* Learn — the cornerstone methodology guides (111.md §9). */}
+            <div>
+              <div style={{ fontSize: 10, fontFamily: MONO, color: C.muted, letterSpacing: '0.15em', textTransform: 'uppercase', marginBottom: 18, fontWeight: 700 }}>
+                Learn
+              </div>
+              {RESOURCE_LINKS.map(l => (
+                <a key={l.path} href={l.path} className="lp-footer-link"
+                  style={{ display: 'block', fontSize: 14, color: C.muted, textDecoration: 'none', marginBottom: 12, maxWidth: 210 }}>
+                  {l.label}
+                </a>
+              ))}
+              <a href="/about" className="lp-footer-link"
+                style={{ display: 'block', fontSize: 14, color: C.muted, textDecoration: 'none', marginBottom: 12 }}>
+                About PecanRev
+              </a>
             </div>
 
             {/* Account */}

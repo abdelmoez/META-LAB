@@ -17,6 +17,8 @@ import { requireAuth }   from './middleware/auth.js';
 import { requireAdmin }  from './middleware/requireAdmin.js';
 import { maintenanceGate } from './middleware/maintenance.js';
 import { spaEnabled, serveSpa, distDir } from './middleware/spaTheme.js';
+// 111.md §5 — SEO edge (real 404s, /privacy 301, X-Robots-Tag, prerendered HTML).
+import { publicPagesMiddleware, blockPrerenderDir } from './middleware/publicPages.js';
 // 109.md §6 — bounded persistence for the client-error beacon (below).
 import { recordClientErrorReport } from './controllers/researchOpsJobsController.js';
 
@@ -662,6 +664,10 @@ app.use('/api/entitlements', requireAuth, entitlementsRouter);
 // Mounted AFTER every /api route so matched API routes always win; serveSpa
 // skips /api/* (those fall through to the JSON 404 below).
 if (spaEnabled()) {
+  // 111.md §5 — dist/__prerender/ holds build-time prerendered HTML. It is an
+  // internal artefact: without this guard express.static would serve every page a
+  // second time under /__prerender/<path>/index.html (duplicate content).
+  app.use(blockPrerenderDir);
   app.use(express.static(distDir, {
     index: false,
     maxAge: '1h',
@@ -682,6 +688,10 @@ if (spaEnabled()) {
       }
     },
   }));
+  // 111.md §5 — between static and serveSpa: real files still win, but the SEO
+  // decision (404 vs 301 vs noindex vs prerendered HTML) is made BEFORE the shell
+  // is written. Kills the universal soft-404 that serveSpa alone produced.
+  app.use(publicPagesMiddleware());
   app.use(serveSpa);
 }
 
