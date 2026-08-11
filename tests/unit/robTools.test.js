@@ -10,14 +10,19 @@ import {
 } from '../../src/research-engine/rob/tools.js';
 
 // NOTE (P14): ROBINS-I is an IMPLEMENTED, active instrument.
-// NOTE (101.md §18-§22): the two official Newcastle-Ottawa forms are now
-// implemented as separate active instruments — 'NOS' (cohort) and 'NOS-CC'
-// (case-control) — because their third domain genuinely differs (Outcome vs
-// Exposure). QUADAS-2 / custom remain planned.
-const ACTIVE = ['RoB2', 'ROBINS-I', 'NOS', 'NOS-CC'];
+// NOTE (101.md §18-§22): the two official Newcastle-Ottawa forms are separate
+// active instruments — 'NOS' (cohort) and 'NOS-CC' (case-control) — because their
+// third domain genuinely differs (Outcome vs Exposure).
+// NOTE (115.md W1-A): the catalogue now carries all thirteen implemented
+// instruments. Only the custom-template authoring surface remains planned.
+const ACTIVE = [
+  'RoB2', 'ROBINS-I', 'NOS', 'NOS-CC', 'QUADAS-2', 'AMSTAR-2',
+  'JBI-CaseSeries', 'JBI-CaseReport', 'JBI-Prevalence', 'JBI-CrossSectional', 'JBI-Qualitative',
+  'QUIPS', 'PROBAST',
+];
 
 describe('ROB_TOOLS catalogue', () => {
-  it('lists RoB 2, ROBINS-I and both NOS forms as active, with the rest coming-soon', () => {
+  it('lists all thirteen implemented instruments as active, with the rest coming-soon', () => {
     expect(ROB_TOOLS.map(t => t.id)).toContain('RoB2');
     expect(ACTIVE_ROB_TOOLS).toEqual(ACTIVE);
     expect(DEFAULT_ROB_TOOL).toBe('RoB2');
@@ -25,8 +30,9 @@ describe('ROB_TOOLS catalogue', () => {
     for (const t of ROB_TOOLS) {
       if (!ACTIVE.includes(t.id)) expect(t.status).toBe('coming-soon');
     }
-    // QUADAS-2 / custom are present for future-proofing
+    // QUADAS-2 is now implemented; the custom template is still future-proofing.
     expect(ROB_TOOLS.map(t => t.id)).toEqual(expect.arrayContaining(['ROBINS-I', 'QUADAS-2', 'NOS', 'NOS-CC', 'custom']));
+    expect(getRobTool('custom').status).toBe('coming-soon');
   });
 
   it('getRobTool resolves descriptors', () => {
@@ -63,20 +69,46 @@ describe('study-design routing (101.md §18)', () => {
     expect(toolsForStudyDesign('interrupted time series')).toEqual(['ROBINS-I']);
   });
 
+  it('treats a non-randomised trial as non-randomised, not as a trial', () => {
+    // "non-randomised" contains "randomised"; the specific test must win.
+    expect(toolsForStudyDesign('non-randomised trial')).toEqual(['ROBINS-I']);
+    expect(toolsForStudyDesign('quasi-experimental study')).toEqual(['ROBINS-I']);
+  });
+
+  it('routes the 115.md designs to their instruments', () => {
+    expect(toolsForStudyDesign('diagnostic test accuracy study')).toEqual(['QUADAS-2']);
+    expect(toolsForStudyDesign('systematic review and meta-analysis')).toEqual(['AMSTAR-2']);
+    expect(toolsForStudyDesign('case report')).toEqual(['JBI-CaseReport']);
+    expect(toolsForStudyDesign('retrospective case series')).toEqual(['JBI-CaseSeries']);
+    expect(toolsForStudyDesign('prevalence survey')).toEqual(['JBI-Prevalence']);
+    expect(toolsForStudyDesign('analytical cross-sectional study')).toEqual(['JBI-CrossSectional']);
+    expect(toolsForStudyDesign('qualitative interview study')).toEqual(['JBI-Qualitative']);
+    expect(toolsForStudyDesign('prognostic factor study')).toEqual(['QUIPS']);
+    expect(toolsForStudyDesign('clinical prediction model development study')).toEqual(['PROBAST']);
+  });
+
+  it('prefers the more specific instrument when a design string names several', () => {
+    // A prevalence study is usually described as cross-sectional.
+    expect(toolsForStudyDesign('cross-sectional prevalence study')).toEqual(['JBI-Prevalence']);
+    // A systematic review of trials is a review, not a trial.
+    expect(toolsForStudyDesign('systematic review of randomised trials')).toEqual(['AMSTAR-2']);
+    // A DTA study run in a cohort is a DTA study.
+    expect(toolsForStudyDesign('prospective cohort diagnostic accuracy study')).toEqual(['QUADAS-2']);
+  });
+
   it('returns nothing rather than a misleading fallback for an unknown design', () => {
     expect(toolsForStudyDesign('')).toEqual([]);
-    expect(toolsForStudyDesign('qualitative interview study')).toEqual([]);
+    expect(toolsForStudyDesign('an n-of-1 design nobody routes')).toEqual([]);
     expect(nosVariantForDesign('qualitative interview study')).toBe('');
+    expect(nosVariantForDesign('an n-of-1 design nobody routes')).toBe('');
   });
 });
 
 describe('isRobToolActive / normalizeRobTool', () => {
-  it('RoB 2, ROBINS-I and the NOS forms are active; planned tools are not', () => {
-    expect(isRobToolActive('RoB2')).toBe(true);
-    expect(isRobToolActive('ROBINS-I')).toBe(true);
-    expect(isRobToolActive('NOS')).toBe(true);
-    expect(isRobToolActive('NOS-CC')).toBe(true);
-    expect(isRobToolActive('QUADAS-2')).toBe(false);
+  it('all thirteen implemented instruments are active; planned tools are not', () => {
+    for (const id of ACTIVE) expect(isRobToolActive(id), id).toBe(true);
+    expect(isRobToolActive('custom')).toBe(false);
+    expect(isRobToolActive('ROBINS-E')).toBe(false);
     expect(isRobToolActive('')).toBe(false);
     expect(isRobToolActive(undefined)).toBe(false);
   });
@@ -84,7 +116,9 @@ describe('isRobToolActive / normalizeRobTool', () => {
   it('coerces any non-active selection back to the default', () => {
     expect(normalizeRobTool('RoB2')).toBe('RoB2');
     expect(normalizeRobTool('ROBINS-I')).toBe('ROBINS-I');
-    expect(normalizeRobTool('QUADAS-2')).toBe('RoB2');
+    expect(normalizeRobTool('QUADAS-2')).toBe('QUADAS-2');
+    expect(normalizeRobTool('PROBAST')).toBe('PROBAST');
+    expect(normalizeRobTool('custom')).toBe('RoB2');
     expect(normalizeRobTool('garbage')).toBe('RoB2');
     expect(normalizeRobTool(undefined)).toBe('RoB2');
     expect(normalizeRobTool(null)).toBe('RoB2');

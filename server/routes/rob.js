@@ -10,6 +10,8 @@
 import { Router } from 'express';
 import {
   getRobInstrument,
+  listRobInstruments,
+  exportProjectAssessments,
   createAssessment,
   getAssessment,
   listProjectAssessments,
@@ -33,12 +35,22 @@ import {
 
 const router = Router();
 
+// 115.md decision 3 — the SELECTABLE instrument catalogue, derived from the
+// registry (never a hardcoded list). Declared before `/instruments/:id` so the
+// bare path is not captured as an id.
+router.get('/instruments', listRobInstruments);
+
 // Instrument definition (data-driven UI). `/instruments/rob2` and
-// `/instruments/robins-i` both resolve here (P14 — instrument-aware).
+// `/instruments/robins-i` resolve via the legacy slug aliases; every registered
+// instrument is additionally reachable by its own slug (115.md).
 router.get('/instruments/:id', getRobInstrument);
 
 // Project-scoped list (for the summary plot). Declared before /assessments/:id.
 router.get('/projects/:projectId/assessments', listProjectAssessments);
+
+// 115.md §27 — the project-wide, tool-SECTIONED RoB CSV. Declared next to the list
+// it exports; the extra path segment means it can never shadow the list route.
+router.get('/projects/:projectId/assessments/export', exportProjectAssessments);
 
 // P14 — machine-vs-human RoB agreement (guided-appraisal validation), scoped by
 // instrument. Gated behind `guidedRobAppraisal` in the handler.

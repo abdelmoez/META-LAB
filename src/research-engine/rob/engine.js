@@ -38,12 +38,18 @@ import {
   completeness as nosCompleteness,
   scoreAssessment,
 } from './instruments/nos.js';
+// 115.md decision 4 — instrument availability is REGISTRY-driven. The registry
+// carries all thirteen definitions + their algorithms; the four literal entries
+// below are kept so the pre-115 dispatch is visibly unchanged (the registry's
+// entries for them are the very same frozen objects and functions).
+import { ROB_INSTRUMENTS, ROB_ALGORITHMS } from './instruments/registry.js';
 
 const INSTRUMENTS = {
   RoB2: ROB2,
   'ROBINS-I': ROBINSI,
   NOS: NOS_COHORT,
   'NOS-CC': NOS_CASE_CONTROL,
+  ...ROB_INSTRUMENTS,
 };
 
 // Per-instrument judgement algorithms. Keyed by instrument id so the generic
@@ -60,6 +66,7 @@ const ALGORITHMS = {
     judgeDomain: (domainId, answers) => nosJudgeDomain(NOS_CASE_CONTROL, domainId, answers),
     judgeOverall: (domainJudgments) => nosJudgeOverall(NOS_CASE_CONTROL, domainJudgments),
   },
+  ...ROB_ALGORITHMS,
 };
 
 /** True for star-scored instruments (NOS), false for judgement instruments. */
@@ -67,7 +74,17 @@ export function isScoringInstrument(instrument) {
   return !!(instrument && instrument.scoring === 'stars');
 }
 
-/** Return a frozen instrument definition by id (RoB2 or ROBINS-I). */
+/** Every registered instrument id, in catalogue order. */
+export function instrumentIds() {
+  return Object.keys(INSTRUMENTS);
+}
+
+/** True when `id` names a registered instrument. Total; never throws. */
+export function hasInstrument(id) {
+  return typeof id === 'string' && Object.prototype.hasOwnProperty.call(INSTRUMENTS, id);
+}
+
+/** Return a frozen instrument definition by id (any registered instrument). */
 export function getInstrument(id = 'RoB2') {
   const inst = INSTRUMENTS[id];
   if (!inst) throw new Error(`Unknown RoB instrument: ${id}`);
@@ -136,6 +153,13 @@ export function proposeDomain(instrument, domainId, answers) {
   // Star-scored instruments (NOS) carry the score alongside the judgement string;
   // pass it through so proposeOverall sums stars rather than re-parsing numerals.
   if (out.stars != null) { proposal.stars = out.stars; proposal.maxStars = out.maxStars; }
+  // 115.md: an instrument's algorithm may carry its own extra signal — AMSTAR 2's
+  // flaw counts (which judgeOverall reads back), a QUADAS-2/PROBAST flagged-question
+  // list, a reviewer-judged marker. Anything not already set is passed through
+  // unchanged, so the four pre-115 instruments produce byte-identical proposals.
+  for (const k of Object.keys(out)) {
+    if (!Object.prototype.hasOwnProperty.call(proposal, k)) proposal[k] = out[k];
+  }
   return proposal;
 }
 
@@ -172,13 +196,22 @@ export function completeness(instrument, assessment) {
   const perDomain = {};
   let totalAnswered = 0;
   let totalRequired = 0;
+  // 115.md: two additive rules, both no-ops for the pre-115 instruments.
+  //  · `answerable: false` marks a prompt that the instrument never asks the
+  //    reviewer to ANSWER (a QUADAS-2/PROBAST applicability prompt), so it can
+  //    never be "missing".
+  //  · `naIsAnswer` marks an instrument where "Not applicable" is a printed,
+  //    deliberate response (the JBI checklists, PROBAST's shaded questions)
+  //    rather than "this was never asked". Default stays: NA counts as missing.
+  const naCountsAsMissing = instrument.naIsAnswer !== true;
   for (const d of instrument.domains) {
     const answers = answersByDomain[d.id] || {};
-    const reachable = d.questions.filter(q => isReachable(q, answers));
+    const reachable = d.questions.filter(q => q.answerable !== false && isReachable(q, answers));
     const missing = reachable
       .filter(q => {
         const v = answerCode(answers, q.id);
-        return v == null || v === 'NA';
+        if (v == null) return true;
+        return v === 'NA' && naCountsAsMissing;
       })
       .map(q => q.id);
     const required = reachable.length;

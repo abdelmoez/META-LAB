@@ -191,10 +191,15 @@ describe('P14 — ROBINS-I guided appraisal (7 domains / 5-level)', () => {
     expect(created.data.assessment.domains).toHaveLength(7);
   });
 
-  it('rejects an unsupported instrumentId (400)', async () => {
+  // 115.md decision 3 — instrument availability is REGISTRY-driven. This test used
+  // to assert that QUADAS-2 was rejected, because the allowlist named exactly four
+  // instruments; QUADAS-2 now HAS a definition, so it is creatable. What must still
+  // be rejected is an id the registry does not know — and the 400 names it.
+  it('rejects an instrumentId the registry does not know (400, naming it)', async () => {
     if (!up || !adminCookie || !projectId) return;
-    const bad = await api('/rob/assessments', { method: 'POST', cookie: ownerCookie, body: { projectId, studyId: 'x', instrumentId: 'QUADAS-2' } });
+    const bad = await api('/rob/assessments', { method: 'POST', cookie: ownerCookie, body: { projectId, studyId: 'x', instrumentId: 'NOT-A-REAL-TOOL' } });
     expect(bad.status).toBe(400);
+    expect(String(bad.data.error)).toContain('NOT-A-REAL-TOOL');
   });
 
   it('appraise populates proposed + evidence + aiConfidence WITHOUT touching final/overridden', async () => {

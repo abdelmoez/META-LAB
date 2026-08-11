@@ -16,10 +16,14 @@ import Icon from '../components/icons.jsx';
 import { api } from '../api-client/apiClient.js';
 import { robApi, guidedRobAppraisalEnabled } from './robApi.js';
 import RobWorkspace from './RobWorkspace.jsx';
-import RobTrafficLight from './RobTrafficLight.jsx';
 import { judgmentStyle } from './judgmentStyle.js';
+import ReviewerComparisonPanel from './ReviewerComparisonPanel.jsx';
+import RobSummaryOutputs from './RobSummaryOutputs.jsx';
+import RobExportButton from './RobExportButton.jsx';
 import { ROB_TOOLS, normalizeRobTool, isRobToolActive } from '../../research-engine/rob/tools.js';
 import { articleStatusOf } from './articleStatus.js';
+import InstrumentSelector from './InstrumentSelector.jsx';
+import { filterInstruments, designsInCatalogue, designLabelsFor } from './instrumentCatalog.js';
 
 export default function ProjectRobPanel({ projectId, embedded = false, canEdit = true, robTool, onSelectTool, onContinue, onWorkspaceChange }) {
   const [project, setProject] = useState(null);
@@ -33,6 +37,13 @@ export default function ProjectRobPanel({ projectId, embedded = false, canEdit =
   const [recentStudyId, setRecentStudyId] = useState(null);
   const [creatingFor, setCreatingFor] = useState(null); // study being created-for
   const [studies, setStudies] = useState([]);          // prompt46 #4 — merged study universe (screening + manual)
+  // 115.md decision 3 — the SELECTABLE instrument catalogue, from the registry via
+  // the API. This is what killed `INSTRUMENT_CHOICES`: nothing in this component
+  // knows which instruments exist, so registering one makes it appear here.
+  const [catalogue, setCatalogue] = useState([]);
+  // 115.md decision 7 — per-instrument assessment groups, so a mixed-tool project
+  // never renders one plot over incompatible tools.
+  const [groups, setGroups] = useState([]);
   const [showAddStudy, setShowAddStudy] = useState(false);
   // 65.md UX-12 — { study, count } while the force-remove confirm modal is open
   // (replaces window.confirm; assessments are kept either way).
@@ -63,11 +74,25 @@ export default function ProjectRobPanel({ projectId, embedded = false, canEdit =
       setProject(proj);
       setAssessments(list.assessments || []);
       setMatrix(list.matrix || null);
+      setGroups(Array.isArray(list.groups) ? list.groups : []);
       setStudies(
         (studiesRes && Array.isArray(studiesRes.studies))
           ? studiesRes.studies
           : (Array.isArray(proj.studies) ? proj.studies.map(s => ({ ...s, source: 'screening' })) : []),
       );
+      // The catalogue travels WITH the study universe (one round-trip). Older
+      // servers omit it; fall back to the dedicated endpoint rather than to a
+      // hardcoded list, so the selector is never quietly narrowed back to two tools.
+      // The rows arrive complete: every one of the thirteen DEFINITIONS carries its
+      // own organisation / citation / guidance URL / licence, so the §32 provenance
+      // panel reads the server's catalogue and nothing is merged in client-side.
+      if (studiesRes && Array.isArray(studiesRes.instruments) && studiesRes.instruments.length) {
+        setCatalogue(studiesRes.instruments);
+      } else {
+        robApi.listInstruments()
+          .then(r => setCatalogue(Array.isArray(r.instruments) ? r.instruments : []))
+          .catch(() => { /* selector falls back to the project's stored tool */ });
+      }
       setError('');
     } catch (e) {
       // Owner-scoped API: a non-owner (shared / read-only collaborator) gets 404.
@@ -86,9 +111,14 @@ export default function ProjectRobPanel({ projectId, embedded = false, canEdit =
   async function createFor(study, resultLabel, instrumentId) {
     try {
       const body = { projectId, studyId: study.id, resultLabel: resultLabel || '' };
-      // Only send an instrument when guided appraisal is ON; when OFF the server
-      // defaults to RoB 2 (behaviour identical to today).
-      if (appraisalOn && instrumentId) body.instrumentId = instrumentId;
+      // 115.md decision 3 — the reviewer's chosen instrument is ALWAYS sent. This
+      // line used to read `if (appraisalOn && instrumentId)`: with the
+      // `guidedRobAppraisal` flag off, every assessment silently became RoB 2 no
+      // matter what the reviewer picked. Which instruments exist is a registry
+      // question; the guided-appraisal flag gates the guided appraiser and nothing
+      // else. The server validates the id against the registry and rejects an
+      // unknown one by name.
+      if (instrumentId) body.instrumentId = instrumentId;
       const res = await robApi.createAssessment(body);
       setCreatingFor(null);
       setRecentStudyId(study.id);
@@ -143,13 +173,17 @@ export default function ProjectRobPanel({ projectId, embedded = false, canEdit =
     <div>
       {error && <div style={{ marginBottom: 14 }}><ErrorBox msg={error} onRetry={reload} /></div>}
 
-      <ToolSelector selected={selectedTool} canEdit={canEdit} onSelect={onSelectTool} appraisalOn={appraisalOn} />
+      <ToolSelector selected={selectedTool} canEdit={canEdit} onSelect={onSelectTool} catalogue={catalogue} />
 
       <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap', margin: '4px 0 16px' }}>
         <div>
           <h2 style={{ fontSize: 18, fontWeight: 800, margin: '0 0 2px' }}>{project.name}</h2>
+          {/* 115.md — this line used to hardcode "RoB 2 / ROBINS-I" (or "RoB 2"
+              with the guided flag off), which stopped being true the moment the
+              registry grew. It now states what is actually available. */}
           <p style={{ fontSize: 12.5, color: C.txt2, margin: 0 }}>
-            {assessments.length} assessment{assessments.length === 1 ? '' : 's'} · {appraisalOn ? 'RoB 2 / ROBINS-I' : 'RoB 2 (effect of assignment)'} · per result
+            {assessments.length} assessment{assessments.length === 1 ? '' : 's'}
+            {catalogue.length ? ` · ${catalogue.length} assessment tools available` : ''} · per result
           </p>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
@@ -166,10 +200,20 @@ export default function ProjectRobPanel({ projectId, embedded = false, canEdit =
         </div>
       </div>
 
+      {/* 115.md W2-B — project-level summary outputs: per-instrument summary
+          tables, traffic lights ONLY where decision 11 allows (supportsTrafficLight
+          = allowlist ∩ risk vocabulary — this is what keeps an AMSTAR-2 "High
+          confidence" from rendering in high-risk red), distributions, and the
+          project-wide sectioned-CSV export. Mixed-tool projects grouped, never
+          merged. */}
       {assessments.length > 0 && (
-        <div style={{ ...card, marginBottom: 22 }}>
-          <div style={{ fontSize: 12, fontFamily: MONO, color: C.muted, textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 12 }}>Summary (traffic light)</div>
-          <RobTrafficLight matrix={matrix} title={`${project.name} — Risk of bias${matrix && matrix.instrumentId === 'ROBINS-I' ? ' (ROBINS-I)' : ' (RoB 2)'}`} />
+        <div style={{ marginBottom: 22 }}>
+          <RobSummaryOutputs
+            groups={groups}
+            assessments={assessments}
+            loadAssessment={async (id) => (await robApi.getAssessment(id)).assessment}
+            exportSlot={<RobExportButton projectId={projectId} assessmentCount={assessments.length} />}
+          />
         </div>
       )}
 
@@ -197,8 +241,10 @@ export default function ProjectRobPanel({ projectId, embedded = false, canEdit =
                 onToggleCreate={() => setCreatingFor(creatingFor === s.id ? null : s.id)}
                 onCreate={(label2, inst) => createFor(s, label2, inst)}
                 onCancelCreate={() => setCreatingFor(null)}
-                appraisalOn={appraisalOn}
+                catalogue={catalogue}
                 defaultInstrument={selectedTool}
+                projectId={projectId}
+                onChanged={reload}
                 onOpenAssessment={(a) => { setRecentStudyId(s.id); setOpenId(a.id); }}
                 onRemoveAssessment={removeAssessment}
                 onRemoveStudy={() => removeManualStudy(s)}
@@ -232,56 +278,113 @@ export default function ProjectRobPanel({ projectId, embedded = false, canEdit =
   );
 }
 
-// ── RoB tool selector (prompt28 Part 4) ────────────────────────────────────────
-// P14 — ROBINS-I only becomes selectable when the guided-appraisal flag is ON; with
-// it OFF the panel offers RoB 2 only (behaviour identical to before P14).
-function ToolSelector({ selected, canEdit, onSelect, appraisalOn }) {
+// ── RoB tool selector (prompt28 Part 4; redesigned by 115.md decision 3) ───────
+//
+// This card sets the project's DEFAULT assessment tool — the one pre-selected when
+// a reviewer starts an assessment. It is not a restriction: a mixed-design review
+// legitimately assesses different studies with different instruments (§25), and the
+// per-study Assess selector below can pick any registered tool regardless of what is
+// set here.
+//
+// What changed: availability used to be `isRobToolActive(t.id) && (t.id === 'RoB2'
+// || appraisalOn)` — the Newcastle-Ottawa tiles were rendered but clickable only
+// when the *guided-appraisal* flag was on, a flag the NOS does not conceptually
+// depend on, while the caption underneath flatly denied that any tool but RoB 2 and
+// ROBINS-I existed. Availability is now a REGISTRY fact: a tool is selectable when
+// the server catalogue carries it (or, before the catalogue loads, when the pure
+// tools catalogue marks it active). No feature flag is consulted here at all.
+//
+// With thirteen instruments a flat grid of tiles would swamp the page, so the
+// current default is shown on its own and the full, filterable list is one click
+// away (progressive disclosure, §30).
+function ToolSelector({ selected, canEdit, onSelect, catalogue = [] }) {
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState('');
+  const [designId, setDesignId] = useState('');
   const interactive = canEdit && typeof onSelect === 'function';
+
+  // The server catalogue is the source of truth; the pure catalogue is the
+  // pre-load fallback so the card is never empty (and never narrower than the
+  // registry). `custom` is deliberately excluded — it is advertised, not built.
+  const tools = catalogue.length
+    ? catalogue
+    : ROB_TOOLS.filter(t => isRobToolActive(t.id)).map(t => ({
+      id: t.id, label: t.label, sublabel: t.sublabel, description: t.description,
+      designs: t.designs || [], instrumentVersion: t.version, organization: t.organization,
+      abbreviation: t.abbreviation, citation: t.citation, guidanceUrl: t.guidanceUrl, license: t.license,
+    }));
+  const current = tools.find(t => t.id === selected) || null;
+  const designs = designsInCatalogue(tools);
+  const filtered = filterInstruments(tools, { query, designId });
+
   return (
     <div style={{ ...card, marginBottom: 18 }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10, flexWrap: 'wrap' }}>
         <Icon name="scale" size={14} />
         <span style={{ fontSize: 12, fontFamily: MONO, color: C.muted, textTransform: 'uppercase', letterSpacing: '0.06em' }}>Assessment tool</span>
+        <span aria-hidden style={{ flex: 1 }} />
+        {interactive && (
+          <button type="button" onClick={() => setOpen(o => !o)} aria-expanded={open} style={{ ...ghost, padding: '5px 11px' }}>
+            <Icon name={open ? 'chevronDown' : 'chevronRight'} size={12} /> {open ? 'Hide' : `Change default (${tools.length} tools)`}
+          </button>
+        )}
       </div>
+
+      {/* The project's current default, always visible. */}
       <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-        {ROB_TOOLS.map(t => {
-          // RoB 2 is always available; ROBINS-I only when guided appraisal is ON.
-          const active = isRobToolActive(t.id) && (t.id === 'RoB2' || appraisalOn);
-          const on = selected === t.id;
-          const clickable = interactive && active;
-          return (
-            <button
-              key={t.id}
-              type="button"
-              disabled={!clickable}
-              onClick={clickable ? () => { if (t.id !== selected) onSelect(t.id); } : undefined}
-              title={active ? t.description : `${t.label} — under development`}
-              aria-pressed={on}
-              style={{
-                position: 'relative', textAlign: 'left', minWidth: 168, flex: '1 1 168px', maxWidth: 240,
-                padding: '10px 12px', borderRadius: 10, fontFamily: FONT,
-                cursor: clickable ? 'pointer' : (active ? 'default' : 'not-allowed'),
-                background: on ? alpha(C.acc, '14') : C.surf,
-                border: `1px solid ${on ? alpha(C.acc, '60') : C.brd}`,
-                opacity: active ? 1 : 0.6,
-              }}
-            >
-              <div style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
-                <span style={{ fontSize: 13, fontWeight: 800, color: on ? C.acc : C.txt }}>{t.label}</span>
-                {on && active && <Icon name="check" size={13} />}
-                {!active && (
-                  <span style={{ fontSize: 8.5, fontFamily: MONO, fontWeight: 700, letterSpacing: '0.04em', color: C.muted, background: alpha(C.txt, '0c'), border: `1px solid ${C.brd}`, borderRadius: 5, padding: '1px 5px', textTransform: 'uppercase', marginLeft: 'auto' }}>Soon</span>
-                )}
-              </div>
-              <div style={{ fontSize: 11, color: C.muted, marginTop: 3, lineHeight: 1.35 }}>{t.sublabel}</div>
-            </button>
-          );
-        })}
+        <button type="button" disabled aria-pressed
+          title={current ? (current.description || current.label) : selected}
+          style={{ textAlign: 'left', minWidth: 168, flex: '1 1 220px', maxWidth: 320, padding: '10px 12px', borderRadius: 10, fontFamily: FONT, cursor: 'default', background: alpha(C.acc, '14'), border: `1px solid ${alpha(C.acc, '60')}` }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
+            <span style={{ fontSize: 13, fontWeight: 800, color: C.acc }}>{current ? (current.label || current.name) : selected}</span>
+            <Icon name="check" size={13} />
+          </div>
+          <div style={{ fontSize: 11, color: C.muted, marginTop: 3, lineHeight: 1.35 }}>
+            {current ? (designLabelsFor(current).join(' · ') || current.sublabel || '') : ''}
+          </div>
+        </button>
       </div>
+
+      {open && interactive && (
+        <div style={{ marginTop: 12 }}>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 9 }}>
+            <label style={{ display: 'flex', alignItems: 'center', gap: 6, flex: '1 1 200px', minWidth: 160, padding: '6px 10px', borderRadius: 8, background: C.surf, border: `1px solid ${C.brd2}` }}>
+              <Icon name="search" size={13} />
+              <input value={query} onChange={e => setQuery(e.target.value)} placeholder="Search tools" aria-label="Search assessment tools"
+                style={{ flex: 1, minWidth: 0, background: 'transparent', border: 'none', outline: 'none', color: C.txt, fontSize: 12.5, fontFamily: FONT }} />
+            </label>
+            <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+              <span style={{ fontSize: 10.5, fontFamily: MONO, color: C.muted, textTransform: 'uppercase', letterSpacing: '0.06em' }}>Study design</span>
+              <select value={designId} onChange={e => setDesignId(e.target.value)} aria-label="Filter tools by study design"
+                style={{ padding: '6px 9px', borderRadius: 8, background: C.surf, border: `1px solid ${C.brd2}`, color: C.txt, fontSize: 12.5, fontFamily: FONT }}>
+                <option value="">All designs</option>
+                {designs.map(d => <option key={d.id} value={d.id}>{d.label}</option>)}
+              </select>
+            </label>
+          </div>
+          <div style={{ display: 'grid', gap: 8, gridTemplateColumns: 'repeat(auto-fill, minmax(min(100%, 240px), 1fr))', maxHeight: 300, overflowY: 'auto' }}>
+            {filtered.map(t => {
+              const on = selected === t.id;
+              return (
+                <button key={t.id} type="button" onClick={() => { if (t.id !== selected) onSelect(t.id); setOpen(false); }}
+                  aria-pressed={on} title={t.description || t.label}
+                  style={{ textAlign: 'left', padding: '10px 12px', borderRadius: 10, fontFamily: FONT, cursor: 'pointer', background: on ? alpha(C.acc, '14') : C.surf, border: `1px solid ${on ? alpha(C.acc, '60') : C.brd}` }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
+                    <span style={{ fontSize: 13, fontWeight: 800, color: on ? C.acc : C.txt }}>{t.label || t.name}</span>
+                    {on && <Icon name="check" size={13} />}
+                  </div>
+                  <div style={{ fontSize: 11, color: C.muted, marginTop: 3, lineHeight: 1.35 }}>{designLabelsFor(t).join(' · ') || t.sublabel || ''}</div>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
       <div style={{ fontSize: 11, color: C.muted, marginTop: 9, lineHeight: 1.5 }}>
-        {appraisalOn
-          ? <><strong style={{ color: C.txt2 }}>RoB 2</strong> (randomised trials) and <strong style={{ color: C.txt2 }}>ROBINS-I</strong> (non-randomised studies) are available; other instruments are in development. Your choice is saved for this project.</>
-          : <>Only <strong style={{ color: C.txt2 }}>RoB 2</strong> is available today; other instruments are in development. Your choice is saved for this project.</>}
+        {tools.length} validated instruments are available, each connected to the full assessment workflow. This sets the
+        project <strong style={{ color: C.txt2 }}>default</strong>; every study can be assessed with whichever instrument
+        suits its design.
       </div>
     </div>
   );
@@ -349,7 +452,8 @@ function IdChip({ icon, label, href, title }) {
 // article keeps an accent ring so the reviewer never loses their place (79.md §1).
 function ArticleCard({
   index, study: s, assessments: list, canEdit, recent, creating,
-  onToggleCreate, onCreate, onCancelCreate, appraisalOn, defaultInstrument,
+  onToggleCreate, onCreate, onCancelCreate, catalogue, defaultInstrument,
+  projectId, onChanged,
   onOpenAssessment, onRemoveAssessment, onRemoveStudy,
 }) {
   const [hover, setHover] = useState(false);
@@ -387,11 +491,46 @@ function ArticleCard({
           </div>
         </div>
 
-        {canEdit && creating && <CreateForm onCancel={onCancelCreate} onCreate={onCreate} appraisalOn={appraisalOn} defaultInstrument={defaultInstrument} />}
+        {/* 115.md §6-§8/§37-§39 — the redesigned Assess selector. It is fed the
+            registry catalogue and this study's own recommendation + existing
+            assessments, so it can recommend without restricting, warn without
+            blocking, and surface earlier work under other tools before a second
+            instrument is started. */}
+        {canEdit && creating && (
+          <InstrumentSelector
+            catalogue={catalogue}
+            recommendation={s.recommendation}
+            existingAssessments={s.existingAssessments && s.existingAssessments.length ? s.existingAssessments : list}
+            defaultToolId={defaultInstrument}
+            onStart={({ instrumentId, resultLabel }) => onCreate(resultLabel, instrumentId)}
+            onCancel={onCancelCreate}
+            onOpenExisting={onOpenAssessment}
+          />
+        )}
 
         {list.length > 0 ? (
           <div style={{ marginTop: 12, display: 'grid', gap: 7 }}>
             {list.map((a) => <AssessmentRow key={a.id} a={a} canEdit={canEdit} onOpen={() => onOpenAssessment(a)} onRemove={() => onRemoveAssessment(a.id)} />)}
+            {/* 115.md decision 10 — one comparison per INSTRUMENT: two RoB 2 rows
+                and a QUADAS-2 row on the same study are different questions
+                entirely. Only rendered once a study has >1 row for an instrument
+                (single-reviewer studies stay uncluttered). */}
+            {[...new Set(list.map(a => a.instrumentId || 'RoB2'))]
+              .filter(iid => list.filter(a => (a.instrumentId || 'RoB2') === iid).length > 1)
+              .map(iid => (
+                <ReviewerComparisonPanel
+                  key={iid}
+                  projectId={projectId}
+                  studyId={s.id}
+                  studyLabel={title}
+                  instrumentId={iid}
+                  instrumentLabel={(list.find(a => (a.instrumentId || 'RoB2') === iid) || {}).instrumentLabel || iid}
+                  rows={list.filter(a => (a.instrumentId || 'RoB2') === iid)}
+                  canEdit={canEdit}
+                  onChanged={onChanged}
+                  onOpenAssessment={onOpenAssessment}
+                />
+              ))}
           </div>
         ) : (
           <div style={{ marginTop: 10, fontSize: 12, color: C.muted, display: 'flex', alignItems: 'center', gap: 6 }}>
@@ -512,53 +651,19 @@ function ModalField({ label, children }) {
 }
 const modalInp = { width: '100%', boxSizing: 'border-box', padding: '8px 11px', background: C.surf, border: `1px solid ${C.brd2}`, borderRadius: 8, color: C.txt, fontSize: 13, fontFamily: FONT };
 
-// P14 — the two guided-appraisal instruments offered at assessment creation.
-const INSTRUMENT_CHOICES = [
-  { id: 'RoB2', label: 'RoB 2', sublabel: 'Randomised trials' },
-  { id: 'ROBINS-I', label: 'ROBINS-I', sublabel: 'Non-randomised studies' },
-];
-
-function CreateForm({ onCancel, onCreate, appraisalOn, defaultInstrument }) {
-  const [label, setLabel] = useState('');
-  // Instrument selector only when guided appraisal is ON; otherwise RoB 2 (omitted
-  // → server default) exactly as today.
-  const [instrument, setInstrument] = useState(
-    appraisalOn ? (normalizeRobTool(defaultInstrument) || 'RoB2') : 'RoB2',
-  );
-  const submit = () => onCreate(label, appraisalOn ? instrument : undefined);
-  return (
-    <div style={{ marginTop: 10, display: 'flex', flexDirection: 'column', gap: 10 }}>
-      {appraisalOn && (
-        <div>
-          <div style={{ fontSize: 10.5, fontFamily: MONO, color: C.muted, textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 6 }}>Instrument</div>
-          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-            {INSTRUMENT_CHOICES.map(ci => {
-              const on = instrument === ci.id;
-              return (
-                <button key={ci.id} type="button" onClick={() => setInstrument(ci.id)} aria-pressed={on} title={ci.sublabel}
-                  style={{ textAlign: 'left', padding: '7px 11px', borderRadius: 9, cursor: 'pointer', fontFamily: FONT,
-                    background: on ? alpha(C.acc, '14') : C.surf, border: `1px solid ${on ? alpha(C.acc, '60') : C.brd2}` }}>
-                  <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                    <span style={{ fontSize: 12.5, fontWeight: 800, color: on ? C.acc : C.txt }}>{ci.label}</span>
-                    {on && <Icon name="check" size={12} />}
-                  </span>
-                  <span style={{ fontSize: 10.5, color: C.muted }}>{ci.sublabel}</span>
-                </button>
-              );
-            })}
-          </div>
-        </div>
-      )}
-      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
-        <input autoFocus value={label} onChange={e => setLabel(e.target.value)} placeholder="Result / outcome being assessed (e.g. Mortality at 6 months)"
-          onKeyDown={e => { if (e.key === 'Enter') submit(); if (e.key === 'Escape') onCancel(); }}
-          style={{ flex: 1, minWidth: 240, padding: '8px 11px', background: C.surf, border: `1px solid ${C.brd2}`, borderRadius: 8, color: C.txt, fontSize: 13, fontFamily: FONT }} />
-        <button onClick={submit} style={{ ...ghost, background: C.acc, color: C.accText, border: `1px solid ${C.acc}` }}>Start assessment</button>
-        <button onClick={onCancel} style={ghost}>Cancel</button>
-      </div>
-    </div>
-  );
-}
+// 115.md decision 3 — `INSTRUMENT_CHOICES` + `CreateForm` were DELETED here.
+//
+// `INSTRUMENT_CHOICES = [RoB 2, ROBINS-I]` was the single hardcode behind the whole
+// problem 115.md exists to fix: the Newcastle–Ottawa forms were fully implemented
+// server-side and fully renderable in the workspace, yet could not be chosen because
+// this two-entry constant was the only thing the Assess flow ever offered — and it
+// was rendered only when `guidedRobAppraisal` was ON, with the chosen instrument
+// dropped from the request when it was OFF.
+//
+// Its replacement is ./InstrumentSelector.jsx, driven by the server's registry
+// catalogue and the per-study recommendation. Adding an instrument to the registry
+// now makes it appear in Assess with no change to this file — which is the
+// architectural fix, not another hardcoded option.
 
 // ── P14 — Guided vs reviewer agreement ────────────────────────────────────────
 // Weighted-κ agreement between the guided SUGGESTIONS (proposed answers) and the

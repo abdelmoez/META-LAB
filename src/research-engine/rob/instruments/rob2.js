@@ -256,10 +256,22 @@ const DOMAINS = [
 export const ROB2 = Object.freeze({
   id: 'RoB2',
   name: 'Cochrane Risk of Bias 2 (RoB 2)',
+  abbreviation: 'RoB 2',
   instrumentVersion: '2019-08-22',
   variant: 'assignment',
   variantLabel: 'Effect of assignment to intervention (intention-to-treat)',
   design: 'parallel-group',
+  // 115.md decision 2 — every definition carries its own provenance, so the
+  // catalogue in tools.js is a VIEW of the registry rather than the only place the
+  // attribution exists. Kept byte-identical to that catalogue and pinned by
+  // tests/unit/robInstrumentRegistry.test.js, which fails on any divergence.
+  designs: ['randomised-trial'],
+  organization: 'Cochrane / RoB 2 development group',
+  citation: 'Sterne JAC, Savović J, Page MJ, et al. RoB 2: a revised tool for assessing risk of bias in randomised trials. BMJ 2019;366:l4898.',
+  guidanceUrl: 'https://www.riskofbias.info/welcome/rob-2-0-tool',
+  license: 'CC BY-NC-ND 4.0 (riskofbias.info). Attribution required; no derivatives; non-commercial. Item text may not be modified.',
+  scoringAllowed: false,
+  consensusSupported: true,
   responseOptions: RESPONSES.filter(r => r !== 'NA').map(value => ({ value, label: RESPONSE_LABELS[value] })),
   judgmentLevels: JUDGMENTS.map(value => ({ value, label: JUDGMENT_LABELS[value] })),
   domains: DOMAINS.map(d => Object.freeze({

@@ -348,13 +348,29 @@ const SOURCE = Object.freeze({
   page: 'https://www.ohri.ca/en/who-we-are/core-facilities-and-platforms/ottawa-methods-centre/newcastle-ottawa-scale',
 });
 
+// 115.md decision 2 — the provenance block both NOS forms share, carried on the
+// DEFINITION so the catalogue in tools.js is a view of the registry rather than
+// the only place the attribution exists. Byte-identical to that catalogue and
+// pinned by tests/unit/robInstrumentRegistry.test.js.
+const NOS_PROVENANCE = Object.freeze({
+  organization: 'Ottawa Hospital Research Institute (Wells et al.)',
+  citation: 'Wells GA, Shea B, O\'Connell D, et al. The Newcastle-Ottawa Scale (NOS) for assessing the quality of nonrandomised studies in meta-analyses. Ottawa Hospital Research Institute.',
+  guidanceUrl: SOURCE.page,
+  license: 'No licence text is published on the OHRI documents or page; the scale is free to download and citation of Wells et al. is expected. Terms beyond free download are not stated.',
+  scoringAllowed: true,
+  consensusSupported: true,
+});
+
 export const NOS_COHORT = Object.freeze({
   id: 'NOS',
   variant: 'cohort',
   variantLabel: 'Cohort studies',
   name: 'Newcastle–Ottawa Scale (cohort studies)',
+  abbreviation: 'NOS (cohort)',
   instrumentVersion: 'ohri-nosgen',
   design: 'cohort',
+  designs: ['cohort'],
+  ...NOS_PROVENANCE,
   scoring: NOS_SCORING,
   maxStars: NOS_MAX_STARS,
   officialNote: OFFICIAL_NOTE_COHORT,
@@ -373,8 +389,11 @@ export const NOS_CASE_CONTROL = Object.freeze({
   variant: 'case-control',
   variantLabel: 'Case-control studies',
   name: 'Newcastle–Ottawa Scale (case-control studies)',
+  abbreviation: 'NOS (case-control)',
   instrumentVersion: 'ohri-nosgen',
   design: 'case-control',
+  designs: ['case-control'],
+  ...NOS_PROVENANCE,
   scoring: NOS_SCORING,
   maxStars: NOS_MAX_STARS,
   officialNote: OFFICIAL_NOTE_CASE_CONTROL,

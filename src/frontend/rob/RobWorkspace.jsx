@@ -19,17 +19,19 @@ import {
   robApi, getRobSettings, guidedRobAppraisalEnabled,
   nosResponsePayload, decodeNosAnswers, NOS_THRESHOLD_DEFAULTS,
 } from './robApi.js';
-import { judgmentStyle, legendFor } from './judgmentStyle.js';
+import { judgmentStyle, judgmentStyleOn, legendFor } from './judgmentStyle.js';
 import RobTrafficLight from './RobTrafficLight.jsx';
 import RobPdfPanel from './RobPdfPanel.jsx';
 import NosAssessmentPanel from './NosAssessmentPanel.jsx';
+import InstrumentAssessmentPanel from './InstrumentAssessmentPanel.jsx';
+import { assessmentProgress, incompleteReason, robRenderMode } from './robProgress.js';
 import { StarTotalPill } from './NosStarProfile.jsx';
 import { screeningApi } from '../screening/api-client/screeningApi.js';
 import { studyDocApi } from '../../features/extraction/unified/studyDocApi.js';
 import { extractStudyFullText } from './robFullText.js';
 import {
   ROB2, getInstrument, isReachable, proposeDomain, proposeOverall, completeness,
-  isScoringInstrument, nosScoreAssessment,
+  isScoringInstrument, nosScoreAssessment, robDesignLabel,
 } from '../../research-engine/rob/index.js';
 
 const RESPONSE_KEYS = ['Y', 'PY', 'PN', 'N', 'NI'];
@@ -299,6 +301,28 @@ function JudgmentPill({ judgment, size = 'md', provisional }) {
   );
 }
 
+/**
+ * 115.md — a judgement pill read on an EXPLICIT scale. `JudgmentPill` above always
+ * means the risk-of-bias scale, which is right for RoB 2 / ROBINS-I and wrong for
+ * AMSTAR 2 (whose "High" is high confidence — the best result) and for a JBI
+ * overall (an Include / Exclude / Seek-further-info decision). Exported for the
+ * SSR tests.
+ */
+export function ScaledPill({ scale, value, size = 'md' }) {
+  const st = judgmentStyleOn(scale, value || 'na');
+  const pad = size === 'lg' ? '6px 14px' : size === 'sm' ? '2px 8px' : '4px 11px';
+  const fs = size === 'lg' ? 14 : size === 'sm' ? 11 : 12.5;
+  return (
+    <span role="status" aria-label={`${st.label}`} style={{
+      display: 'inline-flex', alignItems: 'center', gap: 6, padding: pad, borderRadius: 20,
+      background: st.bg, color: st.fg, border: `1px solid ${alpha(st.hex, 0.5)}`, fontSize: fs, fontWeight: 700, fontFamily: FONT, whiteSpace: 'nowrap',
+    }}>
+      <Icon name={st.icon} size={fs + 2} />
+      <span>{st.label}</span>
+    </span>
+  );
+}
+
 function TrafficDot({ judgment, size = 13 }) {
   const st = judgmentStyle(judgment);
   return <span title={st.label} style={{ display: 'inline-flex', width: size, height: size, borderRadius: '50%', background: st.hex, flexShrink: 0 }} />;
@@ -454,6 +478,25 @@ export default function RobWorkspace({ assessmentId, onClose, onChanged, onConti
   // a traffic light. Everything else in this workspace (PDF column, autosave,
   // finalise, permissions) is shared unchanged.
   const starScored = useMemo(() => isScoringInstrument(instrument), [instrument]);
+  // 115.md build item 2 — which pane an instrument needs is read off its
+  // DEFINITION (`robRenderMode`), never from a list of instrument ids:
+  //   'domain-walk' RoB 2 / ROBINS-I — the branching signalling-question walk with
+  //                 algorithm-proposed judgements. Unchanged.
+  //   'stars'       the two Newcastle–Ottawa forms — NosAssessmentPanel. Unchanged.
+  //   'definition'  everything whose definition declares judgement axes of its own
+  //                 (QUADAS-2 / PROBAST dual axis, the JBI checklists, AMSTAR 2,
+  //                 QUIPS) — InstrumentAssessmentPanel.
+  const renderMode = useMemo(() => robRenderMode(instrument), [instrument]);
+  const definitionMode = renderMode === 'definition';
+  // The tool chip's second half. "Effect of assignment" is a RoB 2 concept and
+  // would be nonsense on QUADAS-2, so the descriptor comes from the definition.
+  const toolDescriptor = useMemo(() => {
+    if (starScored) return `${String(instrument.variantLabel || '').toLowerCase()} · ${instrument.maxStars} stars`;
+    if (instrument.id === 'RoB2') return view?.variant === 'adherence' ? 'effect of adherence' : 'effect of assignment';
+    if (instrument.id === 'ROBINS-I') return 'non-randomised studies';
+    const designs = (instrument.designs || []).map(robDesignLabel).filter(Boolean);
+    return designs.length ? designs.join(' · ').toLowerCase() : (instrument.abbreviation || instrument.id);
+  }, [instrument, starScored, view?.variant]);
 
   // ── Guided appraisal (P14, flag-gated) ──────────────────────────────────────
   // When the guidedRobAppraisal flag is OFF, none of this renders and the
@@ -552,11 +595,38 @@ export default function RobWorkspace({ assessmentId, onClose, onChanged, onConti
     const resolved = {};
     for (const d of instrument.domains) {
       const dv = (view?.domains || []).find(x => x.domainId === d.id);
-      resolved[d.id] = (dv && dv.overridden && dv.finalJudgment) ? dv.finalJudgment : liveProposals[d.id].judgment;
+      const final = (dv && dv.overridden && dv.finalJudgment) ? dv.finalJudgment : null;
+      if (!definitionMode) {
+        // RoB 2 / ROBINS-I / NOS: a map of judgement STRINGS, exactly as before.
+        resolved[d.id] = final || liveProposals[d.id].judgment;
+        continue;
+      }
+      // 115.md — the 2026 overall rules need more than the level string: AMSTAR 2
+      // rolls up the flaw COUNTS its domain proposal carries, and PROBAST rolls up
+      // the applicability axis alongside risk of bias. So the whole proposal object
+      // travels, with the reviewer's own judgement substituted in and the recorded
+      // applicability concern attached. Instruments that only read `.judgment`
+      // (RoB 2's Table 1, PROBAST's Step 4) are unaffected — every algorithm in the
+      // registry accepts a string OR a `{ judgment }` object.
+      const ap = (view?.applicability || []).find(x => x.domainId === d.id);
+      resolved[d.id] = {
+        ...(liveProposals[d.id] || {}),
+        judgment: final || (liveProposals[d.id] && liveProposals[d.id].judgment) || '',
+        ...(ap && ap.judgment ? { applicability: ap.judgment } : {}),
+      };
     }
     return proposeOverall(instrument, resolved);
-  }, [liveProposals, view, instrument]);
+  }, [liveProposals, view, instrument, definitionMode]);
   const liveCompleteness = useMemo(() => completeness(instrument, { answersByDomain: answers }), [answers, instrument]);
+  // 115.md build item 3 (§21) — HONEST progress. `completeness()` counts answered
+  // ITEMS, which is the whole story for RoB 2 / ROBINS-I (their judgements are
+  // computed) but not for an instrument that also requires reviewer-recorded domain
+  // judgements, applicability concerns or an overall appraisal decision. Computed
+  // only where it is used, so the star and domain-walk paths are untouched.
+  const progress = useMemo(
+    () => (definitionMode ? assessmentProgress(instrument, { answers, view, liveProposals, liveOverall }) : null),
+    [definitionMode, instrument, answers, view, liveProposals, liveOverall],
+  );
   // 101.md §21 — the live star profile, from the SAME pure scorer the server uses.
   const nosScore = useMemo(
     () => (starScored ? nosScoreAssessment(instrument, answers) : null),
@@ -588,6 +658,14 @@ export default function RobWorkspace({ assessmentId, onClose, onChanged, onConti
   // API, so the whole assessment is read-only for them (server enforces it too).
   // Default-allow when the field is absent so nothing regresses.
   const editable = !finalised && !readOnly && (view?.canMutate !== false);
+  // 115.md §34/§39 — MAY this person mutate the assessment at all, finalised or
+  // not? `editable` folds the finalise lock into the permission, which is right for
+  // the answer controls but wrong for the footer: `WorkspaceFooter` branches on
+  // `finalised` itself to choose Finalise vs Re-open, so being handed
+  // `editable === false` for every finalised row made the Re-open branch
+  // unreachable — a finalised assessment could never be re-opened from the UI at
+  // all. The footer gets the PERMISSION; it applies the lock itself.
+  const mayMutate = !readOnly && (view?.canMutate !== false);
 
   // ── Autosave (debounced) ──────────────────────────────────────────────────
   const flush = useCallback(async () => {
@@ -686,7 +764,12 @@ export default function RobWorkspace({ assessmentId, onClose, onChanged, onConti
     // OWN option list (a/b/c/d) and no judgement levels at all, so "1–5 = answer"
     // and "o = override" would be wrong rather than merely unhelpful. The NOS pane
     // uses native radios/checkboxes, which are keyboard-operable on their own.
-    if (starScored) return undefined;
+    // 115.md — the same argument applies to every definition-driven form: QUADAS-2
+    // answers Yes/No/Unclear (three, not five), a JBI item adds Not applicable, and
+    // AMSTAR 2 has Partial Yes. Binding "3 = Probably no" over those would silently
+    // record an answer the instrument does not have. That pane uses native,
+    // keyboard-operable radio semantics of its own.
+    if (starScored || definitionMode) return undefined;
     function onKey(e) {
       const tag = (e.target.tagName || '').toLowerCase();
       if (tag === 'input' || tag === 'textarea' || tag === 'select' || e.metaKey || e.ctrlKey || e.altKey) return;
@@ -726,7 +809,7 @@ export default function RobWorkspace({ assessmentId, onClose, onChanged, onConti
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [active, focusedQ, answers, finalised, readOnly, override, domainIds, instrument, editable, starScored]);
+  }, [active, focusedQ, answers, finalised, readOnly, override, domainIds, instrument, editable, starScored, definitionMode]);
 
   async function doOverride({ finalJudgment, justification, clear }) {
     try {
@@ -737,6 +820,44 @@ export default function RobWorkspace({ assessmentId, onClose, onChanged, onConti
       setView(res.assessment); setOverride(null); onChanged && onChanged();
     } catch (e) { setError(e.message); }
   }
+  // ── 115.md — recording a judgement on a DEFINITION-DRIVEN form ──────────────
+  // These go through the SAME `/override` endpoint the domain walk uses, so the
+  // permission check, the finalise lock, the never-overwrite rule and the audit
+  // trail are identical. Two differences are load-bearing:
+  //   · on a reviewer-judged axis (QUADAS-2 with a flagged signalling question,
+  //     every QUIPS domain, a JBI overall decision) there is no algorithm to
+  //     "override" — the API still requires a logged reason, which the panel
+  //     collects and labels as the reason for the judgement rather than for a
+  //     deviation;
+  //   · `target: 'applicability'` writes the SECOND judgement axis (stored as its
+  //     own RobDomainJudgment row keyed `<domain>-APP`) and takes an OPTIONAL note,
+  //     because a concern regarding applicability is a primary judgement, not a
+  //     departure from one.
+  async function doDomainJudgment({ domainId, value, rationale, clear }) {
+    try {
+      const res = await robApi.override(assessmentId, clear
+        ? { target: 'domain', domainId, clear: true }
+        : { target: 'domain', domainId, finalJudgment: value, justification: rationale });
+      setView(res.assessment); onChanged && onChanged();
+    } catch (e) { setError(e.message); }
+  }
+  async function doApplicability({ domainId, value, note, clear }) {
+    try {
+      const res = await robApi.override(assessmentId, clear
+        ? { target: 'applicability', domainId, clear: true }
+        : { target: 'applicability', domainId, finalJudgment: value, justification: note || '' });
+      setView(res.assessment); onChanged && onChanged();
+    } catch (e) { setError(e.message); }
+  }
+  async function doOverallJudgment({ value, rationale, clear }) {
+    try {
+      const res = await robApi.override(assessmentId, clear
+        ? { target: 'overall', clear: true }
+        : { target: 'overall', finalJudgment: value, justification: rationale });
+      setView(res.assessment); onChanged && onChanged();
+    } catch (e) { setError(e.message); }
+  }
+
   async function doFinalise() {
     try { const res = await robApi.finalise(assessmentId); setView(res.assessment); onChanged && onChanged(); }
     catch (e) { setError(e.message); }
@@ -824,8 +945,11 @@ export default function RobWorkspace({ assessmentId, onClose, onChanged, onConti
   if (error && !view) return <div style={shell}><div style={{ padding: 40 }}><ErrorBox msg={error} /><button onClick={onClose} style={ghostBtn}>Back</button></div></div>;
   if (!view) return null;
 
-  const allComplete = liveCompleteness.overall.complete;
-  const summaryOverall = (allComplete || view.overall.overridden) ? (finalised ? view.overall.resolvedOverall : liveOverall.judgment) : 'na';
+  // §21 — an assessment is complete when the DEFINITION's predicate holds, not
+  // merely when every item has an answer. For RoB 2 / ROBINS-I / NOS the two are
+  // the same statement (their judgements are computed), so this is unchanged there.
+  const allComplete = definitionMode ? progress.complete : liveCompleteness.overall.complete;
+  const summaryOverall = (liveCompleteness.overall.complete || view.overall.overridden) ? (finalised ? view.overall.resolvedOverall : liveOverall.judgment) : 'na';
   // `instrumentId` on the matrix makes the traffic-light legend match the plot.
   const single = { instrumentId: instrument.id, domains: instrument.domains.map(d => ({ id: d.id, shortLabel: d.shortLabel })), rows: [{ id: view.id, label: view.resultLabel || view.studyId, cells: instrument.domains.map(d => ({ domainId: d.id, judgment: dotJudgment(d.id) })), overall: summaryOverall }] };
   const completedDomains = instrument.domains.filter(d => domainComplete(d.id)).length;
@@ -862,10 +986,11 @@ export default function RobWorkspace({ assessmentId, onClose, onChanged, onConti
             <Icon name="arrowLeft" size={15} /> Back to Risk of Bias
           </button>
           <span title="Assessment tool" style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '4px 10px', borderRadius: 7, background: alpha(C.acc, '14'), border: `1px solid ${alpha(C.acc, '38')}`, color: C.acc, fontSize: 11, fontFamily: MONO, fontWeight: 700, flexShrink: 0 }}>
-            {/* 101.md §18 — the tool chip must describe the tool that is actually in
-                use; "effect of assignment" is a RoB 2 concept and would be nonsense
-                on a Newcastle–Ottawa form. */}
-            <Icon name="scale" size={13} /> {view?.instrumentLabel || 'RoB 2'} · {starScored ? `${instrument.variantLabel.toLowerCase()} · ${instrument.maxStars} stars` : instrument.id === 'ROBINS-I' ? 'non-randomised studies' : (view?.variant === 'adherence' ? 'effect of adherence' : 'effect of assignment')}
+            {/* 101.md §18 / 115.md §32 — the tool chip must describe the tool that is
+                actually in use; "effect of assignment" is a RoB 2 concept and would
+                be nonsense on a Newcastle–Ottawa form or on QUADAS-2. The descriptor
+                comes from the definition (`toolDescriptor`). */}
+            <Icon name="scale" size={13} /> {view?.instrumentLabel || 'RoB 2'} · {toolDescriptor}
           </span>
           {/* Study title + single open-study link (the only metadata kept). */}
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, flex: '1 1 220px', minWidth: 0 }}>
@@ -929,9 +1054,14 @@ export default function RobWorkspace({ assessmentId, onClose, onChanged, onConti
         <div style={{ flex: 1, minWidth: 150 }}>
           <div style={{ fontSize: 14.5, fontWeight: 800, color: C.txt, fontFamily: FONT, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{view.resultLabel || 'Risk-of-bias assessment'}</div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 5, flexWrap: 'wrap' }}>
-            <span style={{ fontSize: 10, fontFamily: MONO, color: C.muted, whiteSpace: 'nowrap' }}>{completedDomains}/{instrument.domains.length} domains</span>
+            {/* §21 — a definition-driven form counts what the instrument actually
+                asks for (items answered + judgements recorded), not "domains with
+                every question answered". Both are PROGRESS, never a score. */}
+            <span style={{ fontSize: 10, fontFamily: MONO, color: C.muted, whiteSpace: 'nowrap' }}>
+              {definitionMode ? progress.label : `${completedDomains}/${instrument.domains.length} domains`}
+            </span>
             <span aria-hidden style={{ flex: 1, maxWidth: 140, height: 4, borderRadius: 4, background: C.brd, overflow: 'hidden' }}>
-              <span style={{ display: 'block', height: '100%', width: `${(completedDomains / instrument.domains.length) * 100}%`, background: allComplete ? C.grn : C.acc, transition: reduced ? 'none' : 'width 0.3s ease' }} />
+              <span style={{ display: 'block', height: '100%', width: `${definitionMode ? (progress.items.required ? Math.round((progress.items.answered / progress.items.required) * 100) : 0) : (completedDomains / instrument.domains.length) * 100}%`, background: allComplete ? C.grn : C.acc, transition: reduced ? 'none' : 'width 0.3s ease' }} />
             </span>
             {/* prompt46 #3 — who started this assessment (creator visibility). */}
             {view.reviewerName && <span style={{ fontSize: 10, color: C.muted, whiteSpace: 'nowrap' }}>· Started by {view.reviewerName}</span>}
@@ -946,7 +1076,11 @@ export default function RobWorkspace({ assessmentId, onClose, onChanged, onConti
         {/* 101.md §18 — the guided appraisal maps study text onto RoB 2 / ROBINS-I
             signalling answers; it has no Newcastle–Ottawa model, so the action is
             hidden for a star-scored form rather than offered and producing nothing. */}
-        {appraisalOn && editable && !finalised && !starScored && (
+        {/* 115.md — the appraiser's cue model is written against the RoB 2 /
+            ROBINS-I signalling sets; it has no model for QUADAS-2, a JBI checklist,
+            AMSTAR 2, QUIPS or PROBAST, so the action is hidden on those forms rather
+            than offered and producing nothing. */}
+        {appraisalOn && editable && !finalised && renderMode === 'domain-walk' && (
           <button onClick={() => runAppraisal(false)} disabled={appraising}
             title={appraisal ? 'Refresh suggestions from the study text — your own answers and rationales are kept' : 'Suggest signalling answers from the study text — you review and accept each one'}
             style={{ ...ghostBtn, flexShrink: 0, background: appraising ? C.surf : alpha(C.acc, '12'), color: appraising ? C.muted : C.acc, borderColor: alpha(C.acc, '45'), cursor: appraising ? 'progress' : 'pointer' }}>
@@ -955,12 +1089,23 @@ export default function RobWorkspace({ assessmentId, onClose, onChanged, onConti
         )}
         {/* 101.md §26 — a NOS total is a star COUNT, not a risk judgement, so it must
             not be shown in the traffic-light pill language. */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-          <span style={{ fontSize: 10, fontFamily: MONO, color: C.muted, textTransform: 'uppercase', letterSpacing: '0.06em' }}>{starScored ? 'Total' : 'Overall'}</span>
-          {starScored
-            ? <StarTotalPill score={nosScore} size="md" />
-            : <JudgmentPill judgment={finalised ? view.overall.resolvedOverall : liveOverall.judgment} size="md" provisional={!liveCompleteness.overall.complete && !finalised} />}
-        </div>
+        {/* 115.md — the overall pill must be read on the instrument's OWN scale.
+            AMSTAR 2's "High" is high CONFIDENCE (the best result) and a JBI overall
+            is an appraisal DECISION; painting either with the risk-of-bias palette
+            would invert the meaning of the tool. QUADAS-2 defines no overall at all,
+            so no pill is shown for it. */}
+        {(!definitionMode || progress.overall.defined) && (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+            <span style={{ fontSize: 10, fontFamily: MONO, color: C.muted, textTransform: 'uppercase', letterSpacing: '0.06em' }}>
+              {starScored ? 'Total' : definitionMode && progress.overall.scale === 'confidence' ? 'Confidence' : definitionMode && progress.overall.scale === 'decision' ? 'Decision' : 'Overall'}
+            </span>
+            {starScored
+              ? <StarTotalPill score={nosScore} size="md" />
+              : definitionMode
+                ? <ScaledPill scale={progress.overall.scale} value={progress.overall.value || liveOverall.judgment} />
+                : <JudgmentPill judgment={finalised ? view.overall.resolvedOverall : liveOverall.judgment} size="md" provisional={!liveCompleteness.overall.complete && !finalised} />}
+          </div>
+        )}
       </div>
 
       {/* P14 — guided-appraisal status: coverage + warnings, stated calmly, with an
@@ -1003,6 +1148,37 @@ export default function RobWorkspace({ assessmentId, onClose, onChanged, onConti
                prop, so a "go to source" button here could not actually move the
                document. The locator is still recorded with the judgement. */
           />
+        </main>
+      ) : definitionMode ? (
+        /* ── 115.md build item 2 — the DEFINITION-DRIVEN pane. QUADAS-2 and PROBAST
+            judge two axes per domain, the JBI checklists end in a reviewer's
+            appraisal decision, AMSTAR 2 computes a confidence rating from critical
+            flaws and QUIPS rates each domain by hand. None of that fits a
+            branching-signalling-question walk with one algorithm-proposed judgement
+            per domain, so the pane is replaced wholesale — exactly as the NOS pane
+            is. The PDF column, the 450 ms autosave, finalise and the permission
+            model around it are the shared workspace, unchanged. ── */
+        <main style={{ flex: 1, minHeight: 0, overflowY: 'auto', padding: '22px clamp(20px, 2.4vw, 36px)' }}>
+          <InstrumentAssessmentPanel
+            instrument={instrument}
+            view={view}
+            answers={answers}
+            meta={meta}
+            editable={editable}
+            progress={progress}
+            liveProposals={liveProposals}
+            liveOverall={liveOverall}
+            onAnswer={setAnswer}
+            onMeta={setQMeta}
+            onJudgment={doDomainJudgment}
+            onApplicability={doApplicability}
+            onOverall={doOverallJudgment}
+          />
+          {/* ── SEAM (115.md W2-B) — REVIEWER COMPARISON mounts here, per assessment:
+              the independent-reviewer diff + consensus affordance for THIS study and
+              instrument (`GET /projects/:pid/studies/:sid/reviewers`,
+              `POST …/consensus`). Delivered as its own component by the concurrent
+              W2-B agent; this file only reserves the position. ── */}
         </main>
       ) : (
       <div style={{ flex: 1, minHeight: 0, display: 'grid', gap: 0,
@@ -1052,9 +1228,11 @@ export default function RobWorkspace({ assessmentId, onClose, onChanged, onConti
           accordions on one page, so Previous/Next would navigate nothing. ── */}
       <WorkspaceFooter
         active={active} setActive={setActive} setFocusedQ={setFocusedQ} domainIds={domainIds}
-        nav={!starScored}
-        incompleteHint={starScored ? 'Answer every Newcastle–Ottawa item first' : undefined}
-        allComplete={allComplete} finalised={finalised} readOnly={readOnly} editable={editable}
+        nav={renderMode === 'domain-walk'}
+        incompleteHint={starScored
+          ? 'Answer every Newcastle–Ottawa item first'
+          : definitionMode ? (incompleteReason(progress) || undefined) : undefined}
+        allComplete={allComplete} finalised={finalised} readOnly={readOnly} editable={mayMutate}
         saving={saveState === 'saving'} saveState={saveState}
         onFinalise={doFinalise} onReopen={doReopen} onContinue={onContinue}
       />

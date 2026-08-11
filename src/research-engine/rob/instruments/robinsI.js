@@ -343,10 +343,21 @@ const DOMAINS = [
 export const ROBINSI = Object.freeze({
   id: 'ROBINS-I',
   name: 'Risk Of Bias In Non-randomised Studies of Interventions (ROBINS-I)',
+  abbreviation: 'ROBINS-I',
   instrumentVersion: '2016',
   variant: 'effect-of-assignment',
   variantLabel: 'Non-randomised studies of interventions',
   design: 'non-randomised',
+  // 115.md decision 2 — provenance lives on the definition (see rob2.js). ROBINS-I
+  // V2 (Nov 2024, revised Nov 2025) is still labelled draft on riskofbias.info and
+  // is deliberately not shipped; this is the 2016 tool.
+  designs: ['non-randomised-intervention'],
+  organization: 'Cochrane Bias Methods Group / ROBINS-I development group',
+  citation: 'Sterne JAC, Hernán MA, Reeves BC, et al. ROBINS-I: a tool for assessing risk of bias in non-randomised studies of interventions. BMJ 2016;355:i4919.',
+  guidanceUrl: 'https://www.riskofbias.info/welcome/home',
+  license: 'CC BY-NC-ND 4.0 (riskofbias.info). Attribution required; no derivatives; non-commercial. Item text may not be modified.',
+  scoringAllowed: false,
+  consensusSupported: true,
   responseOptions: RESPONSES.filter(r => r !== 'NA').map(value => ({ value, label: RESPONSE_LABELS[value] })),
   judgmentLevels: JUDGMENTS.map(value => ({ value, label: JUDGMENT_LABELS[value] })),
   // Severity-ASCENDING category order for ordinal analyses (weighted κ). NOT the

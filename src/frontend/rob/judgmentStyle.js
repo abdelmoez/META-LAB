@@ -68,3 +68,98 @@ export const JUDGMENT_LEGEND = ROB2_LEGEND;
 export function legendFor(instrumentId) {
   return instrumentId === 'ROBINS-I' ? ROBINSI_LEGEND : ROB2_LEGEND;
 }
+
+/* ── 115.md — SCALE-AWARE judgement styling ──────────────────────────────────
+ *
+ * The map above is a single flat vocabulary, which was safe while every level
+ * belonged to a risk-of-bias scale: `high` meant "high risk of bias" and was red
+ * everywhere. The 2026 tool set breaks that assumption outright:
+ *
+ *   · AMSTAR 2's overall is CONFIDENCE IN THE REVIEW — "High" is the BEST result
+ *     and "Critically low" the worst. Painting AMSTAR's High red (and its
+ *     Critically low green-adjacent) would invert the meaning of the tool.
+ *   · A JBI overall is an appraisal DECISION (include / exclude / seek further
+ *     info), not a severity at all.
+ *   · QUADAS-2 / PROBAST add `unclear`, which — like ROBINS-I's `ni` — means
+ *     "the study does not say", not "somewhere in the middle".
+ *
+ * So a level is only meaningful together with the SCALE it was drawn from, and
+ * the renderer passes that scale explicitly. `judgmentStyle` is untouched and
+ * still means the risk-of-bias scale, so every existing caller is unchanged.
+ *
+ *   'rob'         low / some / moderate / high / serious / critical / unclear / ni
+ *   'concern'     applicability concerns — low / high / unclear
+ *   'confidence'  AMSTAR 2 — high / moderate / low / critically-low (HIGH IS GOOD)
+ *   'decision'    JBI — include / exclude / seek-further-info
+ */
+
+/** `unclear` — the study does not report enough to judge. Never a middle value. */
+const UNCLEAR_STYLE = { label: 'Unclear', short: 'Unclear', icon: 'info', hex: OKABE_ITO.skyBlue, fg: C.teal, bg: alpha(C.teal, 0.14) };
+
+export const ROB_SCALE_STYLE = {
+  ...JUDGMENT_STYLE,
+  unclear: UNCLEAR_STYLE,
+};
+
+export const CONCERN_SCALE_STYLE = {
+  low:     { label: 'Low concern',     short: 'Low',     icon: 'circleCheck',   hex: OKABE_ITO.bluishGreen, fg: C.grn,   bg: alpha(C.grn, 0.14) },
+  high:    { label: 'High concern',    short: 'High',    icon: 'alertOctagon',  hex: OKABE_ITO.vermillion,  fg: C.red,   bg: alpha(C.red, 0.14) },
+  unclear: { label: 'Unclear concern', short: 'Unclear', icon: 'info',          hex: OKABE_ITO.skyBlue,     fg: C.teal,  bg: alpha(C.teal, 0.14) },
+  na:      JUDGMENT_STYLE.na,
+};
+
+// AMSTAR 2 confidence — the polarity is REVERSED relative to a risk scale.
+export const CONFIDENCE_SCALE_STYLE = {
+  high:             { label: 'High confidence',            short: 'High',            icon: 'circleCheck',   hex: OKABE_ITO.bluishGreen, fg: C.grn,  bg: alpha(C.grn, 0.14) },
+  moderate:         { label: 'Moderate confidence',        short: 'Moderate',        icon: 'checkSquare',   hex: OKABE_ITO.blue,        fg: C.teal, bg: alpha(C.teal, 0.14) },
+  low:              { label: 'Low confidence',             short: 'Low',             icon: 'alertTriangle', hex: OKABE_ITO.orange,      fg: C.yel,  bg: alpha(C.yel, 0.14) },
+  'critically-low': { label: 'Critically low confidence',  short: 'Critically low',  icon: 'alertOctagon',  hex: OKABE_ITO.vermillion,  fg: C.red,  bg: alpha(C.red, 0.14) },
+  na:               JUDGMENT_STYLE.na,
+};
+
+// JBI overall appraisal decision — a decision, not a severity.
+export const DECISION_SCALE_STYLE = {
+  include:             { label: 'Include',           short: 'Include', icon: 'circleCheck',   hex: OKABE_ITO.bluishGreen, fg: C.grn,  bg: alpha(C.grn, 0.14) },
+  exclude:             { label: 'Exclude',           short: 'Exclude', icon: 'x',             hex: OKABE_ITO.vermillion,  fg: C.red,  bg: alpha(C.red, 0.14) },
+  'seek-further-info': { label: 'Seek further info', short: 'Seek',    icon: 'alert',         hex: OKABE_ITO.orange,      fg: C.yel,  bg: alpha(C.yel, 0.14) },
+  na:                  JUDGMENT_STYLE.na,
+};
+
+const SCALE_STYLES = {
+  rob: ROB_SCALE_STYLE,
+  concern: CONCERN_SCALE_STYLE,
+  confidence: CONFIDENCE_SCALE_STYLE,
+  decision: DECISION_SCALE_STYLE,
+};
+
+/**
+ * Resolve a level on a NAMED scale. Unknown scale → the risk-of-bias scale (the
+ * historical behaviour); unknown/empty level → `na` (Not assessed).
+ */
+export function judgmentStyleOn(scale, value) {
+  const map = SCALE_STYLES[scale] || ROB_SCALE_STYLE;
+  return map[value] || map.na || JUDGMENT_STYLE.na;
+}
+
+/**
+ * Which scale an instrument's OVERALL judgement is drawn from, read from the
+ * definition's own `overall.axis` (shared.js contract) rather than from a list of
+ * instrument ids: 'confidence' (AMSTAR 2), 'appraisal-decision' (JBI) or 'rob'.
+ * `null` when the instrument declares it has no overall at all (QUADAS-2).
+ */
+export function overallScaleOf(instrument) {
+  if (!instrument) return 'rob';
+  if ('overall' in instrument && instrument.overall == null) return null;
+  const axis = instrument.overall && instrument.overall.axis;
+  if (axis === 'confidence') return 'confidence';
+  if (axis === 'appraisal-decision') return 'decision';
+  return 'rob';
+}
+
+/** Legend rows for any explicit level list `[{value,label}]` on a named scale. */
+export function legendForLevels(levels, scale = 'rob') {
+  return (Array.isArray(levels) ? levels : [])
+    .map(l => (typeof l === 'string' ? l : l && l.value))
+    .filter(Boolean)
+    .map(v => ({ key: v, ...judgmentStyleOn(scale, v) }));
+}

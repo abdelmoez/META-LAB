@@ -49,6 +49,11 @@ export function emptyManuscriptSources() {
     searchMethodsText: '',
     robAssessments: null,
     robByStudyId: null,
+    // 115.md decision 7 — the per-INSTRUMENT breakdown behind the two flat maps
+    // above: [{ instrumentId, studyCount, assessments, robByStudyId }]. Present so
+    // a mixed-tool review can be reported per tool instead of pooled into one
+    // figure; the flat maps stay single-tool by construction.
+    robByInstrument: null,
     // 101.md §27 — { tools:[{id,label,designLabel,scoring,count}], assessedCount, … }
     robUsage: null,
     perSource: null,
@@ -167,6 +172,22 @@ export function mapScreeningWorkflow(d) {
 /* RoB v2 judgement vocabulary → the display labels the tables/narration render.
    Covers RoB 2 (low/some/high) and ROBINS-I (low/moderate/serious/critical). */
 const ROB_RANK = { low: 1, some: 2, moderate: 2, high: 3, serious: 3, critical: 4 };
+
+/** The instrument a row with no `instrumentId` belongs to (the server's default). */
+const DEFAULT_ROB_TOOL_ID = 'RoB2';
+
+/**
+ * The instruments whose OVERALL value is a RISK-OF-BIAS severity scale, so two
+ * values of the SAME tool may legitimately be compared for "which is worse".
+ *
+ * This qualifier exists because the vocabularies COLLIDE on polarity: AMSTAR 2's
+ * overall is a CONFIDENCE rating whose best level is literally 'high', which
+ * ROB_RANK scores as the worst possible risk. Ranking an AMSTAR 2 row would
+ * therefore invert its meaning, so its rows are taken in list order instead. The
+ * JBI checklists end in an appraisal DECISION (include / exclude / seek further
+ * info), which has no severity order at all.
+ */
+const RANKED_ROB_TOOLS = new Set(['RoB2', 'ROBINS-I', 'QUADAS-2', 'QUIPS', 'PROBAST']);
 const ROB_LABEL = {
   low: 'Low',
   some: 'Some concerns',
@@ -185,41 +206,115 @@ export function robJudgementLabel(v) {
   return k.charAt(0).toUpperCase() + k.slice(1).replace(/_/g, ' ');
 }
 
+/** One assessment row → the `{ domains, overall, tool }` entry the tables read. */
+function robEntryFor(a) {
+  const domains = {};
+  const dj = (a.domainJudgments && typeof a.domainJudgments === 'object') ? a.domainJudgments
+    : ((a.domains && typeof a.domains === 'object') ? a.domains : {});
+  for (const k of Object.keys(dj)) {
+    const lbl = robJudgementLabel(dj[k]);
+    if (lbl) domains[k] = lbl;
+  }
+  const entry = { domains, overall: robJudgementLabel(a.overall) };
+  if (a.instrumentId) entry.tool = a.instrumentId;
+  return entry;
+}
+
+/** Of two rows of the SAME instrument, the one this tool's scale calls worse. */
+function worseOfSameTool(instrumentId, prev, next) {
+  // A tool with no severity order (AMSTAR 2's confidence rating, a JBI appraisal
+  // decision) is never ranked — the first row for the study stands.
+  if (!RANKED_ROB_TOOLS.has(instrumentId)) return prev;
+  const rank = (r) => ROB_RANK[String((r && r.overall) || '').toLowerCase()] || 0;
+  return rank(next) > rank(prev) ? next : prev;
+}
+
 /**
  * GET /api/rob/projects/:pid/assessments → the engine's structured shape:
- *   assessments  { [studyId]: { domains:{D1:'Low',…}, overall, tool } }
- *   robByStudyId { [studyId]: 'Low'|'Some concerns'|… } (study-table column)
- * When a study has several outcome-level assessments the WORST overall wins
- * (conservative — matches the journal-submission export). Returns null when the
- * list is empty. Pure.
+ *   assessments   { [studyId]: { domains:{D1:'Low',…}, overall, tool } }
+ *   robByStudyId  { [studyId]: 'Low'|'Some concerns'|… } (study-table column)
+ *   byInstrument  [{ instrumentId, studyCount, assessments, robByStudyId }]
+ *   instrumentIds / primaryInstrumentId / mixedTools
+ *
+ * ── ROWS ARE GROUPED BY INSTRUMENT, NEVER POOLED ACROSS TOOLS (115.md dec. 7) ──
+ * This used to collapse every assessment of a study to the worst overall across
+ * ALL of them via ROB_RANK. In a single-tool review that is the intended
+ * conservative rule (several outcome-level RoB 2 rows → the worst one). In a
+ * mixed-tool review it is a cross-tool aggregation, which decision 7 forbids
+ * everywhere else — and it is not merely untidy: the vocabularies collide, so an
+ * AMSTAR 2 row rated "High confidence" (the BEST outcome that tool can give)
+ * outranked a RoB 2 "Low risk of bias" and became the study's reported judgement.
+ *
+ * So the rows are grouped by `instrumentId` exactly the way the server's
+ * `groups[]` are, and the worst-overall rule applies only WITHIN one tool, and
+ * only where that tool's overall is a severity scale (see RANKED_ROB_TOOLS).
+ *
+ * The flat `assessments` / `robByStudyId` maps that the RoB table and the study
+ * characteristics table read keep their exact shape, because those tables have one
+ * column set (from `project.robMethod`) and cannot render two tools at once. A
+ * study assessed with several tools takes its entry from the PRIMARY tool (the one
+ * covering the most studies) when that tool assessed it, else from the first tool
+ * by id — a deterministic choice within one instrument, never a comparison across
+ * two. `byInstrument` carries the complete per-tool picture for any consumer that
+ * wants it, and `deriveRobUsage` already reports the per-tool counts.
+ *
+ * Returns null when the list is empty. Pure.
  */
 export function mapRobAssessments(rows) {
-  const byStudy = {};
-  for (const a of (Array.isArray(rows) ? rows : [])) {
-    if (!a || !a.studyId) continue;
-    const rank = ROB_RANK[String(a.overall || '').toLowerCase()] || 0;
-    const prev = byStudy[a.studyId];
-    if (prev && prev.rank >= rank) continue;
-    byStudy[a.studyId] = { rank, a };
+  const list = (Array.isArray(rows) ? rows : []).filter((a) => a && a.studyId);
+
+  // 1) Group by instrument; within a group, one row per study.
+  const groups = new Map(); // instrumentId -> Map(studyId -> row)
+  for (const a of list) {
+    const iid = a.instrumentId || DEFAULT_ROB_TOOL_ID;
+    if (!groups.has(iid)) groups.set(iid, new Map());
+    const byStudy = groups.get(iid);
+    const prev = byStudy.get(a.studyId);
+    byStudy.set(a.studyId, prev ? worseOfSameTool(iid, prev, a) : a);
   }
+  if (!groups.size) return null;
+
+  const instrumentIds = [...groups.keys()].sort();
+  const byInstrument = instrumentIds.map((instrumentId) => {
+    const assessments = {};
+    const robByStudyId = {};
+    for (const [sid, a] of groups.get(instrumentId)) {
+      const entry = robEntryFor(a);
+      assessments[sid] = entry;
+      if (entry.overall) robByStudyId[sid] = entry.overall;
+    }
+    return {
+      instrumentId,
+      studyCount: Object.keys(assessments).length,
+      assessments,
+      robByStudyId,
+    };
+  });
+
+  // 2) The primary tool: the one covering the most studies (ties → lowest id).
+  const primary = byInstrument.reduce((best, g) => (g.studyCount > best.studyCount ? g : best), byInstrument[0]);
+
+  // 3) The flat maps — each study served by ONE tool, never a blend of two.
   const assessments = {};
   const robByStudyId = {};
-  for (const sid of Object.keys(byStudy)) {
-    const { a } = byStudy[sid];
-    const domains = {};
-    const dj = (a.domainJudgments && typeof a.domainJudgments === 'object') ? a.domainJudgments
-      : ((a.domains && typeof a.domains === 'object') ? a.domains : {});
-    for (const k of Object.keys(dj)) {
-      const lbl = robJudgementLabel(dj[k]);
-      if (lbl) domains[k] = lbl;
+  for (const g of [primary, ...byInstrument.filter((x) => x !== primary)]) {
+    for (const sid of Object.keys(g.assessments)) {
+      if (assessments[sid]) continue;
+      assessments[sid] = g.assessments[sid];
+      if (g.robByStudyId[sid]) robByStudyId[sid] = g.robByStudyId[sid];
     }
-    const overall = robJudgementLabel(a.overall);
-    const entry = { domains, overall };
-    if (a.instrumentId) entry.tool = a.instrumentId;
-    assessments[sid] = entry;
-    if (overall) robByStudyId[sid] = overall;
   }
-  return Object.keys(assessments).length ? { assessments, robByStudyId } : null;
+
+  return Object.keys(assessments).length
+    ? {
+      assessments,
+      robByStudyId,
+      byInstrument,
+      instrumentIds,
+      primaryInstrumentId: primary.instrumentId,
+      mixedTools: byInstrument.length > 1,
+    }
+    : null;
 }
 
 /** Newest run with state 'completed' (by completedAt, falling back to createdAt). Pure. */
@@ -418,6 +513,7 @@ export async function fetchManuscriptSources({ projectId, screenProjectId, fetch
       if (mapped) {
         out.robAssessments = mapped.assessments;
         out.robByStudyId = mapped.robByStudyId;
+        out.robByInstrument = mapped.byInstrument;
       }
       // 101.md §27 — which instruments were ACTUALLY used, from the raw rows
       // (instrumentId + status + studyId). Derived here rather than from

@@ -20,13 +20,22 @@ const json = body => ({ headers: { 'Content-Type': 'application/json' }, body: J
 
 const BASE = '/api/rob';
 
-/** Map a stored instrument id ('RoB2' | 'ROBINS-I' | 'NOS' | 'NOS-CC') to its route slug. */
+/**
+ * Map a stored instrument id to its route slug.
+ *
+ * 115.md — the four pre-115 ids keep their hand-written slugs because those are
+ * public URLs; every OTHER registered instrument derives its slug the same way the
+ * server does (`'QUADAS-2'` → `quadas-2`, `'JBI-CaseSeries'` → `jbi-caseseries`),
+ * so a newly registered tool needs no edit here. Falling back to `rob2` for an
+ * unknown id — the old behaviour — would have silently served the wrong
+ * instrument definition once there were thirteen of them.
+ */
+const LEGACY_SLUGS = { 'ROBINS-I': 'robins-i', NOS: 'nos', 'NOS-CC': 'nos-cc', RoB2: 'rob2' };
 export function instrumentSlug(instrumentId) {
   const id = String(instrumentId || 'RoB2');
-  if (id === 'ROBINS-I') return 'robins-i';
-  if (id === 'NOS') return 'nos';
-  if (id === 'NOS-CC') return 'nos-cc';
-  return 'rob2';
+  if (LEGACY_SLUGS[id]) return LEGACY_SLUGS[id];
+  const slug = id.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+  return slug || 'rob2';
 }
 
 /* ── Newcastle–Ottawa answers on the wire (101.md §21) ────────────────────────
@@ -92,6 +101,10 @@ export const robApi = {
   // client normally uses the engine-barrel instrument objects directly, but this
   // stays available for a server-of-record fetch.
   instrumentDef:     (instrumentId)     => req(`${BASE}/instruments/${instrumentSlug(instrumentId)}`),
+  // 115.md decision 3 — the SELECTABLE catalogue, derived from the registry. The
+  // Assess selector is fed by this (and by the copy of it that rides along with
+  // `listStudies`), so nothing in the UI hardcodes which instruments exist.
+  listInstruments:   ()                 => req(`${BASE}/instruments`),
   listAssessments:   (projectId)        => req(`${BASE}/projects/${projectId}/assessments`),
   // prompt46 #4 — merged study universe (screening-derived + manual) + manual-study CRUD.
   listStudies:       (projectId)        => req(`${BASE}/projects/${projectId}/studies`),

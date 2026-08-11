@@ -20,9 +20,10 @@ import { getById as getOwnedProject, touchProjectActivity, mutateProjectBlob } f
 import { getRobMemberAccess } from '../screening/metalabAccess.js';
 import { featureAccess } from '../services/featureAccess.js';
 import { canMutateAssessment, normaliseScreeningStudy, normaliseManualStudy } from './robAccess.js';
-import { getRobTool, isStarScoredTool } from '../../src/research-engine/rob/tools.js';
+import { ROB_TOOLS, getRobTool, isStarScoredTool, toolsForStudyDesign } from '../../src/research-engine/rob/tools.js';
 import { sendTierLimit } from '../services/entitlementService.js';
 import { requireProjectExport, settleProjectExport, EXPORT_TYPES } from '../services/projectExportGuard.js';
+import { buildRobProjectCsv } from '../services/robExportService.js';
 import {
   getInstrument,
   isScoringInstrument,
@@ -47,6 +48,13 @@ import {
   AHRQ_STANDARD,
   NOS_CONVENTIONAL_BANDS,
   NOS_CONVENTIONAL_BANDS_NOTICE,
+  // 115.md — the SECOND judgement axis. The suffix + both directions of the
+  // (domainId ⇄ applicability key) mapping live in the pure engine so the server,
+  // the renderer and the exporter can never drift onto two different storage keys.
+  APPLICABILITY_SUFFIX,
+  applicabilityDomainId,
+  isApplicabilityDomainId,
+  baseDomainId,
 } from '../../src/research-engine/rob/index.js';
 
 // ── Instrument awareness (P14) ────────────────────────────────────────────────
@@ -56,10 +64,131 @@ import {
 // THAT instrument. Responses (Y/PY/PN/N/NI/NA) are identical across instruments,
 // so VALID_RESPONSES stays shared. The RoB2 path is byte-identical to before.
 const VALID_RESPONSES = new Set(RESPONSES);
-// 101.md §18 — the two OFFICIAL Newcastle–Ottawa forms join the supported set.
-// They are SEPARATE instruments (Outcome vs Exposure domains) exactly as §19/§20
-// require; nothing about the RoB 2 / ROBINS-I paths changes.
-const SUPPORTED_INSTRUMENTS = ['RoB2', 'ROBINS-I', 'NOS', 'NOS-CC'];
+
+// ── 115.md decision 3 — instrument availability is REGISTRY-DRIVEN ────────────
+// This used to be `SUPPORTED_INSTRUMENTS = ['RoB2','ROBINS-I','NOS','NOS-CC']`, a
+// hardcoded allowlist that had to be edited for every new tool, PLUS a feature-flag
+// gate that made ROBINS-I creatable only when `guidedRobAppraisal` was ON. Both are
+// gone:
+//   · an instrument is creatable when the PURE ENGINE can resolve a DEFINITION for
+//     it. Registering a definition (src/research-engine/rob/instruments/*, wired
+//     into the engine registry + the tools catalogue) makes it creatable with no
+//     server change at all;
+//   · `guidedRobAppraisal` now gates ONLY the guided-appraisal FEATURES (the
+//     text→suggestion appraiser and the machine-vs-human κ validation). It never
+//     decides WHICH instruments a reviewer may select — that was a category error:
+//     ROBINS-I is a Cochrane instrument, not a machine-suggestion feature.
+// Unknown ids are rejected (400 naming the id), never silently coerced.
+
+// The instruments that predate the registry sweep. Kept ONLY as a seed for
+// enumeration, so the list of creatable ids is correct even if a definition is
+// registered in the engine before it is described in the tools catalogue.
+const BASE_INSTRUMENT_IDS = Object.freeze(['RoB2', 'ROBINS-I', 'NOS', 'NOS-CC']);
+
+/**
+ * Resolve an instrument DEFINITION by id, or null when the registry has none.
+ * `getInstrument` throws for unknown ids; this is the non-throwing seam every
+ * request path uses. Pure.
+ */
+export function resolveInstrument(id) {
+  const wanted = String(id == null ? '' : id).trim();
+  if (!wanted) return null;
+  try { return getInstrument(wanted) || null; } catch { return null; }
+}
+
+/**
+ * Every instrument id that currently HAS a definition: the tools catalogue plus
+ * the historical base set, de-duplicated, in catalogue order. A catalogue entry
+ * with no definition yet (status 'coming-soon') is excluded — advertising a tool
+ * is not the same as being able to assess with it. Pure.
+ */
+export function registeredInstrumentIds() {
+  const seen = new Set();
+  const out = [];
+  for (const id of [...BASE_INSTRUMENT_IDS, ...ROB_TOOLS.map(t => t.id)]) {
+    if (seen.has(id)) continue;
+    seen.add(id);
+    if (resolveInstrument(id)) out.push(id);
+  }
+  return out;
+}
+
+/** Is this id a real, creatable instrument right now? Pure. */
+export function isRegisteredInstrument(id) {
+  return !!resolveInstrument(id);
+}
+
+// ── 115.md decision 6 — design-based RECOMMENDATIONS (never restrictions) ─────
+// `toolsForStudyDesign` has existed and been unit-tested since 101.md with no live
+// consumer (dossier §15.3). It is wired here: the Assess surface gets, per study,
+// the design we could DETECT plus the recommended instruments — while every
+// registered instrument stays selectable. A mismatch is an inline warning, never a
+// block; an undetectable design produces NO recommendation and NO warning (a guess
+// dressed as guidance would be worse than silence).
+
+/** The study designs a tool declares it covers (catalogue or definition). Pure. */
+export function designsForTool(tool, instrument) {
+  const t = tool || {};
+  const i = instrument || {};
+  const list = [
+    ...(Array.isArray(t.designs) ? t.designs : []),
+    ...(Array.isArray(i.designs) ? i.designs : []),
+    ...(t.design ? [t.design] : []),
+    ...(i.design ? [i.design] : []),
+  ].map(d => String(d || '').trim()).filter(Boolean);
+  return [...new Set(list)];
+}
+
+/**
+ * Best-effort study design from whatever the source record happens to carry
+ * (dossier §8: the RoB study universe has no design column; design lives in the
+ * legacy blob's `design` / extraction's study-design field). Never guesses. Pure.
+ */
+export function detectStudyDesign(source) {
+  const s = source || {};
+  for (const key of ['design', 'studyDesign', 'study_design', 'studyType', 'study_type', 'type']) {
+    const v = s[key];
+    if (typeof v === 'string' && v.trim()) return v.trim();
+  }
+  return '';
+}
+
+/** Loose containment match between a declared design and a free-text one. Pure. */
+function designCovers(declared, detected) {
+  const a = String(declared || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+  const b = String(detected || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+  if (a.length < 4 || b.length < 3) return false;
+  return b.includes(a) || a.includes(b);
+}
+
+/**
+ * The recommendation payload for one study. `compatible` is deliberately ALL
+ * registered instruments (decision 3/6 — nothing is hidden); `mismatchToolIds`
+ * tells the UI when to render the warning sentence.
+ *
+ * @param {string} design free-text detected design ('' when unknown)
+ * @param {Array<{id,label,designs}>} catalogue instrumentCatalogue() rows
+ * Pure.
+ */
+export function recommendationFor(design, catalogue = []) {
+  const all = catalogue.map(t => t.id);
+  const detected = String(design || '').trim();
+  if (!detected) {
+    return { design: '', recommendedToolIds: [], compatibleToolIds: all, mismatchToolIds: [], warning: '' };
+  }
+  const recommended = toolsForStudyDesign(detected).filter(id => all.includes(id));
+  if (!recommended.length) {
+    // A design we cannot route is the same as no design: no recommendation, and
+    // therefore nothing to warn about.
+    return { design: detected, recommendedToolIds: [], compatibleToolIds: all, mismatchToolIds: [], warning: '' };
+  }
+  const mismatch = catalogue
+    .filter(t => !recommended.includes(t.id) && !(t.designs || []).some(d => designCovers(d, detected)))
+    .map(t => t.id);
+  const names = recommended.map(id => (catalogue.find(t => t.id === id) || {}).label || id);
+  const warning = `This study's recorded design is "${detected}". ${names.join(' or ')} ${names.length > 1 ? 'are the recommended instruments' : 'is the recommended instrument'} for that design — another tool can still be used, but say why in the methods.`;
+  return { design: detected, recommendedToolIds: recommended, compatibleToolIds: all, mismatchToolIds: mismatch, warning };
+}
 
 // 101.md §25 — a reconciled dual-reviewer record is a THIRD RobAssessment row
 // carrying this status. It is an IDENTITY, not a workflow stage: the row stays
@@ -74,16 +203,252 @@ function instrumentFor(a) {
 function isStarInstrument(instrument) {
   return isScoringInstrument(instrument);
 }
-/** Valid FINAL/override judgement values for an instrument (RoB2: low/some/high;
- *  ROBINS-I: low/moderate/serious/critical/ni). */
-function validJudgments(instrument) {
-  return new Set((instrument.judgmentLevels || []).map(l => l.value));
-}
 /** questionId → domainId map for an instrument. */
 function questionDomainMap(instrument) {
   const map = {};
-  for (const d of instrument.domains) for (const q of d.questions) map[q.id] = d.id;
+  for (const d of instrument.domains) for (const q of (d.questions || d.items || [])) map[q.id] = d.id;
   return map;
+}
+
+// ── 115.md decisions 1/4 — DEFINITION-DRIVEN vocabularies ─────────────────────
+// Thirteen instruments do NOT share one response vocabulary: RoB 2 / ROBINS-I /
+// PROBAST use Y/PY/PN/N/NI, QUADAS-2 uses Yes/No/Unclear, JBI adds Not applicable,
+// AMSTAR 2 has Partial Yes, the NOS has per-item option lists. So the allowed
+// values come from the DEFINITION, never from a server constant. An off-form value
+// must never be stored (the 101.md nosPersistence rule, generalised): a junk value
+// would silently look like a considered judgement.
+//
+// Every helper below is tolerant of the small naming variations a definition may
+// use, and every one of them falls back to EXACTLY the pre-115 behaviour when the
+// definition says nothing — so RoB 2 / ROBINS-I / NOS paths are unchanged.
+
+/** Coerce a level/option list (strings or {value}) to a string[] of values. Pure. */
+export function levelValues(src) {
+  if (!Array.isArray(src)) return [];
+  const out = [];
+  for (const l of src) {
+    const v = (l && typeof l === 'object') ? l.value : l;
+    if (typeof v === 'string' && v && !out.includes(v)) out.push(v);
+  }
+  return out;
+}
+
+/**
+ * The responses one ITEM may take. Item-level first, then domain-level, then an
+ * instrument-level CHECKLIST vocabulary, else the shared Y/PY/PN/N/NI/NA set.
+ *
+ * NOTE the deliberate omission: `instrument.responseOptions` is NOT consulted. On
+ * RoB 2 that field is the UI's option list, which excludes 'NA' by design
+ * (rob2.js:263) even though NA is a storable answer — reading it here would start
+ * rejecting legal answers. Definitions that want to narrow the vocabulary declare
+ * it on the item/domain, or as `itemResponses`/`checklistResponses`. Pure.
+ */
+export function allowedResponsesFor(instrument, domain, question) {
+  const q = levelValues(question && (question.responses || question.responseOptions || question.allowedResponses));
+  if (q.length) return new Set(q);
+  const d = levelValues(domain && (domain.responses || domain.responseOptions));
+  if (d.length) return new Set(d);
+  const i = levelValues(instrument && (instrument.itemResponses || instrument.checklistResponses));
+  if (i.length) return new Set(i);
+  return VALID_RESPONSES;
+}
+
+/** Valid DOMAIN judgement values (RoB2: low/some/high; ROBINS-I: 5 levels). Pure. */
+export function domainJudgmentLevels(instrument, domain) {
+  const d = levelValues(domain && (domain.judgmentLevels || (domain.judgment && domain.judgment.levels)));
+  if (d.length) return d;
+  const i = levelValues(instrument && (instrument.judgmentLevels
+    || (instrument.domainJudgment && instrument.domainJudgment.levels)));
+  return i;
+}
+
+/**
+ * Valid OVERALL values, or null when the instrument declares that it HAS no
+ * overall judgement (QUIPS reports domain ratings only — 115.md decision 4:
+ * "null when the tool has no overall — NEVER invent"). An instrument that says
+ * nothing keeps the pre-115 behaviour (overall uses the domain vocabulary). Pure.
+ */
+export function overallLevelsFor(instrument) {
+  if (!instrument) return [];
+  const declaresNone = instrument.hasOverall === false
+    || ('overallLevels' in instrument && instrument.overallLevels == null)
+    || ('overall' in instrument && instrument.overall == null);
+  if (declaresNone) return null;
+  const o = levelValues(instrument.overallLevels
+    || instrument.overallDecisions
+    || (instrument.overall && (instrument.overall.levels || instrument.overall.values || instrument.overall.decisions)));
+  if (o.length) return o;
+  return domainJudgmentLevels(instrument, null);
+}
+
+// ── Applicability judgements without a schema change (115.md build item 2) ────
+// QUADAS-2 and PROBAST judge each of their first domains TWICE: a risk-of-bias
+// judgement AND an applicability-concern judgement. RobDomainJudgment is unique on
+// (assessmentId, domainId), has NO applicability column, and 115 forbids schema
+// changes.
+//
+// DECISION: an applicability judgement is stored as a SECOND RobDomainJudgment row
+// whose `domainId` carries a reserved suffix — `D1` (risk of bias) and `D1-APP`
+// (applicability concern). This mirrors 101.md's reuse of the existing `variant`
+// column to discriminate the two Newcastle–Ottawa forms: an existing string column
+// carries the discriminator instead of a new one.
+//   · the row is additive, so recomputeAndPersist / finalise / reopen (which
+//     iterate the DEFINITION's domains) never touch it;
+//   · it inherits the unique index, the cascade delete, the override-justification
+//     field and the audit trail for free;
+//   · when a definition ships a computed applicability rule, its proposal lands in
+//     the same row's `proposedJudgment` with the human value still in
+//     `finalJudgment` — no migration.
+// Every reader that treats domain rows as "the instrument's domains" filters these
+// keys out (proposeOverall input, κ pairs, the summary matrix).
+//
+// The suffix and both directions of the mapping live in the PURE engine
+// (instruments/shared.js) so the server, the renderer and the exporter can never
+// drift onto two different keys. The server re-exports them under its own names
+// only so existing call sites read the same as before.
+export { APPLICABILITY_SUFFIX };
+
+/** The storage key for a domain's applicability judgement. Pure. */
+export function applicabilityKey(domainId) {
+  return applicabilityDomainId(domainId);
+}
+
+/** Split a stored RobDomainJudgment.domainId into { domainId, kind }. Pure. */
+export function parseDomainKey(key) {
+  const s = String(key == null ? '' : key);
+  return isApplicabilityDomainId(s)
+    ? { domainId: baseDomainId(s), kind: 'applicability' }
+    : { domainId: s, kind: 'rob' };
+}
+
+/** True for a namespaced applicability row. Pure. */
+export function isApplicabilityKey(key) {
+  return isApplicabilityDomainId(String(key == null ? '' : key));
+}
+
+/**
+ * The applicability-concern levels a domain accepts, or null when the domain has
+ * no applicability section. Recognised shapes: an explicit level list on the
+ * domain or instrument, `domain.applicability === true` (falls back to the
+ * instrument's own applicability levels), or an item of `kind: 'applicability'`
+ * inside the domain (115.md decision 4's item kinds). Pure.
+ */
+export function applicabilityLevelsFor(instrument, domain) {
+  if (!domain) return null;
+  const explicit = levelValues(domain.applicabilityLevels
+    || (domain.applicability && domain.applicability.levels));
+  if (explicit.length) return explicit;
+
+  const items = domain.questions || domain.items || [];
+  const applicItem = items.find(q => q && q.kind === 'applicability');
+  const declared = domain.applicability === true
+    || domain.hasApplicability === true
+    || !!applicItem;
+  if (!declared) return null;
+
+  const fromItem = levelValues(applicItem && (applicItem.responses || applicItem.responseOptions));
+  if (fromItem.length) return fromItem;
+  const fromInstrument = levelValues(instrument && (instrument.applicabilityLevels
+    || (instrument.applicability && instrument.applicability.levels)));
+  if (fromInstrument.length) return fromInstrument;
+  // Declared but level-less: fall back to the domain judgement vocabulary rather
+  // than inventing a scale of our own.
+  const fallback = domainJudgmentLevels(instrument, domain);
+  return fallback.length ? fallback : null;
+}
+
+/** The instrument's domain ids that carry an applicability judgement. Pure. */
+export function applicabilityDomainIds(instrument) {
+  const domains = (instrument && instrument.domains) || [];
+  return domains.filter(d => applicabilityLevelsFor(instrument, d)).map(d => d.id);
+}
+
+// ── The OVERALL applicability judgement (PROBAST) ─────────────────────────────
+// PROBAST reports TWO overall judgements per model evaluation: overall risk of
+// bias and overall concerns regarding applicability (the Step 4 table). RobOverall
+// has one judgement column and 115 forbids schema changes, so the second axis
+// reuses the SAME namespaced-row convention the per-domain applicability uses: a
+// RobDomainJudgment keyed `overall-APP`.
+//
+// Reading it back is already generic — `parseDomainKey('overall-APP')` yields
+// `{ domainId: 'overall', kind: 'applicability' }`, so the project list endpoint
+// surfaces it as `row.applicability.overall` and the export as
+// `applicability:overall` with no special case. And because it IS an applicability
+// key, every reader that filters those out (the overall roll-up input, the κ pairs,
+// the traffic-light matrix) already ignores it.
+//
+// The reserved id 'overall' can only collide with a definition that names a DOMAIN
+// 'overall'; none does, and `overallApplicabilityLevels` returns null for every
+// instrument whose overall declares no applicability axis, so nothing is written.
+export const OVERALL_APPLICABILITY_DOMAIN_ID = 'overall';
+
+/** The storage key for an instrument's OVERALL applicability judgement. Pure. */
+export function overallApplicabilityKey() {
+  return applicabilityDomainId(OVERALL_APPLICABILITY_DOMAIN_ID);
+}
+
+/**
+ * The levels an instrument's OVERALL applicability judgement accepts, or null
+ * when the instrument declares no such axis (every tool except PROBAST). Pure.
+ */
+export function overallApplicabilityLevels(instrument) {
+  const ov = instrument && instrument.overall;
+  const ap = ov && ov.applicability;
+  if (!ap) return null;
+  const levels = levelValues(ap.levels || ap.values
+    || (instrument && (instrument.applicabilityLevels
+      || (instrument.applicability && instrument.applicability.levels))));
+  return levels.length ? levels : null;
+}
+
+/**
+ * True when the instrument's OVERALL rule needs more than the resolved level
+ * STRINGS of its domains. Two of the thirteen do, and both say so by declaring a
+ * computed overall contract (pinned by tests/unit/robInstrumentRegistry.test.js):
+ *
+ *   · AMSTAR 2 rolls up the CRITICAL / non-critical flaw COUNTS that each domain
+ *     proposal carries — its domains make no judgement of their own, so a map of
+ *     judgement strings carries literally nothing for the rule to read;
+ *   · PROBAST rolls up the APPLICABILITY axis alongside risk of bias.
+ *
+ * The other eleven get the same judgement-string map they have always been given,
+ * so their proposals stay byte-identical. This mirrors exactly what the workspace
+ * already does client-side (RobWorkspace `liveOverall`) — which is why the two
+ * used to disagree, and why they now cannot. Pure.
+ */
+export function overallReadsProposals(instrument) {
+  return !!(instrument && instrument.overall && instrument.overall.computed === true);
+}
+
+/**
+ * The overall judgement value that may be PERSISTED, validated against the
+ * instrument's own overall vocabulary (115.md decision 4: "null when the tool has
+ * no overall — NEVER invent"). A value the definition does not list is dropped
+ * rather than stored, so no export or plot can ever show a level the instrument
+ * does not define. Star instruments are exempt: their overall is a star COUNT,
+ * validated numerically against maxStars. Pure.
+ */
+export function overallJudgmentToPersist(instrument, judgment, { star = false } = {}) {
+  if (star) return judgment;
+  const levels = overallLevelsFor(instrument);
+  if (levels === null) return '';            // the tool prescribes no overall at all
+  if (!judgment) return judgment;            // '' — nothing claimed, nothing to check
+  if (!levels.length) return judgment;       // no declared vocabulary to validate against
+  return levels.includes(judgment) ? judgment : '';
+}
+
+/** Collapse whitespace so a rationale stays on one CSV row. Pure. */
+function flattenText(v) {
+  return String(v == null ? '' : v).replace(/\s+/g, ' ').trim();
+}
+
+/** The instrument version stamped onto a new row — ALWAYS from the definition. */
+function instrumentVersionOf(instrument) {
+  return String((instrument && (instrument.instrumentVersion ?? instrument.version)) ?? '');
+}
+/** The variant stamped onto a new row — ALWAYS from the definition ('' when none). */
+function variantOf(instrument) {
+  return String((instrument && instrument.variant) ?? '');
 }
 
 // ── NOS persistence boundary (101.md §18/§21) ─────────────────────────────────
@@ -121,10 +486,16 @@ export function encodeAnswerResponse(question, values) {
   return list.length ? String(list[0]) : '';
 }
 
+/** A domain's items. Definitions name the list `questions`; 115.md's newer shape
+ *  calls them `items`. Both are accepted so the server never depends on which. */
+export function questionsOf(domain) {
+  return (domain && (domain.questions || domain.items)) || [];
+}
+
 /** Locate a question (and its domain) in an instrument by question id. Pure. */
 export function findInstrumentQuestion(instrument, questionId) {
   for (const d of (instrument && instrument.domains) || []) {
-    for (const q of d.questions || []) {
+    for (const q of questionsOf(d)) {
       if (q.id === questionId) return { domainId: d.id, domain: d, question: q };
     }
   }
@@ -337,14 +708,21 @@ function permsFor(a) {
 // studies (project.studies blob, source:'screening', NOT deletable from RoB) +
 // RoB-local manual studies (RobManualStudy, source:'manual'). One list keyed by id.
 async function loadStudyUniverse(project) {
+  // 115.md decision 6 — carry the study DESIGN through, when the source record has
+  // one. The normalised universe row has never had a design field (dossier §8),
+  // which is exactly why `toolsForStudyDesign` had no consumer; the project-level
+  // `studyDesign` is the fallback when a study row does not state its own.
+  const projectDesign = detectStudyDesign(project);
   const screening = (Array.isArray(project.studies) ? project.studies : [])
     .filter((s) => s && s.id)
-    .map(normaliseScreeningStudy);
+    .map((s) => ({ ...normaliseScreeningStudy(s), design: detectStudyDesign(s) || projectDesign }));
   const manualRows = await prisma.robManualStudy.findMany({
     where: { projectId: project.id, deletedAt: null },
     orderBy: { createdAt: 'asc' },
   });
-  const manual = manualRows.map(normaliseManualStudy);
+  // A RoB-local manual study records no design of its own; it inherits the
+  // project's, or stays blank (blank → no recommendation, no warning).
+  const manual = manualRows.map((m) => ({ ...normaliseManualStudy(m), design: projectDesign }));
   return [...screening, ...manual];
 }
 
@@ -427,10 +805,35 @@ async function recomputeAndPersist(assessmentId, instrument = getInstrument('RoB
   // Overall is computed from the RESOLVED domain judgements (override-aware).
   const djs = await prisma.robDomainJudgment.findMany({ where: { assessmentId } });
   const resolvedByDomain = {};
+  // 115.md — the recorded APPLICABILITY concerns, keyed by BASE domain id. They are
+  // a second axis, never a risk-of-bias judgement, so they never enter a risk
+  // roll-up; PROBAST's Step 4 applicability rule reads them attached to the domain.
+  const applicByDomain = {};
+  for (const dj of djs) {
+    if (!isApplicabilityKey(dj.domainId)) continue;
+    applicByDomain[baseDomainId(dj.domainId)] = dj.finalJudgment || dj.proposedJudgment || '';
+  }
   // Star instruments hand the resolved COUNT to judgeOverall ({ stars }) instead of
   // a numeral string, so an overridden domain contributes its overridden stars.
+  // 115.md — namespaced APPLICABILITY rows are not risk-of-bias domains and must
+  // never reach an overall algorithm (QUADAS-2/PROBAST report the two separately).
+  const rich = !star && overallReadsProposals(instrument);
   for (const dj of djs) {
-    resolvedByDomain[dj.domainId] = star ? { stars: resolvedDomainStars(dj) } : resolvedDomain(dj);
+    if (isApplicabilityKey(dj.domainId)) continue;
+    if (star) { resolvedByDomain[dj.domainId] = { stars: resolvedDomainStars(dj) }; continue; }
+    const value = resolvedDomain(dj);
+    if (!rich) { resolvedByDomain[dj.domainId] = value; continue; }
+    // AMSTAR 2 / PROBAST: the whole domain PROPOSAL travels (it carries AMSTAR's
+    // flaw counts), with the reviewer's own judgement substituted in and the
+    // recorded applicability concern attached — the same object the workspace
+    // builds client-side, so the persisted overall and the live one cannot differ.
+    const p = proposals[dj.domainId] || {};
+    const ap = applicByDomain[dj.domainId];
+    resolvedByDomain[dj.domainId] = {
+      ...p,
+      judgment: value || '',
+      ...(ap ? { applicability: ap } : {}),
+    };
   }
   const overall = proposeOverall(instrument, resolvedByDomain);
   // multiSomeConcernsFlag is RoB2-specific; ROBINS-I overall returns no such flag →
@@ -439,11 +842,31 @@ async function recomputeAndPersist(assessmentId, instrument = getInstrument('RoB
   const overallStarCols = star
     ? { proposedStars: overall.stars != null ? Number(overall.stars) : null, maxStars: instrument.maxStars }
     : {};
+  // 115.md — validated against the DEFINITION's own overall vocabulary before it is
+  // written, so AMSTAR 2's confidence rating lands in the same column RoB 2's
+  // overall does (its levels ARE the tool's own vocabulary) and nothing else can.
+  const proposedOverall = overallJudgmentToPersist(instrument, overall.judgment, { star });
   await prisma.robOverall.upsert({
     where: { assessmentId },
-    update: { proposedOverall: overall.judgment, multiSomeConcernsFlag: multiFlag, ...overallStarCols },
-    create: { assessmentId, proposedOverall: overall.judgment, multiSomeConcernsFlag: multiFlag, ...overallStarCols },
+    update: { proposedOverall, multiSomeConcernsFlag: multiFlag, ...overallStarCols },
+    create: { assessmentId, proposedOverall, multiSomeConcernsFlag: multiFlag, ...overallStarCols },
   });
+
+  // 115.md — PROBAST's SECOND overall judgement (concerns regarding applicability),
+  // stored under the established `overall-APP` convention. `proposedJudgment` only:
+  // a reviewer's recorded value lives in finalJudgment/overridden on the same row
+  // and is never touched here, exactly as the per-domain rows behave.
+  const ovApplicLevels = overallApplicabilityLevels(instrument);
+  if (ovApplicLevels) {
+    const proposed = (overall.applicability && overall.applicability.judgment) || '';
+    const value = ovApplicLevels.includes(proposed) ? proposed : '';
+    const domainId = overallApplicabilityKey();
+    await prisma.robDomainJudgment.upsert({
+      where: { assessmentId_domainId: { assessmentId, domainId } },
+      update: { proposedJudgment: value },
+      create: { assessmentId, domainId, proposedJudgment: value },
+    });
+  }
 
   return { proposals, overall, score };
 }
@@ -466,9 +889,14 @@ async function buildView(assessmentId) {
   const djByDomain = {};
   for (const dj of a.domainJudgments) djByDomain[dj.domainId] = dj;
 
+  // Every domain's live proposal, kept so the overall roll-up below can read the
+  // extra signal a proposal carries (AMSTAR 2's flaw counts) rather than only its
+  // judgement string — see `overallReadsProposals`.
+  const propByDomain = {};
   const domains = inst.domains.map(d => {
     const dj = djByDomain[d.id] || { proposedJudgment: '', finalJudgment: null, overridden: false, overrideJustification: null };
     const prop = proposeDomain(inst, d.id, abd[d.id] || {});
+    propByDomain[d.id] = prop;
     const row = {
       domainId: d.id,
       proposedJudgment: prop.judgment,
@@ -491,19 +919,69 @@ async function buildView(assessmentId) {
     return row;
   });
 
+  // 115.md build item 2 — the applicability half of QUADAS-2 / PROBAST, read from
+  // the namespaced RobDomainJudgment rows. Absent on every other instrument, so the
+  // view shape is unchanged for RoB 2 / ROBINS-I / NOS.
+  const applicability = [];
+  for (const d of inst.domains) {
+    const levels = applicabilityLevelsFor(inst, d);
+    if (!levels) continue;
+    const row = djByDomain[applicabilityKey(d.id)] || null;
+    applicability.push({
+      domainId: d.id,
+      name: d.name || '',
+      levels,
+      judgment: row ? (row.finalJudgment || row.proposedJudgment || null) : null,
+      proposedJudgment: row ? (row.proposedJudgment || null) : null,
+      rationale: row ? (row.overrideJustification || null) : null,
+    });
+  }
+
+  // The SAME input `recomputeAndPersist` rolls up, so the view can never report an
+  // overall that differs from the one in the RobOverall row (115.md — AMSTAR 2's
+  // confidence rule reads the flaw counts its domain proposal carries, PROBAST's
+  // Step 4 reads the applicability axis; both are lost by a map of level strings).
+  const richOverall = !star && overallReadsProposals(inst);
+  const applicByDomain = {};
+  for (const row of applicability) if (row.judgment) applicByDomain[row.domainId] = row.judgment;
   const resolvedByDomain = {};
-  for (const d of domains) resolvedByDomain[d.domainId] = star ? { stars: d.resolvedStars } : d.resolvedJudgment;
+  for (const d of domains) {
+    if (star) { resolvedByDomain[d.domainId] = { stars: d.resolvedStars }; continue; }
+    if (!richOverall) { resolvedByDomain[d.domainId] = d.resolvedJudgment; continue; }
+    const ap = applicByDomain[d.domainId];
+    resolvedByDomain[d.domainId] = {
+      ...propByDomain[d.domainId],
+      judgment: d.resolvedJudgment || '',
+      ...(ap ? { applicability: ap } : {}),
+    };
+  }
   const overallProp = proposeOverall(inst, resolvedByDomain);
+  const overallProposed = overallJudgmentToPersist(inst, overallProp.judgment, { star });
   const ov = a.overall || {};
   const overall = {
-    proposedOverall: overallProp.judgment,
+    proposedOverall: overallProposed,
     reasons: overallProp.reasons,
     multiSomeConcernsFlag: overallProp.multiSomeConcernsFlag,
     finalOverall: ov.finalOverall || null,
     overridden: !!ov.overridden,
     overrideJustification: ov.overrideJustification || null,
-    resolvedOverall: (ov.overridden && ov.finalOverall) ? ov.finalOverall : overallProp.judgment,
+    resolvedOverall: (ov.overridden && ov.finalOverall) ? ov.finalOverall : overallProposed,
   };
+  // 115.md — PROBAST's SECOND overall judgement. Read from the `overall-APP` row so
+  // the renderer, the summary and the CSV all show the value that was STORED, and
+  // carried with its computed proposal + reasons trace so the panel can explain it.
+  const ovApplicLevels = overallApplicabilityLevels(inst);
+  if (ovApplicLevels) {
+    const row = djByDomain[overallApplicabilityKey()] || null;
+    const proposedApplic = (overallProp.applicability && overallProp.applicability.judgment) || '';
+    overall.applicability = {
+      levels: ovApplicLevels,
+      proposedJudgment: ovApplicLevels.includes(proposedApplic) ? proposedApplic : '',
+      judgment: row ? (row.finalJudgment || row.proposedJudgment || '') : '',
+      rationale: row ? (row.overrideJustification || null) : null,
+      reasons: (overallProp.applicability && overallProp.applicability.reasons) || [],
+    };
+  }
   if (star) {
     overall.proposedStars = overallProp.stars != null ? Number(overallProp.stars) : 0;
     overall.finalStars = ov.finalStars != null ? Number(ov.finalStars) : null;
@@ -567,8 +1045,15 @@ async function buildView(assessmentId) {
       aiModelVersion: x.aiModelVersion || null,
     })),
     domains,
+    // 115.md — QUADAS-2 / PROBAST only; [] everywhere else.
+    applicability,
     overall,
     completeness: comp,
+    // 115.md decision 4/5 — the definition's own overall vocabulary (null when the
+    // tool HAS no overall, e.g. QUIPS) and whether ANY numeric score is legitimate
+    // (only the NOS is star-additive; a progress count is never a score).
+    overallLevels: overallLevelsFor(inst),
+    scoringAllowed: inst.scoringAllowed != null ? !!inst.scoringAllowed : star,
     // Star-scored instruments only; null for RoB 2 / ROBINS-I (unchanged shape).
     scoring: star ? 'stars' : 'judgment',
     score,
@@ -593,12 +1078,77 @@ const INSTRUMENT_URL_IDS = {
   noscc: 'NOS-CC',
   'nos-case-control': 'NOS-CC',
 };
+
+/** URL-safe slug for an instrument id ('QUADAS-2' → 'quadas-2'). Pure. */
+export function instrumentSlug(id) {
+  return String(id || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+}
+
+/**
+ * 115.md — slug → instrument id, REGISTRY-DRIVEN. The hand-written aliases above
+ * stay (they are public URLs), but every registered instrument is also reachable
+ * by its own slug, so a newly registered tool needs no route table edit. Pure.
+ */
+export function instrumentIdForSlug(raw) {
+  const slug = String(raw == null ? '' : raw).toLowerCase();
+  if (INSTRUMENT_URL_IDS[slug]) return INSTRUMENT_URL_IDS[slug];
+  const ids = registeredInstrumentIds();
+  return ids.find(id => id.toLowerCase() === slug || instrumentSlug(id) === slug) || null;
+}
+
 export async function getRobInstrument(req, res) {
   if (!(await robEnabled(req.user))) return res.status(404).json({ error: 'Not found' });
-  const raw = String(req.params.id || 'rob2').toLowerCase();
-  const instrumentId = INSTRUMENT_URL_IDS[raw];
-  if (!instrumentId) return res.status(404).json({ error: 'Unknown instrument' });
-  return res.json({ instrument: getInstrument(instrumentId) });
+  const instrumentId = instrumentIdForSlug(req.params.id || 'rob2');
+  const instrument = instrumentId ? resolveInstrument(instrumentId) : null;
+  if (!instrument) return res.status(404).json({ error: 'Unknown instrument' });
+  return res.json({
+    instrument,
+    // 115.md build item 2 — which domains carry an applicability judgement, so a
+    // data-driven renderer never has to know QUADAS-2/PROBAST by name.
+    applicabilityDomainIds: applicabilityDomainIds(instrument),
+    overallLevels: overallLevelsFor(instrument),
+  });
+}
+
+/**
+ * The catalogue of instruments a reviewer may actually select — 115.md decision 3
+ * ("all tools remain selectable") + decision 6 (the Assess selector needs each
+ * tool's designs to render the recommendation section). Derived entirely from the
+ * registry, so W1-A's nine new definitions appear here with no server change.
+ */
+export function instrumentCatalogue() {
+  return registeredInstrumentIds().map((id) => {
+    const inst = resolveInstrument(id);
+    const tool = getRobTool(id) || {};
+    return {
+      id,
+      label: tool.label || inst.name || id,
+      sublabel: tool.sublabel || '',
+      name: inst.name || tool.label || id,
+      abbreviation: inst.abbreviation || tool.label || id,
+      instrumentVersion: instrumentVersionOf(inst),
+      variant: variantOf(inst),
+      organization: inst.organization || '',
+      description: tool.description || inst.description || '',
+      designs: designsForTool(tool, inst),
+      scoring: isScoringInstrument(inst) ? 'stars' : 'judgment',
+      scoringAllowed: inst.scoringAllowed != null ? !!inst.scoringAllowed : isScoringInstrument(inst),
+      consensusSupported: inst.consensusSupported != null ? !!inst.consensusSupported : true,
+      hasApplicability: applicabilityDomainIds(inst).length > 0,
+      overallLevels: overallLevelsFor(inst),
+      domainCount: (inst.domains || []).length,
+      citation: inst.citation || '',
+      guidanceUrl: inst.guidanceUrl || '',
+      license: inst.license || '',
+      slug: instrumentSlug(id),
+    };
+  });
+}
+
+// ── GET /api/rob/instruments ──────────────────────────────────────────────────
+export async function listRobInstruments(req, res) {
+  if (!(await robEnabled(req.user))) return res.status(404).json({ error: 'Not found' });
+  return res.json({ instruments: instrumentCatalogue() });
 }
 
 // ── POST /api/rob/assessments ─────────────────────────────────────────────────
@@ -609,23 +1159,21 @@ export async function createAssessment(req, res) {
     if (!projectId || !studyId) {
       return res.status(400).json({ error: 'projectId and studyId are required' });
     }
-    // Instrument selection (P14): RoB2 (default, unchanged), ROBINS-I, or either
-    // official Newcastle–Ottawa form. Any other value is rejected rather than
-    // silently coerced (an unsupported tool must never be stored). The version +
-    // variant are taken from the instrument definition.
+    // 115.md decision 3 — REGISTRY-DRIVEN instrument selection. Any instrument the
+    // engine has a definition for is creatable; an unknown id is rejected by NAME
+    // rather than silently coerced (an unsupported tool must never be stored).
+    //
+    // The ROBINS-I `guidedRobAppraisal` gate that used to live here is GONE. Which
+    // instruments exist is a registry question, not a feature-flag question; the
+    // guided-appraisal flag now gates only the guided-appraisal endpoints
+    // (/appraise and /rob-validation), which is all it ever meant.
     const wantInstrumentId = instrumentId ? String(instrumentId) : 'RoB2';
-    if (!SUPPORTED_INSTRUMENTS.includes(wantInstrumentId)) {
-      return res.status(400).json({ error: `instrumentId must be one of: ${SUPPORTED_INSTRUMENTS.join(', ')}` });
+    const instrument = resolveInstrument(wantInstrumentId);
+    if (!instrument) {
+      return res.status(400).json({
+        error: `Unknown instrumentId: ${wantInstrumentId}. Available instruments: ${registeredInstrumentIds().join(', ')}`,
+      });
     }
-    // ROBINS-I is part of the guided-appraisal feature, so it may only be created
-    // when `guidedRobAppraisal` is ON. With the flag OFF the workspace behaves
-    // exactly as before (a stray ROBINS-I request → 400). The NOS is NOT gated on
-    // guided appraisal: it is a manual, human-scored instrument (101.md §18/§23)
-    // with no machine-suggestion path, so it rides the `rob_engine_v2` flag alone.
-    if (wantInstrumentId === 'ROBINS-I' && !(await guidedAppraisalEnabled(req.user))) {
-      return res.status(400).json({ error: 'ROBINS-I requires the Guided RoB Appraisal feature, which is not enabled.' });
-    }
-    const instrument = getInstrument(wantInstrumentId);
     const access = await resolveRobAccess(projectId, req.user.id);
     if (!access) return res.status(404).json({ error: 'Not found' });
     if (!access.canEdit) return res.status(403).json({ error: 'You have read-only access to Risk of Bias for this project.' });
@@ -645,8 +1193,12 @@ export async function createAssessment(req, res) {
         outcomeId: outcomeId ? String(outcomeId) : null,
         resultLabel: resultLabel ? String(resultLabel).slice(0, 300) : null,
         instrumentId: instrument.id,
-        instrumentVersion: instrument.instrumentVersion,
-        variant: instrument.variant,
+        // 115.md build item 1 (the 101.md rule) — version + variant are ALWAYS
+        // stamped from the DEFINITION and are never accepted from the client. A
+        // client-declared version would let a caller mislabel which edition of a
+        // tool a judgement was made with, which is a methodological claim.
+        instrumentVersion: instrumentVersionOf(instrument),
+        variant: variantOf(instrument),
         reviewerId: req.user.id,
         reviewerName: me?.name || me?.email || '',
         status: 'draft',
@@ -654,7 +1206,11 @@ export async function createAssessment(req, res) {
     });
     await recomputeAndPersist(a.id, instrument); // initialise provisional proposals
     await audit(projectId, a.id, { ...req.user, name: me?.name }, 'ROB_CREATE', {
-      entityType: 'RobAssessment', entityId: a.id, details: { studyId, outcomeId: outcomeId || null, instrumentId: instrument.id },
+      entityType: 'RobAssessment', entityId: a.id,
+      details: {
+        studyId, outcomeId: outcomeId || null, instrumentId: instrument.id,
+        instrumentVersion: instrumentVersionOf(instrument), variant: variantOf(instrument),
+      },
     });
     const view = await buildView(a.id);
     return res.status(201).json({ assessment: view });
@@ -702,7 +1258,14 @@ export async function listProjectAssessments(req, res) {
 
     const assessments = rows.map(a => {
       const dj = {};
-      for (const d of a.domainJudgments) dj[d.domainId] = resolvedDomain(d);
+      const applic = {};
+      for (const d of a.domainJudgments) {
+        // 115.md — namespaced applicability rows are surfaced SEPARATELY; they are
+        // not risk-of-bias domains and must never enter the traffic-light matrix.
+        const parsed = parseDomainKey(d.domainId);
+        if (parsed.kind === 'applicability') applic[parsed.domainId] = d.finalJudgment || d.proposedJudgment || null;
+        else dj[d.domainId] = resolvedDomain(d);
+      }
       const ov = a.overall;
       const overall = ov ? ((ov.overridden && ov.finalOverall) ? ov.finalOverall : ov.proposedOverall) : null;
       const st = studiesById[a.studyId];
@@ -711,9 +1274,17 @@ export async function listProjectAssessments(req, res) {
         : (st ? `${st.author || ''} ${st.year || ''}`.trim() || a.studyId : a.studyId);
       const row = {
         id: a.id, studyId: a.studyId, resultLabel: a.resultLabel, status: a.status, label, domainJudgments: dj, overall,
+        // 115.md — QUADAS-2 / PROBAST applicability concerns, keyed by domain id.
+        applicability: applic,
         // prompt46 #3/#5 — creator + tool surfaced to the list UI.
         reviewerId: a.reviewerId, reviewerName: a.reviewerName,
         instrumentId: a.instrumentId,
+        // 115.md decision 8/§39 — the tool-change surface needs the exact edition
+        // and the row's age to say "an existing ROBINS-I draft exists".
+        instrumentVersion: a.instrumentVersion || '',
+        variant: a.variant || '',
+        createdAt: a.createdAt,
+        updatedAt: a.updatedAt,
         instrumentLabel: getRobTool(a.instrumentId)?.label || a.instrumentId || 'Tool unknown',
         // prompt46 #4 — study source ('manual' studies are visually distinct).
         source: st ? st.source : 'screening',
@@ -740,20 +1311,55 @@ export async function listProjectAssessments(req, res) {
     });
 
     // The traffic-light matrix is per-instrument (RoB2 has 5 domains, ROBINS-I 7).
-    // A single project SHOULD use one instrument; if assessments mix instruments we
-    // fall back to RoB2's shape rather than dropping/misaligning domains. (The
-    // validation endpoint strictly scopes agreement by instrument.)
+    // A single project SHOULD use one instrument; if assessments mix instruments the
+    // legacy top-level `matrix` falls back to RoB2's shape rather than dropping or
+    // misaligning domains — kept byte-compatible for existing readers.
     const distinctInstruments = [...new Set(rows.map(r => r.instrumentId || 'RoB2'))];
-    const matrixInstrument = getInstrument(
-      distinctInstruments.length === 1 && SUPPORTED_INSTRUMENTS.includes(distinctInstruments[0])
-        ? distinctInstruments[0]
-        : 'RoB2',
-    );
+    const matrixInstrument = resolveInstrument(
+      distinctInstruments.length === 1 ? distinctInstruments[0] : 'RoB2',
+    ) || getInstrument('RoB2');
     const matrix = summaryMatrix(
       assessments.map(a => ({ id: a.id, label: a.label, domainJudgments: a.domainJudgments, overall: a.overall })),
       matrixInstrument,
     );
-    return res.json({ assessments, matrix });
+
+    // 115.md decision 7 — mixed-tool projects GROUP BY instrument; there is never a
+    // cross-tool aggregate. Each group carries its own matrix (built from its own
+    // definition's domains), so a project running QUADAS-2 alongside RoB 2 renders
+    // two correct plots instead of one wrong one.
+    const groups = distinctInstruments
+      .map((instrumentId) => {
+        const inst = resolveInstrument(instrumentId);
+        const groupRows = assessments.filter(a => (a.instrumentId || 'RoB2') === instrumentId);
+        return {
+          instrumentId,
+          instrumentLabel: getRobTool(instrumentId)?.label || (inst && inst.name) || instrumentId,
+          instrumentVersion: inst ? instrumentVersionOf(inst) : '',
+          scoring: inst && isScoringInstrument(inst) ? 'stars' : 'judgment',
+          applicabilityDomainIds: inst ? applicabilityDomainIds(inst) : [],
+          count: groupRows.length,
+          studyIds: [...new Set(groupRows.map(r => r.studyId))],
+          assessmentIds: groupRows.map(r => r.id),
+          // A matrix is offered ONLY where the instrument actually rates its
+          // domains (115.md decision 11). Null for: a star profile (the NOS — a
+          // traffic light is not what stars mean), a checklist with no per-domain
+          // rating (the JBI tools), and an instrument the registry no longer knows
+          // (rather than a misaligned plot).
+          matrix: inst && !isScoringInstrument(inst) && domainJudgmentLevels(inst, null).length
+            ? summaryMatrix(
+              groupRows.map(a => ({ id: a.id, label: a.label, domainJudgments: a.domainJudgments, overall: a.overall })),
+              inst,
+            )
+            : null,
+          // What the group's judgements MEAN, so a renderer never has to know a
+          // tool by name to decide whether a traffic light is honest.
+          domainJudgmentLevels: inst ? domainJudgmentLevels(inst, null) : [],
+          overallLevels: inst ? overallLevelsFor(inst) : [],
+        };
+      })
+      .sort((a, b) => a.instrumentId.localeCompare(b.instrumentId));
+
+    return res.json({ assessments, matrix, groups, instrumentIds: distinctInstruments });
   } catch (err) {
     console.error('[rob] listProjectAssessments error:', err.message);
     return res.status(500).json({ error: 'Internal server error' });
@@ -778,9 +1384,12 @@ export async function upsertAnswers(req, res) {
     const questionDomain = questionDomainMap(instrument);
 
     // 101.md §18 — validate the WHOLE batch before writing any of it, so a bad item
-    // can never leave half a batch persisted. Judgement instruments validate against
-    // the shared Y/PY/PN/N/NI/NA set; star instruments validate against the item's
-    // OWN option list, with the select:'one' arity enforced (never store junk).
+    // can never leave half a batch persisted. Star instruments validate against the
+    // item's OWN option list with the select:'one' arity enforced; every other
+    // instrument validates against the vocabulary its DEFINITION declares for that
+    // item (115.md build item 2), which is the shared Y/PY/PN/N/NI/NA set when the
+    // definition declares nothing — so RoB 2 / ROBINS-I behave exactly as before.
+    // An off-form value is NEVER stored.
     const prepared = [];
     for (const item of list) {
       const questionId = String(item.questionId || '');
@@ -793,7 +1402,23 @@ export async function upsertAnswers(req, res) {
         response = v.encoded;
       } else {
         response = String(item.response || '');
-        if (!VALID_RESPONSES.has(response)) return res.status(400).json({ error: `Invalid response for ${questionId}: ${response}` });
+        const found = findInstrumentQuestion(instrument, questionId);
+        // 115.md — `answerable: false` marks a prompt the instrument never asks a
+        // reviewer to ANSWER (a QUADAS-2 / PROBAST applicability prompt: it is a
+        // CONCERN on the applicability axis, recorded through the applicability
+        // judgement below). Storing a Y/N against it would fabricate an answer the
+        // tool does not have.
+        if (found && found.question && found.question.answerable === false) {
+          return res.status(400).json({
+            error: `${questionId} is not an answerable item — it is recorded as an applicability concern, not as a response.`,
+          });
+        }
+        const allowed = allowedResponsesFor(instrument, found && found.domain, found && found.question);
+        if (!allowed.has(response)) {
+          return res.status(400).json({
+            error: `Invalid response for ${questionId}: ${response}. Allowed: ${[...allowed].join(', ')}`,
+          });
+        }
       }
       prepared.push({ questionId, domainId, response, item });
     }
@@ -844,9 +1469,81 @@ export async function overrideJudgment(req, res) {
 
     const instrument = instrumentFor(a);
     const star = isStarInstrument(instrument);
-    const validJ = validJudgments(instrument);
     const { target, domainId, finalJudgment, justification, clear } = req.body || {};
     const wantClear = clear === true || finalJudgment == null || finalJudgment === '';
+
+    // ── 115.md build item 2 — target 'applicability' ──────────────────────────
+    // QUADAS-2 / PROBAST judge applicability per domain ALONGSIDE risk of bias. It
+    // is a primary human judgement (no algorithm proposes it), so unlike an
+    // override it needs no justification — but it reuses this endpoint's
+    // permission / finalise-lock / audit plumbing and lands in the namespaced
+    // RobDomainJudgment row (see APPLICABILITY_SUFFIX).
+    if (target === 'applicability') {
+      const domain = (instrument.domains || []).find(d => d.id === domainId);
+      if (!domain) return res.status(400).json({ error: `Unknown domainId: ${domainId}` });
+      const levels = applicabilityLevelsFor(instrument, domain);
+      if (!levels) {
+        return res.status(400).json({
+          error: `${instrument.name || instrument.id} does not assess applicability for domain ${domainId}.`,
+        });
+      }
+      if (!wantClear && !levels.includes(finalJudgment)) {
+        return res.status(400).json({ error: `applicability judgment must be one of: ${levels.join(', ')}` });
+      }
+      const key = applicabilityKey(domainId);
+      const note = typeof justification === 'string' ? justification.trim().slice(0, 4000) : '';
+      await prisma.robDomainJudgment.upsert({
+        where: { assessmentId_domainId: { assessmentId: a.id, domainId: key } },
+        update: wantClear
+          ? { overridden: false, finalJudgment: null, overrideJustification: null }
+          : { overridden: true, finalJudgment, overrideJustification: note || null },
+        create: wantClear
+          ? { assessmentId: a.id, domainId: key, proposedJudgment: '' }
+          : { assessmentId: a.id, domainId: key, proposedJudgment: '', overridden: true, finalJudgment, overrideJustification: note || null },
+      });
+      // 115.md — an instrument with an OVERALL applicability axis (PROBAST) rolls
+      // its per-domain concerns up into a second overall judgement, so recording one
+      // changes it. Recomputing here keeps the stored `overall-APP` row in step with
+      // the domains, exactly as the domain/overall override path does. Instruments
+      // with no such axis (QUADAS-2) skip it: nothing they store could change.
+      if (overallApplicabilityLevels(instrument)) await recomputeAndPersist(a.id, instrument);
+      await prisma.robAssessment.update({ where: { id: a.id }, data: { updatedAt: new Date() } });
+      await audit(a.projectId, a.id, req.user, 'ROB_OVERRIDE', {
+        entityType: 'RobDomainJudgment', entityId: a.id,
+        details: {
+          target: 'applicability', domainId, instrumentId: instrument.id,
+          finalJudgment: wantClear ? null : finalJudgment, cleared: wantClear,
+        },
+      });
+      return res.json({ assessment: await buildView(a.id) });
+    }
+
+    // Domain / overall judgement vocabularies come from the DEFINITION (115.md
+    // decision 4). Overall may declare a vocabulary of its own — JBI's overall is
+    // an appraisal DECISION (include / exclude / seek further info), not a
+    // risk-of-bias level — or declare that the tool has no overall at all (QUIPS),
+    // in which case there is nothing to override.
+    const overallLevels = overallLevelsFor(instrument);
+    const validJ = new Set(
+      target === 'overall'
+        ? (overallLevels || [])
+        : domainJudgmentLevels(instrument, (instrument.domains || []).find(d => d.id === domainId)),
+    );
+    if (target === 'overall' && overallLevels === null) {
+      return res.status(400).json({
+        error: `${instrument.name || instrument.id} reports domain-level judgements only and defines no overall judgement.`,
+      });
+    }
+    // A tool whose domains carry no judgement vocabulary at all (the JBI
+    // checklists: item answers + one overall appraisal DECISION, no per-domain
+    // rating) must say so, rather than reject with an empty allowed-values list.
+    // Star instruments are exempt: their "judgement" is a star COUNT validated
+    // numerically against the domain maximum below, not a level from a list.
+    if (!wantClear && !star && target === 'domain' && validJ.size === 0) {
+      return res.status(400).json({
+        error: `${instrument.name || instrument.id} does not rate its domains — record the item responses and the overall appraisal decision instead.`,
+      });
+    }
 
     // 101.md §21 — on a star-scored instrument an "override" is a reviewer setting
     // the STAR COUNT for a domain (or the total), not picking a judgement level, so
@@ -1064,7 +1761,7 @@ export async function exportAssessment(req, res) {
         const ans = view.answersByDomain[d.domainId] || {};
         const meta = view.answerMeta.filter(m => m.domainId === d.domainId);
         const defn = inst.domains.find(x => x.id === d.domainId);
-        for (const q of defn.questions) {
+        for (const q of questionsOf(defn)) {
           const qid = q.id;
           const m = meta.find(x => x.questionId === qid);
           if (isStarInstrument(inst)) {
@@ -1084,6 +1781,14 @@ export async function exportAssessment(req, res) {
             rows.push([d.domainId, qid, ans[qid] || '', (m?.rationale || '').replace(/\s+/g, ' '), d.proposedJudgment, d.resolvedJudgment]);
           }
         }
+      }
+      // 115.md — QUADAS-2 / PROBAST also carry a per-domain APPLICABILITY concern.
+      // Appended as explicit rows so the single-assessment CSV never drops half the
+      // instrument. Empty for every other tool → those files are unchanged.
+      for (const ap of (view.applicability || [])) {
+        rows.push(isStarInstrument(inst)
+          ? [ap.domainId, 'applicability', ap.name || '', ap.judgment || '', '', '', flattenText(ap.rationale), '', '', '', '']
+          : [ap.domainId, 'applicability', ap.judgment || '', flattenText(ap.rationale), '', ap.judgment || '']);
       }
       const csv = rows.map(r => r.map(c => `"${String(c).replace(/"/g, '""')}"`).join(',')).join('\n');
       settleProjectExport(reservation.reservationId, { status: 'succeeded', fileSize: Buffer.byteLength(csv) });
@@ -1120,15 +1825,203 @@ export async function exportAssessment(req, res) {
   }
 }
 
+// ── GET /api/rob/projects/:projectId/assessments/export?format=csv ────────────
+/**
+ * 115.md build item 5 (§27) — the project-wide RoB export. One CSV, one SECTION
+ * per instrument (see server/services/robExportService.js for why sectioned CSV
+ * rather than the screening zip-job pattern).
+ *
+ * Permissions (dossier §14): VIEW access to the project's RoB surface is enough to
+ * read the same data through the list endpoint, so the export gate is the same as
+ * the per-assessment export — resolved RoB access + the project-export TIER gate
+ * (Free blocked, one unit of the monthly allowance, refunded on failure).
+ *
+ * SOFT-DELETED ROWS ARE NEVER INCLUDED. 115.md decision 8 asked whether to add an
+ * 'archived' affordance: RobAssessment.status is a three-value vocabulary
+ * (draft | complete | consensus) that finalise/reopen, the progress readers and
+ * the Ops metrics all switch on, and 'consensus' is an IDENTITY rather than a
+ * stage. Introducing a fourth value would silently reclassify rows for every one
+ * of those readers, and there is no separate archive column to use instead. So the
+ * decision is: NO archive status — soft delete (`deletedAt`) plus the ROB_DELETE
+ * audit row remains the only removal path, and starting a different instrument for
+ * the same study never touches the earlier assessment (they are separate rows).
+ */
+export async function exportProjectAssessments(req, res) {
+  let reservation;
+  try {
+    if (!(await robEnabled(req.user))) return res.status(404).json({ error: 'Not found' });
+    const access = await resolveRobAccess(req.params.projectId, req.user.id);
+    if (!access) return res.status(404).json({ error: 'Not found' });
+
+    const format = String(req.query.format || 'csv').toLowerCase();
+    if (format !== 'csv') {
+      return res.status(400).json({ error: "format must be 'csv' (the project-wide RoB export is a tool-sectioned CSV)" });
+    }
+
+    try {
+      reservation = await requireProjectExport(req.user, {
+        exportType: EXPORT_TYPES.ROB_ASSESSMENT, projectId: req.params.projectId, format,
+      });
+    } catch (e) { if (sendTierLimit(res, e)) return; throw e; }
+
+    const rows = await prisma.robAssessment.findMany({
+      where: { projectId: req.params.projectId, deletedAt: null },
+      include: { answers: true, domainJudgments: true, overall: true },
+      orderBy: [{ instrumentId: 'asc' }, { studyId: 'asc' }, { createdAt: 'asc' }],
+    });
+    const universe = await loadStudyUniverse(access.project);
+    const studiesById = {};
+    for (const s of universe) studiesById[s.id] = s;
+
+    // Group by instrument — never aggregate across tools (decision 7).
+    const byInstrument = new Map();
+    for (const a of rows) {
+      const id = a.instrumentId || 'RoB2';
+      if (!byInstrument.has(id)) byInstrument.set(id, []);
+      byInstrument.get(id).push(a);
+    }
+
+    const groups = [];
+    for (const [instrumentId, list] of [...byInstrument.entries()].sort((x, y) => x[0].localeCompare(y[0]))) {
+      const inst = resolveInstrument(instrumentId);
+      // A row written under an instrument the registry no longer knows still gets a
+      // section (its answers are real data) — just with no definition-derived
+      // columns, rather than being silently dropped from the export.
+      const applicIds = inst ? applicabilityDomainIds(inst) : [];
+      const star = inst ? isScoringInstrument(inst) : false;
+      groups.push({
+        instrument: inst || { id: instrumentId, name: instrumentId, domains: [] },
+        instrumentId,
+        instrumentLabel: getRobTool(instrumentId)?.label || (inst && inst.name) || instrumentId,
+        applicabilityDomainIds: applicIds,
+        rows: list.map((a) => {
+          const st = studiesById[a.studyId];
+          const studyLabel = st
+            ? [`${st.author || ''} ${st.year || ''}`.trim(), st.title].filter(Boolean).join(' — ')
+            : a.studyId;
+          const answers = {};
+          const itemNotes = {};
+          for (const ans of a.answers) {
+            // The wire format is decoded HERE, not in the pure exporter: 101.md
+            // keeps encode/decodeAnswerResponse as the only place it is applied.
+            const decoded = star ? decodeAnswerResponse(ans.response) : ans.response;
+            answers[ans.questionId] = Array.isArray(decoded) ? decoded.join('; ') : decoded;
+            if (ans.rationale) itemNotes[ans.questionId] = ans.rationale;
+          }
+          const djs = {};
+          const applic = {};
+          const domainNotes = {};
+          for (const dj of a.domainJudgments) {
+            const parsed = parseDomainKey(dj.domainId);
+            if (parsed.kind === 'applicability') {
+              applic[parsed.domainId] = dj.finalJudgment || dj.proposedJudgment || '';
+              if (dj.overrideJustification) domainNotes[`${parsed.domainId} (applicability)`] = dj.overrideJustification;
+            } else {
+              djs[parsed.domainId] = resolvedDomain(dj) || '';
+              if (dj.overridden && dj.overrideJustification) domainNotes[parsed.domainId] = dj.overrideJustification;
+            }
+          }
+          const ov = a.overall;
+          return {
+            studyId: a.studyId,
+            studyLabel: a.resultLabel ? `${studyLabel} — ${a.resultLabel}` : studyLabel,
+            instrumentVersion: a.instrumentVersion || '',
+            variant: a.variant || '',
+            reviewerId: a.reviewerId || '',
+            reviewerName: a.reviewerName || '',
+            status: a.status,
+            isConsensus: a.status === CONSENSUS_STATUS,
+            answers,
+            itemNotes,
+            domainJudgments: djs,
+            applicability: applic,
+            domainNotes,
+            overall: ov ? ((ov.overridden && ov.finalOverall) ? ov.finalOverall : (ov.proposedOverall || '')) : '',
+            overallNote: (ov && ov.overridden && ov.overrideJustification) ? ov.overrideJustification : '',
+            createdAt: a.createdAt ? a.createdAt.toISOString() : '',
+            updatedAt: a.updatedAt ? a.updatedAt.toISOString() : '',
+          };
+        }),
+      });
+    }
+
+    const generatedAt = new Date().toISOString();
+    const csv = buildRobProjectCsv({ groups, projectId: req.params.projectId, generatedAt });
+    settleProjectExport(reservation.reservationId, { status: 'succeeded', fileSize: Buffer.byteLength(csv) });
+    await audit(req.params.projectId, '', req.user, 'ROB_EXPORT', {
+      entityType: 'Project', entityId: req.params.projectId,
+      details: { format, assessments: rows.length, instrumentIds: [...byInstrument.keys()] },
+    });
+    return res.json({
+      format: 'csv',
+      filename: `rob-assessments_${req.params.projectId}.csv`,
+      mime: 'text/csv',
+      content: csv,
+      summary: groups.map(g => ({ instrumentId: g.instrumentId, instrumentLabel: g.instrumentLabel, count: g.rows.length })),
+    });
+  } catch (err) {
+    settleProjectExport(reservation?.reservationId, { status: 'failed', failureReason: err?.message });
+    console.error('[rob] exportProjectAssessments error:', err.message);
+    return res.status(500).json({ error: 'Internal server error' });
+  }
+}
+
 // ── GET /api/rob/projects/:projectId/studies (merged study universe) ───────────
 // prompt46 #4 — screening/extraction-derived studies + RoB-local manual studies,
 // each tagged with `source` ('screening' | 'manual'). View access is enough.
+// 115.md build item 3/4 — each study additionally carries the design we could
+// DETECT, the instruments recommended for it, and every assessment that already
+// exists for it ACROSS instruments (so the selector can say "an existing ROBINS-I
+// draft exists" before a reviewer starts a second tool — decision 8/§39).
 export async function listStudyUniverse(req, res) {
   try {
     if (!(await robEnabled(req.user))) return res.status(404).json({ error: 'Not found' });
     const access = await resolveRobAccess(req.params.projectId, req.user.id);
     if (!access) return res.status(404).json({ error: 'Not found' });
-    return res.json({ studies: await loadStudyUniverse(access.project) });
+
+    const studies = await loadStudyUniverse(access.project);
+    const catalogue = instrumentCatalogue();
+
+    // Soft-deleted assessments are never surfaced (decision 8: soft delete stays
+    // the only removal path — see the note on exportProjectAssessments).
+    const existing = await prisma.robAssessment.findMany({
+      where: { projectId: req.params.projectId, deletedAt: null },
+      select: {
+        id: true, studyId: true, instrumentId: true, instrumentVersion: true, variant: true,
+        status: true, reviewerId: true, reviewerName: true, resultLabel: true,
+        createdAt: true, updatedAt: true,
+      },
+      orderBy: { createdAt: 'asc' },
+    });
+    const byStudy = {};
+    for (const r of existing) {
+      (byStudy[r.studyId] = byStudy[r.studyId] || []).push({
+        id: r.id,
+        instrumentId: r.instrumentId,
+        instrumentLabel: getRobTool(r.instrumentId)?.label || r.instrumentId || 'Tool unknown',
+        instrumentVersion: r.instrumentVersion || '',
+        variant: r.variant || '',
+        status: r.status,
+        isConsensus: r.status === CONSENSUS_STATUS,
+        reviewerId: r.reviewerId,
+        reviewerName: r.reviewerName,
+        resultLabel: r.resultLabel,
+        createdAt: r.createdAt,
+        updatedAt: r.updatedAt,
+      });
+    }
+
+    return res.json({
+      studies: studies.map((s) => ({
+        ...s,
+        recommendation: recommendationFor(s.design, catalogue),
+        existingAssessments: byStudy[s.id] || [],
+        existingInstrumentIds: [...new Set((byStudy[s.id] || []).map(r => r.instrumentId))],
+      })),
+      // Decision 3/6 — the FULL selectable catalogue travels with the list, so the
+      // selector never has to hardcode which tools exist.
+      instruments: catalogue,
+    });
   } catch (err) {
     console.error('[rob] listStudyUniverse error:', err.message);
     return res.status(500).json({ error: 'Internal server error' });
@@ -1289,7 +2182,7 @@ export async function appraiseAssessment(req, res) {
     let written = 0;
     let skipped = 0;
     for (const d of appraisal.domains) {
-      for (const q of d.questions) {
+      for (const q of questionsOf(d)) {
         if (humanAnswered.has(q.questionId) && !force) { skipped += 1; continue; }
         const locator = q.evidenceLocator ? JSON.stringify(q.evidenceLocator) : null;
         const suggestion = {
@@ -1344,9 +2237,8 @@ export async function robValidation(req, res) {
     const access = await resolveRobAccess(req.params.projectId, req.user.id);
     if (!access) return res.status(404).json({ error: 'Not found' });
 
-    const instrumentId = SUPPORTED_INSTRUMENTS.includes(String(req.query.instrumentId))
-      ? String(req.query.instrumentId)
-      : 'RoB2';
+    const wantedId = String(req.query.instrumentId || '');
+    const instrumentId = isRegisteredInstrument(wantedId) ? wantedId : 'RoB2';
     const instrument = getInstrument(instrumentId);
     // 101.md §21/§26 — weighted κ needs an ORDINAL judgement scale. The NOS has none
     // (it has a star count), and there is no machine appraiser to compare against, so
@@ -1358,7 +2250,9 @@ export async function robValidation(req, res) {
     // explicit `judgmentOrder` when present (ROBINS-I: low<moderate<ni<serious<
     // critical — `ni` is NOT most-severe); RoB2's judgmentLevels order already IS
     // its severity order, so it falls back cleanly.
-    const categories = instrument.judgmentOrder || instrument.judgmentLevels.map(l => l.value);
+    const categories = levelValues(instrument.judgmentOrder).length
+      ? levelValues(instrument.judgmentOrder)
+      : domainJudgmentLevels(instrument, null);
 
     const rows = await prisma.robAssessment.findMany({
       where: { projectId: req.params.projectId, deletedAt: null, instrumentId },
@@ -1375,6 +2269,9 @@ export async function robValidation(req, res) {
     const pairs = [];
     for (const a of rows) {
       for (const dj of a.domainJudgments) {
+        // 115.md — an applicability concern is not a risk-of-bias judgement and has
+        // no machine proposal; pooling it into κ would measure nothing.
+        if (isApplicabilityKey(dj.domainId)) continue;
         const proposed = dj.proposedJudgment || '';
         const human = dj.finalJudgment || '';
         if (!proposed || !dj.overridden || !human) continue;
@@ -1539,7 +2436,7 @@ export function reviewerComparison(instrument, rows = []) {
   const disagreements = [];
   let compared = 0;
   for (const d of instrument.domains) {
-    for (const q of d.questions) {
+    for (const q of questionsOf(d)) {
       const values = {};
       const keys = [];
       for (const r of independent) {
@@ -1591,7 +2488,7 @@ export async function getStudyReviewers(req, res) {
     if (!access) return res.status(404).json({ error: 'Not found' });
 
     const wanted = String(req.query.instrumentId || '');
-    const scopedId = SUPPORTED_INSTRUMENTS.includes(wanted) ? wanted : null;
+    const scopedId = isRegisteredInstrument(wanted) ? wanted : null;
     const rows = await prisma.robAssessment.findMany({
       where: {
         projectId: req.params.projectId,
@@ -1617,7 +2514,7 @@ export async function getStudyReviewers(req, res) {
     // Comparison is STRICTLY scoped to one instrument — a RoB 2 row and a NOS row
     // answer different questions entirely, so pooling them would be meaningless.
     const instrumentIds = [...new Set(rows.map(r => r.instrumentId || 'RoB2'))];
-    const useId = scopedId || (SUPPORTED_INSTRUMENTS.includes(instrumentIds[0]) ? instrumentIds[0] : 'RoB2');
+    const useId = scopedId || (isRegisteredInstrument(instrumentIds[0]) ? instrumentIds[0] : 'RoB2');
     const inst = getInstrument(useId);
     const scoped = rows.filter(r => (r.instrumentId || 'RoB2') === useId);
 
@@ -1662,10 +2559,16 @@ export async function createConsensusAssessment(req, res) {
 
     const { instrumentId, outcomeId, resultLabel, seedFromAssessmentId } = req.body || {};
     const wantId = instrumentId ? String(instrumentId) : '';
-    if (!SUPPORTED_INSTRUMENTS.includes(wantId)) {
-      return res.status(400).json({ error: `instrumentId must be one of: ${SUPPORTED_INSTRUMENTS.join(', ')}` });
+    // 115.md decision 3 — registry-driven, exactly like createAssessment.
+    const instrument = resolveInstrument(wantId);
+    if (!instrument) {
+      return res.status(400).json({
+        error: `Unknown instrumentId: ${wantId || '(missing)'}. Available instruments: ${registeredInstrumentIds().join(', ')}`,
+      });
     }
-    const instrument = getInstrument(wantId);
+    if (instrument.consensusSupported === false) {
+      return res.status(400).json({ error: `${instrument.name || instrument.id} does not support a consensus record.` });
+    }
 
     const existing = await prisma.robAssessment.findMany({
       where: { projectId: req.params.projectId, studyId: req.params.studyId, instrumentId: wantId, deletedAt: null },
@@ -1692,8 +2595,9 @@ export async function createConsensusAssessment(req, res) {
         outcomeId: outcomeId ? String(outcomeId) : (independent[0].outcomeId || null),
         resultLabel: resultLabel ? String(resultLabel).slice(0, 300) : (independent[0].resultLabel || null),
         instrumentId: instrument.id,
-        instrumentVersion: instrument.instrumentVersion,
-        variant: instrument.variant,
+        // Server-stamped from the definition, never from the client (115.md item 1).
+        instrumentVersion: instrumentVersionOf(instrument),
+        variant: variantOf(instrument),
         reviewerId: req.user.id,
         reviewerName: me?.name || me?.email || '',
         status: CONSENSUS_STATUS,

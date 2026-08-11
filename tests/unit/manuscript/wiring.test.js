@@ -142,10 +142,62 @@ describe('mapRobAssessments — worst-overall per study, display labels', () => 
     expect(m.assessments.s1.tool).toBe('RoB2');
     expect(m.assessments.s2.overall).toBe('Some concerns');
     expect(m.robByStudyId).toEqual({ s1: 'High', s2: 'Some concerns' });
+    // A single-tool review is unchanged: one group, no mixed-tool flag.
+    expect(m.mixedTools).toBe(false);
+    expect(m.instrumentIds).toEqual(['RoB2']);
+    expect(m.primaryInstrumentId).toBe('RoB2');
+    expect(m.byInstrument).toHaveLength(1);
+    expect(m.byInstrument[0].studyCount).toBe(2);
   });
   it('null on empty input', () => {
     expect(mapRobAssessments([])).toBe(null);
     expect(mapRobAssessments(undefined)).toBe(null);
+  });
+
+  // 115.md decision 7 — outputs GROUP BY instrument; there is no cross-tool
+  // aggregate anywhere, and the collision that made one mandatory is real: AMSTAR
+  // 2's BEST rating is the string 'high', which the risk-of-bias rank scores as the
+  // worst possible judgement.
+  it('NEVER compares judgements across tools — AMSTAR 2 "High confidence" cannot outrank RoB 2 "Low"', () => {
+    const m = mapRobAssessments([
+      { studyId: 's1', overall: 'low', domainJudgments: { D1: 'low' }, instrumentId: 'RoB2' },
+      { studyId: 's1', overall: 'high', domainJudgments: {}, instrumentId: 'AMSTAR-2' },
+    ]);
+    expect(m.mixedTools).toBe(true);
+    expect(m.instrumentIds).toEqual(['AMSTAR-2', 'RoB2']);
+    // Each tool keeps its own answer, on its own scale.
+    const amstar = m.byInstrument.find(g => g.instrumentId === 'AMSTAR-2');
+    const rob2 = m.byInstrument.find(g => g.instrumentId === 'RoB2');
+    expect(amstar.assessments.s1.overall).toBe('High');
+    expect(rob2.assessments.s1.overall).toBe('Low');
+    // …and the flat map serves the study from ONE tool, never a blend of the two.
+    expect(m.assessments.s1.tool).toBe(m.primaryInstrumentId);
+    expect(['Low', 'High']).toContain(m.robByStudyId.s1);
+  });
+
+  it('ranks within a tool, keeps every study, and reports per-tool counts', () => {
+    const m = mapRobAssessments([
+      { studyId: 's1', overall: 'low', domainJudgments: { D1: 'low' }, instrumentId: 'RoB2' },
+      { studyId: 's1', overall: 'high', domainJudgments: { D1: 'high' }, instrumentId: 'RoB2' },
+      { studyId: 's2', overall: 'some', domainJudgments: {}, instrumentId: 'RoB2' },
+      { studyId: 's3', overall: 'critically-low', domainJudgments: {}, instrumentId: 'AMSTAR-2' },
+    ]);
+    // RoB 2 covers two studies → primary; the worst-within-tool rule still applies.
+    expect(m.primaryInstrumentId).toBe('RoB2');
+    expect(m.assessments.s1.overall).toBe('High');
+    // A study only the secondary tool assessed is still reported (never dropped).
+    expect(m.assessments.s3.overall).toBe('Critically-low');
+    expect(m.assessments.s3.tool).toBe('AMSTAR-2');
+    expect(m.byInstrument.map(g => [g.instrumentId, g.studyCount]))
+      .toEqual([['AMSTAR-2', 1], ['RoB2', 2]]);
+  });
+
+  it('a tool with no severity order is never ranked — the first row stands', () => {
+    const m = mapRobAssessments([
+      { studyId: 's1', overall: 'include', domainJudgments: {}, instrumentId: 'JBI-CaseSeries' },
+      { studyId: 's1', overall: 'exclude', domainJudgments: {}, instrumentId: 'JBI-CaseSeries' },
+    ]);
+    expect(m.assessments.s1.overall).toBe('Include');
   });
   it('robJudgementLabel covers RoB2 + ROBINS-I vocabularies', () => {
     expect(robJudgementLabel('low')).toBe('Low');
