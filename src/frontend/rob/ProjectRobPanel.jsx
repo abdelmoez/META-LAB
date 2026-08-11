@@ -16,7 +16,7 @@ import Icon from '../components/icons.jsx';
 import { api } from '../api-client/apiClient.js';
 import { robApi, guidedRobAppraisalEnabled } from './robApi.js';
 import RobWorkspace from './RobWorkspace.jsx';
-import { judgmentStyle } from './judgmentStyle.js';
+import { judgmentStyle, judgmentStyleOn, overallScaleOf } from './judgmentStyle.js';
 import ReviewerComparisonPanel from './ReviewerComparisonPanel.jsx';
 import RobSummaryOutputs from './RobSummaryOutputs.jsx';
 import RobExportButton from './RobExportButton.jsx';
@@ -24,8 +24,16 @@ import { ROB_TOOLS, normalizeRobTool, isRobToolActive } from '../../research-eng
 import { articleStatusOf } from './articleStatus.js';
 import InstrumentSelector from './InstrumentSelector.jsx';
 import { filterInstruments, designsInCatalogue, designLabelsFor } from './instrumentCatalog.js';
+import { blindVisibility, blindNote } from './robOutputModel.js';
+import { findInstrument } from '../../research-engine/rob/instruments/registry.js';
 
-export default function ProjectRobPanel({ projectId, embedded = false, canEdit = true, robTool, onSelectTool, onContinue, onWorkspaceChange }) {
+export default function ProjectRobPanel({
+  projectId, embedded = false, canEdit = true, robTool, onSelectTool, onContinue, onWorkspaceChange,
+  // r2 review finding 1 — the viewer's identity, which is what makes "my rows" a
+  // decidable question. Normally resolved from the session below; the prop exists
+  // so a host that already knows (and the tests) can supply it without a fetch.
+  currentUserId: currentUserIdProp = null,
+}) {
   const [project, setProject] = useState(null);
   const [assessments, setAssessments] = useState([]);
   const [matrix, setMatrix] = useState(null);
@@ -56,6 +64,22 @@ export default function ProjectRobPanel({ projectId, embedded = false, canEdit =
     guidedRobAppraisalEnabled().then(v => { if (alive) setAppraisalOn(!!v); }).catch(() => { /* stays OFF */ });
     return () => { alive = false; };
   }, []);
+
+  // ── Who is reading this page? (r2 review finding 1) ─────────────────────────
+  // The reviewer blind is a rule about WHOSE work a row is, so the panel needs the
+  // viewer's id. It comes from the session (`GET /api/auth/me`) — the same session
+  // that already authorised every request on this page — and the blind FAILS
+  // CLOSED if it cannot be resolved: an unknown viewer sees no in-progress row of
+  // a blinded pair at all, rather than everybody's.
+  const [currentUserId, setCurrentUserId] = useState(currentUserIdProp || null);
+  useEffect(() => {
+    if (currentUserIdProp) { setCurrentUserId(currentUserIdProp); return undefined; }
+    let alive = true;
+    api.auth.me()
+      .then((r) => { if (alive) setCurrentUserId((r && r.user && r.user.id) || (r && r.id) || null); })
+      .catch(() => { /* stays null — the blind fails closed */ });
+    return () => { alive = false; };
+  }, [currentUserIdProp]);
 
   // prompt39 Task 3 — tell the host when the per-study assessment workspace is open
   // so it can hide the RoB overview intro header (focus mode inside the tool).
@@ -169,6 +193,18 @@ export default function ProjectRobPanel({ projectId, embedded = false, canEdit =
   // shown separately so nothing silently disappears).
   const orphans = assessments.filter(a => !studyIds.has(a.studyId));
 
+  // r2 review finding 1 — the blind, computed ONCE for the whole page and applied
+  // to every surface that renders a judgement: the summary tables/distributions/
+  // traffic-light plot (via RobSummaryOutputs) and the per-article assessment rows
+  // below. ReviewerComparisonPanel enforces it independently at the network
+  // boundary; this is the same rule applied to the data the list already holds.
+  //
+  // Rows stay LISTED while blinded (reviewer name, status, tool) — what is
+  // withheld is the judgement, because "Grace has started" is workflow state and
+  // "Grace says high risk" is the thing independence exists to protect.
+  const blind = blindVisibility(assessments, { currentUserId });
+  const maskedIds = blind.hiddenIds;
+
   return (
     <div>
       {error && <div style={{ marginBottom: 14 }}><ErrorBox msg={error} onRetry={reload} /></div>}
@@ -211,6 +247,7 @@ export default function ProjectRobPanel({ projectId, embedded = false, canEdit =
           <RobSummaryOutputs
             groups={groups}
             assessments={assessments}
+            currentUserId={currentUserId}
             loadAssessment={async (id) => (await robApi.getAssessment(id)).assessment}
             exportSlot={<RobExportButton projectId={projectId} assessmentCount={assessments.length} />}
           />
@@ -244,6 +281,7 @@ export default function ProjectRobPanel({ projectId, embedded = false, canEdit =
                 catalogue={catalogue}
                 defaultInstrument={selectedTool}
                 projectId={projectId}
+                maskedIds={maskedIds}
                 onChanged={reload}
                 onOpenAssessment={(a) => { setRecentStudyId(s.id); setOpenId(a.id); }}
                 onRemoveAssessment={removeAssessment}
@@ -270,7 +308,7 @@ export default function ProjectRobPanel({ projectId, embedded = false, canEdit =
           </div>
           <p style={{ fontSize: 12, color: C.txt2, margin: '0 0 10px' }}>These results were assessed earlier; their study has since been removed from the project. They are kept so no work is lost — open to review, or delete.</p>
           <div style={{ display: 'grid', gap: 6 }}>
-            {orphans.map(a => <AssessmentRow key={a.id} a={a} canEdit={canEdit} orphan onOpen={() => setOpenId(a.id)} onRemove={() => removeAssessment(a.id)} />)}
+            {orphans.map(a => <AssessmentRow key={a.id} a={a} canEdit={canEdit} orphan masked={maskedIds.has(a.id)} onOpen={() => setOpenId(a.id)} onRemove={() => removeAssessment(a.id)} />)}
           </div>
         </div>
       )}
@@ -453,7 +491,7 @@ function IdChip({ icon, label, href, title }) {
 function ArticleCard({
   index, study: s, assessments: list, canEdit, recent, creating,
   onToggleCreate, onCreate, onCancelCreate, catalogue, defaultInstrument,
-  projectId, onChanged,
+  projectId, onChanged, maskedIds = null,
   onOpenAssessment, onRemoveAssessment, onRemoveStudy,
 }) {
   const [hover, setHover] = useState(false);
@@ -510,7 +548,16 @@ function ArticleCard({
 
         {list.length > 0 ? (
           <div style={{ marginTop: 12, display: 'grid', gap: 7 }}>
-            {list.map((a) => <AssessmentRow key={a.id} a={a} canEdit={canEdit} onOpen={() => onOpenAssessment(a)} onRemove={() => onRemoveAssessment(a.id)} />)}
+            {list.map((a) => (
+              <AssessmentRow key={a.id} a={a} canEdit={canEdit}
+                masked={!!(maskedIds && maskedIds.has(a.id))}
+                onOpen={() => onOpenAssessment(a)} onRemove={() => onRemoveAssessment(a.id)} />
+            ))}
+            {maskedIds && list.some(a => maskedIds.has(a.id)) && (
+              <p style={{ margin: '2px 0 0', fontSize: 11, color: C.muted, lineHeight: 1.5 }}>
+                <Icon name="eye" size={11} /> {blindNote(list.filter(a => maskedIds.has(a.id)).length)}
+              </p>
+            )}
             {/* 115.md decision 10 — one comparison per INSTRUMENT: two RoB 2 rows
                 and a QUADAS-2 row on the same study are different questions
                 entirely. Only rendered once a study has >1 row for an instrument
@@ -542,22 +589,67 @@ function ArticleCard({
   );
 }
 
-function AssessmentRow({ a, canEdit, onOpen, onRemove, orphan }) {
-  const st = judgmentStyle(a.overall);
+/**
+ * The OVERALL judgement of one row, resolved ON ITS OWN SCALE (r2 review finding
+ * 4). This used to be a flat `judgmentStyle(a.overall)`, i.e. the risk-of-bias
+ * vocabulary applied to every tool — which painted an AMSTAR 2 review rated
+ * "High confidence" (its BEST result) in high-risk red, and rendered a JBI
+ * "Include" decision as "Not assessed" because the risk map has no such level.
+ *
+ * The scale comes from the instrument definition's own `overall.axis`
+ * (`overallScaleOf`), so a tool added to the registry is styled correctly here
+ * with no edit. An unknown instrument falls back to the risk scale, which is the
+ * historical behaviour and the only safe default for a tool we cannot resolve.
+ *
+ * @returns {{ style, scale: string|null, aria: string }}
+ *   `scale === null` means the instrument PRESCRIBES NO OVERALL (QUADAS-2), and
+ *   the caller must not claim one.
+ */
+export function overallPresentation(a, instrumentFor = findInstrument) {
+  const instrument = typeof instrumentFor === 'function' ? instrumentFor(a.instrumentId || 'RoB2') : null;
+  const scale = instrument ? overallScaleOf(instrument) : 'rob';
+  if (scale == null) {
+    return { style: judgmentStyle('na'), scale: null, aria: 'This tool prescribes no overall judgement' };
+  }
+  const style = judgmentStyleOn(scale, a.overall || 'na');
+  const prefix = scale === 'confidence' ? 'Overall confidence'
+    : scale === 'decision' ? 'Appraisal decision'
+      : 'Overall risk';
+  // The confidence/decision labels already carry their noun ("High confidence"),
+  // so the short form keeps the announcement from reading "confidence: High
+  // confidence"; the risk labels ("Some concerns") need their full wording.
+  const value = (scale === 'confidence' || scale === 'decision') ? style.short : style.label;
+  return { style, scale, aria: `${prefix}: ${value}` };
+}
+
+export function AssessmentRow({ a, canEdit, onOpen, onRemove, orphan, masked = false }) {
+  const { style: st, scale, aria } = overallPresentation(a);
   // prompt46 #3 — default-allow when the backend omits canMutate (no regression for owners);
   // the server still enforces the real permission on every write.
   const canMutate = canEdit && (a.canMutate !== false);
   const toolLabel = a.instrumentLabel || (a.instrumentId === 'RoB2' ? 'RoB 2' : a.instrumentId) || 'Tool unknown';
+  // r2 review finding 1 — a colleague's row mid-blind. It is still LISTED (who is
+  // assessing, with which tool, how far along) because that is workflow state; its
+  // JUDGEMENT is replaced by an explicit "hidden", not by a blank that could be
+  // read as "not assessed".
+  const chip = masked
+    ? { icon: 'eye', bg: alpha(C.acc, '12'), fg: C.muted, label: 'Hidden' }
+    : { icon: st.icon, bg: st.bg, fg: st.fg, label: st.label };
+  const chipAria = masked ? 'Judgement hidden — independent review in progress' : aria;
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '9px 11px', borderRadius: 8, background: C.surf, border: `1px solid ${C.brd}` }}>
       {/* 79.md §1 — colour + REDUNDANT symbol (judgement icon) so completed/incomplete
           judgements are distinguishable without relying on colour alone. */}
-      <span title={st.label} aria-label={`Risk of bias: ${st.label}`} style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: 18, height: 18, borderRadius: '50%', background: st.bg, color: st.fg, border: `1px solid ${alpha(st.fg, '55')}`, flexShrink: 0, marginTop: 1, alignSelf: 'flex-start' }}>
-        <Icon name={st.icon} size={11} />
+      <span title={chip.label} aria-label={chipAria} style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: 18, height: 18, borderRadius: '50%', background: chip.bg, color: chip.fg, border: `1px solid ${alpha(chip.fg, '55')}`, flexShrink: 0, marginTop: 1, alignSelf: 'flex-start' }}>
+        <Icon name={chip.icon} size={11} />
       </span>
       <div style={{ flex: 1, minWidth: 0 }}>
         <button onClick={onOpen} style={{ display: 'block', width: '100%', textAlign: 'left', background: 'none', border: 'none', cursor: 'pointer', fontFamily: FONT, color: C.txt, fontSize: 13, padding: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-          {a.resultLabel || 'Result'} — <span style={{ color: st.fg, fontWeight: 700 }}>{st.label}</span> {a.status === 'complete' ? '· finalised' : '· draft'}{orphan ? ` · study ${a.studyId}` : ''}
+          {a.resultLabel || 'Result'} — {masked
+            ? <span style={{ color: C.muted, fontWeight: 700 }}>Judgement hidden</span>
+            : scale == null
+              ? <span style={{ color: C.muted, fontWeight: 700 }}>No overall judgement</span>
+              : <span style={{ color: st.fg, fontWeight: 700 }}>{st.label}</span>} {a.status === 'complete' ? '· finalised' : '· draft'}{orphan ? ` · study ${a.studyId}` : ''}
         </button>
         <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 4, flexWrap: 'wrap' }}>
           <ToolChip label={toolLabel} />
@@ -565,10 +657,15 @@ function AssessmentRow({ a, canEdit, onOpen, onRemove, orphan }) {
           {a.reviewerName && <span style={{ fontSize: 10.5, color: C.muted }}>Started by {a.reviewerName}</span>}
         </div>
       </div>
-      <button onClick={onOpen} style={miniBtn}>{canMutate ? 'Open' : 'View'}</button>
-      {canMutate
+      {/* Opening a blinded colleague's assessment would defeat the same blind the
+          row is enforcing, so the action is withheld with a reason rather than
+          offered and then refused. */}
+      {masked
+        ? <span title="Hidden until every independent assessment of this study is complete" style={{ display: 'inline-flex', alignItems: 'center', gap: 5, padding: '4px 8px', fontSize: 11, color: C.muted }}><Icon name="eye" size={12} /> Blinded</span>
+        : <button onClick={onOpen} style={miniBtn}>{canMutate ? 'Open' : 'View'}</button>}
+      {!masked && (canMutate
         ? <button onClick={onRemove} style={{ ...miniBtn, color: C.muted }} title="Delete"><Icon name="trash" size={12} /></button>
-        : (canEdit && <span title="Only the assessment creator, a project leader, or the owner can delete this assessment" style={{ display: 'inline-flex', padding: '4px 6px', color: C.dim }}><Icon name="lock" size={12} /></span>)}
+        : (canEdit && <span title="Only the assessment creator, a project leader, or the owner can delete this assessment" style={{ display: 'inline-flex', padding: '4px 6px', color: C.dim }}><Icon name="lock" size={12} /></span>))}
     </div>
   );
 }

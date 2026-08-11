@@ -382,8 +382,16 @@ export function toolsForStudyDesign(design) {
   // Non-randomised must be tested BEFORE randomised: "non-randomised trial"
   // contains "randomised" and would otherwise be routed to RoB 2.
   if (/non[\s-]?randomi[sz]ed|quasi[\s-]?experimental|before[\s-]?after|interrupted time/.test(d)) return ['ROBINS-I'];
-  if (/cohort|longitudinal|prospective|retrospective/.test(d)) return ['NOS'];
+  // Randomisation must be tested BEFORE the cohort words. RANDOMISATION IS THE
+  // DESIGN; "prospective" / "longitudinal" / "retrospective" describe the sampling
+  // frame and appear constantly inside trial descriptions ("prospective randomized
+  // controlled trial", "multicentre prospective RCT"). With the cohort test first
+  // those strings routed to the Newcastle–Ottawa cohort form — a star scale for
+  // observational studies — instead of RoB 2, which is a methodological error, not
+  // a cosmetic one. Nothing that is only a cohort matches this line, so plain
+  // "prospective cohort study" still falls through to the NOS below.
   if (/randomi[sz]ed|\brct\b|\btrial\b/.test(d)) return ['RoB2'];
+  if (/cohort|longitudinal|prospective|retrospective/.test(d)) return ['NOS'];
   return [];
 }
 

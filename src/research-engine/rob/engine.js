@@ -174,11 +174,21 @@ export function proposeAllDomains(instrument, answersByDomain) {
 
 /**
  * Propose the overall judgement from per-domain judgements.
+ *
+ * `options` carries the extra CONTEXT an instrument's overall rule needs beyond
+ * the domain judgements themselves. Today exactly one rule has any: PROBAST's
+ * Step 4 downgrade caveat applies only to a model DEVELOPED without external
+ * validation, which is a property of the evaluation (`{ evaluationType }`), not
+ * of the answers. Every other algorithm ignores the second argument, so the
+ * twelve other instruments produce byte-identical proposals whether it is passed
+ * or not.
+ *
  * @param {Record<string,{judgment}|string>} domainJudgments
+ * @param {object} [options]
  * @returns {{ judgment, reasons: string[], multiSomeConcernsFlag: boolean }}
  */
-export function proposeOverall(instrument, domainJudgments) {
-  return getAlgorithm(instrument).judgeOverall(domainJudgments);
+export function proposeOverall(instrument, domainJudgments, options) {
+  return getAlgorithm(instrument).judgeOverall(domainJudgments, options);
 }
 
 /**

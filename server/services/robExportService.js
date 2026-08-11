@@ -73,6 +73,86 @@ export function joinNotes(map, order) {
 /** The key an overall applicability judgement is stored and exported under. */
 export const OVERALL_APPLICABILITY_ID = 'overall';
 
+/* ════════════ the reviewer blind ════════════ */
+
+/**
+ * ── WHY THE EXPORT HAS TO KNOW ABOUT THE BLIND ──────────────────────────────
+ * A dual-reviewer RoB assessment is two `RobAssessment` rows sharing
+ * (projectId, studyId, instrumentId) with different reviewerIds. The workspace
+ * blinds each reviewer from the other's answers until BOTH have finalised —
+ * `src/frontend/rob/robConsensusModel.js reviewerBlindState`, which unlocks only
+ * when there are ≥2 independent rows and EVERY one of them is 'complete'. That
+ * module is explicit that the blind is a client rule, and it is honest about the
+ * reason: the panel simply does not fetch the comparison payload while locked.
+ *
+ * The project CSV had no such rule. It selected every non-deleted row in the
+ * project, so a reviewer halfway through their own assessment could download the
+ * file and read their colleague's in-progress item answers, domain judgements and
+ * rationales — the exact data the panel refuses to fetch, delivered through a
+ * different door. That does not just leak a UI affordance: it destroys the
+ * independence the second assessment exists to provide, and a reviewer who has
+ * seen their colleague's answers cannot un-see them.
+ *
+ * ── THE RULE ────────────────────────────────────────────────────────────────
+ * Per (studyId, instrument) group — the same key the panel blinds on:
+ *
+ *   blinded  ⟺  ≥2 independent (non-consensus) rows AND not all of them complete
+ *
+ * While a pair is blinded, rows belonging to OTHER users that are not complete are
+ * withheld. Always included, blinded or not:
+ *   · the requester's OWN rows (you may always export your own work),
+ *   · rows already 'complete' (the blind is over for that reviewer's work — this
+ *     is the same asymmetry the panel has: it unlocks on completion, not on
+ *     permission),
+ *   · the consensus row (it is the reconciled record, not an independent one).
+ * A study with a single assessment is never blinded, so single-reviewer projects
+ * and every fully-finalised pair export byte-identically to before.
+ *
+ * This is a floor, not a permission model: it withholds a reviewer's unfinished
+ * work from their co-reviewers. Project-level access is still required to reach
+ * the endpoint at all.
+ */
+
+/** Rows for one instrument, with the blinded rows of OTHER reviewers removed. Pure. */
+export function applyReviewerBlind(rows, requesterId) {
+  const list = Array.isArray(rows) ? rows : [];
+  const me = String(requesterId == null ? '' : requesterId);
+  const byStudy = new Map();
+  for (const r of list) {
+    const k = String((r && r.studyId) || '');
+    if (!byStudy.has(k)) byStudy.set(k, []);
+    byStudy.get(k).push(r);
+  }
+  const blindedStudies = new Set();
+  for (const [studyId, peers] of byStudy) {
+    const independent = peers.filter(p => !p.isConsensus);
+    if (independent.length >= 2 && !independent.every(p => p.status === 'complete')) {
+      blindedStudies.add(studyId);
+    }
+  }
+  let withheld = 0;
+  const kept = list.filter((r) => {
+    if (!blindedStudies.has(String((r && r.studyId) || ''))) return true;
+    if (r.isConsensus) return true;
+    if (r.status === 'complete') return true;
+    if (me && String(r.reviewerId || '') === me) return true;
+    withheld += 1;
+    return false;
+  });
+  return { rows: kept, withheld };
+}
+
+/** `applyReviewerBlind` across every instrument group. Idempotent. Pure. */
+export function blindGroups(groups, requesterId) {
+  let withheld = 0;
+  const out = (Array.isArray(groups) ? groups : []).map((g) => {
+    const r = applyReviewerBlind(g && g.rows, requesterId);
+    withheld += r.withheld;
+    return { ...g, rows: r.rows };
+  });
+  return { groups: out, withheld };
+}
+
 /**
  * The column keys for one instrument, derived ONLY from its definition — so a
  * tool added to the registry exports its own items with no change here.
@@ -125,17 +205,31 @@ export function columnsForInstrument(instrument, { applicabilityDomainIds = [] }
  * @param {string} [o.projectId]
  * @param {string} [o.generatedAt] ISO string supplied by the caller (kept out of
  *   this module so the builder stays deterministic and testable)
+ * @param {string} [o.requesterId] the id of the user the file is being built FOR.
+ *   Drives the reviewer blind (see `applyReviewerBlind`); the filter is applied
+ *   here so no caller can produce the file without it. Idempotent, so a caller
+ *   that has already filtered its groups loses nothing by passing them in.
  * @returns {string} the CSV text
  */
-export function buildRobProjectCsv({ groups = [], projectId = '', generatedAt = '' } = {}) {
+export function buildRobProjectCsv({ groups = [], projectId = '', generatedAt = '', requesterId = '' } = {}) {
+  const blinded = blindGroups(groups, requesterId);
+  const shown = blinded.groups;
   const out = [];
-  out.push(line(['# pecanrev risk-of-bias export', projectId, generatedAt, `${groups.length} tool group(s)`]));
+  out.push(line(['# pecanrev risk-of-bias export', projectId, generatedAt, `${shown.length} tool group(s)`]));
   out.push(line([
     '# note',
     'One section per instrument. Column sets differ between tools by design — risk-of-bias instruments are never pooled across tools.',
   ]));
+  // The blind is DOCUMENTED in the file, not applied silently: a reader counting
+  // rows must be able to tell that a row is missing because a co-reviewer has not
+  // finished, rather than because it was never made.
+  out.push(line([
+    '# blind',
+    'While two or more reviewers are independently assessing the same study with the same instrument and at least one of them has not finalised, the unfinished assessments of OTHER reviewers are withheld from this export. Your own rows, finalised rows and the consensus row are always included; a study with a single assessment is never withheld.',
+    `${blinded.withheld} row(s) withheld`,
+  ]));
 
-  for (const g of groups) {
+  for (const g of shown) {
     const inst = g.instrument || {};
     const applicabilityDomainIds = Array.isArray(g.applicabilityDomainIds) ? g.applicabilityDomainIds : [];
     const { itemIds, domainIds, applicabilityIds, hasOverallApplicability } =

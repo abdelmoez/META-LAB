@@ -37,7 +37,24 @@
  *    their denominator and never as "8/10" styled like a rating, never as a
  *    percentage, and never ranked. Only the two Newcastle-Ottawa forms are
  *    star-scored (`scoringAllowed`), and they keep stars — never a traffic light.
+ *
+ * 4. THE REVIEWER BLIND REACHES THE OUTPUTS, NOT ONLY THE COMPARISON PANEL
+ *    (r2 review finding 1). ReviewerComparisonPanel refuses to fetch the other
+ *    reviewer's answers while a (study, instrument) pair is mid-blind — but the
+ *    project-level summary tables, the distributions and the traffic-light plot
+ *    were built straight from `GET /projects/:id/assessments`, which returns
+ *    EVERY row regardless of status. So a reviewer with an unfinished assessment
+ *    could read their colleague's in-progress domain judgements and overall two
+ *    inches above the panel that says the comparison is hidden, which defeats the
+ *    blind entirely.
+ *
+ *    `blindVisibility()` is the single pure rule, applied here and by the article
+ *    list. It withholds rows the current reviewer did not author while their pair
+ *    is blinded, and reports how many were withheld so the surface can say so out
+ *    loud instead of silently under-reporting the project.
  */
+
+import { reviewerBlindState, isConsensusRow } from './robConsensusModel.js';
 
 /**
  * Decision 11's allowlist: the instruments whose domain categories genuinely map
@@ -219,9 +236,116 @@ export function groupNotes(group, instrument = null) {
   return notes;
 }
 
-/** The assessments belonging to one group, in a stable order. */
-export function groupRows(group, assessments = []) {
+/* ── the reviewer blind, applied to the OUTPUTS (rule 4) ────────────────────── */
+
+/** The (study, instrument) key a blind is scoped to. */
+const pairKey = (row) => `${row && row.studyId} ${(row && row.instrumentId) || 'RoB2'}`;
+
+/**
+ * Is this pair mid-blind — i.e. are two or more people assessing it independently
+ * and at least one of them has not finished?
+ *
+ * Deliberately NARROWER than `!reviewerBlindState().unlocked`. A pair with a
+ * SINGLE assessment is also "locked" (there is nothing to compare), but nothing
+ * is being kept from anybody there, and masking it would blank the summary of
+ * every ordinary single-reviewer project. Only `awaiting-completion` — ≥2
+ * independent rows, not all complete — is a blind with something to protect.
+ */
+export function isBlindedPair(rows = []) {
+  const state = reviewerBlindState(rows);
+  return !state.unlocked && state.reason === 'awaiting-completion';
+}
+
+/**
+ * Which of a project's assessment rows may THIS reviewer see?
+ *
+ * While a pair is blinded, a row is visible when it is
+ *   · the reviewer's own work (`reviewerId === currentUserId`), or
+ *   · the reconciled consensus record (which by definition postdates the blind).
+ * Everything else in that pair is withheld until every independent assessment is
+ * complete. Rows outside a blinded pair are never touched.
+ *
+ * FAIL-CLOSED on an unknown viewer: without a `currentUserId` we cannot tell
+ * whose work a row is, so a blinded pair hides ALL of its independent rows rather
+ * than guessing. That degrades to "N assessments hidden" for the reviewer's own
+ * study — visibly wrong-looking but honest — instead of quietly leaking a
+ * colleague's draft judgements to whoever the session belongs to.
+ *
+ * @param {Array} assessments the project-wide list
+ * @param {{ currentUserId?: string|null, enforced?: boolean }} [opts]
+ * @returns {{ visible: Array, hiddenIds: Set<string>, hiddenCount: number,
+ *             blindedPairs: Array<{studyId, instrumentId, hidden, pending}> }}
+ */
+export function blindVisibility(assessments = [], { currentUserId = null, enforced = true } = {}) {
   const list = (Array.isArray(assessments) ? assessments : []).filter(Boolean);
+  const hiddenIds = new Set();
+  const blindedPairs = [];
+  if (!enforced) return { visible: list, hiddenIds, hiddenCount: 0, blindedPairs };
+
+  const pairs = new Map();
+  for (const a of list) {
+    const key = pairKey(a);
+    if (!pairs.has(key)) pairs.set(key, []);
+    pairs.get(key).push(a);
+  }
+  for (const rows of pairs.values()) {
+    const state = reviewerBlindState(rows);
+    if (state.unlocked || state.reason !== 'awaiting-completion') continue;
+    let hidden = 0;
+    for (const r of rows) {
+      if (isConsensusRow(r)) continue;
+      if (currentUserId && r.reviewerId && r.reviewerId === currentUserId) continue;
+      hiddenIds.add(r.id);
+      hidden += 1;
+    }
+    if (hidden) {
+      blindedPairs.push({
+        studyId: rows[0].studyId,
+        instrumentId: rows[0].instrumentId || 'RoB2',
+        hidden,
+        pending: state.pending.length,
+      });
+    }
+  }
+  return {
+    visible: list.filter(a => !hiddenIds.has(a.id)),
+    hiddenIds,
+    hiddenCount: hiddenIds.size,
+    blindedPairs,
+  };
+}
+
+/**
+ * The one sentence a surface prints when the blind withheld rows. Never implies
+ * the assessments do not exist — it says they are hidden, and why.
+ */
+export function blindNote(hiddenCount) {
+  const n = Number(hiddenCount) || 0;
+  if (n <= 0) return '';
+  return `${n} assessment${n === 1 ? '' : 's'} hidden until both reviewers complete — independent review in progress.`;
+}
+
+/**
+ * A traffic-light matrix with the withheld rows removed. The server builds
+ * `groups[].matrix` from every row it holds, so plotting it unfiltered would draw
+ * the blinded reviewer's judgements as coloured cells. Returns the SAME object
+ * when nothing is hidden, so nothing re-renders needlessly.
+ */
+export function filterMatrixRows(matrix, hiddenIds) {
+  if (!matrix || !hiddenIds || !hiddenIds.size) return matrix;
+  const rows = (matrix.rows || []).filter(r => !hiddenIds.has(r && r.id));
+  if (rows.length === (matrix.rows || []).length) return matrix;
+  return { ...matrix, rows };
+}
+
+/**
+ * The assessments belonging to one group, in a stable order.
+ * `hiddenIds` (from `blindVisibility`) drops the rows the blind withholds, so a
+ * caller that hands `groupRows` the raw project list still cannot render them.
+ */
+export function groupRows(group, assessments = [], { hiddenIds = null } = {}) {
+  const list = (Array.isArray(assessments) ? assessments : []).filter(Boolean)
+    .filter(a => !(hiddenIds && hiddenIds.has(a.id)));
   const ids = new Set((group && group.assessmentIds) || []);
   const rows = ids.size
     ? list.filter(a => ids.has(a.id))
@@ -302,10 +426,24 @@ function totalItemsFor(view, domainId) {
  * a checklist row, its item counts are included; when it is absent the row still
  * renders its decision, with the counts marked as not loaded.
  */
-export function buildSummaryModel({ groups = [], assessments = [], instrumentFor = null, detailsById = null } = {}) {
+export function buildSummaryModel({
+  groups = [], assessments = [], instrumentFor = null, detailsById = null,
+  // rule 4 — who is looking, and should the blind be applied at all? `enforceBlind`
+  // exists for the tests and for surfaces that legitimately see everything (there
+  // are none today); leaving it ON is the safe default.
+  currentUserId = null, enforceBlind = true,
+} = {}) {
+  const blind = blindVisibility(assessments, { currentUserId, enforced: enforceBlind });
   const sections = (Array.isArray(groups) ? groups : []).filter(Boolean).map((group) => {
     const instrument = typeof instrumentFor === 'function' ? (instrumentFor(group.instrumentId) || null) : null;
-    const rows = groupRows(group, assessments);
+    const rows = groupRows(group, assessments, { hiddenIds: blind.hiddenIds });
+    // How many of THIS group's rows the blind withheld, so the note lands in the
+    // section whose count it explains rather than floating above the whole page.
+    const declared = (group.assessmentIds || []);
+    const hiddenHere = declared.length
+      ? declared.filter(id => blind.hiddenIds.has(id)).length
+      : (assessments || []).filter(a => a && blind.hiddenIds.has(a.id)
+        && (a.instrumentId || 'RoB2') === group.instrumentId).length;
     const domains = domainColumns(group, instrument, rows);
     const applicability = applicabilityColumns(group, instrument);
     const overall = overallColumn(group, instrument);
@@ -325,6 +463,9 @@ export function buildSummaryModel({ groups = [], assessments = [], instrumentFor
       notes: groupNotes(group, instrument),
       count: rows.length,
       studyCount: new Set(rows.map(r => r.studyId)).size,
+      // rule 4 — the withheld rows are COUNTED and NAMED, never silently dropped.
+      hiddenByBlind: hiddenHere,
+      blindNote: blindNote(hiddenHere),
       rows: rows.map((r) => {
         const view = detailsById ? detailsById[r.id] : null;
         return {
@@ -378,6 +519,12 @@ export function buildSummaryModel({ groups = [], assessments = [], instrumentFor
     sections,
     mixedTools: sections.length > 1,
     totalAssessments: sections.reduce((n, s) => n + s.count, 0),
+    // rule 4 — the project-wide blind accounting, so the header can be honest
+    // about a total that is smaller than the project really holds.
+    hiddenByBlind: blind.hiddenCount,
+    blindNote: blindNote(blind.hiddenCount),
+    hiddenIds: blind.hiddenIds,
+    blindedPairs: blind.blindedPairs,
   };
 }
 
@@ -394,6 +541,10 @@ export default {
   overallApplicabilityColumn,
   groupNotes,
   groupRows,
+  isBlindedPair,
+  blindVisibility,
+  blindNote,
+  filterMatrixRows,
   distribution,
   checklistCounts,
   buildSummaryModel,

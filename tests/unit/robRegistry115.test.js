@@ -36,9 +36,15 @@ import {
   overallApplicabilityLevels,
   overallReadsProposals,
   overallJudgmentToPersist,
+  overallIsRequired,
+  evaluationTypeValues,
+  variantToStamp,
+  overallOptionsFor,
+  robvisLabelsFor,
 } from '../../server/controllers/robController.js';
 import {
   buildRobProjectCsv, columnsForInstrument, joinNotes, flatten,
+  applyReviewerBlind, blindGroups,
 } from '../../server/services/robExportService.js';
 import {
   APPLICABILITY_SUFFIX as ENGINE_APPLICABILITY_SUFFIX,
@@ -190,6 +196,171 @@ describe('115 — overall vocabularies (never invented)', () => {
   it('domainJudgmentLevels prefers a domain-level override', () => {
     expect(domainJudgmentLevels(QUIPS_LIKE, null)).toEqual(['low', 'moderate', 'high']);
     expect(domainJudgmentLevels(QUADAS_LIKE, { judgmentLevels: ['x', 'y'] })).toEqual(['x', 'y']);
+  });
+
+  // ── The instrument-level fallback is for PRE-115 definitions only ──────────
+  // On a 115-shape definition `instrument.judgmentLevels` is NOT the per-domain
+  // vocabulary. On AMSTAR 2 it is the OVERALL CONFIDENCE scale, so inheriting it
+  // invented a per-domain judgement the tool does not make — which the override
+  // endpoint then ACCEPTED, and which the project list rendered as a traffic-light
+  // matrix. Mirrors src/frontend/rob/robProgress.js so server and workspace agree.
+  describe('a 115-shape definition never inherits the instrument-level scale', () => {
+    it('AMSTAR 2 rates NO domain, so its confidence scale is not a domain vocabulary', () => {
+      const amstar = resolveInstrument('AMSTAR-2');
+      if (!amstar) return;
+      expect(overallLevelsFor(amstar)).toEqual(['high', 'moderate', 'low', 'critically-low']);
+      expect(domainJudgmentLevels(amstar, amstar.domains[0])).toEqual([]);
+      expect(domainJudgmentLevels(amstar, null)).toEqual([]);
+    });
+
+    it('the JBI checklists likewise rate no domain', () => {
+      for (const id of ['JBI-CaseSeries', 'JBI-Qualitative']) {
+        const inst = resolveInstrument(id);
+        if (!inst) continue;
+        expect(domainJudgmentLevels(inst, null), id).toEqual([]);
+      }
+    });
+
+    it('but the tools that DO rate their domains still report their real scale', () => {
+      const want = {
+        'QUADAS-2': ['low', 'high', 'unclear'],
+        PROBAST: ['low', 'high', 'unclear'],
+        QUIPS: ['low', 'moderate', 'high'],
+      };
+      for (const [id, levels] of Object.entries(want)) {
+        const inst = resolveInstrument(id);
+        if (!inst) continue;
+        expect(domainJudgmentLevels(inst, inst.domains[0]), id).toEqual(levels);
+        expect(domainJudgmentLevels(inst, null), id).toEqual(levels);
+      }
+    });
+
+    it('and the pre-115 instruments are byte-identical (they declare no `overall`)', () => {
+      expect(domainJudgmentLevels(resolveInstrument('RoB2'), null)).toEqual(['low', 'some', 'high']);
+      expect(domainJudgmentLevels(resolveInstrument('ROBINS-I'), null))
+        .toEqual(['low', 'moderate', 'serious', 'critical', 'ni']);
+      expect(domainJudgmentLevels(resolveInstrument('RoB2'), resolveInstrument('RoB2').domains[0]))
+        .toEqual(['low', 'some', 'high']);
+    });
+  });
+
+  // ── What "fully judged" means, per instrument ──────────────────────────────
+  // `finaliseAssessment` used to validate ITEM answers only, which was the whole
+  // story while every judgement was algorithm-proposed. It is not the story for
+  // tools whose judgements are the reviewer's own.
+  describe('overallIsRequired', () => {
+    it('is true for a tool whose overall is a real output', () => {
+      expect(overallIsRequired(resolveInstrument('RoB2'))).toBe(true);
+      for (const id of ['AMSTAR-2', 'PROBAST', 'JBI-CaseSeries']) {
+        const inst = resolveInstrument(id);
+        if (inst) expect(overallIsRequired(inst), id).toBe(true);
+      }
+    });
+
+    it('is false when the tool prescribes no overall at all (QUADAS-2)', () => {
+      const q2 = resolveInstrument('QUADAS-2');
+      if (q2) expect(overallIsRequired(q2)).toBe(false);
+    });
+
+    it('is false when the definition marks the overall as NOT a tool output (QUIPS)', () => {
+      // Hayden 2013 defines no overall algorithm; any value is the review team's own
+      // summary rule, so demanding one to finalise would force an invented rating.
+      const quips = resolveInstrument('QUIPS');
+      if (quips) {
+        expect(quips.overall.official).toBe(false);
+        expect(overallIsRequired(quips)).toBe(false);
+      }
+    });
+  });
+});
+
+// ── The PROBAST evaluation type (Dev / Val / Dev+Val) ────────────────────────
+// It was hard-coded to 'development-and-validation', which made the official
+// downgrade caveat for a development-only model unreachable. It rides in the
+// EXISTING `variant` column — the 101.md Newcastle–Ottawa precedent — with the
+// difference that PROBAST's is a per-assessment reviewer choice, so the definition
+// declares the closed set and the server accepts a client value only from it.
+describe('115 — the evaluation type is a restricted client choice', () => {
+  it('reads the declared set, and only PROBAST declares one', () => {
+    const probast = resolveInstrument('PROBAST');
+    if (probast) {
+      expect(evaluationTypeValues(probast))
+        .toEqual(['development', 'validation', 'development-and-validation']);
+    }
+    for (const id of ['RoB2', 'ROBINS-I', 'NOS', 'QUADAS-2', 'AMSTAR-2', 'QUIPS']) {
+      const inst = resolveInstrument(id);
+      if (inst) expect(evaluationTypeValues(inst), id).toEqual([]);
+    }
+    expect(evaluationTypeValues(null)).toEqual([]);
+  });
+
+  it('defaults to the definition\'s own variant when the client asks for nothing', () => {
+    const probast = resolveInstrument('PROBAST');
+    if (probast) expect(variantToStamp(probast, undefined)).toEqual({ ok: true, variant: 'development-and-validation' });
+    const rob2 = resolveInstrument('RoB2');
+    expect(variantToStamp(rob2, '')).toEqual({ ok: true, variant: 'assignment' });
+    expect(variantToStamp(rob2, null).variant).toBe('assignment');
+  });
+
+  it('accepts a declared value and REJECTS anything else by name', () => {
+    const probast = resolveInstrument('PROBAST');
+    if (!probast) return;
+    expect(variantToStamp(probast, 'development')).toEqual({ ok: true, variant: 'development' });
+    expect(variantToStamp(probast, 'validation').variant).toBe('validation');
+    const bad = variantToStamp(probast, 'made-up');
+    expect(bad.ok).toBe(false);
+    expect(bad.error).toMatch(/Invalid variant: made-up/);
+    expect(bad.error).toMatch(/development, validation, development-and-validation/);
+  });
+
+  it('DISCARDS a client variant on an instrument that offers no choice', () => {
+    // Where the definition owns the variant there is nothing for the client to
+    // choose, so the value is noise and is dropped exactly as a client-supplied
+    // `instrumentVersion` is (115.md build item 1). A forged value can therefore
+    // never be stored — which is the invariant, restated.
+    expect(variantToStamp(resolveInstrument('NOS'), 'case-control'))
+      .toEqual({ ok: true, variant: 'cohort' });
+    expect(variantToStamp(resolveInstrument('RoB2'), 'forged-variant'))
+      .toEqual({ ok: true, variant: 'assignment' });
+  });
+
+  it('threads the stamped variant into the overall rule, and nothing else', () => {
+    const probast = resolveInstrument('PROBAST');
+    if (probast) {
+      expect(overallOptionsFor(probast, 'development')).toEqual({ evaluationType: 'development' });
+      // A stored value the definition does not declare falls back to the
+      // definition's own variant rather than silently disabling the caveat.
+      expect(overallOptionsFor(probast, 'nonsense')).toEqual({ evaluationType: 'development-and-validation' });
+      expect(overallOptionsFor(probast, '')).toEqual({ evaluationType: 'development-and-validation' });
+    }
+    // Every other instrument gets NO options object, so its algorithm is called
+    // exactly as it was before.
+    for (const id of ['RoB2', 'ROBINS-I', 'NOS', 'QUADAS-2', 'AMSTAR-2']) {
+      const inst = resolveInstrument(id);
+      if (inst) expect(overallOptionsFor(inst, 'development'), id).toBeUndefined();
+    }
+  });
+});
+
+// ── robvis is a WHITELIST ────────────────────────────────────────────────────
+// The label table used to fall back to RoB 2's labels for any unknown instrument.
+// Since 115 that means nine tools, and the fallback INVERTED meaning: AMSTAR 2's
+// overall is a CONFIDENCE rating whose best level is literally 'high', so a review
+// rated High confidence exported as "High risk of bias".
+describe('115 — robvis labels', () => {
+  it('exists for exactly the two Cochrane risk-of-bias tools', () => {
+    expect(robvisLabelsFor('RoB2')).toEqual({ low: 'Low', some: 'Some concerns', high: 'High' });
+    expect(robvisLabelsFor('ROBINS-I').ni).toBe('No information');
+    for (const id of ['AMSTAR-2', 'QUADAS-2', 'PROBAST', 'QUIPS', 'JBI-CaseSeries', 'NOS', 'NOS-CC', 'nope']) {
+      expect(robvisLabelsFor(id), id).toBeNull();
+    }
+  });
+
+  it('never maps AMSTAR 2\'s best rating onto the worst risk-of-bias label', () => {
+    // The specific inversion: 'high' means HIGH CONFIDENCE on AMSTAR 2 and HIGH
+    // RISK OF BIAS on RoB 2. There is no label set to make that mistake with.
+    expect(robvisLabelsFor('AMSTAR-2')).toBeNull();
+    expect(robvisLabelsFor('RoB2').high).toBe('High');
   });
 });
 
@@ -441,6 +612,106 @@ describe('115 — project CSV export (pure)', () => {
   it('is deterministic — the same input yields byte-identical output', () => {
     const args = { projectId: 'p', generatedAt: 'T', groups: [{ instrument: JBI_LIKE, instrumentId: 'J', instrumentLabel: 'J', rows: [] }] };
     expect(buildRobProjectCsv(args)).toBe(buildRobProjectCsv(args));
+  });
+
+  // ── The reviewer blind ────────────────────────────────────────────────────
+  // The workspace refuses to even FETCH the comparison until both reviewers have
+  // finalised (robConsensusModel.reviewerBlindState). The project CSV selected
+  // every non-deleted row in the project, so the same reviewer could download
+  // their colleague's in-progress answers through a different door — destroying
+  // the independence the second assessment exists to provide.
+  describe('the reviewer blind', () => {
+    const row = (o) => ({
+      studyId: 's1', studyLabel: 'Smith 2020', reviewerId: 'u1', reviewerName: 'Ann',
+      status: 'draft', isConsensus: false, answers: {}, domainJudgments: {}, overall: '',
+      ...o,
+    });
+
+    it('withholds another reviewer\'s UNFINISHED row while the pair is blinded', () => {
+      const rows = [row({ reviewerId: 'u1', status: 'draft' }), row({ reviewerId: 'u2', status: 'draft' })];
+      const r = applyReviewerBlind(rows, 'u1');
+      expect(r.withheld).toBe(1);
+      expect(r.rows.map(x => x.reviewerId)).toEqual(['u1']);   // my own row survives
+      // …and symmetrically for the other reviewer.
+      expect(applyReviewerBlind(rows, 'u2').rows.map(x => x.reviewerId)).toEqual(['u2']);
+    });
+
+    it('withholds nothing once every independent row is complete', () => {
+      const rows = [
+        row({ reviewerId: 'u1', status: 'complete' }),
+        row({ reviewerId: 'u2', status: 'complete' }),
+      ];
+      expect(applyReviewerBlind(rows, 'u1')).toEqual({ rows, withheld: 0 });
+    });
+
+    it('never withholds a FINISHED row, nor the consensus record', () => {
+      const rows = [
+        row({ reviewerId: 'u1', status: 'draft' }),
+        row({ reviewerId: 'u2', status: 'complete' }),
+        row({ reviewerId: 'u3', status: 'consensus', isConsensus: true }),
+      ];
+      const r = applyReviewerBlind(rows, 'u2');
+      expect(r.withheld).toBe(1);
+      expect(r.rows.map(x => x.reviewerId)).toEqual(['u2', 'u3']);
+    });
+
+    it('a single-reviewer study is never blinded (single-reviewer projects unchanged)', () => {
+      const rows = [row({ reviewerId: 'u2', status: 'draft' })];
+      expect(applyReviewerBlind(rows, 'u1')).toEqual({ rows, withheld: 0 });
+    });
+
+    it('blinds PER STUDY — one blinded pair never hides another study\'s rows', () => {
+      const rows = [
+        row({ studyId: 'sA', reviewerId: 'u1', status: 'draft' }),
+        row({ studyId: 'sA', reviewerId: 'u2', status: 'draft' }),
+        row({ studyId: 'sB', reviewerId: 'u2', status: 'draft' }),
+      ];
+      const r = applyReviewerBlind(rows, 'u1');
+      expect(r.withheld).toBe(1);
+      expect(r.rows.map(x => `${x.studyId}/${x.reviewerId}`)).toEqual(['sA/u1', 'sB/u2']);
+    });
+
+    it('is idempotent, so a caller that pre-filters loses nothing', () => {
+      const rows = [row({ reviewerId: 'u1' }), row({ reviewerId: 'u2' })];
+      const once = applyReviewerBlind(rows, 'u1');
+      const twice = applyReviewerBlind(once.rows, 'u1');
+      expect(twice.rows).toEqual(once.rows);
+      expect(twice.withheld).toBe(0);
+    });
+
+    it('withholds from an UNKNOWN requester rather than defaulting open', () => {
+      const rows = [row({ reviewerId: 'u1' }), row({ reviewerId: 'u2' })];
+      expect(applyReviewerBlind(rows, '').withheld).toBe(2);
+    });
+
+    it('blindGroups applies it per instrument and totals what it withheld', () => {
+      const g = blindGroups([
+        { instrument: JBI_LIKE, instrumentId: 'A', rows: [row({ reviewerId: 'u1' }), row({ reviewerId: 'u2' })] },
+        { instrument: JBI_LIKE, instrumentId: 'B', rows: [row({ reviewerId: 'u2' })] },
+      ], 'u1');
+      expect(g.withheld).toBe(1);
+      expect(g.groups.map(x => x.rows.length)).toEqual([1, 1]);
+      expect(g.groups[0].instrumentId).toBe('A');   // every other field survives
+    });
+
+    it('the CSV applies it itself and SAYS SO in the header', () => {
+      const groups = [{
+        instrument: JBI_LIKE, instrumentId: 'J', instrumentLabel: 'JBI',
+        rows: [
+          row({ reviewerId: 'u1', reviewerName: 'Ann', status: 'draft' }),
+          row({ reviewerId: 'u2', reviewerName: 'Bo', status: 'draft' }),
+        ],
+      }];
+      const csv = buildRobProjectCsv({ groups, projectId: 'p', generatedAt: 'T', requesterId: 'u1' });
+      expect(csv).toContain('"Ann"');
+      expect(csv).not.toContain('"Bo"');
+      expect(csv).toContain('"# blind"');
+      expect(csv).toContain('"1 row(s) withheld"');
+      // The section header counts the rows the file actually contains.
+      expect(csv).toContain('"1 assessment(s)"');
+      // No requester at all still yields a documented, honest file.
+      expect(buildRobProjectCsv({ groups, projectId: 'p', generatedAt: 'T' })).toContain('"2 row(s) withheld"');
+    });
   });
 
   it('joinNotes drops empties and flatten collapses whitespace', () => {

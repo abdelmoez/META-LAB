@@ -192,6 +192,37 @@ describe('mapRobAssessments — worst-overall per study, display labels', () => 
       .toEqual([['AMSTAR-2', 1], ['RoB2', 2]]);
   });
 
+  // The severity ladder was missing its UNCERTAIN rung. QUADAS-2 and PROBAST rate
+  // Low / High / **Unclear** and ROBINS-I answers **No information**; neither was in
+  // ROB_RANK, so `ROB_RANK[...] || 0` scored them BELOW 'low' and a study the
+  // reviewer could not judge was reported in the manuscript as Low risk of bias.
+  it('ranks Unclear / No information as WORSE than low and better than high', () => {
+    const worst = (rows) => mapRobAssessments(rows).assessments.s1.overall;
+    // Order-independent in both directions — the bug only showed one way round.
+    expect(worst([
+      { studyId: 's1', overall: 'unclear', domainJudgments: {}, instrumentId: 'PROBAST' },
+      { studyId: 's1', overall: 'low', domainJudgments: {}, instrumentId: 'PROBAST' },
+    ])).toBe('Unclear');
+    expect(worst([
+      { studyId: 's1', overall: 'low', domainJudgments: {}, instrumentId: 'PROBAST' },
+      { studyId: 's1', overall: 'unclear', domainJudgments: {}, instrumentId: 'PROBAST' },
+    ])).toBe('Unclear');
+    // …but High still beats Unclear.
+    expect(worst([
+      { studyId: 's1', overall: 'unclear', domainJudgments: {}, instrumentId: 'QUADAS-2' },
+      { studyId: 's1', overall: 'high', domainJudgments: {}, instrumentId: 'QUADAS-2' },
+    ])).toBe('High');
+    // ROBINS-I's `ni`, same rung — and it renders as words, not "Ni".
+    expect(worst([
+      { studyId: 's1', overall: 'ni', domainJudgments: {}, instrumentId: 'ROBINS-I' },
+      { studyId: 's1', overall: 'low', domainJudgments: {}, instrumentId: 'ROBINS-I' },
+    ])).toBe('No information');
+    expect(worst([
+      { studyId: 's1', overall: 'ni', domainJudgments: {}, instrumentId: 'ROBINS-I' },
+      { studyId: 's1', overall: 'serious', domainJudgments: {}, instrumentId: 'ROBINS-I' },
+    ])).toBe('Serious');
+  });
+
   it('a tool with no severity order is never ranked — the first row stands', () => {
     const m = mapRobAssessments([
       { studyId: 's1', overall: 'include', domainJudgments: {}, instrumentId: 'JBI-CaseSeries' },

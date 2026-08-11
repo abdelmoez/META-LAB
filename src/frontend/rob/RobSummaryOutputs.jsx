@@ -30,7 +30,7 @@ import { C, FONT, MONO, alpha } from '../theme/tokens.js';
 import Icon from '../components/icons.jsx';
 import RobTrafficLight from './RobTrafficLight.jsx';
 import { levelStyle, levelSymbol, levelLegend } from './robLevelStyle.js';
-import { buildSummaryModel } from './robOutputModel.js';
+import { buildSummaryModel, filterMatrixRows } from './robOutputModel.js';
 import { findInstrument } from '../../research-engine/rob/instruments/registry.js';
 
 /* ── small presentational atoms ─────────────────────────────────────────────── */
@@ -233,9 +233,17 @@ function sectionMaxStars(section, row, domainId) {
 
 /* ── the section ────────────────────────────────────────────────────────────── */
 
-function GroupSection({ section, group, onLoadDetails, loadingDetails }) {
+function GroupSection({ section, group, onLoadDetails, loadingDetails, hiddenIds = null }) {
   const [showPlot, setShowPlot] = useState(true);
   const legend = section.overall ? levelLegend(section.overall.levels, { axis: section.overall.axis }) : [];
+  // The server's matrix is built from EVERY row it holds, so it has to be filtered
+  // by the same blind that filtered the table — otherwise the plot draws the
+  // colleague's in-progress judgements as coloured cells (r2 review finding 1).
+  const matrix = group && group.matrix ? filterMatrixRows(group.matrix, hiddenIds) : null;
+  // The plot is withdrawn only when the BLIND emptied it — a group whose matrix
+  // arrived without rows is left exactly as it was.
+  const supplied = ((group && group.matrix && group.matrix.rows) || []).length;
+  const plottable = !!matrix && !(supplied > 0 && (matrix.rows || []).length === 0);
   return (
     <section style={{ ...card, marginBottom: 18 }} aria-label={`${section.instrumentLabel} summary`}>
       <header style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap', marginBottom: 10 }}>
@@ -245,7 +253,7 @@ function GroupSection({ section, group, onLoadDetails, loadingDetails }) {
             <span style={{ fontSize: 10.5, fontFamily: MONO, color: C.muted }}>version {section.instrumentVersion}</span>
           )}
         </div>
-        {section.trafficLight && group && group.matrix && (
+        {section.trafficLight && plottable && (
           <button type="button" onClick={() => setShowPlot(v => !v)}
             style={{ padding: '4px 10px', background: 'transparent', border: `1px solid ${C.brd2}`, borderRadius: 7, color: C.txt2, fontSize: 11.5, fontFamily: FONT, cursor: 'pointer' }}>
             {showPlot ? 'Hide traffic-light plot' : 'Show traffic-light plot'}
@@ -258,6 +266,17 @@ function GroupSection({ section, group, onLoadDetails, loadingDetails }) {
           <Icon name="info" size={11} /> {n}
         </p>
       ))}
+
+      {/* The blind is stated, not silently applied: a reader must never mistake a
+          masked table for the whole of the project's evidence. */}
+      {section.blindNote && (
+        <p style={{
+          margin: '0 0 10px', padding: '8px 10px', borderRadius: 8, fontSize: 11.5, lineHeight: 1.5,
+          color: C.txt2, background: alpha(C.acc, '08'), border: `1px solid ${alpha(C.acc, '30')}`,
+        }}>
+          <Icon name="eye" size={11} /> {section.blindNote}
+        </p>
+      )}
 
       <SectionTable section={section} onLoadDetails={onLoadDetails} loadingDetails={loadingDetails} />
 
@@ -304,9 +323,9 @@ function GroupSection({ section, group, onLoadDetails, loadingDetails }) {
         </div>
       )}
 
-      {section.trafficLight && group && group.matrix && showPlot && (
+      {section.trafficLight && plottable && showPlot && (
         <div style={{ marginTop: 16 }}>
-          <RobTrafficLight matrix={group.matrix} title={`Risk of bias — ${section.instrumentLabel}`} />
+          <RobTrafficLight matrix={matrix} title={`Risk of bias — ${section.instrumentLabel}`} />
         </div>
       )}
     </section>
@@ -322,10 +341,15 @@ export default function RobSummaryOutputs({
   loadAssessment = null,      // (assessmentId) => Promise<view>  (JBI item counts)
   exportSlot = null,          // e.g. <RobExportButton …/>, rendered in the header
   instrumentFor = findInstrument,
+  // r2 review finding 1 — who is reading this page. Rows belonging to a colleague
+  // whose independent assessment of the same (study, instrument) is still in
+  // progress are withheld, because this table was the widest hole in the blind.
+  currentUserId = null,
+  enforceBlind = true,
 }) {
   const [details, setDetails] = useState(detailsById || null);
   const [loadingFor, setLoadingFor] = useState('');
-  const model = buildSummaryModel({ groups, assessments, instrumentFor, detailsById: details });
+  const model = buildSummaryModel({ groups, assessments, instrumentFor, detailsById: details, currentUserId, enforceBlind });
 
   const loadGroupDetails = useCallback(async (section) => {
     if (typeof loadAssessment !== 'function') return;
@@ -374,6 +398,7 @@ export default function RobSummaryOutputs({
           group={(groups || []).find(g => g.instrumentId === section.instrumentId)}
           onLoadDetails={typeof loadAssessment === 'function' ? () => loadGroupDetails(section) : null}
           loadingDetails={loadingFor === section.instrumentId}
+          hiddenIds={model.hiddenIds}
         />
       ))}
     </div>

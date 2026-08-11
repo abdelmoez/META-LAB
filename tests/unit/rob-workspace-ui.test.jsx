@@ -8,7 +8,10 @@
  */
 import { describe, it, expect } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { WorkspaceFooter, ArticleHeaderBar, ResizeDivider, clampSplit } from '../../src/frontend/rob/RobWorkspace.jsx';
+import {
+  WorkspaceFooter, ArticleHeaderBar, ResizeDivider, clampSplit,
+  hasSavedResponse, isRetryableSaveError,
+} from '../../src/frontend/rob/RobWorkspace.jsx';
 import PdfViewer, { pdfFitWidthSrc } from '../../src/frontend/screening/components/PdfViewer.jsx';
 import RobPdfPanel from '../../src/frontend/rob/RobPdfPanel.jsx';
 
@@ -156,5 +159,63 @@ describe('RobPdfPanel — empty state when no screening record (Task 2)', () => 
     const html = renderToStaticMarkup(<RobPdfPanel loading={false} error="Could not load the study PDF." screenProjectId={null} recordId={null} canManage onRetry={() => {}} />);
     expect(html).toContain('Could not load the study PDF.');
     expect(html).toContain('Retry');
+  });
+});
+
+/* ── r2 review finding 5 — the autosave queue's two decisions ─────────────────
+ *
+ * Both of these were bugs that no rendering test could see, and both could
+ * silently destroy a reviewer's work:
+ *
+ *  · `response || 'NA'` sent the answer "Not applicable" for any question that
+ *    had only a RATIONALE typed against it. On QUADAS-2 / QUIPS / AMSTAR 2 (no
+ *    'NA' in their answer sets) the server 400s; on JBI / PROBAST (which do have
+ *    one) it recorded a fabricated answer the reviewer never gave.
+ *
+ *  · the catch re-queued EVERY failure, so that rejected item came back on the
+ *    next keystroke, was rejected again, and took every later edit down with it —
+ *    a permanently poisoned save queue behind a single "save failed" chip.
+ */
+describe('autosave queue — what is sent (finding 5)', () => {
+  it('sends a real answer', () => {
+    expect(hasSavedResponse('Y')).toBe(true);
+    expect(hasSavedResponse('NA')).toBe(true);   // when the reviewer CHOSE it
+  });
+
+  it('sends nothing for a meta-only edit on an unanswered question', () => {
+    // This is the case that used to become response:'NA'.
+    expect(hasSavedResponse('')).toBe(false);
+    expect(hasSavedResponse(undefined)).toBe(false);
+    expect(hasSavedResponse(null)).toBe(false);
+  });
+
+  it('keeps the Newcastle-Ottawa rule: an emptied selection is not a save', () => {
+    expect(hasSavedResponse(['a', 'b'])).toBe(true);
+    expect(hasSavedResponse([])).toBe(false);
+  });
+});
+
+describe('autosave queue — what is retried (finding 5)', () => {
+  it('DROPS a validation rejection instead of retrying it forever', () => {
+    expect(isRetryableSaveError({ status: 400, message: 'Invalid response' })).toBe(false);
+  });
+
+  it('drops the other permanent 4xx verdicts too', () => {
+    for (const status of [401, 403, 404, 409, 422]) {
+      expect(isRetryableSaveError({ status }), `HTTP ${status}`).toBe(false);
+    }
+  });
+
+  it('retries a transient failure exactly as before', () => {
+    expect(isRetryableSaveError({ status: 500 })).toBe(true);
+    expect(isRetryableSaveError({ status: 503 })).toBe(true);
+    // A fetch that never reached the server carries no status at all.
+    expect(isRetryableSaveError(new Error('Failed to fetch'))).toBe(true);
+    expect(isRetryableSaveError(undefined)).toBe(true);
+  });
+
+  it('treats the two self-clearing 4xx codes as transient', () => {
+    expect(isRetryableSaveError({ status: 408 })).toBe(true);   // request timeout
+    expect(isRetryableSaveError({ status: 429 })).toBe(true);   // rate limited
   });
 });

@@ -87,6 +87,30 @@ describe('study-design routing (101.md §18)', () => {
     expect(toolsForStudyDesign('clinical prediction model development study')).toEqual(['PROBAST']);
   });
 
+  // A trial is routinely described by its sampling frame as well as its design.
+  // With the cohort words tested first, every one of these strings routed to the
+  // Newcastle–Ottawa COHORT form — a star scale for observational studies — instead
+  // of RoB 2. Randomisation is the design; prospective/longitudinal/retrospective
+  // are not.
+  it('lets randomisation win over the cohort words that describe a trial', () => {
+    expect(toolsForStudyDesign('prospective randomized controlled trial')).toEqual(['RoB2']);
+    expect(toolsForStudyDesign('multicentre prospective RCT')).toEqual(['RoB2']);
+    expect(toolsForStudyDesign('longitudinal randomised trial')).toEqual(['RoB2']);
+    expect(toolsForStudyDesign('retrospective analysis of a randomised trial')).toEqual(['RoB2']);
+    expect(nosVariantForDesign('prospective randomized controlled trial')).toBe('');
+  });
+
+  it('…without stealing the designs that really are cohorts', () => {
+    expect(toolsForStudyDesign('prospective cohort study')).toEqual(['NOS']);
+    expect(toolsForStudyDesign('retrospective longitudinal cohort')).toEqual(['NOS']);
+    expect(toolsForStudyDesign('registry-based prospective cohort')).toEqual(['NOS']);
+    // The non-randomised guard still runs FIRST, so it beats both.
+    expect(toolsForStudyDesign('prospective non-randomised trial')).toEqual(['ROBINS-I']);
+    expect(toolsForStudyDesign('prospective quasi-experimental study')).toEqual(['ROBINS-I']);
+    // And a nested case-control inside a randomised trial is still case-control.
+    expect(toolsForStudyDesign('nested case-control within a randomised trial')).toEqual(['NOS-CC']);
+  });
+
   it('prefers the more specific instrument when a design string names several', () => {
     // A prevalence study is usually described as cross-sectional.
     expect(toolsForStudyDesign('cross-sectional prevalence study')).toEqual(['JBI-Prevalence']);

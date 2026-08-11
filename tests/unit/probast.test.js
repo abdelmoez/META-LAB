@@ -236,6 +236,39 @@ describe('PROBAST through the generic engine', () => {
     expect(completeness(inst, { answersByDomain: {} }).overall.required).toBe(20);
   });
 
+  // The evaluation type used to be unreachable: the definition hard-coded
+  // `variant: 'development-and-validation'`, nothing ever passed an
+  // `evaluationType`, and `proposeOverall` dropped its second argument on the
+  // floor — so the official downgrade caveat for a model developed with NO
+  // external validation could never fire. It now travels through the engine.
+  it('carries the evaluation type through to the Step 4 downgrade caveat', () => {
+    const inst = getInstrument('PROBAST');
+    const dev = proposeOverall(inst, ALL_LOW, { evaluationType: 'development' });
+    expect(dev.judgment).toBe('low');
+    expect(dev.considerDowngrade).toBe(true);
+    expect(dev.reasons.join(' ')).toMatch(/consider downgrading to high risk of bias/);
+
+    // The default evaluation (development AND validation) carries no caveat…
+    const both = proposeOverall(inst, ALL_LOW, { evaluationType: 'development-and-validation' });
+    expect(both.considerDowngrade).toBe(false);
+    // …and neither does omitting it, so the twelve other tools are unaffected.
+    expect(proposeOverall(inst, ALL_LOW).considerDowngrade).toBe(false);
+  });
+
+  it('declares the closed set of evaluation types a reviewer may pick from', () => {
+    const inst = getInstrument('PROBAST');
+    expect(inst.evaluationTypes.map((t) => t.value))
+      .toEqual(['development', 'validation', 'development-and-validation']);
+    expect(EVALUATION_TYPES.map((t) => t.value)).toEqual(inst.evaluationTypes.map((t) => t.value));
+    // The definition's own variant remains the DEFAULT, so a row created without a
+    // choice behaves exactly as it did.
+    expect(inst.variant).toBe('development-and-validation');
+    // No other instrument offers a choice — their variant is a definition constant.
+    for (const id of ['RoB2', 'ROBINS-I', 'NOS', 'NOS-CC', 'QUADAS-2', 'AMSTAR-2', 'QUIPS']) {
+      expect(getInstrument(id).evaluationTypes, id).toBeUndefined();
+    }
+  });
+
   it('an NA answer counts as answered, so a shaded question does not block completion', () => {
     const inst = getInstrument('PROBAST');
     const answersByDomain = {};

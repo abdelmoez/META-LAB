@@ -170,8 +170,33 @@ export function mapScreeningWorkflow(d) {
 }
 
 /* RoB v2 judgement vocabulary → the display labels the tables/narration render.
-   Covers RoB 2 (low/some/high) and ROBINS-I (low/moderate/serious/critical). */
-const ROB_RANK = { low: 1, some: 2, moderate: 2, high: 3, serious: 3, critical: 4 };
+   Covers RoB 2 (low/some/high) and ROBINS-I (low/moderate/serious/critical).
+
+   ── THE UNCERTAIN TIER ────────────────────────────────────────────────────────
+   115.md added tools whose scale has an explicit UNCERTAIN level: QUADAS-2 and
+   PROBAST rate Low / High / **Unclear**, and ROBINS-I answers **No information**.
+   Those levels were absent here, so `ROB_RANK[...] || 0` scored them ZERO — below
+   'low' — and `worseOfSameTool` therefore preferred an Unclear row's *predecessor*
+   and, where the Unclear row came first, reported a study assessed "Unclear risk of
+   bias" as **Low** in the manuscript. Unclear is not better than low: the reviewer
+   could not tell. It sits between low and high, alongside 'some concerns' and
+   'moderate', which is where the conservative worst-of rule needs it.
+
+   This is a WITHIN-TOOL comparison only — the grouping in `mapRobAssessments`
+   still forbids ranking one tool's overall against another's (115.md decision 7),
+   and RANKED_ROB_TOOLS still excludes the tools whose overall is not a severity
+   scale at all. */
+const ROB_RANK = {
+  low: 1,
+  some: 2,
+  moderate: 2,
+  unclear: 2,
+  ni: 2,
+  no_information: 2,
+  high: 3,
+  serious: 3,
+  critical: 4,
+};
 
 /** The instrument a row with no `instrumentId` belongs to (the server's default). */
 const DEFAULT_ROB_TOOL_ID = 'RoB2';
@@ -192,9 +217,13 @@ const ROB_LABEL = {
   low: 'Low',
   some: 'Some concerns',
   moderate: 'Moderate',
+  unclear: 'Unclear',
   high: 'High',
   serious: 'Serious',
   critical: 'Critical',
+  // ROBINS-I stores its "No information" level as `ni`; without this entry the
+  // generic title-case fallback rendered it "Ni" in the manuscript table.
+  ni: 'No information',
   no_information: 'No information',
 };
 

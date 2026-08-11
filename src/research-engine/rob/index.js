@@ -169,8 +169,14 @@ export {
   nosVariantForDesign,
 } from './tools.js';
 
-// Guided appraisal (text → suggested signalling answers → real judgement).
-export { appraiseFromText, ROB_APPRAISAL_VERSION } from './appraisal.js';
+// Guided appraisal (text → suggested signalling answers → real judgement), plus
+// the cue-coverage predicate every caller must consult before offering it.
+export {
+  appraiseFromText,
+  hasAppraisalCues,
+  APPRAISAL_INSTRUMENT_IDS,
+  ROB_APPRAISAL_VERSION,
+} from './appraisal.js';
 
 // Reviewer agreement for ordinal RoB judgements (weighted κ).
 export {

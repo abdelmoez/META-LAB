@@ -92,7 +92,9 @@ export const NOT_APPLICABLE_RESPONSES = Object.freeze(['NMA', 'ONLY_NRSI', 'ONLY
  *   'PARTIAL_YES'             → partial adherence → NOT a weakness by default
  *   'NMA'/'ONLY_NRSI'/'ONLY_RCT'
  *                             → the item does not apply → never a weakness
- *   unanswered                → never counted, in either direction
+ *   unanswered                → never counted, in either direction — and while
+ *                               ANY item is unanswered `judgeOverall` proposes no
+ *                               rating at all (see its note on Box 2)
  *
  * Box 1 and Box 2 operationalise "critical flaw" and "non-critical weakness"
  * only through the critical-domain list and the four rating definitions — the
@@ -394,6 +396,21 @@ export function judgeDomain(domainId, answers) {
  * Accepts the engine's per-domain proposal map ({ items: { flaws } }), a bare
  * counts object ({ criticalFlaws, nonCriticalWeaknesses }), or an answers map
  * ({ '1': 'Y', … }) — whichever the caller has to hand.
+ *
+ * ── WHY AN INCOMPLETE CHECKLIST GETS NO RATING ──────────────────────────────
+ * Box 2 rates confidence from the NUMBER and CRITICALITY of the weaknesses found
+ * ACROSS THE WHOLE CHECKLIST. Weaknesses are therefore only countable once every
+ * item has an answer: an unanswered item is not "no weakness found", it is "not
+ * looked at yet", and it may still turn out to be a critical flaw. Rating a blank
+ * or partly-filled form would read {0 critical, 0 non-critical} and propose HIGH
+ * confidence — the tool's BEST rating — for a review nobody has appraised.
+ *
+ * So the `unanswered` list `countFlaws` returns is LOAD-BEARING: while any of the
+ * sixteen items is unanswered this returns the reviewer-judged "not yet
+ * determined" result, exactly as it does when nothing at all is recorded. A bare
+ * counts object (no `unanswered` key) is taken at face value — a caller who has
+ * already tallied the checklist is stating the counts, and `rateConfidence` is
+ * the direct entry point for that.
  * Pure.
  */
 export function judgeOverall(input) {
@@ -401,6 +418,19 @@ export function judgeOverall(input) {
   if (!counts) {
     return {
       ...reviewerJudged(['No AMSTAR 2 responses recorded yet — the overall confidence rating is not yet determined.']),
+      multiSomeConcernsFlag: false,
+    };
+  }
+  const unanswered = Array.isArray(counts.unanswered) ? counts.unanswered : [];
+  if (unanswered.length) {
+    return {
+      ...reviewerJudged([
+        `Overall confidence is not yet determined: ${unanswered.length} of the ${ITEMS.length} AMSTAR 2 items ${unanswered.length === 1 ? 'is' : 'are'} still unanswered (${unanswered.join(', ')}).`,
+        'Box 2 rates confidence from the number and criticality of the weaknesses found across the whole checklist, so an unanswered item cannot be read as "no weakness" — it may yet prove to be a critical flaw.',
+      ]),
+      criticalFlaws: counts.criticalFlaws,
+      nonCriticalWeaknesses: counts.nonCriticalWeaknesses,
+      unanswered,
       multiSomeConcernsFlag: false,
     };
   }

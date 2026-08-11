@@ -39,6 +39,7 @@ import {
   partitionReviewerRows, reviewerBlindState, reviewerLabel,
   domainDiff, overallDiff, itemDiffRows, agreementText, consensusEligibility,
 } from './robConsensusModel.js';
+import { overallScaleOf } from './judgmentStyle.js';
 import { findInstrument } from '../../research-engine/rob/instruments/registry.js';
 
 /* ── atoms ──────────────────────────────────────────────────────────────────── */
@@ -57,7 +58,23 @@ function Chip({ level, axis = 'rob', muted = false }) {
   );
 }
 
-function ConflictFlag({ on }) {
+/**
+ * THREE states, not two (r2 review finding 6). "agree" used to be the fallback for
+ * everything that was not a conflict — including a row where only ONE reviewer had
+ * recorded anything, or neither had. That is the same "missing ≠ disagreement"
+ * rule `domainDiff` already applies to conflicts, applied to its other half: with
+ * fewer than two recorded judgements there is nothing to agree about, and claiming
+ * agreement there is a fabricated finding, not a cosmetic slip.
+ */
+function ConflictFlag({ on, recorded = 2 }) {
+  if ((Number(recorded) || 0) < 2) {
+    return (
+      <span title="Fewer than two reviewers have recorded this — nothing to compare"
+        style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 10.5, color: C.muted }}>
+        <span aria-hidden style={{ fontFamily: MONO }}>—</span> not compared
+      </span>
+    );
+  }
   if (!on) {
     return (
       <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 10.5, color: C.muted }}>
@@ -121,6 +138,11 @@ export default function ReviewerComparisonPanel({
 
   const [payload, setPayload] = useState(comparison);
   const [loading, setLoading] = useState(false);
+  // The COMPARISON FETCH failure is kept apart from an action failure (r2 review
+  // finding 7): they need different copy, and — more importantly — a failed fetch
+  // must suppress the agreement claim, which an action error must not.
+  const [loadError, setLoadError] = useState('');
+  const [reloadKey, setReloadKey] = useState(0);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
   const [seedFrom, setSeedFrom] = useState('');
@@ -137,12 +159,18 @@ export default function ReviewerComparisonPanel({
     let alive = true;
     setLoading(true);
     Promise.resolve(fetcher(projectId, studyId, { instrumentId }))
-      .then((res) => { if (alive) { setPayload(res); setError(''); } })
-      .catch((e) => { if (alive) setError(e && e.message ? e.message : 'Could not load the reviewer comparison.'); })
+      .then((res) => { if (alive) { setPayload(res); setLoadError(''); } })
+      .catch((e) => { if (alive) setLoadError(e && e.message ? e.message : 'Could not load the reviewer comparison.'); })
       .finally(() => { if (alive) setLoading(false); });
     return () => { alive = false; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [unlocked, projectId, studyId, instrumentId, comparison]);
+  }, [unlocked, projectId, studyId, instrumentId, comparison, reloadKey]);
+
+  const retryComparison = useCallback(() => {
+    setLoadError('');
+    setPayload(null);
+    setReloadKey(k => k + 1);
+  }, []);
 
   const createConsensus = useCallback(async () => {
     setBusy(true);
@@ -162,17 +190,43 @@ export default function ReviewerComparisonPanel({
   const domainIds = (instrument && (instrument.domains || []).map(d => d.id))
     || [...new Set(independent.flatMap(r => Object.keys(r.domainJudgments || {})))];
   const domainLabels = {};
-  for (const d of (instrument && instrument.domains) || []) domainLabels[d.id] = d.shortLabel || d.name || d.id;
+  // r2 review finding 2 — every diff cell is drawn on the axis the INSTRUMENT
+  // declares for that column, not on a hardcoded 'rob'. The old code coloured an
+  // AMSTAR 2 "High confidence" (its best rating) in high-risk red and left a JBI
+  // "Include" decision unresolvable on the risk scale. `domain.judgment.axis` and
+  // `instrument.overall.axis` are the definitions' own contract (shared.js), so a
+  // newly registered tool is styled correctly with no edit here.
+  const domainAxes = {};
+  for (const d of (instrument && instrument.domains) || []) {
+    domainLabels[d.id] = d.shortLabel || d.name || d.id;
+    domainAxes[d.id] = (d.judgment && d.judgment.axis) || 'rob';
+  }
 
   const applicIds = ((instrument && instrument.domains) || [])
     .filter(d => d.applicability).map(d => d.id);
+
+  // r2 review finding 3 — `overall: null` means the instrument PRESCRIBES NO
+  // OVERALL JUDGEMENT (QUADAS-2 reports per domain and defines no summary rating).
+  // Rendering an "Overall judgement" diff row for it invents a judgement the tool
+  // does not have. When the instrument cannot be resolved at all we keep the old
+  // behaviour and show the row, because the rows may still carry an overall.
+  const overallScale = instrument ? overallScaleOf(instrument) : 'rob';
+  const hasOverall = overallScale != null;
+  const overallAxis = (instrument && instrument.overall && instrument.overall.axis) || 'rob';
 
   const dDiffs = domainDiff(independent, domainIds);
   const aDiffs = applicIds.length ? domainDiff(independent, applicIds, { field: 'applicability' }) : [];
   const oDiff = overallDiff(independent);
   const items = itemDiffRows((payload && payload.disagreements) || [], independent);
-  const conflictCount = dDiffs.filter(d => d.conflict).length + (oDiff.conflict ? 1 : 0)
+  const conflictCount = dDiffs.filter(d => d.conflict).length + (hasOverall && oDiff.conflict ? 1 : 0)
     + aDiffs.filter(d => d.conflict).length + items.length;
+  // r2 review finding 6 — how much was ACTUALLY compared. "The reviewers agree on
+  // every recorded judgement" is a finding, and a finding needs a denominator: with
+  // nothing compared it is vacuously true and reads as a clean bill of health.
+  const comparedCount = dDiffs.filter(d => d.recordedCount >= 2).length
+    + aDiffs.filter(d => d.recordedCount >= 2).length
+    + ((hasOverall && oDiff.recordedCount >= 2) ? 1 : 0)
+    + Number((payload && payload.agreement && payload.agreement.comparedQuestions) || 0);
 
   const title = instrumentLabel || (instrument && instrument.abbreviation) || instrumentId;
 
@@ -218,19 +272,44 @@ export default function ReviewerComparisonPanel({
 
       {unlocked && !loading && (
         <>
-          <div style={{
-            display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10,
-            fontSize: 12, color: conflictCount ? C.yel : C.grn, fontWeight: 700,
-          }}>
-            <Icon name={conflictCount ? 'alertTriangle' : 'circleCheck'} size={13} />
-            {conflictCount
-              ? `${conflictCount} difference${conflictCount === 1 ? '' : 's'} between the reviewers`
-              : 'The reviewers agree on every recorded judgement and item.'}
-          </div>
+          {/* r2 review finding 7 — the item-level comparison comes from the API. If
+              that request failed we know nothing about item agreement, so the panel
+              says so and offers a retry instead of asserting that the reviewers
+              "agree on every recorded judgement and item" on the strength of a
+              payload it never received. */}
+          {loadError ? (
+            <div role="alert" style={{
+              display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', marginBottom: 10,
+              padding: '9px 11px', borderRadius: 8, fontSize: 12, lineHeight: 1.5,
+              color: C.red, background: alpha(C.red, '10'), border: `1px solid ${alpha(C.red, '40')}`,
+            }}>
+              <Icon name="alertTriangle" size={13} />
+              <span style={{ flex: 1, minWidth: 160 }}>
+                {loadError} The item-level comparison and the agreement summary are unavailable —
+                the domain and overall columns below come from the assessment list, not from this request.
+              </span>
+              <button type="button" onClick={retryComparison} style={miniBtn}>Retry</button>
+            </div>
+          ) : (
+            <div style={{
+              display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10,
+              fontSize: 12, color: conflictCount ? C.yel : comparedCount ? C.grn : C.muted, fontWeight: 700,
+            }}>
+              <Icon name={conflictCount ? 'alertTriangle' : comparedCount ? 'circleCheck' : 'minus'} size={13} />
+              {conflictCount
+                ? `${conflictCount} difference${conflictCount === 1 ? '' : 's'} between the reviewers`
+                : comparedCount
+                  ? 'The reviewers agree on every recorded judgement and item.'
+                  : 'Nothing has been compared yet — no judgement or item has been recorded by two reviewers.'}
+            </div>
+          )}
 
           <DiffTable
             heading="Domain judgements"
-            rowsMeta={dDiffs.map(d => ({ key: d.domainId, label: domainLabels[d.domainId] || d.domainId, ...d }))}
+            rowsMeta={dDiffs.map(d => ({
+              key: d.domainId, label: domainLabels[d.domainId] || d.domainId,
+              axis: domainAxes[d.domainId] || 'rob', ...d,
+            }))}
             reviewers={independent}
             consensusRow={consensus}
             consensusField="domainJudgments"
@@ -247,17 +326,32 @@ export default function ReviewerComparisonPanel({
             />
           )}
 
-          <DiffTable
-            heading="Overall"
-            rowsMeta={[{ key: '__overall', label: 'Overall judgement', ...oDiff }]}
-            reviewers={independent}
-            consensusRow={consensus}
-            consensusField="__overall"
-          />
+          {hasOverall ? (
+            <DiffTable
+              heading="Overall"
+              axis={overallAxis}
+              rowsMeta={[{ key: '__overall', label: overallLabelFor(overallAxis), ...oDiff }]}
+              reviewers={independent}
+              consensusRow={consensus}
+              consensusField="__overall"
+            />
+          ) : (
+            <div style={{ marginTop: 12 }}>
+              <div style={sectionHead}>Overall</div>
+              <p style={{ margin: 0, fontSize: 11.5, color: C.muted, lineHeight: 1.55 }}>
+                {title} prescribes no overall judgement — the per-domain judgements above are the
+                complete result, so there is nothing to reconcile here.
+              </p>
+            </div>
+          )}
 
           <div style={{ marginTop: 14 }}>
             <div style={sectionHead}>Item-level differences</div>
-            {items.length === 0 ? (
+            {loadError ? (
+              <p style={{ margin: 0, fontSize: 11.5, color: C.muted }}>
+                Not loaded — retry above to compare the reviewers&rsquo; item answers.
+              </p>
+            ) : items.length === 0 ? (
               <p style={{ margin: 0, fontSize: 11.5, color: C.muted }}>
                 No item both reviewers answered was answered differently.
               </p>
@@ -344,6 +438,13 @@ export default function ReviewerComparisonPanel({
 
 /* ── the reusable diff table ────────────────────────────────────────────────── */
 
+/** What the overall row is actually called on its own axis. */
+function overallLabelFor(axis) {
+  if (axis === 'confidence') return 'Overall confidence';
+  if (axis === 'appraisal-decision' || axis === 'decision') return 'Appraisal decision';
+  return 'Overall judgement';
+}
+
 function DiffTable({ heading, rowsMeta, reviewers, consensusRow, consensusField, axis = 'rob' }) {
   if (!rowsMeta || !rowsMeta.length) return null;
   const consensusValue = (meta) => {
@@ -365,20 +466,27 @@ function DiffTable({ heading, rowsMeta, reviewers, consensusRow, consensusField,
             </tr>
           </thead>
           <tbody>
-            {rowsMeta.map(meta => (
-              <tr key={meta.key}
-                style={{
-                  borderBottom: `1px solid ${alpha(C.brd, '80')}`,
-                  background: meta.conflict ? alpha(C.yel, '08') : 'transparent',
-                }}>
-                <td style={{ ...td, fontSize: 12, color: C.txt }}>{meta.label}</td>
-                {reviewers.map(r => (
-                  <td key={r.id} style={td}><Chip level={meta.values[r.id]} axis={axis} /></td>
-                ))}
-                {consensusRow && <td style={td}><Chip level={consensusValue(meta)} axis={axis} /></td>}
-                <td style={td}><ConflictFlag on={meta.conflict} /></td>
-              </tr>
-            ))}
+            {rowsMeta.map((meta) => {
+              // The COLUMN's own axis wins over the table default, so a mixed
+              // instrument (one confidence domain among risk domains) is still
+              // coloured per column rather than per table. The consensus cell and
+              // the reviewer cells always share it — they are the same judgement.
+              const cellAxis = meta.axis || axis;
+              return (
+                <tr key={meta.key}
+                  style={{
+                    borderBottom: `1px solid ${alpha(C.brd, '80')}`,
+                    background: meta.conflict ? alpha(C.yel, '08') : 'transparent',
+                  }}>
+                  <td style={{ ...td, fontSize: 12, color: C.txt }}>{meta.label}</td>
+                  {reviewers.map(r => (
+                    <td key={r.id} style={td}><Chip level={meta.values[r.id]} axis={cellAxis} /></td>
+                  ))}
+                  {consensusRow && <td style={td}><Chip level={consensusValue(meta)} axis={cellAxis} /></td>}
+                  <td style={td}><ConflictFlag on={meta.conflict} recorded={meta.recordedCount} /></td>
+                </tr>
+              );
+            })}
           </tbody>
         </table>
       </div>

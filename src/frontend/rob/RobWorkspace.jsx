@@ -41,6 +41,42 @@ const KEY_TO_RESPONSE = { 1: 'Y', 2: 'PY', 3: 'PN', 4: 'N', 5: 'NI' };
 const RESPONSE_LABELS = { Y: 'Yes', PY: 'Probably yes', PN: 'Probably no', N: 'No', NI: 'No information' };
 const DOMAIN_IDS = ROB2.domains.map(d => d.id);
 
+/* ── the autosave queue's two decisions, as pure predicates (r2 review #5) ──────
+ * Both live outside the component so they can be unit-tested without a browser —
+ * they are the rules that decide what reaches the server and what stays on the
+ * queue, and both of them were wrong in ways no rendering test could catch.
+ */
+
+/**
+ * Is there an ANSWER to send for this question?
+ *
+ * A queued question with no recorded response is a META-ONLY edit (a rationale or
+ * an evidence quote typed before the item was answered). It has nothing to persist
+ * as a `response`, and inventing one — the old `response || 'NA'` — either 400s
+ * forever (QUADAS-2 / QUIPS / AMSTAR 2 have no 'NA') or records a fabricated
+ * "Not applicable" (JBI / PROBAST, which do).
+ */
+export function hasSavedResponse(response) {
+  if (Array.isArray(response)) return response.length > 0;
+  return !!response;
+}
+
+/**
+ * Should a failed save go back on the queue?
+ *
+ * Only if retrying could plausibly succeed. A 4xx is the server's verdict on this
+ * exact payload and will not change on a resend, so re-queueing it poisons the
+ * queue: the rejected item is retried on every later keystroke and takes every
+ * subsequent edit down with it. 408 (timeout) and 429 (rate limit) are 4xx codes
+ * that DO clear on their own, so they stay retryable; a fetch that never got a
+ * status at all (offline, DNS, aborted) has `status === 0` and is retryable too.
+ */
+export function isRetryableSaveError(err) {
+  const status = Number(err && err.status) || 0;
+  if (status === 408 || status === 429) return true;
+  return !(status >= 400 && status < 500);
+}
+
 function usePrefersReducedMotion() {
   const [reduced, setReduced] = useState(() => {
     try { return window.matchMedia('(prefers-reduced-motion: reduce)').matches; } catch { return false; }
@@ -677,17 +713,27 @@ export default function RobWorkspace({ assessmentId, onClose, onChanged, onConti
     for (const qid of qids) {
       const domainId = instrument.domains.find(d => d.questions.some(q => q.id === qid))?.id;
       // Meta-only (rationale/evidence) edits must NOT wipe the saved answer: read
-      // the CURRENT response from answersRef (always fresh — never a stale closure);
-      // default to 'NA' only when the question is genuinely unanswered.
+      // the CURRENT response from answersRef (always fresh — never a stale closure).
       const response = batch.answers[qid] !== undefined
         ? batch.answers[qid]
         : ((answersRef.current[domainId] || {})[qid] || '');
-      // 101.md §21 — a NOS selection travels as its array of option values (the
-      // server owns the column encoding and rejects an empty one, so an unanswered
-      // item is skipped rather than sent). Single-code instruments keep the exact
-      // old path, including the 'NA' default.
-      if (Array.isArray(response) && !response.length) continue;
-      const item = { questionId: qid, response: Array.isArray(response) ? nosResponsePayload(response) : (response || 'NA') };
+      // r2 review finding 5 — this line used to end `: (response || 'NA')`, i.e. a
+      // rationale typed against an as-yet-UNANSWERED question was sent as the
+      // answer "NA". That was wrong twice over:
+      //   · on QUADAS-2 / QUIPS / AMSTAR 2, whose answer sets contain no 'NA', the
+      //     server rejects it with a 400 — and the catch below re-queued the batch,
+      //     so the same rejected item retried forever and blocked every LATER edit
+      //     to the assessment;
+      //   · on JBI / PROBAST, which DO accept 'NA', it silently recorded the
+      //     fabricated answer "Not applicable" for an item the reviewer had only
+      //     written a note against.
+      // So an item with nothing to record as a response is skipped — the same rule
+      // 101.md §21 already applied to an emptied Newcastle-Ottawa selection. The
+      // note stays in local state and is persisted with the answer as soon as the
+      // reviewer records one (the API has no rationale-only patch; adding one is a
+      // server change, not this one).
+      if (!hasSavedResponse(response)) continue;
+      const item = { questionId: qid, response: Array.isArray(response) ? nosResponsePayload(response) : response };
       const mm = batch.meta[qid];
       if (mm) {
         item.rationale = mm.rationale ?? '';
@@ -698,7 +744,7 @@ export default function RobWorkspace({ assessmentId, onClose, onChanged, onConti
       }
       items.push(item);
     }
-    // Everything in the batch was an un-answered NOS item — nothing to persist.
+    // Everything in the batch was an un-answered item — nothing to persist.
     if (!items.length) return;
     if (mounted.current) setSaveState('saving');
     try {
@@ -711,11 +757,31 @@ export default function RobWorkspace({ assessmentId, onClose, onChanged, onConti
       }
       onChanged && onChanged();
     } catch (e) {
-      // Re-queue the un-saved batch (newer edits win) so the next change retries it
-      // instead of silently dropping the failed edits.
-      pending.current.answers = { ...batch.answers, ...pending.current.answers };
-      pending.current.meta = { ...batch.meta, ...pending.current.meta };
-      if (mounted.current) { setSaveState('error'); setError(e.message); }
+      // r2 review finding 5 — RE-QUEUE ONLY WHAT RETRYING CAN FIX.
+      //
+      // Re-queueing unconditionally turned any permanently-rejected item into a
+      // poison pill: the batch went back on the queue, the next keystroke resent
+      // it, the server rejected it again, and every subsequent edit to the
+      // assessment rode along and failed with it — silently, because the reviewer
+      // only ever sees one "save failed" chip.
+      //
+      // A 4xx is the server's considered verdict on THIS payload (invalid
+      // response code, finalised assessment, lost permission, deleted row); it
+      // will not become valid by being sent again, so the item is DROPPED and the
+      // reason is made visible. Everything else — a network drop, a 5xx, a
+      // timeout, a rate limit — is transient and is re-queued exactly as before
+      // (newer edits still win).
+      const permanent = !isRetryableSaveError(e);
+      if (!permanent) {
+        pending.current.answers = { ...batch.answers, ...pending.current.answers };
+        pending.current.meta = { ...batch.meta, ...pending.current.meta };
+      }
+      if (mounted.current) {
+        setSaveState('error');
+        setError(permanent
+          ? `${e.message} — ${items.length} edit${items.length === 1 ? '' : 's'} could not be saved and ${items.length === 1 ? 'was' : 'were'} discarded. Reload the assessment before continuing.`
+          : e.message);
+      }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [assessmentId, onChanged, instrument]);

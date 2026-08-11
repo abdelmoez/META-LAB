@@ -5,6 +5,8 @@
  * confidence, thin-text warnings, and feeding BOTH instruments' algorithms.
  */
 import { describe, it, expect } from 'vitest';
+import { hasAppraisalCues, APPRAISAL_INSTRUMENT_IDS } from '../../src/research-engine/rob/appraisal.js';
+import { instrumentIds as allInstrumentIds } from '../../src/research-engine/rob/engine.js';
 import { appraiseFromText } from '../../src/research-engine/rob/index.js';
 
 const Q = (res, domainId, questionId) =>
@@ -128,5 +130,49 @@ describe('appraiseFromText — feeds the instrument algorithm (one source of tru
   it('defaults to RoB 2 when no instrument is given', () => {
     const r = appraiseFromText({ text: 'Patients were randomly assigned.' });
     expect(r.instrumentId).toBe('RoB2');
+  });
+});
+
+// ── Cue COVERAGE is a hard gate, not a warning ────────────────────────────────
+// The appraiser is a cue-phrase matcher with a hand-written table per instrument.
+// Run against a tool with no table, every question falls through to the "No
+// information" default — and the result is not a thin appraisal but a fabricated
+// one: 'NI' is off-vocabulary for most of the 2026 set, so the suggestions are not
+// even storable answers, and feeding that clean sweep to the instrument's own
+// algorithm makes it propose a judgement from ZERO evidence.
+describe('guided appraisal — cue coverage', () => {
+  it('covers exactly RoB 2 and ROBINS-I today', () => {
+    expect([...APPRAISAL_INSTRUMENT_IDS].sort()).toEqual(['ROBINS-I', 'RoB2']);
+    expect(hasAppraisalCues('RoB2')).toBe(true);
+    expect(hasAppraisalCues('ROBINS-I')).toBe(true);
+  });
+
+  it('is false for every other registered instrument', () => {
+    const uncovered = allInstrumentIds().filter(id => !APPRAISAL_INSTRUMENT_IDS.includes(id));
+    expect(uncovered.length).toBeGreaterThan(0);
+    for (const id of uncovered) expect(hasAppraisalCues(id), id).toBe(false);
+  });
+
+  it('accepts an instrument OBJECT as well as an id, and never throws', () => {
+    expect(hasAppraisalCues({ id: 'RoB2' })).toBe(true);
+    expect(hasAppraisalCues({ id: 'QUADAS-2' })).toBe(false);
+    expect(hasAppraisalCues(null)).toBe(false);
+    expect(hasAppraisalCues(undefined)).toBe(false);
+    expect(hasAppraisalCues('')).toBe(false);
+    expect(hasAppraisalCues('constructor')).toBe(false);   // no prototype leak
+  });
+
+  it('shows WHY an uncovered tool must be refused rather than appraised', () => {
+    // Nothing here matches a QUADAS-2 cue, because there are none. Every question
+    // comes back 'NI' — a response QUADAS-2 does not even define…
+    const r = appraiseFromText({
+      instrument: 'QUADAS-2',
+      text: 'A consecutive sample of patients underwent the index test and the reference standard.',
+    });
+    const answers = r.domains.flatMap(d => d.questions.map(q => q.suggestedResponse));
+    expect(new Set(answers)).toEqual(new Set(['NI']));
+    // …and the instrument dutifully proposes a judgement off the back of it.
+    expect(r.domains.every(d => d.questions.every(q => q.evidenceQuote === null))).toBe(true);
+    expect(r.warnings.some(w => w.type === 'no-evidence')).toBe(true);
   });
 });

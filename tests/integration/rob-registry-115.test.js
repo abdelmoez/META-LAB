@@ -98,7 +98,7 @@ beforeAll(async () => {
     const list = await api('/rob/instruments', { cookie: ownerCookie });
     catalogue = (list.status === 200 && Array.isArray(list.data?.instruments)) ? list.data.instruments : [];
 
-    for (const key of ['registry', 'stamp', 'vocabRob2', 'vocabNos', 'recommend', 'toolChange', 'deleted', 'regress', 'regressNos', 'consensus', 'applicability', 'computedOverall', 'overallApplic']) {
+    for (const key of ['registry', 'stamp', 'vocabRob2', 'vocabNos', 'recommend', 'toolChange', 'deleted', 'regress', 'regressNos', 'consensus', 'applicability', 'computedOverall', 'overallApplic', 'evalType', 'robvis', 'fullyJudged']) {
       const created = await api(`/rob/projects/${projectId}/manual-studies`, {
         method: 'POST', cookie: ownerCookie,
         body: { title: `115 ${key} study ${TS}`, authors: 'Seed', year: '2024' },
@@ -200,6 +200,18 @@ describe('115 — instrumentVersion / variant come from the DEFINITION only', ()
           instrumentVersion: '1999-forged', variant: 'forged-variant',
         },
       });
+      // 115.md r2 — the INVARIANT is "a forged value is never stored", and there
+      // are now two honest ways to enforce it. A tool that offers the reviewer no
+      // variant choice DISCARDS the field (there is nothing to choose, so it is
+      // noise, exactly like the forged instrumentVersion beside it). A tool that
+      // declares `evaluationTypes` (PROBAST's Dev / Val / Dev+Val) treats the
+      // variant as a real methodological claim and REJECTS an undeclared value by
+      // name rather than quietly substituting its default.
+      if ((tool.evaluationTypes || []).length) {
+        expect(created.status, tool.id).toBe(400);
+        expect(String(created.data.error), tool.id).toMatch(/Invalid variant: forged-variant/);
+        continue;
+      }
       expect(created.status, tool.id).toBe(201);
       const view = created.data.assessment;
       expect(view.instrumentVersion, tool.id).toBe(tool.instrumentVersion);
@@ -207,6 +219,25 @@ describe('115 — instrumentVersion / variant come from the DEFINITION only', ()
       expect(view.variant).toBe(tool.variant);
       expect(view.variant).not.toBe('forged-variant');
     }
+  });
+
+  // …and the branch above is not a hole: on the one tool that DOES take a variant,
+  // the version is still server-stamped and a forged one still discarded.
+  it('stamps the definition version on a PROBAST row created with a legal variant', async () => {
+    if (!up || !adminCookie || !projectId || !catalogue.length) return;
+    const probast = catalogue.find(t => t.id === 'PROBAST');
+    if (!probast) return;
+    const created = await api('/rob/assessments', {
+      method: 'POST', cookie: ownerCookie,
+      body: {
+        projectId, studyId: study.stamp, instrumentId: 'PROBAST',
+        instrumentVersion: '1999-forged', variant: 'validation',
+      },
+    });
+    expect(created.status, JSON.stringify(created.data)).toBe(201);
+    expect(created.data.assessment.instrumentVersion).toBe(probast.instrumentVersion);
+    expect(created.data.assessment.instrumentVersion).not.toBe('1999-forged');
+    expect(created.data.assessment.variant).toBe('validation');
   });
 });
 
@@ -324,13 +355,32 @@ describe('115 — the definition owns the response vocabulary', () => {
     const id = created.data.assessment.id;
     expect(created.data.assessment.overallLevels).toEqual(['high', 'moderate', 'low', 'critically-low']);
 
-    // Two CRITICAL flaws (items 2 and 7 answered "No") → "critically low".
-    const ans = await api(`/rob/assessments/${id}/answers`, {
+    // Box 2 counts weaknesses across the WHOLE checklist, so a partly-answered
+    // form proposes NOTHING. This used to rate a three-item form 'critically-low',
+    // and — worse — rated a BLANK one 'high', the tool's best rating, at creation.
+    expect(created.data.assessment.overall.proposedOverall).toBe('');
+    const partial = await api(`/rob/assessments/${id}/answers`, {
       method: 'PUT',
       cookie: ownerCookie,
       body: { answers: [{ questionId: '2', response: 'N' }, { questionId: '7', response: 'N' }, { questionId: '1', response: 'Y' }] },
     });
+    expect(partial.status, JSON.stringify(partial.data)).toBe(200);
+    expect(partial.data.assessment.overall.proposedOverall).toBe('');
+
+    // Answer all sixteen — two CRITICAL flaws (items 2 and 7) → "critically low".
+    const items = (created.data.assessment.domains || []).length
+      ? Object.keys(created.data.assessment.completeness.perDomain)
+      : [];
+    expect(items).toContain('items');
+    const all = Array.from({ length: 16 }, (_, i) => ({
+      questionId: String(i + 1),
+      response: (i + 1 === 2 || i + 1 === 7) ? 'N' : 'Y',
+    }));
+    const ans = await api(`/rob/assessments/${id}/answers`, {
+      method: 'PUT', cookie: ownerCookie, body: { answers: all },
+    });
     expect(ans.status, JSON.stringify(ans.data)).toBe(200);
+    expect(ans.data.assessment.completeness.overall.complete).toBe(true);
     expect(ans.data.assessment.overall.proposedOverall).toBe('critically-low');
 
     // …and it is READ BACK from the row, not recomputed only for the response.
@@ -391,6 +441,126 @@ describe('115 — the definition owns the response vocabulary', () => {
       body: { target: 'domain', domainId: 'D1', finalJudgment: 'include', justification: 'x' },
     });
     expect(res.status).toBe(400);
+  });
+});
+
+// ── 3b. The r2 adversarial-review fixes ───────────────────────────────────────
+describe('115 r2 — the evaluation type is a real, restricted choice', () => {
+  it('stamps a client-chosen PROBAST evaluation type and rejects anything else', async () => {
+    if (!up || !adminCookie || !projectId) return;
+    if (!catalogue.find(t => t.id === 'PROBAST') || !study.evalType) return;
+
+    // The catalogue advertises the closed set, so a picker needs no hardcoded list.
+    const probast = catalogue.find(t => t.id === 'PROBAST');
+    expect((probast.evaluationTypes || []).map(t => t.value))
+      .toEqual(['development', 'validation', 'development-and-validation']);
+    for (const t of catalogue.filter(x => x.id !== 'PROBAST')) {
+      expect(t.evaluationTypes, t.id).toEqual([]);
+    }
+
+    const dev = await api('/rob/assessments', {
+      method: 'POST', cookie: ownerCookie,
+      body: { projectId, studyId: study.evalType, instrumentId: 'PROBAST', variant: 'development' },
+    });
+    expect(dev.status, JSON.stringify(dev.data)).toBe(201);
+    expect(dev.data.assessment.variant).toBe('development');
+
+    // An undeclared value is refused BY NAME — never silently coerced, because the
+    // variant is a methodological claim about what was appraised.
+    const bad = await api('/rob/assessments', {
+      method: 'POST', cookie: ownerCookie,
+      body: { projectId, studyId: study.evalType, instrumentId: 'PROBAST', variant: 'made-up' },
+    });
+    expect(bad.status).toBe(400);
+    expect(String(bad.data.error)).toMatch(/Invalid variant: made-up/);
+
+    // A tool that offers no choice still DISCARDS a client variant (the
+    // definition-owns-provenance rule pinned in §2 above), so a forged value can
+    // never be stored on any instrument, whichever branch it takes.
+    const rob2 = await api('/rob/assessments', {
+      method: 'POST', cookie: ownerCookie,
+      body: { projectId, studyId: study.evalType, instrumentId: 'RoB2', variant: 'development' },
+    });
+    expect(rob2.status, JSON.stringify(rob2.data)).toBe(201);
+    expect(rob2.data.assessment.variant).toBe('assignment');
+  });
+});
+
+describe('115 r2 — robvis refuses the tools it cannot label', () => {
+  it('refuses AMSTAR 2 rather than inverting its confidence rating into a risk', async () => {
+    if (!up || !adminCookie || !projectId || !study.robvis) return;
+    if (!catalogue.find(t => t.id === 'AMSTAR-2')) return;
+    const created = await api('/rob/assessments', {
+      method: 'POST', cookie: ownerCookie,
+      body: { projectId, studyId: study.robvis, instrumentId: 'AMSTAR-2' },
+    });
+    expect(created.status, JSON.stringify(created.data)).toBe(201);
+    const id = created.data.assessment.id;
+
+    const rv = await api(`/rob/assessments/${id}/export?format=robvis`, { cookie: ownerCookie });
+    expect(rv.status).toBe(400);
+    expect(String(rv.data.error)).toMatch(/robvis/i);
+
+    // The CSV export still works, and it NAMES THE RIGHT TOOL: this used to
+    // download as `robins-i_<studyId>.csv`.
+    const csv = await api(`/rob/assessments/${id}/export?format=csv`, { cookie: ownerCookie });
+    if (csv.status === 200) {
+      expect(csv.data.filename.startsWith('amstar-2_')).toBe(true);
+      expect(csv.data.filename).not.toContain('robins-i');
+    }
+  });
+});
+
+describe('115 r2 — finalising requires the tool to be FULLY JUDGED', () => {
+  it('refuses a QUADAS-2 assessment whose items are answered but nothing is judged', async () => {
+    if (!up || !adminCookie || !projectId || !study.fullyJudged) return;
+    if (!catalogue.find(t => t.id === 'QUADAS-2')) return;
+
+    const created = await api('/rob/assessments', {
+      method: 'POST', cookie: ownerCookie,
+      body: { projectId, studyId: study.fullyJudged, instrumentId: 'QUADAS-2' },
+    });
+    expect(created.status, JSON.stringify(created.data)).toBe(201);
+    const id = created.data.assessment.id;
+
+    // Answer every signalling question — 'N' so QUADAS-2 withholds its proposal and
+    // leaves the judgement to the reviewer, which is the whole point.
+    const inst = await api('/rob/instruments/quadas-2', { cookie: ownerCookie });
+    const answers = (inst.data.instrument.domains || []).flatMap(d => (d.questions || [])
+      .filter(q => q.answerable !== false)
+      .map(q => ({ questionId: q.id, response: 'N' })));
+    const put = await api(`/rob/assessments/${id}/answers`, { method: 'PUT', cookie: ownerCookie, body: { answers } });
+    expect(put.status, JSON.stringify(put.data)).toBe(200);
+    expect(put.data.assessment.completeness.overall.complete).toBe(true);
+
+    // Complete items, ZERO judgements — and 'complete' is what the dual-reviewer
+    // blind reads to decide the comparison may be revealed.
+    const early = await api(`/rob/assessments/${id}/finalise`, { method: 'POST', cookie: ownerCookie });
+    expect(early.status).toBe(400);
+    expect(Array.isArray(early.data.missingJudgments)).toBe(true);
+    expect(early.data.missingJudgments.length).toBe(7);   // 4 risk-of-bias + 3 applicability
+    expect(String(early.data.error)).toMatch(/not fully judged/i);
+
+    // Record every judgement the definition asks for…
+    for (const d of inst.data.instrument.domains) {
+      const r = await api(`/rob/assessments/${id}/override`, {
+        method: 'POST', cookie: ownerCookie,
+        body: { target: 'domain', domainId: d.id, finalJudgment: 'high', justification: 'signalling questions answered No' },
+      });
+      expect(r.status, JSON.stringify(r.data)).toBe(200);
+    }
+    for (const domainId of (inst.data.applicabilityDomainIds || [])) {
+      const r = await api(`/rob/assessments/${id}/override`, {
+        method: 'POST', cookie: ownerCookie,
+        body: { target: 'applicability', domainId, finalJudgment: 'low', justification: 'matches the review question' },
+      });
+      expect(r.status, JSON.stringify(r.data)).toBe(200);
+    }
+    // …and only now does it finalise. QUADAS-2 prescribes NO overall, so none is
+    // demanded — the predicate is the DEFINITION's, not a fixed checklist.
+    const ok = await api(`/rob/assessments/${id}/finalise`, { method: 'POST', cookie: ownerCookie });
+    expect(ok.status, JSON.stringify(ok.data)).toBe(200);
+    expect(ok.data.assessment.status).toBe('complete');
   });
 });
 

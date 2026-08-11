@@ -25,6 +25,9 @@ import { getInstrument, proposeDomain, proposeOverall, completeness } from '../.
 const items = AMSTAR2.domains[0].questions;
 const item = (id) => items.find((q) => q.id === id);
 
+/** A fully answered checklist — the only state AMSTAR 2 may be rated from. */
+const allYes = () => Object.fromEntries(items.map((q) => [q.id, 'Y']));
+
 describe('AMSTAR 2 structure', () => {
   it('has sixteen items, numbered 1-16', () => {
     expect(items).toHaveLength(16);
@@ -168,7 +171,9 @@ describe('AMSTAR 2 judgeOverall', () => {
   });
 
   it('rates from the engine per-domain proposal map', () => {
-    const answers = { 2: 'N', 7: 'N' };
+    const answers = allYes();
+    answers['2'] = 'N';
+    answers['7'] = 'N';
     const proposal = judgeDomain('items', answers);
     expect(proposal.flaws.criticalFlaws).toBe(2);
     expect(judgeOverall({ items: proposal }).judgment).toBe('critically-low');
@@ -178,6 +183,57 @@ describe('AMSTAR 2 judgeOverall', () => {
     const r = judgeOverall({});
     expect(r.judgment).toBe('');
     expect(r.reviewerJudged).toBe(true);
+  });
+
+  // ── The BLANK-FORM bug ────────────────────────────────────────────────────
+  // `judgeDomain` always attaches a `flaws` object, so `resolveCounts` always
+  // found counts and rateConfidence({0,0}) proposed HIGH — the tool's BEST rating
+  // — for an umbrella review nobody had appraised. Box 2 counts weaknesses across
+  // the WHOLE checklist, so nothing may be rated until every item is answered:
+  // an unanswered item is "not looked at", never "no weakness found".
+  describe('an incomplete checklist gets NO rating', () => {
+    it('proposes nothing for a blank form, through the domain proposal', () => {
+      const r = judgeOverall({ items: judgeDomain('items', {}) });
+      expect(r.judgment).toBe('');
+      expect(r.reviewerJudged).toBe(true);
+      expect(r.unanswered).toHaveLength(16);
+      expect(r.reasons.join(' ')).toMatch(/16 of the 16 AMSTAR 2 items are still unanswered/);
+    });
+
+    it('proposes nothing for a PARTLY answered form, however clean the answers', () => {
+      const partial = { 1: 'Y', 2: 'Y', 3: 'Y' };
+      expect(judgeOverall(partial).judgment).toBe('');
+      expect(judgeOverall({ items: judgeDomain('items', partial) }).judgment).toBe('');
+      // …and it still reports what it found so far, so a UI can show progress.
+      const r = judgeOverall(partial);
+      expect(r.criticalFlaws).toBe(0);
+      expect(r.unanswered).toHaveLength(13);
+    });
+
+    it('rates only once ALL sixteen items are answered', () => {
+      const answers = allYes();
+      expect(judgeOverall(answers).judgment).toBe('high');
+      // One item taken away is enough to withdraw the rating again.
+      delete answers['16'];
+      expect(judgeOverall(answers).judgment).toBe('');
+    });
+
+    it('counts a not-applicable response as ANSWERED (it is a printed option)', () => {
+      const answers = allYes();
+      answers['11'] = 'NMA';
+      answers['12'] = 'NMA';
+      answers['15'] = 'NMA';
+      const r = judgeOverall(answers);
+      expect(r.judgment).toBe('high');
+      expect(r.criticalFlaws).toBe(0);
+    });
+
+    it('still takes a BARE counts object at face value (rateConfidence\'s contract)', () => {
+      // A caller who has tallied the checklist themselves is stating the counts;
+      // there is no `unanswered` list to be load-bearing.
+      expect(judgeOverall({ criticalFlaws: 0, nonCriticalWeaknesses: 0 }).judgment).toBe('high');
+      expect(rateConfidence({ criticalFlaws: 0, nonCriticalWeaknesses: 0 }).judgment).toBe('high');
+    });
   });
 
   it('makes no per-item or per-domain judgement of its own', () => {
@@ -192,8 +248,16 @@ describe('AMSTAR 2 through the generic engine', () => {
   it('is registered and dispatches to the confidence rule', () => {
     const inst = getInstrument('AMSTAR-2');
     expect(inst.id).toBe('AMSTAR-2');
-    const proposals = { items: proposeDomain(inst, 'items', { 2: 'N', 4: 'N', 7: 'N' }) };
+    const answers = allYes();
+    Object.assign(answers, { 2: 'N', 4: 'N', 7: 'N' });
+    const proposals = { items: proposeDomain(inst, 'items', answers) };
     expect(proposeOverall(inst, proposals).judgment).toBe('critically-low');
+  });
+
+  it('the engine round-trip proposes nothing while items are unanswered', () => {
+    const inst = getInstrument('AMSTAR-2');
+    const proposals = { items: proposeDomain(inst, 'items', { 2: 'N', 4: 'N', 7: 'N' }) };
+    expect(proposeOverall(inst, proposals).judgment).toBe('');
   });
 
   it('completeness requires all sixteen items', () => {

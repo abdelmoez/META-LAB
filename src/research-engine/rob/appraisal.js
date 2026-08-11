@@ -188,6 +188,38 @@ const CUES = {
   },
 };
 
+/**
+ * The instruments the cue tables above actually cover, and the predicate every
+ * caller must consult BEFORE offering a guided appraisal.
+ *
+ * ── WHY THIS IS A HARD GATE, NOT A WARNING ──────────────────────────────────
+ * `appraiseQuestion` falls back to "No information" with 0.1 confidence when no
+ * cue matches, which is honest for a question the tables cover but miss. For an
+ * instrument with NO table at all every question takes that fallback, and the
+ * result is not a thin appraisal — it is a fabricated one:
+ *
+ *   · 'NI' is off-vocabulary for most of the 2026 tool set (QUADAS-2 answers
+ *     Yes/No/Unclear; the JBI checklists Yes/No/Unclear/Not applicable; AMSTAR 2
+ *     Yes/Partial Yes/No), so the suggestions would not even be storable answers;
+ *   · the instrument's own algorithm is then fed that full sweep of NI and duly
+ *     proposes a judgement from it — QUADAS-2 reads "no signalling question
+ *     answered No" and proposes LOW RISK OF BIAS from zero evidence.
+ *
+ * So a tool with no cue coverage must be REFUSED, the same way the Newcastle–
+ * Ottawa forms are: its items are assessed by a reviewer against the study text.
+ */
+export const APPRAISAL_INSTRUMENT_IDS = Object.freeze(Object.keys(CUES));
+
+/**
+ * True only when the appraiser has a cue table for this instrument (an id or a
+ * definition object). Total; never throws. Pure.
+ */
+export function hasAppraisalCues(instrument) {
+  const id = typeof instrument === 'string' ? instrument : (instrument && instrument.id);
+  if (typeof id !== 'string' || !Object.prototype.hasOwnProperty.call(CUES, id)) return false;
+  return Object.keys(CUES[id]).length > 0;
+}
+
 // ── Text handling ────────────────────────────────────────────────────────────
 
 /**

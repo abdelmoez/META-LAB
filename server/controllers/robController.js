@@ -23,7 +23,7 @@ import { canMutateAssessment, normaliseScreeningStudy, normaliseManualStudy } fr
 import { ROB_TOOLS, getRobTool, isStarScoredTool, toolsForStudyDesign } from '../../src/research-engine/rob/tools.js';
 import { sendTierLimit } from '../services/entitlementService.js';
 import { requireProjectExport, settleProjectExport, EXPORT_TYPES } from '../services/projectExportGuard.js';
-import { buildRobProjectCsv } from '../services/robExportService.js';
+import { buildRobProjectCsv, blindGroups } from '../services/robExportService.js';
 import {
   getInstrument,
   isScoringInstrument,
@@ -35,6 +35,8 @@ import {
   RESPONSES,
   // P14 — guided appraisal (deterministic text → suggested answers) + agreement.
   appraiseFromText,
+  hasAppraisalCues,
+  APPRAISAL_INSTRUMENT_IDS,
   ROB_APPRAISAL_VERSION,
   robDomainAgreement,
   // 101.md §18–§22 — Newcastle–Ottawa Scale: star scoring + the deliberately
@@ -253,10 +255,40 @@ export function allowedResponsesFor(instrument, domain, question) {
   return VALID_RESPONSES;
 }
 
-/** Valid DOMAIN judgement values (RoB2: low/some/high; ROBINS-I: 5 levels). Pure. */
+/**
+ * Valid DOMAIN judgement values (RoB2: low/some/high; ROBINS-I: 5 levels). Pure.
+ *
+ * ── THE INSTRUMENT-LEVEL FALLBACK IS FOR PRE-115 DEFINITIONS ONLY ───────────
+ * Mirrors src/frontend/rob/robProgress.js `domainJudgmentLevels`, deliberately, so
+ * the server and the workspace can never disagree about whether a tool rates its
+ * domains at all.
+ *
+ * On RoB 2 / ROBINS-I / NOS (no `overall` contract) `instrument.judgmentLevels` IS
+ * the per-domain vocabulary, and inheriting it is right. On a 115-shape definition
+ * the per-domain axis is declared explicitly on the DOMAIN (`domain.judgment`) and
+ * `instrument.judgmentLevels` means something else entirely — on AMSTAR 2 it is
+ * the OVERALL CONFIDENCE scale. Inheriting it there invented a per-domain
+ * judgement AMSTAR 2 does not make, with two live consequences: the override
+ * endpoint ACCEPTED `{domainId:'items', finalJudgment:'critically-low'}` as a
+ * domain rating, and the project list served a traffic-light `matrix` for a tool
+ * whose single domain is never rated.
+ *
+ * With no domain named the answer is "whatever this instrument's domains declare"
+ * — read off the domains rather than off the instrument, so QUADAS-2 / PROBAST /
+ * QUIPS still report their real Low/High/Unclear (or Low/Moderate/High) scale and
+ * AMSTAR 2 and the JBI checklists correctly report none.
+ */
 export function domainJudgmentLevels(instrument, domain) {
   const d = levelValues(domain && (domain.judgmentLevels || (domain.judgment && domain.judgment.levels)));
   if (d.length) return d;
+  if (instrument && 'overall' in instrument) {
+    if (domain) return [];
+    for (const dd of (instrument.domains || [])) {
+      const own = levelValues(dd.judgmentLevels || (dd.judgment && dd.judgment.levels));
+      if (own.length) return own;
+    }
+    return [];
+  }
   const i = levelValues(instrument && (instrument.judgmentLevels
     || (instrument.domainJudgment && instrument.domainJudgment.levels)));
   return i;
@@ -402,6 +434,22 @@ export function overallApplicabilityLevels(instrument) {
 }
 
 /**
+ * True when an assessment cannot be considered FULLY JUDGED without an overall
+ * value. False when the tool prescribes no overall at all (QUADAS-2), and false
+ * when its definition marks the overall as NOT an output of the tool — QUIPS
+ * declares `official: false` because Hayden 2013 defines no overall algorithm and
+ * any value is the review team's own summary rule, so demanding one to finalise
+ * would force a reviewer to invent an unofficial rating. Pure.
+ */
+export function overallIsRequired(instrument) {
+  const levels = overallLevelsFor(instrument);
+  if (levels === null || !levels.length) return false;
+  const ov = instrument && instrument.overall;
+  if (ov && ov.official === false) return false;
+  return true;
+}
+
+/**
  * True when the instrument's OVERALL rule needs more than the resolved level
  * STRINGS of its domains. Two of the thirteen do, and both say so by declaring a
  * computed overall contract (pinned by tests/unit/robInstrumentRegistry.test.js):
@@ -449,6 +497,78 @@ function instrumentVersionOf(instrument) {
 /** The variant stamped onto a new row — ALWAYS from the definition ('' when none). */
 function variantOf(instrument) {
   return String((instrument && instrument.variant) ?? '');
+}
+
+// ── The EVALUATION TYPE (PROBAST) — a reviewer choice, not a definition constant ─
+// PROBAST is completed once per evaluation of a DISTINCT model, and its answer grid
+// has two columns: "Dev" (development) and "Val" (validation). Which of the three
+// cases an assessment covers is a fact about the STUDY, not about the tool, and it
+// is load-bearing for the Step 4 rule: a model developed with NO external
+// validation that scores low in every domain must be considered for downgrading to
+// high risk of bias. Hard-coding `development-and-validation` (the definition's
+// default) made that official caveat unreachable — a development-only model always
+// came back a clean "Low".
+//
+// The 101.md Newcastle–Ottawa precedent is adapted rather than reinvented: the NOS
+// discriminates its two forms through the EXISTING `RobAssessment.variant` column,
+// so the evaluation type lands in the same column. No schema change, no id change,
+// no new instrument. The difference from the NOS is only WHO chooses: the NOS form
+// is implied by the instrument id, so its variant stays definition-stamped, while
+// PROBAST's is a per-assessment reviewer choice — which is why the definition has
+// to declare the closed set of legal values (`evaluationTypes`) and the server
+// accepts a client value ONLY from that set.
+
+/** The evaluation-type VALUES a definition declares ([] when it declares none). Pure. */
+export function evaluationTypeValues(instrument) {
+  return levelValues(instrument && instrument.evaluationTypes);
+}
+
+/**
+ * The variant to stamp on a new row, given what the client asked for.
+ *   { ok:true, variant }        — use this value
+ *   { ok:false, error }         — reject by name
+ *
+ * Two cases, and the difference between them is whether the definition offers the
+ * reviewer a CHOICE at all:
+ *
+ *   · No `evaluationTypes` (twelve of the thirteen tools). The variant is a
+ *     property of the definition — RoB 2's 'assignment', the NOS form implied by
+ *     the instrument id — so a client-supplied one is meaningless noise and is
+ *     DISCARDED, exactly as a client-supplied `instrumentVersion` already is
+ *     (115.md build item 1: provenance fields are server-stamped, and the
+ *     integration suite pins that a forged pair is ignored rather than honoured).
+ *   · `evaluationTypes` declared (PROBAST). Now the variant IS a reviewer choice
+ *     and a methodological claim about what was appraised, so it is honoured — and
+ *     an undeclared value is REJECTED BY NAME rather than quietly replaced with the
+ *     default, because silently turning a reviewer's "development" into
+ *     "development and validation" is precisely the mislabelling this rule exists
+ *     to prevent (and it would switch off the Step 4 downgrade caveat).
+ *
+ * `requested` empty/absent → the definition's own variant, exactly as before. Pure.
+ */
+export function variantToStamp(instrument, requested) {
+  const types = evaluationTypeValues(instrument);
+  const want = requested == null ? '' : String(requested).trim();
+  if (!want || !types.length) return { ok: true, variant: variantOf(instrument) };
+  if (!types.includes(want)) {
+    return { ok: false, error: `Invalid variant: ${want}. Allowed: ${types.join(', ')}` };
+  }
+  return { ok: true, variant: want };
+}
+
+/**
+ * The extra context an instrument's OVERALL rule needs beyond the domain
+ * judgements — the PROBAST evaluation type, and nothing else today. Returns
+ * undefined for every instrument that declares no `evaluationTypes`, so the other
+ * twelve algorithms are called exactly as before. A row whose stored variant is not
+ * one of the declared values (legacy or hand-edited) falls back to the definition's
+ * own variant rather than silently disabling the caveat. Pure.
+ */
+export function overallOptionsFor(instrument, variant) {
+  const types = evaluationTypeValues(instrument);
+  if (!types.length) return undefined;
+  const v = String(variant == null ? '' : variant);
+  return { evaluationType: types.includes(v) ? v : variantOf(instrument) };
 }
 
 // ── NOS persistence boundary (101.md §18/§21) ─────────────────────────────────
@@ -778,8 +898,13 @@ function answersByDomainFrom(instrument, answers) {
  * Recompute every PROPOSED judgement from the current answers and persist them,
  * PRESERVING any human override (final + overridden). Returns the fresh proposals.
  * `instrument` is the assessment's instrument (RoB2 default).
+ *
+ * `variant` is the ROW's stored variant, needed only by an instrument whose overall
+ * rule reads it (PROBAST's development-only downgrade caveat). Every caller has the
+ * row in hand, so it is passed rather than re-queried; omitting it falls back to the
+ * definition's own variant, which is what every pre-115 row carries anyway.
  */
-async function recomputeAndPersist(assessmentId, instrument = getInstrument('RoB2')) {
+async function recomputeAndPersist(assessmentId, instrument = getInstrument('RoB2'), variant) {
   const answers = await prisma.robAnswer.findMany({ where: { assessmentId } });
   const abd = answersByDomainFrom(instrument, answers);
   const proposals = proposeAllDomains(instrument, abd); // { D1:{judgment,reasons}, ... }
@@ -835,7 +960,7 @@ async function recomputeAndPersist(assessmentId, instrument = getInstrument('RoB
       ...(ap ? { applicability: ap } : {}),
     };
   }
-  const overall = proposeOverall(instrument, resolvedByDomain);
+  const overall = proposeOverall(instrument, resolvedByDomain, overallOptionsFor(instrument, variant));
   // multiSomeConcernsFlag is RoB2-specific; ROBINS-I overall returns no such flag →
   // coerce to a real boolean (false) so the non-nullable column is always set.
   const multiFlag = !!overall.multiSomeConcernsFlag;
@@ -955,7 +1080,7 @@ async function buildView(assessmentId) {
       ...(ap ? { applicability: ap } : {}),
     };
   }
-  const overallProp = proposeOverall(inst, resolvedByDomain);
+  const overallProp = proposeOverall(inst, resolvedByDomain, overallOptionsFor(inst, a.variant));
   const overallProposed = overallJudgmentToPersist(inst, overallProp.judgment, { star });
   const ov = a.overall || {};
   const overall = {
@@ -966,6 +1091,11 @@ async function buildView(assessmentId) {
     overridden: !!ov.overridden,
     overrideJustification: ov.overrideJustification || null,
     resolvedOverall: (ov.overridden && ov.finalOverall) ? ov.finalOverall : overallProposed,
+    // 115.md — PROBAST Step 4: a model DEVELOPED without any external validation
+    // that is low risk in every domain should be considered for downgrading. The
+    // caveat is in `reasons`; this is the machine-readable twin so a panel can
+    // surface it without string-matching. Always false for every other tool.
+    considerDowngrade: overallProp.considerDowngrade === true,
   };
   // 115.md — PROBAST's SECOND overall judgement. Read from the `overall-APP` row so
   // the renderer, the summary and the CSV all show the value that was STORED, and
@@ -1053,6 +1183,10 @@ async function buildView(assessmentId) {
     // tool HAS no overall, e.g. QUIPS) and whether ANY numeric score is legitimate
     // (only the NOS is star-additive; a progress count is never a score).
     overallLevels: overallLevelsFor(inst),
+    // 115.md — the closed set of evaluation types this tool recognises (PROBAST's
+    // Dev / Val / Dev+Val columns); [] for every other instrument, whose `variant`
+    // is fixed by the definition. `variant` above says which one this row covers.
+    evaluationTypes: inst.evaluationTypes || [],
     scoringAllowed: inst.scoringAllowed != null ? !!inst.scoringAllowed : star,
     // Star-scored instruments only; null for RoB 2 / ROBINS-I (unchanged shape).
     scoring: star ? 'stars' : 'judgment',
@@ -1128,6 +1262,11 @@ export function instrumentCatalogue() {
       abbreviation: inst.abbreviation || tool.label || id,
       instrumentVersion: instrumentVersionOf(inst),
       variant: variantOf(inst),
+      // 115.md — the evaluation types a reviewer may CHOOSE between when starting
+      // this instrument, as `[{ value, label }]` so a selector can render a picker
+      // without knowing PROBAST by name. Empty for the twelve tools whose variant
+      // is a property of the definition rather than of the study.
+      evaluationTypes: inst.evaluationTypes || [],
       organization: inst.organization || '',
       description: tool.description || inst.description || '',
       designs: designsForTool(tool, inst),
@@ -1155,7 +1294,7 @@ export async function listRobInstruments(req, res) {
 export async function createAssessment(req, res) {
   try {
     if (!(await robEnabled(req.user))) return res.status(404).json({ error: 'Not found' });
-    const { projectId, studyId, outcomeId, resultLabel, instrumentId } = req.body || {};
+    const { projectId, studyId, outcomeId, resultLabel, instrumentId, variant } = req.body || {};
     if (!projectId || !studyId) {
       return res.status(400).json({ error: 'projectId and studyId are required' });
     }
@@ -1174,6 +1313,13 @@ export async function createAssessment(req, res) {
         error: `Unknown instrumentId: ${wantInstrumentId}. Available instruments: ${registeredInstrumentIds().join(', ')}`,
       });
     }
+    // 115.md — the VARIANT. Version is never client-supplied and neither is the
+    // variant, EXCEPT where the definition declares a closed set of evaluation types
+    // (PROBAST's Dev / Val / Dev+Val): that choice is a property of the study being
+    // appraised, and the overall rule reads it. Restricted to the declared values and
+    // rejected by name when it is not one of them — never silently coerced.
+    const stamped = variantToStamp(instrument, variant);
+    if (!stamped.ok) return res.status(400).json({ error: stamped.error });
     const access = await resolveRobAccess(projectId, req.user.id);
     if (!access) return res.status(404).json({ error: 'Not found' });
     if (!access.canEdit) return res.status(403).json({ error: 'You have read-only access to Risk of Bias for this project.' });
@@ -1198,18 +1344,18 @@ export async function createAssessment(req, res) {
         // client-declared version would let a caller mislabel which edition of a
         // tool a judgement was made with, which is a methodological claim.
         instrumentVersion: instrumentVersionOf(instrument),
-        variant: variantOf(instrument),
+        variant: stamped.variant,
         reviewerId: req.user.id,
         reviewerName: me?.name || me?.email || '',
         status: 'draft',
       },
     });
-    await recomputeAndPersist(a.id, instrument); // initialise provisional proposals
+    await recomputeAndPersist(a.id, instrument, stamped.variant); // initialise provisional proposals
     await audit(projectId, a.id, { ...req.user, name: me?.name }, 'ROB_CREATE', {
       entityType: 'RobAssessment', entityId: a.id,
       details: {
         studyId, outcomeId: outcomeId || null, instrumentId: instrument.id,
-        instrumentVersion: instrumentVersionOf(instrument), variant: variantOf(instrument),
+        instrumentVersion: instrumentVersionOf(instrument), variant: stamped.variant,
       },
     });
     const view = await buildView(a.id);
@@ -1444,7 +1590,7 @@ export async function upsertAnswers(req, res) {
         },
       });
     }
-    await recomputeAndPersist(a.id, instrument);
+    await recomputeAndPersist(a.id, instrument, a.variant);
     await prisma.robAssessment.update({ where: { id: a.id }, data: { updatedAt: new Date() } });
     await audit(a.projectId, a.id, req.user, 'ROB_ANSWER', { entityType: 'RobAnswer', entityId: a.id, details: { count: list.length } });
     return res.json({ assessment: await buildView(a.id) });
@@ -1506,7 +1652,7 @@ export async function overrideJudgment(req, res) {
       // changes it. Recomputing here keeps the stored `overall-APP` row in step with
       // the domains, exactly as the domain/overall override path does. Instruments
       // with no such axis (QUADAS-2) skip it: nothing they store could change.
-      if (overallApplicabilityLevels(instrument)) await recomputeAndPersist(a.id, instrument);
+      if (overallApplicabilityLevels(instrument)) await recomputeAndPersist(a.id, instrument, a.variant);
       await prisma.robAssessment.update({ where: { id: a.id }, data: { updatedAt: new Date() } });
       await audit(a.projectId, a.id, req.user, 'ROB_OVERRIDE', {
         entityType: 'RobDomainJudgment', entityId: a.id,
@@ -1605,7 +1751,7 @@ export async function overrideJudgment(req, res) {
       return res.status(400).json({ error: "target must be 'domain' or 'overall'" });
     }
 
-    await recomputeAndPersist(a.id, instrument); // overall reflects override-aware resolved domains
+    await recomputeAndPersist(a.id, instrument, a.variant); // overall reflects override-aware resolved domains
     await audit(a.projectId, a.id, req.user, 'ROB_OVERRIDE', {
       entityType: target === 'domain' ? 'RobDomainJudgment' : 'RobOverall',
       entityId: a.id,
@@ -1636,6 +1782,42 @@ export async function finaliseAssessment(req, res) {
     const view = await buildView(a.id);
     if (!view.completeness.overall.complete) {
       return res.status(400).json({ error: 'Assessment is incomplete', completeness: view.completeness });
+    }
+    // 115.md — COMPLETENESS IS NOT THE FINALISE PREDICATE. `engineCompleteness`
+    // counts answered ITEMS and nothing else, which was the whole predicate on the
+    // four pre-115 instruments because their domain and overall judgements are
+    // ALGORITHM-PROPOSED: answer every signalling question and every judgement
+    // exists. That stopped being true the moment tools arrived whose judgements are
+    // the reviewer's own — QUADAS-2 and QUIPS rate each domain by hand, PROBAST and
+    // QUADAS-2 record an applicability concern per domain, the JBI checklists end in
+    // an appraisal DECISION. On those, answering the items alone let an assessment
+    // be marked 'complete' with no judgement recorded anywhere, and 'complete' is
+    // exactly what the dual-reviewer blind reads to decide the comparison may be
+    // revealed. So the FULL definition predicate is enforced here, server-side.
+    if (!star) {
+      const missing = [];
+      for (const d of (instrument.domains || [])) {
+        if (!domainJudgmentLevels(instrument, d).length) continue;   // tool rates no domains
+        const row = view.domains.find(x => x.domainId === d.id);
+        if (!row || !row.resolvedJudgment) missing.push(`${d.shortLabel || d.name || d.id}: risk-of-bias judgement`);
+      }
+      for (const ap of (view.applicability || [])) {
+        if (!ap.judgment) missing.push(`${ap.name || ap.domainId}: concern regarding applicability`);
+      }
+      if (overallIsRequired(instrument) && !view.overall.resolvedOverall) {
+        missing.push('Overall: the tool\'s overall judgement');
+      }
+      if (overallApplicabilityLevels(instrument)
+        && !(view.overall.applicability && view.overall.applicability.judgment)) {
+        missing.push('Overall: concerns regarding applicability');
+      }
+      if (missing.length) {
+        return res.status(400).json({
+          error: `${instrument.name || instrument.id} is not fully judged yet — record ${missing.length === 1 ? 'the missing judgement' : `all ${missing.length} missing judgements`} before finalising: ${missing.join('; ')}.`,
+          missingJudgments: missing,
+          completeness: view.completeness,
+        });
+      }
     }
     // Lock in final = resolved for every domain + overall.
     for (const d of view.domains) {
@@ -1712,6 +1894,35 @@ export async function deleteAssessment(req, res) {
   }
 }
 
+// ── The robvis label sets ─────────────────────────────────────────────────────
+// robvis "data" CSVs carry the judgement LABELS its templates recognise, per tool.
+// The two here are the two the exporter has ever had, and they are byte-identical
+// to the inline table they replace.
+//
+// THIS TABLE IS A WHITELIST, NOT A LOOKUP WITH A DEFAULT. It used to fall back to
+// the RoB 2 labels for anything unknown, which since 115 means the nine added
+// tools — and the fallback did not merely mislabel, it INVERTED meaning: AMSTAR 2's
+// overall is a CONFIDENCE rating whose best level is literally 'high', so a review
+// rated High confidence exported as "High risk of bias". A JBI appraisal decision
+// ('include') and a QUIPS 'moderate' simply fell through `labelSet[j] || 'No
+// information'` and every cell came out "No information". Both outcomes are
+// fabricated data in a figure a reader treats as the review's result.
+//
+// Adding a tool here is the extension point, and it means asserting that robvis has
+// a template whose categories match that tool's own scale. Until that is verified
+// against robvis itself the export REFUSES, exactly as it already refuses for the
+// Newcastle–Ottawa star profile — a CSV/JSON export of the same assessment is
+// always available and loses nothing.
+const ROBVIS_LABELS = Object.freeze({
+  RoB2: Object.freeze({ low: 'Low', some: 'Some concerns', high: 'High' }),
+  'ROBINS-I': Object.freeze({ low: 'Low', moderate: 'Moderate', serious: 'Serious', critical: 'Critical', ni: 'No information' }),
+});
+
+/** The robvis label set for an instrument, or null when robvis cannot render it. Pure. */
+export function robvisLabelsFor(instrumentId) {
+  return ROBVIS_LABELS[instrumentId] || null;
+}
+
 // ── GET /api/rob/assessments/:id/export?format=csv|json|robvis ────────────────
 export async function exportAssessment(req, res) {
   let reservation; // declared here so a post-reservation error can refund it (79.md §3)
@@ -1733,6 +1944,14 @@ export async function exportAssessment(req, res) {
         error: 'The robvis traffic-light export does not apply to the Newcastle–Ottawa Scale, which reports a star profile rather than risk-of-bias judgements. Export as CSV or JSON instead.',
       });
     }
+    // 115.md — the same refusal for every other instrument robvis has no label set
+    // for (see ROBVIS_LABELS). Refused BEFORE the export allowance is reserved.
+    if (format === 'robvis' && !robvisLabelsFor(inst.id)) {
+      return res.status(400).json({
+        error: `The robvis traffic-light export is not available for ${inst.name || inst.id}: robvis renders Cochrane risk-of-bias judgements, and this tool's judgements are on a different scale (${(overallLevelsFor(inst) || []).join(' / ') || 'its own per-domain vocabulary'}). Exporting them under risk-of-bias labels would misstate the appraisal. Export as CSV or JSON instead.`,
+        robvisInstrumentIds: Object.keys(ROBVIS_LABELS),
+      });
+    }
     // 79.md §3 — RoB assessment export is a project export: Free tier is blocked and
     // permitted tiers consume one unit of the monthly allowance. Reserved once here,
     // after the format is known to be valid, and confirmed on the successful return.
@@ -1741,8 +1960,13 @@ export async function exportAssessment(req, res) {
         exportType: EXPORT_TYPES.ROB_ASSESSMENT, projectId: a.projectId || null, format,
       });
     } catch (e) { if (sendTierLimit(res, e)) return; throw e; }
+    // The four legacy prefixes are pinned by name so existing filenames stay
+    // byte-identical; every other instrument takes its own registry slug. The old
+    // `|| 'robins-i'` default meant an AMSTAR 2 export downloaded as
+    // `robins-i_<studyId>.csv` — a file that names the wrong instrument, which is a
+    // provenance error the moment it lands in a shared folder.
     const FILE_PREFIXES = { RoB2: 'rob2', 'ROBINS-I': 'robins-i', NOS: 'nos-cohort', 'NOS-CC': 'nos-case-control' };
-    const filePrefix = FILE_PREFIXES[inst.id] || 'robins-i';
+    const filePrefix = FILE_PREFIXES[inst.id] || instrumentSlug(inst.id) || 'rob';
     const base = `${filePrefix}_${a.studyId}${a.resultLabel ? '_' + a.resultLabel.replace(/[^a-z0-9]+/gi, '-').toLowerCase() : ''}`;
 
     if (format === 'json') {
@@ -1797,12 +2021,9 @@ export async function exportAssessment(req, res) {
     if (format === 'robvis') {
       // robvis "data" CSV: Study, D1..Dn, Overall, Weight (one row). The judgement
       // labels are the exact strings robvis expects, per instrument (RoB2 3-level;
-      // ROBINS-I 5-level) — RoB2 labels are byte-identical to before.
-      const ROBVIS_LABELS = {
-        RoB2: { low: 'Low', some: 'Some concerns', high: 'High' },
-        'ROBINS-I': { low: 'Low', moderate: 'Moderate', serious: 'Serious', critical: 'Critical', ni: 'No information' },
-      };
-      const labelSet = ROBVIS_LABELS[inst.id] || ROBVIS_LABELS.RoB2;
+      // ROBINS-I 5-level) — RoB2 labels are byte-identical to before. Guaranteed
+      // non-null: an instrument with no label set was refused above.
+      const labelSet = robvisLabelsFor(inst.id);
       const header = ['Study', ...inst.domains.map(d => d.id), 'Overall', 'Weight'];
       const judgeChar = j => (labelSet[j] || 'No information');
       const row = [
@@ -1945,19 +2166,36 @@ export async function exportProjectAssessments(req, res) {
       });
     }
 
+    // 115.md/dossier §6 — the REVIEWER BLIND, applied before anything is counted or
+    // written. `getStudyReviewers` is fetched only once the workspace says the blind
+    // is unlocked; this endpoint had no such rule, so it handed a reviewer their
+    // co-reviewer's in-progress answers in a file. The rule lives in the pure
+    // exporter (applyReviewerBlind) so it is unit-testable and so the summary the
+    // API returns counts exactly the rows the file contains.
+    const blinded = blindGroups(groups, req.user.id);
     const generatedAt = new Date().toISOString();
-    const csv = buildRobProjectCsv({ groups, projectId: req.params.projectId, generatedAt });
+    const csv = buildRobProjectCsv({
+      groups: blinded.groups, projectId: req.params.projectId, generatedAt, requesterId: req.user.id,
+    });
     settleProjectExport(reservation.reservationId, { status: 'succeeded', fileSize: Buffer.byteLength(csv) });
     await audit(req.params.projectId, '', req.user, 'ROB_EXPORT', {
       entityType: 'Project', entityId: req.params.projectId,
-      details: { format, assessments: rows.length, instrumentIds: [...byInstrument.keys()] },
+      details: {
+        format,
+        assessments: rows.length - blinded.withheld,
+        withheldForBlind: blinded.withheld,
+        instrumentIds: [...byInstrument.keys()],
+      },
     });
     return res.json({
       format: 'csv',
       filename: `rob-assessments_${req.params.projectId}.csv`,
       mime: 'text/csv',
       content: csv,
-      summary: groups.map(g => ({ instrumentId: g.instrumentId, instrumentLabel: g.instrumentLabel, count: g.rows.length })),
+      summary: blinded.groups.map(g => ({ instrumentId: g.instrumentId, instrumentLabel: g.instrumentLabel, count: g.rows.length })),
+      // Surfaced so the download UI can say "2 rows withheld while your
+      // co-reviewers finish" rather than letting a reader assume the file is whole.
+      withheldForBlind: blinded.withheld,
     });
   } catch (err) {
     settleProjectExport(reservation?.reservationId, { status: 'failed', failureReason: err?.message });
@@ -2161,6 +2399,22 @@ export async function appraiseAssessment(req, res) {
     if (isStarInstrument(instrument)) {
       return res.status(400).json({ error: 'Guided appraisal is not available for the Newcastle–Ottawa Scale; its items must be assessed by a reviewer against the study text.' });
     }
+    // 115.md — the SAME refusal, generalised. The appraiser is a cue-phrase matcher
+    // with a hand-written table per instrument, and it covers RoB 2 and ROBINS-I
+    // only. Run against a tool with no table, every question falls through to the
+    // "No information" default — which is not a thin appraisal but a fabricated
+    // one: 'NI' is off-vocabulary for most of the 2026 set (QUADAS-2 answers
+    // Yes/No/Unclear, JBI adds Not applicable, AMSTAR 2 has Partial Yes) so the
+    // suggestions are not even storable answers, and feeding that clean sweep to
+    // the instrument's own algorithm makes it propose a judgement from ZERO
+    // evidence (QUADAS-2 reads "no signalling question answered No" and proposes
+    // LOW risk of bias). Refuse, exactly as the Newcastle–Ottawa forms are refused.
+    if (!hasAppraisalCues(instrument)) {
+      return res.status(400).json({
+        error: `Guided appraisal is not available for ${instrument.name || instrument.id}: the appraiser has no cue table for its items, so every question would default to "No information" and any judgement proposed from that would rest on no evidence. Assess its items against the study text instead.`,
+        supportedInstrumentIds: [...APPRAISAL_INSTRUMENT_IDS],
+      });
+    }
     const force = req.body?.force === true;
     const fullText = typeof req.body?.fullText === 'string' ? req.body.fullText : '';
 
@@ -2206,7 +2460,7 @@ export async function appraiseAssessment(req, res) {
     }
 
     // Recompute PROPOSED judgements only (finalJudgment / overridden untouched).
-    await recomputeAndPersist(a.id, instrument);
+    await recomputeAndPersist(a.id, instrument, a.variant);
     await prisma.robAssessment.update({ where: { id: a.id }, data: { updatedAt: new Date() } });
     await audit(a.projectId, a.id, req.user, 'ROB_APPRAISE', {
       entityType: 'RobAssessment', entityId: a.id,
@@ -2597,7 +2851,16 @@ export async function createConsensusAssessment(req, res) {
         instrumentId: instrument.id,
         // Server-stamped from the definition, never from the client (115.md item 1).
         instrumentVersion: instrumentVersionOf(instrument),
-        variant: variantOf(instrument),
+        // 115.md — where the tool has SELECTABLE evaluation types (PROBAST) the
+        // consensus row reconciles the same evaluation the reviewers appraised, so
+        // its variant is INHERITED from them (as outcomeId/resultLabel already are)
+        // rather than reset to the definition's default — which would silently
+        // re-label a development-only appraisal as development-and-validation and
+        // switch off the Step 4 downgrade caveat. Definition-stamped for every
+        // other tool, exactly as before.
+        variant: evaluationTypeValues(instrument).length
+          ? (independent[0].variant || variantOf(instrument))
+          : variantOf(instrument),
         reviewerId: req.user.id,
         reviewerName: me?.name || me?.email || '',
         status: CONSENSUS_STATUS,
@@ -2630,7 +2893,7 @@ export async function createConsensusAssessment(req, res) {
       seededFrom = { assessmentId: src.id, reviewerId: src.reviewerId, answerCount: answers.length };
     }
 
-    await recomputeAndPersist(row.id, instrument);
+    await recomputeAndPersist(row.id, instrument, row.variant);
     await audit(req.params.projectId, row.id, { ...req.user, name: me?.name }, 'ROB_CONSENSUS_CREATE', {
       entityType: 'RobAssessment', entityId: row.id,
       details: { studyId: req.params.studyId, instrumentId: instrument.id, reviewerIds, seededFrom },

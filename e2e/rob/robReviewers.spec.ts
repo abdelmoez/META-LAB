@@ -248,7 +248,7 @@ const MOUNT_TODO =
 test.describe('RoB — dual-reviewer + outputs UI', () => {
   test('the comparison stays hidden until both reviewers finish, then shows the conflict', async ({ request, tmpProject, normalContext, page }) => {
     const projectId = tmpProject.id;
-    await addSecondReviewer(request, normalContext.request, projectId);
+    const second = await addSecondReviewer(request, normalContext.request, projectId);
     const seeded = await RobPage.createManualStudy(request, projectId, {
       title: 'E2E UI dual-reviewer study', authors: 'Blind, B', year: '2022',
     });
@@ -271,6 +271,21 @@ test.describe('RoB — dual-reviewer + outputs UI', () => {
     await expect(page.getByText(/1 of 2 finished/i)).toBeVisible();
     await expect(page.getByText(/conflict/i)).toHaveCount(0);
 
+    // ── r2 review finding 1 — the blind must hold on EVERY surface, not just the
+    // comparison panel. The page is being viewed by reviewer A (the owner), so A's
+    // own judgements stay fully visible while B's in-progress row is masked
+    // everywhere: the article list, the summary table and the traffic-light plot.
+    const articles = page.getByLabel('Articles for risk-of-bias assessment');
+    await expect(articles.getByText('Judgement hidden')).toHaveCount(1);
+    await expect(articles.getByText(/Blinded/).first()).toBeVisible();
+    await expect(page.getByText(/1 assessment hidden until both reviewers complete/i).first()).toBeVisible();
+    // B's row is LISTED (their name and progress are workflow state, not a
+    // judgement) but carries no Open action — opening it would defeat the blind.
+    const secondName = second.name || second.email;
+    await expect(articles.getByText(secondName, { exact: false }).first()).toBeVisible();
+    // Exactly one summary row remains: A's. B's must not be in the table.
+    await expect(page.getByRole('row').filter({ hasText: secondName })).toHaveCount(0);
+
     // B finishes → the comparison unlocks and names the conflict.
     await normalContext.request.put(`/api/rob/assessments/${idB}/answers`, {
       data: { answers: questionIds.map(q => ({ questionId: q, response: q === questionIds[0] ? 'N' : 'Y' })) },
@@ -280,6 +295,11 @@ test.describe('RoB — dual-reviewer + outputs UI', () => {
     await expect(page.getByText(/Comparison hidden/i)).toHaveCount(0);
     await expect(page.getByText(/difference/i).first()).toBeVisible();
     await expect(page.getByRole('button', { name: /create consensus record/i })).toBeVisible();
+
+    // …and the masking lifts with it: nothing is hidden once both are complete.
+    await expect(page.getByText(/Judgement hidden/i)).toHaveCount(0);
+    await expect(page.getByText(/hidden until both reviewers complete/i)).toHaveCount(0);
+    await expect(page.getByRole('row').filter({ hasText: secondName }).first()).toBeVisible();
   });
 
   test('creating consensus from the panel keeps both originals on screen', async ({ request, tmpProject, normalContext, page }) => {
