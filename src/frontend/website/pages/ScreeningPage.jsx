@@ -10,7 +10,19 @@ import { ArticlePage } from '../ArticlePage.jsx';
 
 const TRAIL = [{label: "Home", path: "/"}, {label: "Features", path: "/features"}, {label: "Screening"}];
 
-const RELATED = [{label: "Title & abstract screening", path: "/resources/title-and-abstract-screening", note: "a practical guide to screening decisions"}, {label: "Search engine", path: "/features/search-engine", note: "where the records come from"}, {label: "Data extraction", path: "/features/data-extraction", note: "what happens to included studies"}];
+/**
+ * Editorial notes for the related-links block. 113 §5 — the registry entry's
+ * `related` array owns WHICH pages are listed and in what order (so the rendered
+ * links and the internal-link graph cannot drift); this map only supplies the
+ * one-line "why you would click this" beside each.
+ */
+const RELATED_NOTES = {
+  '/features/search-engine': 'where the records come from',
+  '/features/data-extraction': 'what happens to included studies',
+  '/features/prisma-flow-diagram': 'where screening decisions become counts',
+  '/ai-systematic-review': 'what the relevance model may and may not do',
+  '/resources/title-and-abstract-screening': 'a practical guide to screening decisions',
+};
 
 export function ScreeningPage() {
   return (
@@ -19,7 +31,7 @@ export function ScreeningPage() {
       eyebrow="Feature"
       trail={TRAIL}
       relatedTitle="Related"
-      related={RELATED}
+      relatedNotes={RELATED_NOTES}
     />
   );
 }

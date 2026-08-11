@@ -12,6 +12,7 @@ import { PageShell, RelatedLinks } from './PageShell.jsx';
 import { MarkdownContent } from './markdown/MarkdownContent.jsx';
 import { inlineText } from './markdown/parseMarkdown.js';
 import { getDoc } from './content/index.js';
+import { resolveRelated } from './publicPages.js';
 
 /**
  * Derives the visible lede from the document's first paragraph, so the page
@@ -30,9 +31,21 @@ function bodyBlocks(blocks) {
   return [...blocks.slice(0, idx), ...blocks.slice(idx + 1)];
 }
 
-export function ArticlePage({ slug, eyebrow, trail, related, relatedTitle, footerCta }) {
+/**
+ * @param {object} props
+ * @param {string} props.slug          content-document slug; the route path is `/${slug}`
+ * @param {string} props.relatedTitle  heading for the related block ("Continue reading", …)
+ * @param {Record<string,string>} props.relatedNotes
+ *        targetPath → the one-line note shown beside that link. 113 §5 — WHICH pages
+ *        appear, and in what order, comes from the registry entry's `related` array
+ *        (resolveRelated); this prop only decorates them. A page therefore cannot
+ *        render an onward link the internal-link graph does not know about, which is
+ *        what the orphan test in publicPagesRegistry.test.js relies on.
+ */
+export function ArticlePage({ slug, eyebrow, trail, relatedNotes, relatedTitle, footerCta }) {
   const doc = getDoc(slug);
   const { frontmatter, blocks } = doc;
+  const related = resolveRelated(`/${slug}`, relatedNotes);
   return (
     <PageShell
       eyebrow={eyebrow}

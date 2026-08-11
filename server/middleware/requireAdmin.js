@@ -42,6 +42,11 @@ const MOD_PERMISSIONS = new Set([
   // manage_email_templates (copy edits, enable/disable, restore, test-send) —
   // mods may LOOK at what the product sends, they may not change it.
   'view_email_delivery',
+  // 113.md item 8 — Ops › SEO. The whole section is read-only: the public-page
+  // registry is CODE, the crawler files are BUILD ARTEFACTS, and the live check
+  // only fetches our own public origin. There is deliberately no matching
+  // manage_* capability, because there is nothing here an operator could write.
+  'view_seo_status',
 ]);
 
 /** Exported for the authorization unit test — the grant list IS the contract. */

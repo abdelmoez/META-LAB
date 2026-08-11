@@ -1,6 +1,6 @@
 {
   "name": "meta-lab",
-  "version": "4.17.0",
+  "version": "4.18.0",
   "private": true,
   "type": "module",
   "scripts": {

@@ -13,8 +13,18 @@ Operational guide for deploying the META·LAB monorepo (React + Vite frontend, E
 ```bash
 # from repo root
 npm install
-npm run build        # → vite build, emits static assets to ./dist
+npm run build        # stage OCR assets → version:gen → vite build → prerender-public
 ```
+
+`npm run build` is four steps, and the last one is load-bearing for SEO:
+`scripts/prerender-public.mjs` renders every public page to
+`dist/__prerender/<path>/index.html` and regenerates `dist/sitemap.xml`,
+`dist/robots.txt` and `dist/llms.txt`. It **fails the build** (non-zero exit, no
+artefacts shipped) when an indexable page will not render, when a page does not have
+exactly one `<h1>`, or when a prerendered page's inline scripts stop being
+byte-identical to `dist/index.html` (they are hashed into the CSP at runtime). Treat a
+prerender failure as a broken build, never as a warning to skip — and see §5c for the
+serving side, which is where this output actually has to end up.
 
 Server deps install separately:
 
@@ -207,6 +217,111 @@ The realtime layer is a single Server-Sent Events stream per browser tab (`serve
 
 ---
 
+## 5c. SEO serving (113.md §1) — the prerendered documents MUST reach the crawler
+
+**This section exists because it went wrong in production.** On 2026-08-10 the live
+site served the empty SPA shell on *every* route: `/features/screening` returned the
+homepage `<title>`, no meta description, no `<h1>`, no article text and no JSON-LD.
+`dist/__prerender/` had been built and deployed and was never read once. Nothing was
+indexed. The application code was correct the whole time — the reverse proxy was
+answering page requests from `dist/` with a plain `try_files … /index.html` SPA
+fallback, so `server/middleware/publicPages.js` never ran.
+
+It is invisible without a deliberate check: a browser executes the JavaScript and
+renders a perfect page, so the site *looks* fine to everyone who is not a crawler.
+
+### How serving is supposed to work
+
+1. `npm run build` runs `scripts/prerender-public.mjs`, which writes a fully rendered,
+   crawlable document to `dist/__prerender/<path>/index.html` for **every** entry in
+   `src/frontend/website/publicPages.js`, and regenerates `sitemap.xml`, `robots.txt`
+   and `llms.txt` into `dist/`. An indexable page that fails to render, renders zero or
+   two `<h1>`s, or whose inline scripts stop matching the shell's (the CSP byte-identity
+   guard) is a **hard build failure** — the build is the first gate.
+2. `server/middleware/publicPages.js` classifies each GET and answers with one of:
+   the prerendered document, a 301, a real 404, or the SPA shell (+ `X-Robots-Tag`).
+3. **The reverse proxy must let requests reach step 2.** That is the whole job, and it
+   is the step that failed.
+
+### Required proxy configuration
+
+Use `deploy/nginx/pecanrev.conf.example` as-is — it proxies every non-`/assets`
+request to Node (**recipe A**). Read the box at the top of that file before editing it.
+
+If Node genuinely cannot sit in front of page requests, use **recipe B** (the
+commented block at the bottom of the same file), which is prerender-aware:
+
+```nginx
+root /var/www/pecanrev/dist;
+location = /            { try_files /__prerender/index.html /index.html; }
+location /              { try_files /__prerender$uri/index.html $uri /index.html; }
+location ^~ /__prerender/ { return 404; }
+```
+
+Recipe B serves the correct document per page but **loses**, honestly: real 404s
+(every unknown URL becomes a 200 soft-404), the `PERMANENT_REDIRECTS` 301s and the
+trailing-slash/case canonicalisations, `X-Robots-Tag: noindex` on `/app` `/ops` and
+token URLs, and every helmet security header including CSP (files off disk get none —
+you must re-add them at nginx). Prefer recipe A.
+
+**Never** use `try_files $uri $uri/ /index.html` for page routes. That is the bug.
+
+### www and TLS
+
+`www.pecanrev.com` served a certificate covering only the apex, so www was a hard TLS
+error rather than a redirect. Fix DNS + reissue with both names as SANs
+(`certbot --nginx -d pecanrev.com -d www.pecanrev.com`), then the `www` → apex 301
+server block in the example config takes over. Every canonical the app emits is
+apex-absolute (`SITE_ORIGIN`), so two live hostnames would split the signal.
+
+### Verification (run after every deploy AND every nginx change)
+
+```bash
+# THE check. A feature page must serve its OWN title, not the homepage's.
+curl -s https://pecanrev.com/features/screening | grep -o '<title>[^<]*'
+#   ✓ <title>Title, Abstract &amp; Full-Text Screening Software | PecanRev
+#   ✗ <title>PecanRev — Systematic Review & Meta-Analysis Platform   ← prerender not served
+
+# Exactly one <h1>, and it is the page's own.
+curl -s https://pecanrev.com/features/screening | grep -c '<h1'            # → 1
+curl -s https://pecanrev.com/features/screening | grep -o '<h1[^>]*>[^<]*' # → screening headline
+
+# Page-specific description + canonical, and structured data.
+curl -s https://pecanrev.com/features/screening \
+  | grep -oE '<(meta name="description"|link rel="canonical")[^>]*'
+curl -s https://pecanrev.com/features/screening | grep -c 'application/ld+json'   # → ≥1
+
+# Soft-404 regression alarm — both must be 404.
+curl -sI https://pecanrev.com/this-does-not-exist    | head -1
+curl -sI https://pecanrev.com/features/does-not-exist | head -1
+
+# Redirects, noindex headers, and the internal prerender dir.
+curl -sI https://pecanrev.com/privacy | grep -iE '^(HTTP|location)'   # 301 → /terms#privacy
+curl -sI https://pecanrev.com/app     | grep -i x-robots-tag          # noindex, nofollow
+curl -sI https://pecanrev.com/__prerender/terms/index.html | head -1  # → 404
+
+# Crawler files.
+curl -s  https://pecanrev.com/robots.txt  | tail -1                   # Sitemap: …
+curl -s  https://pecanrev.com/sitemap.xml | grep -c '<loc>'           # every submitted page
+curl -sI https://pecanrev.com/llms.txt    | head -1                   # 200
+
+# www is a 301, not a certificate error.
+curl -sI https://www.pecanrev.com/ | head -1                          # → 301
+```
+
+`/login` and `/register` are deliberately **absent from `sitemap.xml`** (registry
+`sitemap: false`) while remaining indexable and present in `llms.txt` — if they
+reappear in the sitemap, a registry entry lost its flag.
+
+### Owner actions this repo cannot perform
+
+- Google Search Console: verify the property, submit `https://pecanrev.com/sitemap.xml`,
+  then watch **Coverage → Soft 404** weekly. A soft-404 spike is this failure returning.
+- Bing Webmaster Tools: same property + sitemap.
+- DNS `www` record + certificate SAN (above).
+
+---
+
 ## 6. "Pushing to GitHub main deploys live" — checklist
 
 Pushing to `main` deploys to production. Before pushing:
@@ -221,6 +336,7 @@ Pushing to `main` deploys to production. Before pushing:
 - [ ] No secrets committed; `.env` / `server/.env` are gitignored.
 - [ ] Smoke test after deploy: `GET /api/health` → `{ status: "ok" }` and `GET /api/version` returns the expected version + commit.
 - [ ] SSE smoke test (§5b): `curl -N https://<host>/api/events` with a valid session cookie → `retry:` + `:connected` arrive immediately, `:hb` within ~25s (proves the proxy isn't buffering).
+- [ ] **SEO serving smoke test (§5c)** — `curl -s https://<host>/features/screening | grep -o '<title>[^<]*'` prints the *screening* title, and `curl -sI https://<host>/this-does-not-exist` is a **404**. A page-shaped 200 with the homepage title means the prerendered documents are not being served and the site is invisible to crawlers.
 
 ---
 

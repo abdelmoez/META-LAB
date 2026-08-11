@@ -32,6 +32,27 @@ import resourcesPrismaSource from './resources-prisma-2020-explained.js';
 import resourcesScreeningSource from './resources-title-and-abstract-screening.js';
 import resourcesMetaAnalysisSource from './resources-how-to-run-a-meta-analysis.js';
 
+// 113 W1-A — commercial + feature + comparison pages.
+import systematicReviewSoftwareSource from './systematic-review-software.js';
+import aiSystematicReviewSource from './ai-systematic-review.js';
+import featuresRiskOfBiasSource from './features-risk-of-bias.js';
+import featuresPrismaFlowSource from './features-prisma-flow-diagram.js';
+import featuresNetworkMetaAnalysisSource from './features-network-meta-analysis.js';
+import featuresCaseSeriesSource from './features-case-series.js';
+import compareIndexSource from './compare-index.js';
+import compareCovidenceSource from './compare-pecanrev-vs-covidence.js';
+import compareRayyanSource from './compare-pecanrev-vs-rayyan.js';
+
+// 113 W1-B — methodology guides under /resources.
+import resourcesConductSource from './resources-how-to-conduct-a-systematic-review.js';
+import resourcesSearchStrategySource from './resources-systematic-review-search-strategy.js';
+import resourcesDataExtractionSource from './resources-data-extraction-for-systematic-reviews.js';
+import resourcesRiskOfBiasSource from './resources-risk-of-bias-assessment.js';
+import resourcesForestPlotsSource from './resources-forest-plots-and-heterogeneity.js';
+import resourcesPublicationBiasSource from './resources-publication-bias.js';
+import resourcesNetworkMetaAnalysisSource from './resources-network-meta-analysis-explained.js';
+import resourcesPrismaFlowSource from './resources-prisma-flow-diagram-guide.js';
+
 const SOURCES = {
   'about': aboutSource,
   'features': featuresIndexSource,
@@ -45,6 +66,25 @@ const SOURCES = {
   'resources/prisma-2020-explained': resourcesPrismaSource,
   'resources/title-and-abstract-screening': resourcesScreeningSource,
   'resources/how-to-run-a-meta-analysis': resourcesMetaAnalysisSource,
+  // 113 W1-A
+  'systematic-review-software': systematicReviewSoftwareSource,
+  'ai-systematic-review': aiSystematicReviewSource,
+  'features/risk-of-bias': featuresRiskOfBiasSource,
+  'features/prisma-flow-diagram': featuresPrismaFlowSource,
+  'features/network-meta-analysis': featuresNetworkMetaAnalysisSource,
+  'features/case-series': featuresCaseSeriesSource,
+  'compare': compareIndexSource,
+  'compare/pecanrev-vs-covidence': compareCovidenceSource,
+  'compare/pecanrev-vs-rayyan': compareRayyanSource,
+  // 113 W1-B
+  'resources/how-to-conduct-a-systematic-review': resourcesConductSource,
+  'resources/systematic-review-search-strategy': resourcesSearchStrategySource,
+  'resources/data-extraction-for-systematic-reviews': resourcesDataExtractionSource,
+  'resources/risk-of-bias-assessment': resourcesRiskOfBiasSource,
+  'resources/forest-plots-and-heterogeneity': resourcesForestPlotsSource,
+  'resources/publication-bias': resourcesPublicationBiasSource,
+  'resources/network-meta-analysis-explained': resourcesNetworkMetaAnalysisSource,
+  'resources/prisma-flow-diagram-guide': resourcesPrismaFlowSource,
 };
 
 /** Required frontmatter keys. A document missing one is a build-time bug. */

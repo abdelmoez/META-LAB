@@ -1,20 +1,63 @@
 # ──────────────────────────────────────────────────────────────────────────────
-# deploy/nginx/pecanrev.conf.example — production reverse proxy (93.md §3.2)
+# deploy/nginx/pecanrev.conf.example — production reverse proxy
+# (93.md §3.2, rewritten 113.md §1)
 #
-# Copy to /etc/nginx/sites-available/pecanrev.conf, replace the example.com
-# placeholders with the real domain, then:
-#   ln -s /etc/nginx/sites-available/pecanrev.conf /etc/nginx/sites-enabled/
-#   nginx -t && systemctl reload nginx
+# ╔══════════════════════════════════════════════════════════════════════════╗
+# ║ READ THIS BEFORE EDITING — THE FAILURE THIS FILE EXISTS TO PREVENT       ║
+# ╠══════════════════════════════════════════════════════════════════════════╣
+# ║ The build writes a fully rendered, crawlable HTML document for EVERY     ║
+# ║ public page to `dist/__prerender/<path>/index.html`. The Express edge    ║
+# ║ (server/middleware/publicPages.js) is what maps a URL to that file.      ║
+# ║                                                                          ║
+# ║ In August 2026 the live nginx served `dist/` from disk with a plain      ║
+# ║ SPA fallback:                                                            ║
+# ║                                                                          ║
+# ║     location / { try_files $uri $uri/ /index.html; }     # ← THE BUG     ║
+# ║                                                                          ║
+# ║ That one line answers /features/screening with the EMPTY APP SHELL:      ║
+# ║ the homepage <title>, no meta description, no <h1>, no article text,     ║
+# ║ no JSON-LD — on every route on the site. dist/__prerender/ was built,    ║
+# ║ deployed, and never read once. A crawler saw a blank JavaScript stub at  ║
+# ║ every URL, and nothing was indexed. Every other piece of SEO work in     ║
+# ║ the repo was invisible because of it.                                    ║
+# ║                                                                          ║
+# ║ THE RULE: never add a `try_files … /index.html` fallback for PAGE        ║
+# ║ routes. Either proxy them to Node (recipe A, below — preferred), or use  ║
+# ║ the explicit prerender-aware try_files of recipe B (bottom of file).     ║
+# ║ A bare /index.html fallback is always wrong.                             ║
+# ║                                                                          ║
+# ║ Verify after EVERY nginx change (README.md §5 has the full list):        ║
+# ║   curl -s https://pecanrev.com/features/screening | grep -o '<title>.*'  ║
+# ║   → must print the SCREENING title, not the homepage one.                ║
+# ╚══════════════════════════════════════════════════════════════════════════╝
+#
+# Install:
+#   sudo cp deploy/nginx/pecanrev.conf.example /etc/nginx/sites-available/pecanrev.conf
+#   sudo sed -i 's/example\.com/pecanrev.com/g' /etc/nginx/sites-available/pecanrev.conf
+#   sudo ln -s /etc/nginx/sites-available/pecanrev.conf /etc/nginx/sites-enabled/
+#   sudo nginx -t && sudo systemctl reload nginx
 # TLS certificates: see deploy/nginx/README.md (certbot or Cloudflare).
 #
-# Architecture (docs/manager/deployment-config.md): everything — the SPA, its
-# /assets, and /api — is served by ONE Node/Express process on 127.0.0.1:3001.
-# nginx terminates TLS and proxies; it does NOT serve dist/ from disk.
+# ── RECIPE A (what this file implements): proxy everything to Node ────────────
+# Architecture (docs/manager/deployment-config.md): the SPA, its /assets, the
+# prerendered documents and /api are all served by ONE Node/Express process on
+# 127.0.0.1:3001. nginx terminates TLS and proxies; it does NOT serve dist/ from
+# disk. This is the preferred recipe because ONLY the Node edge implements:
+#   • prerendered HTML per registry path (the whole point — see the box above);
+#   • REAL 404s for unknown URLs and unknown /features/* /resources/* /compare/*
+#     children (a soft 404 is an unbounded indexable URL space);
+#   • the 301s (/privacy → /terms#privacy, trailing-slash and case canonicalisation);
+#   • `X-Robots-Tag: noindex, nofollow` on /app, /ops, token URLs and /__prerender/**;
+#   • the CSP nonce + security headers (helmet) and the pre-paint theme injection.
+# Recipe B at the bottom of this file works without Node in the page path and
+# loses all five. Use it only when you must.
+#
+# Other invariants:
 #   • Immutable caching for content-hashed /assets/* comes from EXPRESS
 #     (server/index.js, 93.md §3.7). A CDN or `proxy_cache` MAY cache /assets/*
-#     (they are content-hashed and immutable) but must NEVER cache index.html
-#     or anything under /api/ — a cached index.html traps users on old builds,
-#     and /api/ responses carry private data.
+#     (they are content-hashed and immutable) but must NEVER cache index.html,
+#     any page route, or anything under /api/ — a cached page traps users on an
+#     old build, and /api/ responses carry private data.
 #   • SECURITY HEADERS (CSP, HSTS, frame/nosniff/referrer policies) are set by
 #     the app via helmet. Do NOT duplicate them here — duplicated headers are
 #     at best confusing and at worst conflicting (two CSPs = strictest union).
@@ -31,11 +74,12 @@ gzip_min_length   1024;
 gzip_vary         on;
 gzip_proxied      any;
 # application/xml is what nginx labels /sitemap.xml — without it the sitemap is the
-# one text asset on the site that ships uncompressed.
+# one text asset on the site that ships uncompressed. text/plain covers robots.txt
+# and llms.txt.
 gzip_types        text/plain text/css text/xml application/xml application/json
                   application/javascript application/xml+rss image/svg+xml;
 
-# ── HTTP → HTTPS redirect (production + staging hosts) ────────────────────────
+# ── HTTP → HTTPS redirect (production + www + staging hosts) ──────────────────
 server {
     listen 80;
     listen [::]:80;
@@ -51,13 +95,51 @@ server {
     }
 }
 
-# ── Production HTTPS ──────────────────────────────────────────────────────────
+# ── www → apex, 301 (113.md §1) ───────────────────────────────────────────────
+#
+# THIS BLOCK IS USELESS WITHOUT A CERTIFICATE THAT COVERS www.
+# TLS is negotiated BEFORE nginx ever sees the request path, so a visitor or a
+# crawler hitting https://www.example.com when the certificate's SANs are only
+# `example.com` gets a hard browser interstitial / a TLS error — the 301 below
+# never runs. That is the state www.pecanrev.com was in when this was written.
+#
+# Fix, in this order:
+#   1. DNS: a CNAME (or A/AAAA) for `www` pointing at the same host as the apex.
+#   2. Certificate: reissue with BOTH names as SANs —
+#        sudo certbot --nginx -d example.com -d www.example.com
+#      Confirm afterwards:
+#        openssl s_client -connect www.example.com:443 -servername www.example.com \
+#          </dev/null 2>/dev/null | openssl x509 -noout -text | grep -A1 'Subject Alternative Name'
+#   3. Only then does this redirect do its job.
+#
+# Why redirect rather than serve both: two hostnames serving identical HTML is a
+# duplicate-content split, and every canonical the app emits is apex-absolute
+# (SITE_ORIGIN in src/frontend/website/publicPages.js). A 301 consolidates the
+# signals instead of asking Google to guess.
 server {
     listen 443 ssl http2;
     listen [::]:443 ssl http2;
-    server_name example.com www.example.com;
+    server_name www.example.com;
 
-    # Managed by certbot after `certbot --nginx` (see deploy/nginx/README.md):
+    ssl_certificate     /etc/letsencrypt/live/example.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/example.com/privkey.pem;
+    # include /etc/letsencrypt/options-ssl-nginx.conf;
+    # ssl_dhparam /etc/letsencrypt/ssl-dhparams.pem;
+
+    # 301, not 302: this is permanent, and only a permanent redirect transfers
+    # ranking signals to the apex. $request_uri keeps the path AND query string.
+    return 301 https://example.com$request_uri;
+}
+
+# ── Production HTTPS (apex) ───────────────────────────────────────────────────
+server {
+    listen 443 ssl http2;
+    listen [::]:443 ssl http2;
+    server_name example.com;
+
+    # Managed by certbot after `certbot --nginx` (see deploy/nginx/README.md).
+    # The certificate should carry BOTH example.com and www.example.com as SANs
+    # so the www server block above can actually answer.
     ssl_certificate     /etc/letsencrypt/live/example.com/fullchain.pem;
     ssl_certificate_key /etc/letsencrypt/live/example.com/privkey.pem;
     # include /etc/letsencrypt/options-ssl-nginx.conf;
@@ -102,7 +184,41 @@ server {
         # here at all — do not add one for /api/.
     }
 
-    # ── SPA + static assets (served by Express, incl. /assets immutable) ──────
+    # ── OPTIONAL: let nginx serve the content-hashed build assets from disk ───
+    #
+    # Everything under /assets/ is emitted by Vite with a content hash in the
+    # filename, so it is immutable and safe to serve without touching Node. This
+    # block is OPTIONAL — Express already serves these with the same immutable
+    # cache header, and leaving it commented out keeps the topology to one moving
+    # part. Enable it only if you want to take the static bytes off the Node
+    # event loop, and only with `root` pointing at the deployed build.
+    #
+    # It is SAFE with respect to the bug in the box above because it matches
+    # `^~ /assets/` — a literal prefix that no page route can ever fall into —
+    # and because it has NO /index.html fallback: a missing asset 404s, which is
+    # what a missing asset is.
+    #
+    # location ^~ /assets/ {
+    #     root /var/www/pecanrev/dist;          # the directory CONTAINING /assets
+    #     access_log off;
+    #     expires 1y;
+    #     add_header Cache-Control "public, immutable" always;
+    #     try_files $uri =404;                  # never, ever /index.html
+    # }
+    #
+    # Static files that live at the dist ROOT (favicon, og-image, manifest,
+    # robots.txt, sitemap.xml, llms.txt) are deliberately NOT listed here: they
+    # are few, they are cheap, and routing them through Node keeps the crawler
+    # files on exactly one code path — the one the tests exercise.
+
+    # ── EVERYTHING ELSE → Node ────────────────────────────────────────────────
+    # Page routes, the crawler files, the SPA shell and the static root assets.
+    # server/middleware/publicPages.js decides, per request: prerendered
+    # document / 301 / real 404 / SPA shell + X-Robots-Tag.
+    #
+    # DO NOT add `root` + `try_files … /index.html` to this block. See the box
+    # at the top of this file: that is precisely the change that de-indexed the
+    # entire site, and it fails silently — the pages still render for humans.
     location / {
         proxy_pass http://127.0.0.1:3001;
         proxy_http_version 1.1;
@@ -117,6 +233,10 @@ server {
 # The staging PM2 process listens on 3002 with server/.env built from
 # server/.env.staging.example (separate DB, secrets, Sentry env, email
 # redirect). See docs/manager/staging-deployment.md.
+#
+# Staging is `Disallow: /`-worthy but the app ships ONE robots.txt for every
+# host, so keep staging out of the index with an origin-level header instead —
+# it is the one header the app deliberately does not set per-host.
 server {
     listen 443 ssl http2;
     listen [::]:443 ssl http2;
@@ -126,6 +246,15 @@ server {
     ssl_certificate_key /etc/letsencrypt/live/example.com/privkey.pem;
 
     client_max_body_size 70m;
+
+    # Staging serves the same prerendered pages with the same production
+    # canonicals; without this it competes with the real site for those URLs.
+    # The app already sets this header on /app, /ops and token URLs, so those
+    # responses carry it twice — harmless (both say noindex) and preferable to
+    # leaving the marketing pages uncovered. Note the nginx inheritance rule: if
+    # you ever add an `add_header` to one of the locations below, this one stops
+    # applying there and must be repeated.
+    add_header X-Robots-Tag "noindex, nofollow" always;
 
     location /api/events {
         proxy_pass http://127.0.0.1:3002;
@@ -160,3 +289,113 @@ server {
         proxy_read_timeout 60s;
     }
 }
+
+# ══════════════════════════════════════════════════════════════════════════════
+# RECIPE B — STATIC FALLBACK: serve dist/ from disk WITHOUT Node in the page path
+# ══════════════════════════════════════════════════════════════════════════════
+#
+# Use this ONLY when Node cannot be in front of page requests (a CDN edge that
+# will not proxy HTML, an emergency where the app process is down but the site
+# must still answer, a static mirror). It serves the CORRECT prerendered
+# document for every registry path — which already puts it infinitely ahead of
+# `try_files $uri $uri/ /index.html` — but it is a genuine downgrade.
+#
+# ── WHAT YOU LOSE, HONESTLY ───────────────────────────────────────────────────
+#  1. REAL 404s. Every unknown URL — /nonsense, /features/typo, a scraped bad
+#     link — answers 200 with the SPA shell. That is a soft 404: Google reports
+#     it under "Soft 404" in Coverage, and /features/* and /compare/* become an
+#     unbounded indexable URL space. This is the single biggest loss.
+#  2. REDIRECTS. /privacy → /terms#privacy and the trailing-slash / wrong-case
+#     canonicalisations (/terms/ , /Terms) are implemented in
+#     src/frontend/website/publicPages.js (PERMANENT_REDIRECTS) and applied by
+#     the Node edge. The `location = /privacy` line below hand-copies ONE of
+#     them; the rest are gone, and this copy has to be kept in sync by a human.
+#  3. X-Robots-Tag. /app, /ops, /rob, invite/reset/verify token URLs and every
+#     other NON_INDEXABLE_PATTERNS surface lose their `noindex, nofollow`
+#     response header. robots.txt still disallows them, which is weaker (a URL
+#     that is disallowed but linked can still surface as a bare listing).
+#  4. SECURITY HEADERS. helmet sets CSP (with a per-request nonce), HSTS,
+#     nosniff, frame and referrer policy on responses Node produces. Files
+#     served straight off disk get NONE of that. If you run recipe B you MUST
+#     add them here yourself — and the CSP cannot use a nonce, so it needs the
+#     static hash form. Do not skip this step.
+#  5. The pre-paint theme injection (server/middleware/spaTheme.js) does not
+#     run, so a first-time visitor may see one frame of the default accent
+#     colour. Documented as graceful degradation; cosmetic, unlike 1-4.
+#
+# ── THE CONFIG ────────────────────────────────────────────────────────────────
+# server {
+#     listen 443 ssl http2;
+#     listen [::]:443 ssl http2;
+#     server_name example.com;
+#
+#     ssl_certificate     /etc/letsencrypt/live/example.com/fullchain.pem;
+#     ssl_certificate_key /etc/letsencrypt/live/example.com/privkey.pem;
+#
+#     root /var/www/pecanrev/dist;      # the deployed `npm run build` output
+#     client_max_body_size 70m;
+#
+#     # /api still has to reach Node. There is no static substitute for it.
+#     location /api/ {
+#         proxy_pass http://127.0.0.1:3001;
+#         proxy_http_version 1.1;
+#         proxy_set_header Host $host;
+#         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+#         proxy_set_header X-Forwarded-Proto $scheme;
+#         proxy_read_timeout 130s;
+#     }
+#
+#     # The prerender directory is an internal staging area, NOT a URL space.
+#     # Without this, every page is reachable at TWO URLs (/features/screening
+#     # and /__prerender/features/screening/index.html) and you have manufactured
+#     # duplicate content. Node returns 404 + noindex here; match that.
+#     # `^~` makes this beat the regex/prefix matching below.
+#     location ^~ /__prerender/ { return 404; }
+#
+#     # The one redirect worth hand-copying. Keep it in step with
+#     # PERMANENT_REDIRECTS in src/frontend/website/publicPages.js.
+#     location = /privacy { return 301 /terms#privacy; }
+#
+#     # Immutable, content-hashed build output. No /index.html fallback.
+#     location ^~ /assets/ {
+#         access_log off;
+#         expires 1y;
+#         add_header Cache-Control "public, immutable" always;
+#         try_files $uri =404;
+#     }
+#
+#     # THE HOMEPAGE. `$uri` is "/" here, so the generic rule below would look
+#     # for `/__prerender//index.html` — hence the exact-match special case.
+#     # Order matters: the prerendered document FIRST, the shell only as a
+#     # fallback for a build that somehow has no prerender output.
+#     location = / {
+#         add_header Cache-Control "no-cache" always;
+#         try_files /__prerender/index.html /index.html;
+#     }
+#
+#     # EVERY OTHER PATH.
+#     #   /features/screening  → /__prerender/features/screening/index.html  ✓ hit
+#     #   /favicon.svg         → miss, then $uri                             ✓ hit
+#     #   /sitemap.xml         → miss, then $uri                             ✓ hit
+#     #   /app                 → miss, miss, then /index.html — the SPA shell ✓
+#     #   /nonsense            → miss, miss, then /index.html — 200 SOFT 404  ✗
+#     # That last line is loss #1 above. There is no way to fix it in nginx
+#     # without hand-maintaining the registry's path list in this file, which
+#     # would rot within one release.
+#     location / {
+#         add_header Cache-Control "no-cache" always;
+#         try_files /__prerender$uri/index.html $uri /index.html;
+#     }
+# }
+#
+# ── VERIFY RECIPE B (all four must pass) ──────────────────────────────────────
+#   curl -s  https://example.com/features/screening | grep -o '<title>[^<]*'
+#     → the screening title, NOT the homepage title
+#   curl -s  https://example.com/ | grep -c '<h1'
+#     → 1
+#   curl -sI https://example.com/__prerender/terms/index.html | head -1
+#     → 404
+#   curl -sI https://example.com/assets/<any-hashed-file> | grep -i cache-control
+#     → public, immutable
+# And know that `curl -sI https://example.com/nonsense` answers 200. That is the
+# documented cost of not having Node in the path.

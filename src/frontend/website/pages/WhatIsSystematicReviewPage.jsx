@@ -10,7 +10,18 @@ import { ArticlePage } from '../ArticlePage.jsx';
 
 const TRAIL = [{label: "Home", path: "/"}, {label: "Resources", path: "/resources"}, {label: "What is a systematic review?"}];
 
-const RELATED = [{label: "PRISMA 2020 explained", path: "/resources/prisma-2020-explained", note: "how to report what you did"}, {label: "Title & abstract screening", path: "/resources/title-and-abstract-screening", note: "the stage that consumes most of the time"}, {label: "How to run a meta-analysis", path: "/resources/how-to-run-a-meta-analysis", note: "if you plan to pool"}];
+/**
+ * Editorial notes for the related-links block. 113 §5 — the registry entry's
+ * `related` array owns WHICH pages are listed and in what order (so the rendered
+ * links and the internal-link graph cannot drift); this map only supplies the
+ * one-line "why you would click this" beside each.
+ */
+const RELATED_NOTES = {
+  '/resources/how-to-conduct-a-systematic-review': 'the same method as an eight-step walkthrough',
+  '/resources/prisma-2020-explained': 'how to report what you did',
+  '/resources/title-and-abstract-screening': 'the stage that consumes most of the time',
+  '/resources/how-to-run-a-meta-analysis': 'if you plan to pool',
+};
 
 export function WhatIsSystematicReviewPage() {
   return (
@@ -19,7 +30,7 @@ export function WhatIsSystematicReviewPage() {
       eyebrow="Guide"
       trail={TRAIL}
       relatedTitle="Continue reading"
-      related={RELATED}
+      relatedNotes={RELATED_NOTES}
     />
   );
 }

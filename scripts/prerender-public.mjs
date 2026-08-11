@@ -55,6 +55,7 @@ import * as esbuild from 'esbuild';
 import {
   PUBLIC_PAGES,
   indexablePages,
+  sitemapPages,
   SITE_ORIGIN,
   absoluteUrl,
 } from '../src/frontend/website/publicPages.js';
@@ -428,9 +429,13 @@ async function main() {
 
   /* ── (f) sitemap.xml / robots.txt / llms.txt ── */
 
+  // 113 §2 — TWO different sets on purpose. sitemap.xml is a crawl submission and
+  // drops `sitemap: false` entries (/login, /register: indexable, but no content a
+  // crawler benefits from fetching); llms.txt keeps them, because "where do I sign
+  // in" is a question an assistant should be able to answer.
   const indexable = indexablePages();
   const sitemapEntries = [];
-  for (const entry of indexable) {
+  for (const entry of sitemapPages()) {
     const loc = absoluteUrl(entry.canonicalPath || entry.path, SITE_ORIGIN);
     const lastmod = entry.lastmodSource ? await gitLastModified(entry.lastmodSource) : '';
     sitemapEntries.push({
@@ -456,8 +461,14 @@ async function main() {
     title: entry.title,
     url: absoluteUrl(entry.canonicalPath || entry.path, SITE_ORIGIN),
     description: entry.description,
+    group: entry.navGroup,
   })));
   fs.writeFileSync(path.join(DIST, 'llms.txt'), llms, 'utf8');
+  const llmsListed = (llms.match(/^- \[/gm) || []).length;
+  if (llmsListed !== indexable.length) {
+    fail(`llms.txt listed ${llmsListed} of ${indexable.length} indexable pages — a page was dropped by grouping.`);
+    process.exit(1);
+  }
   log(`llms.txt: ${indexable.length} pages listed`);
 }
 

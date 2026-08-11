@@ -72,7 +72,9 @@ describe('content registry entries', () => {
   it('carries navLabel and navGroup for internal linking', () => {
     for (const entry of contentEntries) {
       expect(entry.navLabel, `${entry.path} has no navLabel`).toBeTruthy();
-      expect(['product', 'resources', 'company']).toContain(entry.navGroup);
+      // 113 W1-A added 'compare': the /compare section is its own footer column,
+      // because "which tool" is a different question from "what does this do".
+      expect(['product', 'resources', 'compare', 'company']).toContain(entry.navGroup);
     }
   });
 });
@@ -102,9 +104,13 @@ describe('content JSON-LD', () => {
     }
   });
 
-  it('marks the four methodology guides as Article and everything else as WebPage', () => {
+  it('marks every methodology guide as Article and everything else as WebPage', () => {
+    // 113 W1-B — the count is derived from the content documents rather than pinned
+    // at a literal, so adding a guide cannot silently skip the Article assertions.
     const guides = contentEntries.filter(e => e.path.startsWith('/resources/'));
-    expect(guides).toHaveLength(4);
+    const guideDocs = Object.keys(DOCS).filter(s => s.startsWith('resources/'));
+    expect(guides).toHaveLength(guideDocs.length);
+    expect(guides.length).toBeGreaterThanOrEqual(12);
     for (const entry of guides) {
       const nodes = entry.jsonLd(ctxFor(entry))['@graph'];
       const article = nodes.find(n => n['@type'] === 'Article');

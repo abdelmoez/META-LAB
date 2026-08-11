@@ -2869,8 +2869,10 @@ export async function getConsole(req, res) {
   // 112.md follow-up — 'email' (template management + delivery history) is
   // admin-only in the sidebar, mirroring 'research': mods hold the
   // view_email_delivery capability at the API layer with no console UI for it.
+  // 113.md item 8 — 'seo' follows the same shape: read-only, admin-only sidebar,
+  // view_seo_status held by mods at the API layer.
   const sections = role === 'admin'
-    ? ['overview', 'users', 'projects', 'sift', 'research', 'rob', 'searchProviders', 'waitlist', 'onboarding', 'content', 'settings', 'style', 'flags', 'extractionAi', 'livingReviews', 'tiers', 'messages', 'email', 'security', 'health', 'engineVersions']
+    ? ['overview', 'users', 'projects', 'sift', 'research', 'rob', 'searchProviders', 'waitlist', 'onboarding', 'content', 'settings', 'style', 'flags', 'extractionAi', 'livingReviews', 'tiers', 'messages', 'email', 'seo', 'security', 'health', 'engineVersions']
     : role === 'mod'
       ? ['users', 'messages']
       : [];

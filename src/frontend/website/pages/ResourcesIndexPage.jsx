@@ -10,7 +10,18 @@ import { ArticlePage } from '../ArticlePage.jsx';
 
 const TRAIL = [{label: "Home", path: "/"}, {label: "Resources"}];
 
-const RELATED = [{label: "Features", path: "/features", note: "what PecanRev does,  stage by stage"}];
+/**
+ * Editorial notes for the related-links block. 113 §5 — the registry entry's
+ * `related` array owns WHICH pages are listed and in what order (so the rendered
+ * links and the internal-link graph cannot drift); this map only supplies the
+ * one-line "why you would click this" beside each.
+ */
+const RELATED_NOTES = {
+  '/features': 'what PecanRev does, stage by stage',
+  '/systematic-review-software': 'the workflow as one page',
+  '/ai-systematic-review': 'which steps are model-assisted',
+  '/compare': 'how PecanRev sits beside other tools',
+};
 
 export function ResourcesIndexPage() {
   return (
@@ -19,7 +30,7 @@ export function ResourcesIndexPage() {
       eyebrow="Learn"
       trail={TRAIL}
       relatedTitle="Product"
-      related={RELATED}
+      relatedNotes={RELATED_NOTES}
     />
   );
 }

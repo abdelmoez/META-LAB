@@ -10,7 +10,18 @@ import { ArticlePage } from '../ArticlePage.jsx';
 
 const TRAIL = [{label: "Home", path: "/"}, {label: "Resources", path: "/resources"}, {label: "How to run a meta-analysis"}];
 
-const RELATED = [{label: "What is a systematic review?", path: "/resources/what-is-a-systematic-review", note: "the review that a meta-analysis sits inside"}, {label: "PRISMA 2020 explained", path: "/resources/prisma-2020-explained", note: "reporting the synthesis"}, {label: "Meta-analysis", path: "/features/meta-analysis", note: "the models PecanRev implements"}];
+/**
+ * Editorial notes for the related-links block. 113 §5 — the registry entry's
+ * `related` array owns WHICH pages are listed and in what order (so the rendered
+ * links and the internal-link graph cannot drift); this map only supplies the
+ * one-line "why you would click this" beside each.
+ */
+const RELATED_NOTES = {
+  '/resources/what-is-a-systematic-review': 'the review that a meta-analysis sits inside',
+  '/resources/forest-plots-and-heterogeneity': 'reading the plot and the heterogeneity statistics',
+  '/resources/prisma-2020-explained': 'reporting the synthesis',
+  '/features/meta-analysis': 'the models PecanRev implements',
+};
 
 export function MetaAnalysisGuidePage() {
   return (
@@ -19,7 +30,7 @@ export function MetaAnalysisGuidePage() {
       eyebrow="Guide"
       trail={TRAIL}
       relatedTitle="Continue reading"
-      related={RELATED}
+      relatedNotes={RELATED_NOTES}
     />
   );
 }

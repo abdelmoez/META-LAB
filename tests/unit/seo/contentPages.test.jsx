@@ -15,12 +15,15 @@
  */
 
 import { describe, it, expect } from 'vitest';
+import fs from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { MemoryRouter } from 'react-router-dom';
 
 import { DOCS, validateDocs, REQUIRED_FRONTMATTER } from '../../../src/frontend/website/content/index.js';
-import { PUBLIC_PAGES } from '../../../src/frontend/website/publicPages.js';
-import { FEATURE_LINKS, RESOURCE_LINKS, COMPANY_LINKS, allNavPaths } from '../../../src/frontend/website/siteNav.js';
+import { PUBLIC_PAGES, getPublicPage, resolveRelated } from '../../../src/frontend/website/publicPages.js';
+import { FEATURE_LINKS, RESOURCE_LINKS, COMPARE_LINKS, COMPANY_LINKS, allNavPaths } from '../../../src/frontend/website/siteNav.js';
 
 import { FeaturesIndexPage } from '../../../src/frontend/website/pages/FeaturesIndexPage.jsx';
 import { SearchEnginePage } from '../../../src/frontend/website/pages/SearchEnginePage.jsx';
@@ -34,6 +37,25 @@ import { Prisma2020Page } from '../../../src/frontend/website/pages/Prisma2020Pa
 import { ScreeningGuidePage } from '../../../src/frontend/website/pages/ScreeningGuidePage.jsx';
 import { MetaAnalysisGuidePage } from '../../../src/frontend/website/pages/MetaAnalysisGuidePage.jsx';
 import { AboutPage } from '../../../src/frontend/website/pages/AboutPage.jsx';
+// 113 W1-A — commercial, feature and comparison pages.
+import { SystematicReviewSoftwarePage } from '../../../src/frontend/website/pages/SystematicReviewSoftwarePage.jsx';
+import { AiSystematicReviewPage } from '../../../src/frontend/website/pages/AiSystematicReviewPage.jsx';
+import { RiskOfBiasPage } from '../../../src/frontend/website/pages/RiskOfBiasPage.jsx';
+import { PrismaFlowDiagramPage } from '../../../src/frontend/website/pages/PrismaFlowDiagramPage.jsx';
+import { NetworkMetaAnalysisPage } from '../../../src/frontend/website/pages/NetworkMetaAnalysisPage.jsx';
+import { CaseSeriesPage } from '../../../src/frontend/website/pages/CaseSeriesPage.jsx';
+import { CompareIndexPage } from '../../../src/frontend/website/pages/CompareIndexPage.jsx';
+import { CompareCovidencePage } from '../../../src/frontend/website/pages/CompareCovidencePage.jsx';
+import { CompareRayyanPage } from '../../../src/frontend/website/pages/CompareRayyanPage.jsx';
+// 113 W1-B — the eight methodology guides.
+import { ConductSystematicReviewPage } from '../../../src/frontend/website/pages/ConductSystematicReviewPage.jsx';
+import { SearchStrategyGuidePage } from '../../../src/frontend/website/pages/SearchStrategyGuidePage.jsx';
+import { DataExtractionGuidePage } from '../../../src/frontend/website/pages/DataExtractionGuidePage.jsx';
+import { RiskOfBiasGuidePage } from '../../../src/frontend/website/pages/RiskOfBiasGuidePage.jsx';
+import { ForestPlotsGuidePage } from '../../../src/frontend/website/pages/ForestPlotsGuidePage.jsx';
+import { PublicationBiasGuidePage } from '../../../src/frontend/website/pages/PublicationBiasGuidePage.jsx';
+import { NetworkMetaAnalysisGuidePage } from '../../../src/frontend/website/pages/NetworkMetaAnalysisGuidePage.jsx';
+import { PrismaFlowDiagramGuidePage } from '../../../src/frontend/website/pages/PrismaFlowDiagramGuidePage.jsx';
 
 /** [slug, Component] for every markdown-backed public page. */
 const PAGES = [
@@ -49,7 +71,28 @@ const PAGES = [
   ['resources/title-and-abstract-screening', ScreeningGuidePage],
   ['resources/how-to-run-a-meta-analysis', MetaAnalysisGuidePage],
   ['about', AboutPage],
+  // 113 W1-A
+  ['systematic-review-software', SystematicReviewSoftwarePage],
+  ['ai-systematic-review', AiSystematicReviewPage],
+  ['features/risk-of-bias', RiskOfBiasPage],
+  ['features/prisma-flow-diagram', PrismaFlowDiagramPage],
+  ['features/network-meta-analysis', NetworkMetaAnalysisPage],
+  ['features/case-series', CaseSeriesPage],
+  ['compare', CompareIndexPage],
+  ['compare/pecanrev-vs-covidence', CompareCovidencePage],
+  ['compare/pecanrev-vs-rayyan', CompareRayyanPage],
+  // 113 W1-B
+  ['resources/how-to-conduct-a-systematic-review', ConductSystematicReviewPage],
+  ['resources/systematic-review-search-strategy', SearchStrategyGuidePage],
+  ['resources/data-extraction-for-systematic-reviews', DataExtractionGuidePage],
+  ['resources/risk-of-bias-assessment', RiskOfBiasGuidePage],
+  ['resources/forest-plots-and-heterogeneity', ForestPlotsGuidePage],
+  ['resources/publication-bias', PublicationBiasGuidePage],
+  ['resources/network-meta-analysis-explained', NetworkMetaAnalysisGuidePage],
+  ['resources/prisma-flow-diagram-guide', PrismaFlowDiagramGuidePage],
 ];
+
+const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
 
 const html = (Component, slug) => renderToStaticMarkup(
   <MemoryRouter initialEntries={[slug ? `/${slug}` : '/']}>
@@ -136,12 +179,16 @@ describe('SSR rendering', () => {
 });
 
 describe('cornerstone guides cite real sources', () => {
-  const GUIDES = [
-    'resources/what-is-a-systematic-review',
-    'resources/prisma-2020-explained',
-    'resources/title-and-abstract-screening',
-    'resources/how-to-run-a-meta-analysis',
-  ];
+  // 113 W1-B — DERIVED, not a hand-maintained list. Every markdown document under
+  // /resources/ is a methodology guide and must carry real citations; deriving the
+  // set means a new guide cannot be added without meeting the bar.
+  const GUIDES = Object.keys(DOCS).filter(slug => slug.startsWith('resources/'));
+
+  it('covers every published methodology guide', () => {
+    expect(GUIDES.length).toBeGreaterThanOrEqual(12);
+    expect(GUIDES).toContain('resources/what-is-a-systematic-review');
+    expect(GUIDES).toContain('resources/prisma-flow-diagram-guide');
+  });
 
   it('each guide has a References section with at least four resolvable citations', () => {
     for (const slug of GUIDES) {
@@ -166,7 +213,9 @@ describe('internal linking (111.md §23)', () => {
   });
 
   it('every feature and resource page is reachable from the shared footer', () => {
-    const linked = new Set([...FEATURE_LINKS, ...RESOURCE_LINKS, ...COMPANY_LINKS].map(l => l.path));
+    const linked = new Set(
+      [...FEATURE_LINKS, ...RESOURCE_LINKS, ...COMPARE_LINKS, ...COMPANY_LINKS].map(l => l.path),
+    );
     for (const [slug] of PAGES) {
       if (slug === 'features' || slug === 'resources' || slug === 'about') continue;
       expect(linked.has(`/${slug}`), `/${slug} is orphaned`).toBe(true);
@@ -178,6 +227,72 @@ describe('internal linking (111.md §23)', () => {
       const markup = html(Component, slug);
       for (const link of FEATURE_LINKS) expect(markup).toContain(`href="${link.path}"`);
       for (const link of RESOURCE_LINKS) expect(markup).toContain(`href="${link.path}"`);
+      for (const link of COMPARE_LINKS) expect(markup).toContain(`href="${link.path}"`);
+    }
+  });
+});
+
+/**
+ * 113 §5 — the related-links block is GENERATED from the registry.
+ *
+ * Page components used to hand-roll their own `RELATED` array, so the rendered links
+ * and the internal-link graph were two lists maintained by hand and free to drift —
+ * and the orphan test could only ever check the one it could see. ArticlePage now
+ * calls resolveRelated() on the registry entry, and the component supplies only the
+ * per-link note. These assertions are what makes "the graph IS the page" a fact
+ * rather than an intention.
+ */
+describe('related links are the registry graph (113 §5)', () => {
+  /** The RelatedLinks <aside> is the only <aside> a content page renders. */
+  const relatedAside = (markup) => {
+    const start = markup.indexOf('<aside');
+    if (start === -1) return null;
+    const end = markup.indexOf('</aside>', start);
+    return end === -1 ? null : markup.slice(start, end);
+  };
+  const hrefsIn = (fragment) =>
+    [...fragment.matchAll(/href="([^"]+)"/g)].map((m) => m[1]);
+
+  for (const [slug, Component] of PAGES) {
+    it(`/${slug} renders exactly its registry related list, in order`, () => {
+      const entry = getPublicPage(`/${slug}`);
+      expect(entry, `/${slug} must be a registry page`).toBeTruthy();
+      expect(Array.isArray(entry.related), `/${slug} must declare related[]`).toBe(true);
+
+      const aside = relatedAside(html(Component, slug));
+      expect(aside, `/${slug} renders no related block`).toBeTruthy();
+      expect(hrefsIn(aside)).toEqual(entry.related);
+    });
+  }
+
+  it('every rendered related link carries a visible label and an editorial note', () => {
+    for (const [slug, Component] of PAGES) {
+      const aside = relatedAside(html(Component, slug));
+      for (const link of resolveRelated(`/${slug}`)) {
+        // React escapes text nodes, so "Title & abstract screening" ships as
+        // "Title &amp; abstract screening".
+        const label = link.label.replace(/&/g, '&amp;').replace(/</g, '&lt;');
+        expect(aside, `/${slug} → ${link.path} has no label`).toContain(`>${label}</a>`);
+      }
+      // A bare list of page names is a menu; the note is what makes it a
+      // recommendation. Missing notes are a content gap, so fail on them.
+      // RelatedLinks prefixes each note with an em dash (JSX `&mdash;`, which
+      // renderToStaticMarkup emits as the literal character, not the entity).
+      const notes = (aside.match(/—/g) || []).length;
+      expect(notes, `/${slug} related links are missing notes`)
+        .toBe(getPublicPage(`/${slug}`).related.length);
+    }
+  });
+
+  it('no page component hand-rolls a related list any more', () => {
+    // The prop and the const are both gone; a reintroduced `related={…}` would
+    // silently take precedence over the registry and reopen the drift.
+    const dir = path.join(repoRoot, 'src/frontend/website/pages');
+    for (const file of fs.readdirSync(dir)) {
+      const source = fs.readFileSync(path.join(dir, file), 'utf8');
+      expect(source, `${file} still declares a local RELATED array`)
+        .not.toMatch(/const RELATED\s*=/);
+      expect(source, `${file} still passes a related= prop`).not.toMatch(/\brelated=\{/);
     }
   });
 });

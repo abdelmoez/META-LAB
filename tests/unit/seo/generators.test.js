@@ -13,9 +13,17 @@ import {
   sitemapXml,
   robotsTxt,
   llmsTxt,
+  LLMS_GROUPS,
+  LLMS_OTHER_HEADING,
   ROBOTS_DISALLOW,
   ROBOTS_SITEMAP,
 } from '../../../scripts/seo/generators.js';
+import {
+  SITE_ORIGIN,
+  absoluteUrl,
+  indexablePages,
+  sitemapPages,
+} from '../../../src/frontend/website/publicPages.js';
 
 describe('sitemapXml', () => {
   it('emits a well-formed urlset with one <url> per entry', () => {
@@ -124,14 +132,22 @@ describe('llmsTxt', () => {
       title: 'PecanRev — Systematic Review & Meta-Analysis Platform',
       url: 'https://pecanrev.com/',
       description: 'An end-to-end platform for systematic reviews.',
+      group: 'product',
     },
-    { title: 'About PecanRev', url: 'https://pecanrev.com/about', description: 'Who we build for.' },
+    {
+      title: 'About PecanRev',
+      url: 'https://pecanrev.com/about',
+      description: 'Who we build for.',
+      group: 'company',
+    },
   ];
   const txt = llmsTxt(pages);
+  /** Everything before the first `## ` section heading. */
+  const summaryOf = (out) => out.split(/\n## /)[0];
 
   it('starts with the # PecanRev header and a prose summary', () => {
     expect(txt.startsWith('# PecanRev\n')).toBe(true);
-    const summary = txt.split('## Pages')[0];
+    const summary = summaryOf(txt);
     expect(summary).toMatch(/systematic review and meta-analysis platform/i);
     // 2-3 honest sentences, not a wall of copy.
     const sentences = summary.split('\n').filter((l) => l.trim() && !l.startsWith('#'));
@@ -155,7 +171,6 @@ describe('llmsTxt', () => {
   });
 
   it('lists each page as a markdown link with its description', () => {
-    expect(txt).toContain('## Pages');
     expect(txt).toContain(
       '- [PecanRev — Systematic Review & Meta-Analysis Platform](https://pecanrev.com/): '
       + 'An end-to-end platform for systematic reviews.',
@@ -167,6 +182,66 @@ describe('llmsTxt', () => {
     const out = llmsTxt([{ title: 'Bare', url: 'https://pecanrev.com/bare' }]);
     expect(out).toContain('- [Bare](https://pecanrev.com/bare)\n');
     expect(out).not.toContain('- [Bare](https://pecanrev.com/bare):');
+  });
+
+  /* ── 113 §6 — grouping ── */
+
+  it('groups pages under their navGroup heading, in the declared order', () => {
+    expect(txt).toContain('## Product');
+    expect(txt).toContain('## Company');
+    expect(txt.indexOf('## Product')).toBeLessThan(txt.indexOf('## Company'));
+    // Each link sits under its own heading, not in one flat list.
+    const productSection = txt.split('## Product')[1].split('\n## ')[0];
+    expect(productSection).toContain('](https://pecanrev.com/)');
+    expect(productSection).not.toContain('/about');
+  });
+
+  it('emits no heading for a group with no pages', () => {
+    const out = llmsTxt([{ title: 'Only', url: 'https://pecanrev.com/x', group: 'product' }]);
+    expect(out).toContain('## Product');
+    for (const g of LLMS_GROUPS.filter((x) => x.key !== 'product')) {
+      expect(out, `empty group ${g.key} should not print a heading`).not.toContain(`## ${g.heading}`);
+    }
+  });
+
+  /**
+   * A page silently vanishing from llms.txt is precisely the class of bug this file
+   * exists to prevent, so an unrecognised group must degrade to a visible catch-all
+   * rather than to nothing. scripts/prerender-public.mjs additionally fails the build
+   * when the link count does not match the indexable count.
+   */
+  it('never drops a page whose group is unknown or missing', () => {
+    const out = llmsTxt([
+      { title: 'Grouped', url: 'https://pecanrev.com/a', group: 'product' },
+      { title: 'Strange', url: 'https://pecanrev.com/b', group: 'not-a-real-group' },
+      { title: 'Ungrouped', url: 'https://pecanrev.com/c' },
+    ]);
+    expect(out).toContain(`## ${LLMS_OTHER_HEADING}`);
+    expect((out.match(/^- \[/gm) || []).length).toBe(3);
+    expect(out).toContain('- [Strange](https://pecanrev.com/b)');
+    expect(out).toContain('- [Ungrouped](https://pecanrev.com/c)');
+  });
+
+  it('lists EVERY indexable registry page exactly once, /login and /register included', () => {
+    const indexable = indexablePages();
+    const out = llmsTxt(indexable.map((e) => ({
+      title: e.title,
+      url: absoluteUrl(e.canonicalPath || e.path, SITE_ORIGIN),
+      description: e.description,
+      group: e.navGroup,
+    })));
+    const links = out.match(/^- \[/gm) || [];
+    expect(links.length, 'grouping must not drop a page').toBe(indexable.length);
+    for (const e of indexable) {
+      const url = absoluteUrl(e.canonicalPath || e.path, SITE_ORIGIN);
+      expect(out.split(`](${url}):`).length - 1, `${e.path} listed once`).toBe(1);
+    }
+    // sitemap:false pages are OUT of the sitemap but IN here — "where do I sign in"
+    // is a question an assistant should be able to answer.
+    expect(out).toContain(`](${SITE_ORIGIN}/login):`);
+    expect(out).toContain(`](${SITE_ORIGIN}/register):`);
+    // No section is left empty or unlabelled.
+    expect(out).not.toContain(`## ${LLMS_OTHER_HEADING}`);
   });
 
   it('contains no marketing hype', () => {
@@ -181,8 +256,49 @@ describe('llmsTxt', () => {
     for (const input of [undefined, null, [], [null], [{}], [{ title: 'x' }]]) {
       const out = llmsTxt(input);
       expect(out).toContain('# PecanRev');
-      expect(out).toContain('## Pages');
       expect(out).not.toContain('- [');
+      // No page, no section headings — an empty "## Product" advertises nothing.
+      expect(out).not.toContain('\n## ');
+      expect(out.endsWith('\n')).toBe(true);
+    }
+  });
+});
+
+/* ─────────── 113 §2 — what the built sitemap actually contains ───────────── */
+
+describe('sitemap.xml built from the registry', () => {
+  const xml = sitemapXml(sitemapPages().map((e) => ({
+    loc: absoluteUrl(e.canonicalPath || e.path, SITE_ORIGIN),
+    ...(e.changefreq ? { changefreq: e.changefreq } : {}),
+    ...(typeof e.priority === 'number' ? { priority: e.priority } : {}),
+  })));
+
+  it('EXCLUDES every `sitemap: false` entry — /login and /register', () => {
+    // Regression pin: the deployed sitemap listed both, which submits two thin auth
+    // forms for crawl alongside the pages that actually have something to say.
+    expect(xml).not.toContain(`<loc>${SITE_ORIGIN}/login</loc>`);
+    expect(xml).not.toContain(`<loc>${SITE_ORIGIN}/register</loc>`);
+  });
+
+  it('includes every other indexable page, once each', () => {
+    for (const e of sitemapPages()) {
+      const loc = `<loc>${absoluteUrl(e.canonicalPath || e.path, SITE_ORIGIN)}</loc>`;
+      expect(xml.split(loc).length - 1, `${e.path} appears exactly once`).toBe(1);
+    }
+    expect((xml.match(/<url>/g) || []).length).toBe(sitemapPages().length);
+  });
+
+  it('lists the pages that carry the commercial and educational intent', () => {
+    for (const p of ['/', '/systematic-review-software', '/ai-systematic-review',
+      '/features/risk-of-bias', '/features/prisma-flow-diagram', '/compare',
+      '/resources/how-to-conduct-a-systematic-review', '/resources/publication-bias']) {
+      expect(xml, `${p} missing from sitemap.xml`).toContain(`<loc>${absoluteUrl(p, SITE_ORIGIN)}</loc>`);
+    }
+  });
+
+  it('never submits a noindex surface', () => {
+    for (const p of ['/beta-waitlist', '/app', '/ops', '/sift-beta', '/__prerender']) {
+      expect(xml, `${p} must never be submitted`).not.toContain(`${SITE_ORIGIN}${p}`);
     }
   });
 });

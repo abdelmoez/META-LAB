@@ -44,6 +44,11 @@ export const NAV_SECTIONS = [
   // history. Admin-only in the sidebar, same asymmetry as 'research' (mods hold
   // view_email_delivery at the API layer with no console UI for it).
   { id: 'email',      icon: 'send',      label: 'Email'         },
+  // 113.md item 8 — read-only discoverability console. Two sharply separated
+  // panels (repository validation vs externally-observed serving) plus the
+  // first-party landing counters. Admin-only in the sidebar, same asymmetry as
+  // 'research' and 'email' (mods hold view_seo_status at the API layer).
+  { id: 'seo',        icon: 'globe',     label: 'SEO'           },
   { id: 'security',   icon: 'shield',    label: 'Security'      },
   { id: 'health',     icon: 'activity',  label: 'Health'        },
   { id: 'engineVersions', icon: 'layers', label: 'Engine Versions' },

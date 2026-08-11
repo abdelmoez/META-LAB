@@ -33,10 +33,14 @@ import {
   matchPattern,
   normalizePath,
   organizationJsonLd,
+  relatedLabelFor,
+  resolveRelated,
+  sitemapPages,
   softwareApplicationJsonLd,
   stripTrailingSlash,
   webSiteJsonLd,
 } from '../../../src/frontend/website/publicPages.js';
+import { allNavPaths, CHROME_LINKS } from '../../../src/frontend/website/siteNav.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(here, '../../..');
@@ -130,6 +134,184 @@ describe('publicPages registry — entry shape', () => {
         expect(['always', 'hourly', 'daily', 'weekly', 'monthly', 'yearly', 'never'])
           .toContain(e.changefreq);
       }
+    }
+  });
+});
+
+/* ───────────────── 113 §2 — the `sitemap` flag ───────────────────────────── */
+
+describe('publicPages registry — sitemap eligibility', () => {
+  /**
+   * The ONLY two entries allowed to opt out. Hardcoded so that adding a third is a
+   * deliberate act with a test edit attached, not something that happens because a
+   * new page felt thin on the day it was written — every silent drop from the
+   * sitemap is a page nobody notices is missing.
+   */
+  const SITEMAP_OPT_OUT = ['/login', '/register'];
+
+  it('only /login and /register opt out, and they stay indexable', () => {
+    const optedOut = PUBLIC_PAGES.filter((e) => e.sitemap === false).map((e) => e.path);
+    expect(optedOut.sort()).toEqual([...SITEMAP_OPT_OUT].sort());
+    for (const p of SITEMAP_OPT_OUT) {
+      const entry = getPublicPage(p);
+      // sitemap:false is NOT noindex. These pages answer the navigational query
+      // "PecanRev login"; noindexing them hands that query to a third party.
+      expect(entry.indexable, `${p} must stay indexable`).toBe(true);
+      expect(entry.canonicalPath, `${p} must stay self-canonical`).toBe(p);
+      expect(isNonIndexablePath(p), `${p} must not be noindex`).toBe(false);
+    }
+  });
+
+  it('sitemapPages() is indexablePages() minus the opt-outs', () => {
+    const sitemap = sitemapPages().map((e) => e.path);
+    const indexable = indexablePages().map((e) => e.path);
+    for (const p of SITEMAP_OPT_OUT) {
+      expect(indexable, `${p} belongs in llms.txt`).toContain(p);
+      expect(sitemap, `${p} must not be submitted for crawl`).not.toContain(p);
+    }
+    expect(sitemap).toEqual(indexable.filter((p) => !SITEMAP_OPT_OUT.includes(p)));
+    expect(sitemap.length).toBe(indexable.length - SITEMAP_OPT_OUT.length);
+  });
+
+  it('every sitemap entry is self-canonical, so no submitted URL points elsewhere', () => {
+    for (const e of sitemapPages()) expect(e.canonicalPath, `${e.path}`).toBe(e.path);
+  });
+
+  it('the default is inclusion — an entry with no flag is submitted', () => {
+    const unflagged = PUBLIC_PAGES.filter((e) => e.indexable !== false && e.sitemap === undefined);
+    const sitemap = new Set(sitemapPages().map((e) => e.path));
+    for (const e of unflagged) expect(sitemap.has(e.path), `${e.path}`).toBe(true);
+  });
+});
+
+/* ───────────────── 113 §5 — the related-links graph ──────────────────────── */
+
+describe('publicPages registry — related-links graph', () => {
+  /**
+   * The four indexable entries with no `related` array, and why each is exempt.
+   *
+   * `related` is not decoration: it is what ArticlePage renders as the page's
+   * related-links block. Declaring links on a page that renders none would be a
+   * graph that claims coverage the HTML does not have. These four are the only
+   * registry entries whose component is not ArticlePage:
+   *   /          Landing — its footer already links every feature, guide and
+   *              comparison, which is strictly more than a related block would.
+   *   /terms     legal page, deliberately chrome-less.
+   *   /login     auth form, ~17 words. Sending a visitor mid-sign-in to a
+   *   /register  methodology guide is not a link, it is an interruption.
+   * Hardcoded so a new page cannot quietly join them.
+   */
+  const RELATED_EXEMPT = ['/', '/terms', '/login', '/register'];
+
+  const withRelated = PUBLIC_PAGES.filter((e) => Array.isArray(e.related));
+
+  it('exactly the non-exempt indexable entries declare `related`', () => {
+    const missing = PUBLIC_PAGES
+      .filter((e) => e.indexable !== false && !RELATED_EXEMPT.includes(e.path))
+      .filter((e) => !Array.isArray(e.related))
+      .map((e) => e.path);
+    expect(missing, `these indexable pages have no related[]: ${missing.join(', ')}`).toEqual([]);
+    for (const p of RELATED_EXEMPT) {
+      expect(getPublicPage(p).related, `${p} is exempt and must not declare related[]`).toBeUndefined();
+    }
+    expect(withRelated.length).toBe(indexablePages().length - RELATED_EXEMPT.length);
+  });
+
+  it('every related list is 3-5 real registry paths, deduped, never self', () => {
+    for (const e of withRelated) {
+      expect(e.related.length, `${e.path} has ${e.related.length} related links`)
+        .toBeGreaterThanOrEqual(3);
+      expect(e.related.length, `${e.path} has ${e.related.length} related links`)
+        .toBeLessThanOrEqual(5);
+      expect(new Set(e.related).size, `${e.path} repeats a related path`).toBe(e.related.length);
+      for (const target of e.related) {
+        expect(isRegistryPath(target), `${e.path} links to unregistered ${target}`).toBe(true);
+        expect(target, `${e.path} lists itself`).not.toBe(e.path);
+        expect(getPublicPage(target).indexable, `${e.path} links to noindex ${target}`).not.toBe(false);
+      }
+    }
+  });
+
+  it('resolveRelated returns registry order with labels, and honours notes', () => {
+    const entry = getPublicPage('/features/screening');
+    const links = resolveRelated('/features/screening', { '/features/search-engine': 'where records come from' });
+    expect(links.map((l) => l.path)).toEqual(entry.related);
+    expect(links.every((l) => l.label && l.label.length > 1)).toBe(true);
+    expect(links.find((l) => l.path === '/features/search-engine').note).toBe('where records come from');
+    // A note for a path the registry does NOT list cannot smuggle in an extra link.
+    expect(resolveRelated('/features/screening', { '/about': 'nope' }).map((l) => l.path))
+      .toEqual(entry.related);
+    // Exempt and unknown paths resolve to nothing rather than throwing.
+    expect(resolveRelated('/login')).toEqual([]);
+    expect(resolveRelated('/nope-not-a-page')).toEqual([]);
+  });
+
+  /**
+   * A related block is read as a list of destinations. Two rows reading
+   * "Data extraction" is not a choice, it is a coin flip — and `navLabel` is written
+   * for a footer column whose heading ("Product" / "Learn") already disambiguates it.
+   * `relatedLabel` exists for exactly this; the assertion makes forgetting it fail.
+   */
+  it('no two links in one related block share a label', () => {
+    for (const e of withRelated) {
+      const labels = resolveRelated(e.path).map((l) => l.label);
+      const dupes = labels.filter((l, i) => labels.indexOf(l) !== i);
+      expect(dupes, `${e.path} shows ambiguous related labels: ${dupes.join(', ')}`).toEqual([]);
+    }
+  });
+
+  it('relatedLabel is only set where navLabel would genuinely be ambiguous', () => {
+    for (const e of PUBLIC_PAGES.filter((x) => x.relatedLabel)) {
+      expect(relatedLabelFor(e)).toBe(e.relatedLabel);
+      const collides = PUBLIC_PAGES.some((o) => o !== e && o.navLabel && o.navLabel === e.navLabel);
+      expect(collides, `${e.path} sets relatedLabel but its navLabel is already unique`).toBe(true);
+    }
+    // Fallback chain, for entries that need no override.
+    expect(relatedLabelFor(getPublicPage('/features/screening'))).toBe('Screening');
+    expect(relatedLabelFor(null)).toBe('');
+  });
+
+  /**
+   * THE orphan test. A page nothing links to is a page Google reaches only through
+   * the sitemap and then treats as unimportant; internally it is a page a reader can
+   * never stumble into. Reachability is the union of the two link systems that
+   * actually render: the shared nav/footer (siteNav.js) and the related graph.
+   */
+  it('every indexable page is reachable from the navigation or the related graph', () => {
+    const reachable = new Set([...allNavPaths(), ...withRelated.flatMap((e) => e.related)]);
+    const orphans = indexablePages().map((e) => e.path).filter((p) => !reachable.has(p));
+    expect(orphans, `orphaned public pages: ${orphans.join(', ')}`).toEqual([]);
+  });
+
+  it('most pages earn an inbound RELATED link, not just a footer row', () => {
+    // Nav coverage alone is weak: the footer links everything, so it can never fail.
+    // The related graph is the signal that carries topical context, so hold it to a
+    // high bar without pretending the four exempt pages can meet it.
+    const inbound = new Set(withRelated.flatMap((e) => e.related));
+    const missing = indexablePages()
+      .map((e) => e.path)
+      .filter((p) => !inbound.has(p) && !RELATED_EXEMPT.includes(p));
+    expect(missing, `no page links to: ${missing.join(', ')}`).toEqual([]);
+  });
+
+  it('CHROME_LINKS matches the hrefs PageShell actually renders', () => {
+    // CHROME_LINKS is what lets the orphan test count /, /login and /register as
+    // reachable. If the navbar buttons are ever removed or re-pointed, that claim
+    // becomes false — so pin it to the source rather than trusting the constant.
+    const shell = fs.readFileSync(
+      path.join(repoRoot, 'src/frontend/website/PageShell.jsx'), 'utf8',
+    );
+    for (const link of CHROME_LINKS) {
+      expect(shell, `PageShell no longer renders href="${link.path}"`)
+        .toContain(`href="${link.path}"`);
+      expect(isRegistryPath(link.path), `${link.path} is not a registry page`).toBe(true);
+    }
+    expect(CHROME_LINKS.map((l) => l.path).sort()).toEqual(['/', '/login', '/register']);
+  });
+
+  it('every navigation path is a registry path', () => {
+    for (const p of allNavPaths()) {
+      expect(isRegistryPath(p), `nav links to unregistered ${p}`).toBe(true);
     }
   });
 });

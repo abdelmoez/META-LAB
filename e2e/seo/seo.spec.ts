@@ -9,24 +9,25 @@
  * The registry feeds two independent head paths, and BOTH are now complete:
  *
  *   - BUILD TIME — scripts/prerender-public.mjs splices the head into
- *     dist/__prerender/<path>/index.html for all 17 entries. This is what a crawler
- *     receives.
+ *     dist/__prerender/<path>/index.html for EVERY registry entry. This is what a
+ *     crawler receives.
  *   - RUNTIME — src/frontend/website/usePageHead.js applies the head from inside the
  *     React tree. Landing (`/`), Terms, Login, Register and BetaWaitlist call it
- *     directly; the twelve content pages under src/frontend/website/pages/ get it
- *     from PageShell, which resolves `useLocation().pathname` against the registry
+ *     directly; every content page under src/frontend/website/pages/ gets it from
+ *     PageShell, which resolves `useLocation().pathname` against the registry
  *     (getPublicPage ∘ stripTrailingSlash) and hands the entry to usePageHead.
  *
  * That closes the gap this header used to describe: on the Vite dev server, and
  * after any client-side navigation, every indexable route now applies its own
  * title/description/canonical instead of inheriting index.html's shell head. So
  * RUNTIME_HEAD_PATHS is simply INDEXABLE_PATHS — group 1 and group 2 assert the same
- * 16 routes from the two different directions.
+ * routes from the two different directions, and both lists are DERIVED from the
+ * registry (113.md §5) rather than transcribed from it.
  *
  * ─────────────────────────────────────────────────────────────────────────────
  * GROUP 1 — RUNTIME HEAD (baseURL, dev + prod)
  * ─────────────────────────────────────────────────────────────────────────────
- * All 16 indexable routes, driven by usePageHead. Every read here is retry-based:
+ * Every indexable route, driven by usePageHead. Every read here is retry-based:
  * these components are `lazy()`, so their chunk — and the effect — executes AFTER
  * the load event `page.goto()` resolves on. A bare `page.title()` reads the shell
  * default and races hydration. `waitForRuntimeHead()` is the gate; there are no
@@ -35,11 +36,13 @@
  * change proves the head is re-applied rather than merely set once on first paint.
  *
  * ─────────────────────────────────────────────────────────────────────────────
- * GROUP 2 — CRAWLER-VISIBLE HEAD (Express only, all 16 routes)
+ * GROUP 2 — CRAWLER-VISIBLE HEAD (Express only, every indexable route)
  * ─────────────────────────────────────────────────────────────────────────────
- * Navigates to the Express origin, where the prerendered document is served, and
- * asserts the head a crawler actually receives: distinct title, description,
- * canonical, exactly one <h1>, parseable JSON-LD.
+ * Fetches the raw bytes from the Express origin, where the prerendered document is
+ * served, and asserts the head a crawler actually receives: distinct title,
+ * description, canonical, exactly one <h1>, parseable JSON-LD. One looped test over
+ * plain HTTP rather than a browser navigation per route — see the comment above the
+ * group for why that is both faster and closer to the thing being tested.
  *
  * ─────────────────────────────────────────────────────────────────────────────
  * GROUP 3 — SERVER-OWNED CRAWLER SEMANTICS (Express only)
@@ -66,36 +69,25 @@
 import { request as playwrightRequest, APIRequestContext, Page } from '@playwright/test';
 import { anonTest, expect } from '../fixtures/stitch-test';
 import { API_URL } from '../helpers/env';
+import { PUBLIC_PAGES } from '../../src/frontend/website/publicPages.js';
 
 /**
- * The 16 `indexable: true` entries of src/frontend/website/publicPages.js.
+ * Every `indexable: true` entry of src/frontend/website/publicPages.js — DERIVED.
  *
- * Hardcoded on purpose: the registry is ESM `.js` under src/ and this suite is TS
- * compiled by Playwright's own transform, so importing it would drag the whole
- * website module graph into the test process. tests/unit/seo/publicPagesRegistry.test.js
- * is the guard that keeps this list honest — it asserts the indexable count, so a
- * 17th public page fails there and sends you back here.
+ * This list used to be sixteen hardcoded strings, on the theory that importing the
+ * registry would drag the website module graph into the test process. It does not:
+ * publicPages.js is dependency-free BY CONTRACT (see its header — no React, no
+ * `process`, no `fs`, no app module), which is exactly why the Express server and
+ * vite.config.js can both import it. The cost of hardcoding was real, though — the
+ * site went from 16 public pages to 33 and this suite silently kept asserting the
+ * original sixteen, i.e. the seventeen newest pages, the ones most likely to be
+ * broken, were the ones nothing checked.
  *
  * `/beta-waitlist` is the one registry entry deliberately absent: `indexable: false`.
  */
-const INDEXABLE_PATHS = [
-  '/',
-  '/terms',
-  '/login',
-  '/register',
-  '/features',
-  '/features/search-engine',
-  '/features/screening',
-  '/features/data-extraction',
-  '/features/meta-analysis',
-  '/features/manuscript',
-  '/resources',
-  '/resources/what-is-a-systematic-review',
-  '/resources/prisma-2020-explained',
-  '/resources/title-and-abstract-screening',
-  '/resources/how-to-run-a-meta-analysis',
-  '/about',
-] as const;
+const INDEXABLE_PATHS: string[] = PUBLIC_PAGES
+  .filter((entry: { indexable?: boolean }) => entry.indexable !== false)
+  .map((entry: { path: string }) => entry.path);
 
 /**
  * The indexable routes whose component applies `usePageHead` (see the file header).
@@ -233,32 +225,71 @@ anonTest.describe('SEO — runtime page head (usePageHead)', () => {
   });
 });
 
-/* ═══════════ GROUP 2 — crawler-visible head, all 16 (Express only) ═══════ */
+/* ═══════ GROUP 2 — crawler-visible head, every indexable route (Express) ═══ */
+
+/**
+ * One looped RAW-HTTP test rather than one browser test per route.
+ *
+ * Deriving INDEXABLE_PATHS took this group from 16 routes to 33, and a `page.goto()`
+ * per route would have roughly doubled the suite's wall time to assert something a
+ * browser is the wrong instrument for: these are the BYTES a crawler receives, before
+ * any script runs. `server.get()` reads exactly those bytes, so the loop is both
+ * faster and a closer match to the thing under test. Group 1 still drives a real
+ * browser, because the runtime head genuinely requires one.
+ */
+const titleOf = (html: string) => (/<title>([^<]*)<\/title>/i.exec(html) || [, ''])[1].trim();
+const jsonLdBlocksOf = (html: string) =>
+  [...html.matchAll(/<script type="application\/ld\+json">([\s\S]*?)<\/script>/gi)].map((m) => m[1]);
 
 anonTest.describe('SEO — crawler-visible head (prerendered, Express only)', () => {
-  for (const path of INDEXABLE_PATHS) {
-    anonTest(`${path} is served with a complete, crawlable head`, async ({ page }) => {
-      anonTest.skip(!server, skipReason);
-      const res = await page.goto(new URL(path, API_URL).href);
-      expect(res?.status(), `${path} should not be an error page`).toBeLessThan(400);
-      await assertHeadContract(page, path);
-    });
-  }
-
-  anonTest('@smoke every indexable route is served a distinct <title>', async ({ page }) => {
+  anonTest('@smoke every indexable route serves a complete, distinct, crawlable head', async () => {
     anonTest.skip(!server, skipReason);
-    const seen = new Map<string, string>();
+    expect(INDEXABLE_PATHS.length, 'the registry should expose a real public surface')
+      .toBeGreaterThanOrEqual(30);
+
+    const seenTitle = new Map<string, string>();
     for (const path of INDEXABLE_PATHS) {
-      await page.goto(new URL(path, API_URL).href);
-      await expect
-        .poll(() => page.title(), { message: `${path} should set a substantive <title>` })
-        .toMatch(/\S.{5,}/s);
-      const title = (await page.title()).trim();
-      const clash = seen.get(title);
+      const res = await server!.get(path);
+      expect(res.status(), `${path} should be served`).toBe(200);
+      const html = await res.text();
+
+      const title = titleOf(html);
+      expect(title.length, `${path} should set a substantive <title>`).toBeGreaterThan(5);
+      const clash = seenTitle.get(title);
       expect(clash, `${path} duplicates the <title> already used by ${clash}`).toBeUndefined();
-      seen.set(title, path);
+      seenTitle.set(title, path);
+
+      const description = /<meta name="description" content="([^"]*)"/i.exec(html);
+      expect(description?.[1]?.length ?? 0, `${path} should carry a meta description`)
+        .toBeGreaterThan(20);
+
+      expect(html, `${path} canonical should be the absolute production URL`)
+        .toContain(`<link rel="canonical" href="${canonicalFor(path)}"`);
+
+      // The prerenderer enforces the same rule at build time.
+      expect((html.match(/<h1[\s>]/gi) || []).length, `${path} should render exactly one <h1>`)
+        .toBe(1);
+
+      const blocks = jsonLdBlocksOf(html);
+      if (!JSON_LD_EXEMPT.has(path)) {
+        expect(blocks.length, `${path} should emit a JSON-LD graph`).toBeGreaterThan(0);
+      }
+      for (const raw of blocks) {
+        expect(() => JSON.parse(raw), `${path} JSON-LD should parse`).not.toThrow();
+        expect(typeof JSON.parse(raw), `${path} JSON-LD should be an object`).toBe('object');
+      }
     }
-    expect(seen.size).toBe(INDEXABLE_PATHS.length);
+    expect(seenTitle.size).toBe(INDEXABLE_PATHS.length);
+  });
+
+  anonTest('a prerendered page is a real DOM once a browser parses it', async ({ page }) => {
+    anonTest.skip(!server, skipReason);
+    // The loop above reads bytes; this proves those bytes parse into the document a
+    // rendering crawler walks. One representative page is enough — the shape is
+    // identical for all of them, and the per-page assertions are covered above.
+    const res = await page.goto(new URL('/features/screening', API_URL).href);
+    expect(res?.status(), 'should not be an error page').toBeLessThan(400);
+    await assertHeadContract(page, '/features/screening');
   });
 });
 

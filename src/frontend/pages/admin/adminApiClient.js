@@ -258,6 +258,34 @@ export const adminApi = {
     delivery:        (p)        => req(`${BASE}/email/delivery${qs(p)}`),
   },
 
+  // ── 113.md item 8 — Ops › SEO (read-only; view_seo_status, admin + mod) ──────
+  // THE TWO PANELS MUST NEVER BE MIXED IN THE UI:
+  //  status()      REPOSITORY VALIDATION, computed server-side from the
+  //    public-page registry + dist/ at request time →
+  //    { generatedAt, origin, baseUrl, inventory:[{ path, title, description,
+  //      descriptionLength, canonicalPath, canonicalUrl, indexable, inSitemap,
+  //      hasJsonLd, component, componentExists, lastmodSource }], counts,
+  //      artifacts:{ distPresent, prerender:{present,pageCount,generatedAt},
+  //      sitemap:{present,urlCount,generatedAt}, robots, llms },
+  //      checks:[{ id, label, status:'pass'|'fail'|'unknown', detail, offenders }],
+  //      verification:{ google, bing, note }, passing, failing }
+  //  liveCheck()   EXTERNALLY OBSERVED — the server fetches the PUBLIC origin
+  //    (PUBLIC_BASE_URL) for '/', one feature page, sitemap.xml and robots.txt
+  //    with an 8s budget → { baseUrl, checkedAt, timeoutMs, results:[…] }. Each
+  //    result is either a measurement ({ status, servedTitle, titleMatches,
+  //    h1Present, jsonLdPresent } / { urlCount }) or an honest failure
+  //    ({ ok:false, error:'fetch failed: …' }). NEVER cached as repository truth:
+  //    it answers "is the prerendered HTML actually being served?", which is the
+  //    production failure the 111 round shipped blind.
+  //  analytics(days) first-party aggregate from SeoPageView →
+  //    { days, from, to, rows:[{ path, total, classes:{search,ai,referral,
+  //      internal,direct} }], totals, grandTotal, observedDays, available }.
+  seo: {
+    status:    ()           => req(`${BASE}/seo/status`),
+    liveCheck: ()           => req(`${BASE}/seo/live-check`, { method: 'POST' }),
+    analytics: (days = 14)  => req(`${BASE}/seo/analytics${qs({ days })}`),
+  },
+
   // 66.md P5/P6 — global extraction-AI + living-review policy (admin-only).
   extractionAi: {
     get:          ()         => req(`${BASE}/extraction-ai/settings`),

@@ -100,7 +100,15 @@ const DEFAULTS = {
     { label: 'About',    href: '/about'     },
     { label: 'Contact',  href: '#contact'   },
   ],
-  heroHeadline:      'From screening to meta-analysis,\none clean workspace for evidence synthesis.',
+  // 113 §4 — the H1. It carries the BRAND and the product category, because it is the
+  // one heading a crawler and an answer engine treat as the page's subject, and the
+  // previous wording ("From screening to meta-analysis, one clean workspace for
+  // evidence synthesis.") named neither PecanRev nor "systematic reviews". Deliberately
+  // NOT "systematic review software" — that head term belongs to
+  // /systematic-review-software, and two pages competing for it helps neither.
+  // \n is rendered as a line break (the h1 sets whiteSpace: 'pre-line'); both lines are
+  // the same length as the copy they replace, so the hero layout is untouched.
+  heroHeadline:      'PecanRev: from screening to meta-analysis,\none clean workspace for systematic reviews.',
   heroSubtitle:      'Organize citations, screen studies, extract data, run pooled analyses, and export research-ready reports — all in one auditable platform.',
   ctaText:           'Get started',
   ctaSecondaryText:  'Sign in',

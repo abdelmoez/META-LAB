@@ -47,6 +47,8 @@ export const OPS_SECTION_IDS = [
   'messages',
   // 112.md follow-up — outbound email templates + delivery history.
   'email',
+  // 113.md item 8 — read-only SEO console.
+  'seo',
   'security', 'health', 'engineVersions',
 ] as const;
 
@@ -78,6 +80,7 @@ export class OpsPage {
     tiers: /^Tiers$/i,
     messages: /Contact Messages/i,
     email: /^Email$/i,
+    seo: /^SEO$/i,
     security: /Security/i,
     health: /System Health/i,
     engineVersions: /Engine Versions/i,
@@ -157,6 +160,24 @@ export class OpsPage {
   /** Open an Email sub-tab. */
   async openEmailTab(id: 'templates' | 'delivery'): Promise<void> {
     await this.emailTab(id).click();
+  }
+
+  // ── SEO section (113.md item 8) ──────────────────────────────────────────────
+  // READ-ONLY console. `seo-live-run` reaches the PUBLIC origin over the network,
+  // so specs assert that the button exists — never what the internet answered.
+  seoTab(id: 'repository' | 'live' | 'analytics'): Locator { return this.page.getByTestId(`seo-tab-${id}`); }
+  get seoInventoryTable(): Locator { return this.page.getByTestId('seo-inventory-table'); }
+  get seoChecksList(): Locator { return this.page.getByTestId('seo-checks'); }
+  seoCheck(id: string): Locator { return this.page.getByTestId(`seo-check-${id}`); }
+  get seoLiveRun(): Locator { return this.page.getByTestId('seo-live-run'); }
+  get seoLiveScope(): Locator { return this.page.getByTestId('seo-live-scope'); }
+  get seoVerification(): Locator { return this.page.getByTestId('seo-verification'); }
+  get seoAnalyticsTable(): Locator { return this.page.getByTestId('seo-analytics-table'); }
+  get seoAnalyticsScope(): Locator { return this.page.getByTestId('seo-analytics-scope'); }
+
+  /** Open an SEO sub-tab. */
+  async openSeoTab(id: 'repository' | 'live' | 'analytics'): Promise<void> {
+    await this.seoTab(id).click();
   }
 
   // ── Settings tab ─────────────────────────────────────────────────────────────

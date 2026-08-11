@@ -42,6 +42,8 @@ import notificationsRouter from './routes/notifications.js';
 import invitesRouter      from './routes/invites.js';
 import acceptInvitationRouter from './routes/acceptInvitation.js';
 import emailPublicRouter  from './routes/emailPublic.js';
+// 113.md phase 19 — the public, cookie-free landing-page beacon.
+import seoPublicRouter    from './routes/seoPublic.js';
 import eventsRouter       from './routes/events.js';
 import robRouter          from './routes/rob.js';
 import onboardingRouter   from './routes/onboarding.js';
@@ -306,6 +308,20 @@ const emailPublicLimiter = rateLimit({
   legacyHeaders: false,
 });
 
+// ── Rate limiter for the public SEO page-view beacon (113.md phase 19) ────────
+// One request per public page view, so the budget is well above the public
+// mounts that guard forms (a single visitor reading six guides costs six). The
+// over-limit HANDLER answers 204, not 429: this beacon is fire-and-forget from a
+// marketing page, and a rate-limit error in a visitor's console would be a
+// self-inflicted bug report.
+const seoBeaconLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: process.env.NODE_ENV === 'production' ? 300 : 2000,
+  standardHeaders: true,
+  legacyHeaders: false,
+  handler: (_req, res) => res.status(204).end(),
+});
+
 // ── Rate limiter for institution autocomplete (prompt35) — typeahead fires often,
 // so a generous-but-bounded budget (120 req / 15 min in prod) per IP. ───────────
 const institutionLimiter = rateLimit({
@@ -510,6 +526,15 @@ app.use('/api/settings', settingsRouter);
 // applies requireAuth at router level and would 401 the unsubscribe link). The
 // signed token in the query string is the only credential.
 app.use('/api/email', emailPublicLimiter, emailPublicRouter);
+
+// ── Public SEO beacon (113.md phase 19) — POST /api/seo/pageview from the public
+// marketing pages. No auth (visitors are anonymous by definition), no cookies
+// read, no per-visitor row written: the service allowlists the path against the
+// public-page registry, classifies the referrer server-side and increments one
+// daily aggregate. Mounted here, with the other public routers and BEFORE the
+// bare '/api' importExport router (which applies requireAuth at router level and
+// would 401 every beacon).
+app.use('/api/seo', seoBeaconLimiter, seoPublicRouter);
 
 // ── Protected route mounting ───────────────────────────────────────────────────
 app.use('/api/profile',              profileRouter);

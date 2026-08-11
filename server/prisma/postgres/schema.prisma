@@ -3032,3 +3032,23 @@ model ChatDigestPending {
   @@index([userId, projectId])
   @@index([lastMessageAt])
 }
+
+// ── 113.md SEO analytics — privacy-safe DAILY AGGREGATES only. No visitor
+// rows, no IPs, no user agents, no user linkage, no cookies: one row per
+// (UTC day, registry path, referrer class), incremented in place. Paths are
+// allowlisted against the public-page registry at write time so junk URLs
+// never mint rows. No @@unique (live-table rule): the writer does
+// findFirst-then-create; racing increments may create twin rows and readers
+// must SUM per (day, path, referrerClass).
+model SeoPageView {
+  id            String   @id @default(cuid())
+  day           String   // YYYY-MM-DD (UTC)
+  path          String   // registry canonicalPath (allowlisted)
+  referrerClass String   @default("direct") // 'search' | 'ai' | 'referral' | 'internal' | 'direct'
+  count         Int      @default(0)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@index([day, path, referrerClass])
+  @@index([path, day])
+}

@@ -10,7 +10,18 @@ import { ArticlePage } from '../ArticlePage.jsx';
 
 const TRAIL = [{label: "Home", path: "/"}, {label: "Resources", path: "/resources"}, {label: "PRISMA 2020 explained"}];
 
-const RELATED = [{label: "What is a systematic review?", path: "/resources/what-is-a-systematic-review", note: "the method PRISMA reports on"}, {label: "Title & abstract screening", path: "/resources/title-and-abstract-screening", note: "where the flow-diagram numbers are generated"}, {label: "Manuscript editor", path: "/features/manuscript", note: "PRISMA counts derived from the record ledger"}];
+/**
+ * Editorial notes for the related-links block. 113 §5 — the registry entry's
+ * `related` array owns WHICH pages are listed and in what order (so the rendered
+ * links and the internal-link graph cannot drift); this map only supplies the
+ * one-line "why you would click this" beside each.
+ */
+const RELATED_NOTES = {
+  '/resources/what-is-a-systematic-review': 'the method PRISMA reports on',
+  '/resources/title-and-abstract-screening': 'where the flow-diagram numbers are generated',
+  '/resources/prisma-flow-diagram-guide': 'the diagram box by box',
+  '/features/manuscript': 'PRISMA counts derived from the record ledger',
+};
 
 export function Prisma2020Page() {
   return (
@@ -19,7 +30,7 @@ export function Prisma2020Page() {
       eyebrow="Guide"
       trail={TRAIL}
       relatedTitle="Continue reading"
-      related={RELATED}
+      relatedNotes={RELATED_NOTES}
     />
   );
 }

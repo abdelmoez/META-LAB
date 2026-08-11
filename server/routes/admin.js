@@ -14,6 +14,11 @@ import {
   restoreEmailTemplateAdmin, setEmailTemplateEnabledAdmin,
   previewEmailTemplateAdmin, testSendEmailTemplateAdmin, listEmailDeliveryAdmin,
 } from '../controllers/emailAdminController.js';
+// 113.md item 8 — Ops › SEO: repository validation, the externally-observed
+// serving self-check, and the first-party landing counters.
+import {
+  getSeoStatus, runSeoLiveCheck, getSeoAnalytics,
+} from '../controllers/seoAdminController.js';
 import { requireAdminOrMod, requireTargetEditable } from '../middleware/requireRole.js';
 // 95.md — user-management surface (metrics/timeline/notes/actions/bulk/export).
 import {
@@ -353,6 +358,17 @@ router.delete('/email/templates/:key', requirePermission('manage_email_templates
 router.post('/email/templates/:key/enabled', requirePermission('manage_email_templates'), setEmailTemplateEnabledAdmin);
 router.post('/email/templates/:key/preview', requirePermission('manage_email_templates'), previewEmailTemplateAdmin);
 router.post('/email/templates/:key/test-send', requirePermission('manage_email_templates'), testSendEmailTemplateAdmin);
+
+// ── 113.md item 8 — Ops › SEO (read-only) ─────────────────────────────────────
+// One capability for the whole section: view_seo_status (admin + mod). There is
+// no manage_* twin because nothing here is writable — the registry is code, the
+// crawler files are build artefacts, and the live check is a GET against our own
+// public origin. `live-check` is a POST because it is an ACTION (it reaches out
+// over the network on click) rather than a cacheable read; it still writes
+// nothing, which is why it shares the read capability.
+router.get('/seo/status', requirePermission('view_seo_status'), getSeoStatus);
+router.get('/seo/analytics', requirePermission('view_seo_status'), getSeoAnalytics);
+router.post('/seo/live-check', requirePermission('view_seo_status'), runSeoLiveCheck);
 
 router.get('/audit-log', requireAdmin, getAuditLog);
 router.get('/security-events', requireAdmin, getSecurityEvents);

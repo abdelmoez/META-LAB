@@ -10,7 +10,19 @@ import { ArticlePage } from '../ArticlePage.jsx';
 
 const TRAIL = [{label: "Home", path: "/"}, {label: "Features"}];
 
-const RELATED = [{label: "What is a systematic review?", path: "/resources/what-is-a-systematic-review", note: "the method these features implement"}, {label: "PRISMA 2020 explained", path: "/resources/prisma-2020-explained", note: "the reporting standard"}];
+/**
+ * Editorial notes for the related-links block. 113 §5 — the registry entry's
+ * `related` array owns WHICH pages are listed and in what order (so the rendered
+ * links and the internal-link graph cannot drift); this map only supplies the
+ * one-line "why you would click this" beside each.
+ */
+const RELATED_NOTES = {
+  '/systematic-review-software': 'the workflow as one page',
+  '/compare': 'how PecanRev sits beside other tools',
+  '/resources/how-to-conduct-a-systematic-review': 'the method these features implement',
+  '/resources/what-is-a-systematic-review': 'the definition behind the method',
+  '/about': 'who builds this, and how',
+};
 
 export function FeaturesIndexPage() {
   return (
@@ -18,8 +30,8 @@ export function FeaturesIndexPage() {
       slug="features"
       eyebrow="Product"
       trail={TRAIL}
-      relatedTitle="Methodology guides"
-      related={RELATED}
+      relatedTitle="Explore next"
+      relatedNotes={RELATED_NOTES}
     />
   );
 }

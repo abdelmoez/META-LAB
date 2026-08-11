@@ -23,9 +23,10 @@
 import { useLocation } from 'react-router-dom';
 import { C, FONT, MONO, alpha } from '../theme/tokens.js';
 import { Icon } from '../components/icons.jsx';
-import { FEATURE_LINKS, RESOURCE_LINKS, COMPANY_LINKS, PAGE_NAV_LINKS } from './siteNav.js';
+import { FEATURE_LINKS, RESOURCE_LINKS, COMPARE_LINKS, COMPANY_LINKS, PAGE_NAV_LINKS } from './siteNav.js';
 import { getPublicPage, stripTrailingSlash } from './publicPages.js';
 import { usePageHead } from './usePageHead.js';
+import { useSeoBeacon } from './useSeoBeacon.js';
 
 const MAX_W = 1104;
 
@@ -145,6 +146,7 @@ export function SiteFooter() {
           </div>
           <FooterColumn title="Product" links={FEATURE_LINKS} />
           <FooterColumn title="Learn" links={RESOURCE_LINKS} />
+          <FooterColumn title="Compare" links={COMPARE_LINKS} />
           <FooterColumn title="Company" links={COMPANY_LINKS} />
         </div>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', borderTop: `1px solid ${C.brd}`, paddingTop: 24, flexWrap: 'wrap', gap: 12 }}>
@@ -179,7 +181,14 @@ export function PageCta({ title, body, primaryLabel = 'Create a free account' })
   );
 }
 
-/** A related-reading block. 111.md §23 — every page links onward, none is a dead end. */
+/**
+ * A related-reading block. 111.md §23 — every page links onward, none is a dead end.
+ *
+ * 113 §5 — presentational only. `links` is what `resolveRelated()` returned for the
+ * page's registry `related` array (ArticlePage does that call), so this component
+ * never decides membership: the rendered block and the internal-link graph the
+ * orphan test walks are the same list by construction.
+ */
 export function RelatedLinks({ title = 'Related', links }) {
   if (!links || links.length === 0) return null;
   return (
@@ -214,7 +223,14 @@ export function PageShell({ eyebrow, h1, lede, trail, updated, author, narrow = 
   // keyed on the canonical, slash-stripped path; an unknown path yields undefined,
   // and usePageHead(null) is a deliberate no-op.
   const { pathname } = useLocation();
-  usePageHead(getPublicPage(stripTrailingSlash(pathname)) || null);
+  const canonicalPath = stripTrailingSlash(pathname);
+  const entry = getPublicPage(canonicalPath) || null;
+  usePageHead(entry);
+  // 113.md phase 19 — first-party landing counter. Effect-only, so it never runs
+  // under renderToString (prerender + SSR pins) and never touches the head. The
+  // path is only sent for a REGISTERED public page; the server allowlists it
+  // again, so an unknown route contributes nothing from either side.
+  useSeoBeacon(entry ? canonicalPath : null);
 
   return (
     <div style={{ background: C.bg, minHeight: '100vh', fontFamily: FONT, color: C.txt }}>

@@ -90,6 +90,26 @@ const Prisma2020Page           = preloadableLazy(() => import('./frontend/websit
 const ScreeningGuidePage       = preloadableLazy(() => import('./frontend/website/pages/ScreeningGuidePage.jsx'));
 const MetaAnalysisGuidePage    = preloadableLazy(() => import('./frontend/website/pages/MetaAnalysisGuidePage.jsx'));
 const AboutPage                = preloadableLazy(() => import('./frontend/website/pages/AboutPage.jsx'));
+// 113 W1-A — commercial + feature + comparison pages. Same contract as above:
+// pure, SSR-safe, prerendered, therefore preloadableLazy.
+const SystematicReviewSoftwarePage = preloadableLazy(() => import('./frontend/website/pages/SystematicReviewSoftwarePage.jsx'));
+const AiSystematicReviewPage   = preloadableLazy(() => import('./frontend/website/pages/AiSystematicReviewPage.jsx'));
+const RiskOfBiasFeaturePage    = preloadableLazy(() => import('./frontend/website/pages/RiskOfBiasPage.jsx'));
+const PrismaFlowDiagramPage    = preloadableLazy(() => import('./frontend/website/pages/PrismaFlowDiagramPage.jsx'));
+const NetworkMetaAnalysisPage  = preloadableLazy(() => import('./frontend/website/pages/NetworkMetaAnalysisPage.jsx'));
+const CaseSeriesFeaturePage    = preloadableLazy(() => import('./frontend/website/pages/CaseSeriesPage.jsx'));
+const CompareIndexPage         = preloadableLazy(() => import('./frontend/website/pages/CompareIndexPage.jsx'));
+const CompareCovidencePage     = preloadableLazy(() => import('./frontend/website/pages/CompareCovidencePage.jsx'));
+const CompareRayyanPage        = preloadableLazy(() => import('./frontend/website/pages/CompareRayyanPage.jsx'));
+// 113 W1-B — the eight methodology guides under /resources. Same contract again.
+const ConductSystematicReviewPage = preloadableLazy(() => import('./frontend/website/pages/ConductSystematicReviewPage.jsx'));
+const SearchStrategyGuidePage  = preloadableLazy(() => import('./frontend/website/pages/SearchStrategyGuidePage.jsx'));
+const DataExtractionGuidePage  = preloadableLazy(() => import('./frontend/website/pages/DataExtractionGuidePage.jsx'));
+const RiskOfBiasGuidePage      = preloadableLazy(() => import('./frontend/website/pages/RiskOfBiasGuidePage.jsx'));
+const ForestPlotsGuidePage     = preloadableLazy(() => import('./frontend/website/pages/ForestPlotsGuidePage.jsx'));
+const PublicationBiasGuidePage = preloadableLazy(() => import('./frontend/website/pages/PublicationBiasGuidePage.jsx'));
+const NetworkMetaAnalysisGuidePage = preloadableLazy(() => import('./frontend/website/pages/NetworkMetaAnalysisGuidePage.jsx'));
+const PrismaFlowDiagramGuidePage = preloadableLazy(() => import('./frontend/website/pages/PrismaFlowDiagramGuidePage.jsx'));
 const NotFound      = lazy(() => import('./frontend/pages/NotFound.jsx'));
 // 68.md (P8) — the PUBLIC synthesis page. Unwrapped (no auth): serves both the
 // shareable public page and the chrome-less embed. Same component, `embed` prop.
@@ -133,6 +153,25 @@ const PRERENDERED_ROUTES = {
   '/resources/title-and-abstract-screening': ScreeningGuidePage,
   '/resources/how-to-run-a-meta-analysis': MetaAnalysisGuidePage,
   '/about': AboutPage,
+  // 113 W1-A
+  '/systematic-review-software': SystematicReviewSoftwarePage,
+  '/ai-systematic-review': AiSystematicReviewPage,
+  '/features/risk-of-bias': RiskOfBiasFeaturePage,
+  '/features/prisma-flow-diagram': PrismaFlowDiagramPage,
+  '/features/network-meta-analysis': NetworkMetaAnalysisPage,
+  '/features/case-series': CaseSeriesFeaturePage,
+  '/compare': CompareIndexPage,
+  '/compare/pecanrev-vs-covidence': CompareCovidencePage,
+  '/compare/pecanrev-vs-rayyan': CompareRayyanPage,
+  // 113 W1-B
+  '/resources/how-to-conduct-a-systematic-review': ConductSystematicReviewPage,
+  '/resources/systematic-review-search-strategy': SearchStrategyGuidePage,
+  '/resources/data-extraction-for-systematic-reviews': DataExtractionGuidePage,
+  '/resources/risk-of-bias-assessment': RiskOfBiasGuidePage,
+  '/resources/forest-plots-and-heterogeneity': ForestPlotsGuidePage,
+  '/resources/publication-bias': PublicationBiasGuidePage,
+  '/resources/network-meta-analysis-explained': NetworkMetaAnalysisGuidePage,
+  '/resources/prisma-flow-diagram-guide': PrismaFlowDiagramGuidePage,
 };
 
 /**
@@ -306,17 +345,36 @@ export default function App() {
         {/* 111.md §§6, 8, 9 — public marketing + methodology pages. Anonymous-reachable,
             indexable, and prerendered at build time. Kept above the auth routes so the
             public information architecture reads as one block. */}
+        <Route path="/systematic-review-software"                  element={<SystematicReviewSoftwarePage />} />
+        <Route path="/ai-systematic-review"                        element={<AiSystematicReviewPage />} />
         <Route path="/features"                                    element={<FeaturesIndexPage />} />
         <Route path="/features/search-engine"                      element={<SearchEnginePage />} />
         <Route path="/features/screening"                          element={<ScreeningFeaturePage />} />
         <Route path="/features/data-extraction"                    element={<DataExtractionPage />} />
         <Route path="/features/meta-analysis"                      element={<MetaAnalysisFeaturePage />} />
         <Route path="/features/manuscript"                         element={<ManuscriptPage />} />
+        <Route path="/features/risk-of-bias"                       element={<RiskOfBiasFeaturePage />} />
+        <Route path="/features/prisma-flow-diagram"                element={<PrismaFlowDiagramPage />} />
+        <Route path="/features/network-meta-analysis"              element={<NetworkMetaAnalysisPage />} />
+        <Route path="/features/case-series"                        element={<CaseSeriesFeaturePage />} />
+        <Route path="/compare"                                     element={<CompareIndexPage />} />
+        <Route path="/compare/pecanrev-vs-covidence"               element={<CompareCovidencePage />} />
+        <Route path="/compare/pecanrev-vs-rayyan"                  element={<CompareRayyanPage />} />
         <Route path="/resources"                                   element={<ResourcesIndexPage />} />
         <Route path="/resources/what-is-a-systematic-review"       element={<WhatIsSystematicReviewPage />} />
         <Route path="/resources/prisma-2020-explained"             element={<Prisma2020Page />} />
         <Route path="/resources/title-and-abstract-screening"      element={<ScreeningGuidePage />} />
         <Route path="/resources/how-to-run-a-meta-analysis"        element={<MetaAnalysisGuidePage />} />
+        {/* 113 W1-B — the eight methodology guides. Registry-gated prefix, so each
+            one needs BOTH this route and a PUBLIC_PAGES entry. */}
+        <Route path="/resources/how-to-conduct-a-systematic-review"    element={<ConductSystematicReviewPage />} />
+        <Route path="/resources/systematic-review-search-strategy"     element={<SearchStrategyGuidePage />} />
+        <Route path="/resources/data-extraction-for-systematic-reviews" element={<DataExtractionGuidePage />} />
+        <Route path="/resources/risk-of-bias-assessment"               element={<RiskOfBiasGuidePage />} />
+        <Route path="/resources/forest-plots-and-heterogeneity"        element={<ForestPlotsGuidePage />} />
+        <Route path="/resources/publication-bias"                      element={<PublicationBiasGuidePage />} />
+        <Route path="/resources/network-meta-analysis-explained"       element={<NetworkMetaAnalysisGuidePage />} />
+        <Route path="/resources/prisma-flow-diagram-guide"             element={<PrismaFlowDiagramGuidePage />} />
         <Route path="/about"                                       element={<AboutPage />} />
 
         {/* Public Terms of Service + Privacy Policy (prompt29) — works signed in or out */}

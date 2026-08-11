@@ -14,6 +14,13 @@
  *   - <lastmod> is OMITTED when the caller has no real date. Never `new Date()`.
  *   - llms.txt describes the product in plain capability language. No superlatives,
  *     no unverifiable claims, no marketing adjectives.
+ *
+ * WHICH PAGES GO WHERE (113 §2) — decided by the registry, not here:
+ *   - sitemap.xml gets `sitemapPages()`  — indexable AND not `sitemap: false`.
+ *   - llms.txt  gets `indexablePages()` — the wider set, so /login and /register
+ *     stay discoverable to an assistant answering "where do I sign in" while staying
+ *     out of the crawl submission. scripts/prerender-public.mjs makes both calls;
+ *     these builders only serialise the list they are handed.
  */
 
 /* ────────────────────────────── sitemap.xml ─────────────────────────────── */
@@ -122,10 +129,35 @@ export const LLMS_SUMMARY = [
 ];
 
 /**
+ * 113 §6 — llms.txt sections, in emission order.
+ *
+ * The file grew from 16 pages to 33; one flat list of 33 links is a worse map of the
+ * site than six labelled ones, because the reader (a model deciding which URL answers
+ * a question) has to infer the difference between a feature page, a methodology guide
+ * and a comparison from the slug. `key` is the registry entry's `navGroup`, so adding
+ * a page to an existing group needs no change here.
+ *
+ * A page whose navGroup matches nothing below lands in the trailing catch-all rather
+ * than being dropped: a silently missing page is exactly the failure this file exists
+ * to prevent, and it is caught by tests/unit/seo/generators.test.js.
+ */
+export const LLMS_GROUPS = [
+  { key: 'product', heading: 'Product' },
+  { key: 'resources', heading: 'Methodology guides' },
+  { key: 'compare', heading: 'Comparisons' },
+  { key: 'company', heading: 'Company' },
+  { key: 'account', heading: 'Account access' },
+  { key: 'legal', heading: 'Legal' },
+];
+
+/** Heading used for pages whose group is unknown. */
+export const LLMS_OTHER_HEADING = 'Other pages';
+
+/**
  * Build llms.txt — a plain-text map of the public site for LLM crawlers.
  *
- * @param {{title: string, url: string, description?: string}[]} pages
- *   `url` MUST already be absolute.
+ * @param {{title: string, url: string, description?: string, group?: string}[]} pages
+ *   `url` MUST already be absolute. `group` is the registry `navGroup`; see LLMS_GROUPS.
  * @returns {string} the complete file, newline-terminated.
  */
 export function llmsTxt(pages) {
@@ -135,13 +167,29 @@ export function llmsTxt(pages) {
     lines.push(sentence);
     lines.push('');
   }
-  lines.push('## Pages');
-  lines.push('');
-  for (const page of list) {
-    const description = typeof page.description === 'string' ? page.description.trim() : '';
-    lines.push(description
-      ? `- [${page.title}](${page.url}): ${description}`
-      : `- [${page.title}](${page.url})`);
+
+  const known = new Set(LLMS_GROUPS.map((g) => g.key));
+  const sections = LLMS_GROUPS
+    .map((g) => ({ heading: g.heading, items: list.filter((p) => p.group === g.key) }))
+    .concat([{
+      heading: LLMS_OTHER_HEADING,
+      items: list.filter((p) => !known.has(p.group)),
+    }])
+    .filter((s) => s.items.length > 0);
+
+  for (const section of sections) {
+    lines.push(`## ${section.heading}`);
+    lines.push('');
+    for (const page of section.items) {
+      const description = typeof page.description === 'string' ? page.description.trim() : '';
+      lines.push(description
+        ? `- [${page.title}](${page.url}): ${description}`
+        : `- [${page.title}](${page.url})`);
+    }
+    lines.push('');
   }
+
+  // Trailing blank line from the last section becomes the file's single terminator.
+  while (lines.length && lines[lines.length - 1] === '') lines.pop();
   return `${lines.join('\n')}\n`;
 }

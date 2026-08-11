@@ -36,9 +36,10 @@ The 16 indexable pages currently cover the shaded rows. The rest is the roadmap.
 software` · `evidence synthesis software` · `evidence synthesis platform` ·
 `literature review software`
 
-→ Served today by `/`, `/features`, and the five feature pages. **Gap:** no dedicated
-"AI systematic review software" page; the claim is spread across `/` and
-`/features/screening`.
+→ Served today by `/`, `/features`, the feature pages, and (since 113) the flagship
+`/systematic-review-software` commercial page and the dedicated `/ai-systematic-review`
+page (which scopes exactly which parts of the product use external models and which are
+deterministic — the honest version of the "AI systematic review" claim).
 
 ### Tier 2 — Feature ownership (partially covered)
 `systematic review screening software` · `title and abstract screening` · `full-text
@@ -50,23 +51,21 @@ meta-analysis` · `PRISMA flow diagram` · `PRISMA 2020 software` · `risk of bi
 `network meta-analysis` · `NMA software` · `forest plot software` · `systematic review
 manuscript writing` · `research manuscript generator`
 
-→ **Gaps with a real product behind them and no page yet:** risk of bias / RoB 2 /
-ROBINS-I, network meta-analysis as its own page, PRISMA flow diagram as a
-tool-plus-explainer page, case-series and case-report extraction (a genuine PecanRev
-differentiator, currently undocumented publicly), forest plots, living reviews,
-dual/independent extraction and adjudication.
+→ Since 113: `/features/risk-of-bias`, `/features/network-meta-analysis`,
+`/features/prisma-flow-diagram` and `/features/case-series` cover the four largest of
+these gaps. **Still open:** forest plots as a feature page, living reviews,
+dual/independent extraction and adjudication as its own page.
 
-### Tier 3 — Educational authority (4 guides shipped)
-Shipped: what a systematic review is · PRISMA 2020 explained · title & abstract
-screening · how to run a meta-analysis.
+### Tier 3 — Educational authority (12 guides shipped)
+Shipped in 111: what a systematic review is · PRISMA 2020 explained · title & abstract
+screening · how to run a meta-analysis. Shipped in 113: how to conduct a systematic
+review (cornerstone) · search strategy (PubMed/MeSH/Boolean) · data extraction · risk
+of bias assessment · forest plots & heterogeneity · publication bias · network
+meta-analysis explained · PRISMA flow diagram guide.
 
-Next, in rough priority order: PubMed search strategy syntax · MeSH terms explained ·
-Boolean and proximity operators across databases · inter-rater reliability and Cohen's
-kappa for screening · heterogeneity (I², τ²) · fixed vs. random effects · risk-of-bias
-tool selection (RoB 2 vs. ROBINS-I vs. Newcastle-Ottawa vs. QUADAS-2) · GRADE certainty
-· publication bias and funnel plots · PROSPERO registration · deduplication across
-databases · full-text retrieval and screening logistics · network meta-analysis
-assumptions (transitivity, consistency) · reporting a PRISMA flow diagram correctly.
+Still open, in rough priority order: inter-rater reliability and Cohen's kappa ·
+GRADE certainty · PROSPERO registration · deduplication across databases · full-text
+retrieval logistics · scoping vs systematic vs rapid reviews.
 
 ### Tier 4 — Long-tail
 Hundreds of specific methodological questions ("how many reviewers do you need for
@@ -185,3 +184,79 @@ Once §1 is done:
 - An RSS or JSON feed for the resources hub, if the cadence in §3 is sustained.
 - Structured `HowTo` schema on the guides — only where the page really is a procedure,
   and only if the visible page matches the markup step for step.
+
+---
+
+## 8. 113 update — production diagnosis, demand map, and the user checklist (2026-08-10)
+
+### 8.1 Why the 111 work produced no visible result (root-cause diagnosis)
+
+Live fetches of pecanrev.com on 2026-08-10 found the 111 build **deployed but not
+served**: every route — including `/features/screening` — returned the SPA shell with
+the homepage's default title, no meta description, no H1 article content and no JSON-LD.
+The production nginx serves `dist/` statically with an SPA fallback, so
+`server/middleware/publicPages.js` (which serves `dist/__prerender/<path>/index.html`)
+never runs for page routes. Consequences observed:
+
+- crawlers saw an empty application shell on every URL (the exact Phase-40 failure);
+- a garbage URL returned the shell (soft-404) instead of the middleware's real 404;
+- `www.pecanrev.com` presents a TLS certificate covering only the apex + a nip.io name
+  — hard cert error, no www→apex redirect;
+- a branded web search for "PecanRev" returned **zero** pecanrev.com results (new
+  domain + no Search Console submission + shell-only HTML + no backlinks);
+- the sitemap contained `/login` and `/register` (removed in 113 via `sitemap: false`).
+
+The fix is in the repo (nginx recipes in the deployment docs: preferred proxy-to-node
+config, plus a static `try_files /__prerender$uri/index.html` fallback), and the Ops ›
+SEO console now has an externally-observed serving check so this failure mode is
+detectable at a glance forever. **The deploy-side change must be applied by whoever
+operates the server.**
+
+### 8.2 Demand map — one canonical page per cluster (Phase 41)
+
+| Cluster | Representative intents | Canonical page |
+|---|---|---|
+| Brand | pecanrev, pecan rev, pecanrev login | `/` (`/login` for the navigational query) |
+| Commercial: category | systematic review software/tool/platform, evidence synthesis platform | `/systematic-review-software` |
+| Commercial: AI | AI systematic review, AI literature screening, automate systematic review | `/ai-systematic-review` |
+| Commercial: analysis | meta-analysis software, forest plot software | `/features/meta-analysis` |
+| Workflow: search | systematic review search strategy, PubMed/MeSH search builder | `/features/search-engine` (guide: `/resources/systematic-review-search-strategy`) |
+| Workflow: screening | screening software, title/abstract screening, dual reviewers | `/features/screening` (guide: `/resources/title-and-abstract-screening`) |
+| Workflow: extraction | data extraction software/templates, case series extraction | `/features/data-extraction`, `/features/case-series` |
+| Workflow: RoB | risk of bias tool, RoB 2, Newcastle-Ottawa | `/features/risk-of-bias` (guide: `/resources/risk-of-bias-assessment`) |
+| Workflow: PRISMA | PRISMA flow diagram software/generator | `/features/prisma-flow-diagram` (guide: `/resources/prisma-flow-diagram-guide`) |
+| Workflow: NMA | network meta-analysis software | `/features/network-meta-analysis` (guide: `/resources/network-meta-analysis-explained`) |
+| Educational: SR | how to conduct a systematic review | `/resources/how-to-conduct-a-systematic-review` |
+| Educational: MA | how to perform meta-analysis, heterogeneity, I² | `/resources/how-to-run-a-meta-analysis`, `/resources/forest-plots-and-heterogeneity` |
+| Educational: bias | publication bias, funnel plots | `/resources/publication-bias` |
+| Comparison | alternative to Covidence / Rayyan, PecanRev vs X | `/compare/pecanrev-vs-covidence`, `/compare/pecanrev-vs-rayyan` |
+
+Rule: new intents join an existing cluster's canonical page unless the intent is
+genuinely distinct (Phase 42 — intent > keyword count). Never mint sibling pages for
+rewordings of the same intent.
+
+### 8.3 What only a human can do — the verification checklist (Phases 18/37/38/39)
+
+Blocking (do these first — indexing cannot start reliably without them):
+1. **Apply the nginx serving fix** from `docs/manager/deployment-readiness.md` (either
+   recipe) and verify with:
+   `curl -s https://pecanrev.com/features/screening | grep -o '<title>[^<]*'` — must show
+   the screening page's own title, not the homepage default.
+2. **Google Search Console**: DNS-TXT-verify `pecanrev.com`, submit
+   `https://pecanrev.com/sitemap.xml`, then use URL Inspection → Request indexing for
+   `/`, `/systematic-review-software`, `/features/screening`.
+3. **Bing Webmaster Tools**: import from GSC (also feeds Copilot).
+4. **www**: add `www.pecanrev.com` to DNS + the TLS certificate SAN, enable the
+   301 www→apex server block already provided in the nginx example.
+
+High-value, non-blocking:
+5. IndexNow key (Bing/Yandex instant indexing) — optional, low cost.
+6. Consistent public profiles when ready (LinkedIn, X, GitHub) using the exact name
+   "PecanRev" + https://pecanrev.com — no fake profiles, no purchased anything.
+7. Software directories with honest listings: AlternativeTo, Capterra/G2 (when
+   pricing/positioning is settled), library-science tool lists (§4 targets).
+8. Academic outreach per §4: methods librarians, systematic-review course pages,
+   university LibGuides — the guides under `/resources` are the linkable assets.
+
+Nothing in this checklist can be done from the repository, and none of it is claimed
+as done anywhere in the codebase or the Ops console.

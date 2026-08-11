@@ -10,7 +10,19 @@ import { ArticlePage } from '../ArticlePage.jsx';
 
 const TRAIL = [{label: "Home", path: "/"}, {label: "Features", path: "/features"}, {label: "Data extraction"}];
 
-const RELATED = [{label: "Meta-analysis", path: "/features/meta-analysis", note: "what the extracted values feed"}, {label: "Screening", path: "/features/screening", note: "the stage before extraction"}, {label: "What is a systematic review?", path: "/resources/what-is-a-systematic-review", note: "extraction in the context of the full method"}];
+/**
+ * Editorial notes for the related-links block. 113 §5 — the registry entry's
+ * `related` array owns WHICH pages are listed and in what order (so the rendered
+ * links and the internal-link graph cannot drift); this map only supplies the
+ * one-line "why you would click this" beside each.
+ */
+const RELATED_NOTES = {
+  '/features/meta-analysis': 'what the extracted values feed',
+  '/features/screening': 'the stage before extraction',
+  '/features/case-series': 'many patients from one publication',
+  '/resources/data-extraction-for-systematic-reviews': 'designing and piloting the form',
+  '/resources/what-is-a-systematic-review': 'extraction in the context of the full method',
+};
 
 export function DataExtractionPage() {
   return (
@@ -19,7 +31,7 @@ export function DataExtractionPage() {
       eyebrow="Feature"
       trail={TRAIL}
       relatedTitle="Related"
-      related={RELATED}
+      relatedNotes={RELATED_NOTES}
     />
   );
 }
