@@ -28,7 +28,7 @@ PecanRev implements four risk-of-bias instruments as real, encoded tools rather 
 ## Which tools are implemented?
 
 - **RoB 2** — Cochrane risk of bias 2 for randomised trials. Five domains, twenty-two signalling questions, the 2019-08-22 version, effect of assignment to intervention.
-- **ROBINS-I** — non-randomised studies of interventions, the 2016 tool of Sterne and colleagues. Seven domains, thirty-four signalling questions.
+- **ROBINS-I** — non-randomised studies of interventions, the 2016 tool of Sterne and colleagues. Seven domains, thirty-four signalling questions. Selectable only when the guided-appraisal flag is enabled as well as the workspace itself; see Availability below.
 - **Newcastle-Ottawa Scale (cohort)** — three categories, eight items, nine stars maximum.
 - **Newcastle-Ottawa Scale (case-control)** — three categories, eight items, nine stars maximum.
 
@@ -108,6 +108,8 @@ Be aware of the current boundary: **this flow is available through the API and t
 ## Availability
 
 The risk-of-bias workspace is behind a feature flag that is **off by default** and described in the product's own settings catalogue as beta, off until validated. A site administrator enables it; guided appraisal is a second flag that requires the first. When the workspace is off, its routes do not respond at all.
+
+One consequence of that two-flag arrangement is worth stating rather than leaving to be discovered: **ROBINS-I becomes selectable only when the second flag, guided appraisal, is on.** With the workspace flag alone you get RoB 2 and both Newcastle-Ottawa forms; an attempt to create a ROBINS-I assessment is refused with that reason. If your review appraises non-randomised studies of interventions, both flags need to be enabled.
 
 ## Where this sits in the workflow
 

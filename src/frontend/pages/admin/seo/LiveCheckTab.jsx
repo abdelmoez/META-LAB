@@ -28,7 +28,7 @@ import {
   Badge, ErrorBox, NoticeBox, SectionCard, Spinner, accentBtn,
 } from '../research/primitives.jsx';
 import {
-  LIVE_TARGET_LABEL, SERVING_VERDICT_LABEL, VERIFICATION_STATE_LABEL, servingVerdict,
+  LIVE_TARGET_LABEL, SERVING_VERDICT_LABEL, VERIFICATION_STATE_LABEL, servingVerdict, servingNote,
 } from './fields.js';
 
 const VERDICT_COLOR = {
@@ -47,6 +47,7 @@ const signal = (label, ok) => (
 
 function PageResult({ result }) {
   const verdict = servingVerdict(result);
+  const note = servingNote(result);
   return (
     <div data-testid={`seo-live-${result.id}`} style={{ padding: '13px 18px', borderBottom: `1px solid ${C.brd}` }}>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 14, flexWrap: 'wrap' }}>
@@ -76,6 +77,14 @@ function PageResult({ result }) {
             <div>served &lt;title&gt;: <span style={{ fontFamily: MONO, color: C.txt2 }}>{result.servedTitle || '(none)'}</span></div>
             <div>expected: <span style={{ fontFamily: MONO, color: C.txt2 }}>{result.expectedTitle || '(none)'}</span></div>
           </div>
+          {note && (
+            <div
+              data-testid={`seo-live-note-${result.id}`}
+              style={{ marginTop: 7, fontSize: 11, color: C.ylw, lineHeight: 1.65, maxWidth: 720 }}
+            >
+              {note}
+            </div>
+          )}
         </div>
       )}
     </div>

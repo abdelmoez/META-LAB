@@ -15,8 +15,8 @@ h1: Network meta-analysis explained
 title: Network Meta-Analysis Explained: Geometry and Indirect Evidence
 description: What a network meta-analysis estimates, how indirect evidence is formed, why transitivity matters, how consistency is tested and how to read rankings.
 slug: resources/network-meta-analysis-explained
-published: 2026-08-09
-updated: 2026-08-09
+published: 2026-08-10
+updated: 2026-08-10
 author: The PecanRev team
 ---
 

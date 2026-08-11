@@ -65,15 +65,43 @@ export const VERIFICATION_STATE_LABEL = Object.freeze({
  * check that would have caught the 111 production failure, where every route
  * returned a JavaScript shell with the homepage title and no content.
  *
+ * THE TITLE IS NOT A CONTENT SIGNAL. index.html's own <title> is (correctly) the
+ * registry title for '/', so the homepage row's titleMatches is TRUE even when
+ * the bare shell is served. Requiring all three signals to be false before
+ * saying 'shell' therefore made the exact production failure — 200, shell title,
+ * no <h1>, no JSON-LD, on the most important row in the console — report as
+ * 'partial', i.e. as a page that is mostly working.
+ *
+ * So the shell test is the two signals a shell CANNOT fake: no <h1> AND no
+ * JSON-LD means no document content was served, whatever the title says. The
+ * title is then only what separates a full 'prerendered' pass from 'partial'.
+ *
  * @returns {'unreachable'|'http-error'|'prerendered'|'shell'|'partial'}
  */
 export function servingVerdict(result) {
   if (!result || result.ok === false) return 'unreachable';
   if (typeof result.status === 'number' && result.status >= 400) return 'http-error';
-  const signals = [result.titleMatches, result.h1Present, result.jsonLdPresent];
-  if (signals.every(Boolean)) return 'prerendered';
-  if (signals.every((s) => !s)) return 'shell';
+  if (!result.h1Present && !result.jsonLdPresent) return 'shell';
+  if (result.titleMatches && result.h1Present && result.jsonLdPresent) return 'prerendered';
   return 'partial';
+}
+
+/**
+ * The caveat that has to travel WITH a page verdict, or null when there is none.
+ * PURE.
+ *
+ * `titleIsShellDefault` comes from the server (seoAdminController compares the
+ * target's expected title with index.html's own <title>). When it is set, the
+ * green "page title matches registry" tick on that row is not evidence of
+ * anything, and the console has to say so rather than let an operator read three
+ * ticks as three independent confirmations.
+ */
+export function servingNote(result) {
+  if (!result || result.ok === false || result.kind !== 'page') return null;
+  if (!result.titleIsShellDefault) return null;
+  return 'This page’s registry title is identical to the app shell’s default <title>, '
+    + 'so a title match proves nothing here — only the <h1> and JSON-LD signals distinguish '
+    + 'the prerendered document from the shell.';
 }
 
 export const SERVING_VERDICT_LABEL = Object.freeze({

@@ -22,14 +22,39 @@ import { existsSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { PUBLIC_PAGES } from '../../../src/frontend/website/publicPages.js';
 import {
-  REPO_ROOT, DESCRIPTION_MIN, DESCRIPTION_MAX,
+  REPO_ROOT, DESCRIPTION_MIN, DESCRIPTION_MAX, LIVE_CHECK_MAX_BYTES,
   inSitemap, registryInventory, registryCounts, registryChecks,
   countSitemapUrls, countLlmsLinks, extractTitle, decodeTitleEntities, hasH1, hasJsonLdMarker,
-  buildArtifactReport, artifactChecks, readVerificationTokens,
+  buildArtifactReport, artifactChecks, readVerificationTokens, appShellTitle,
   liveCheckTargets, evaluateLiveTarget, probeLiveTarget,
 } from '../../../server/controllers/seoAdminController.js';
 
 const componentExists = (rel) => (typeof rel === 'string' && rel ? existsSync(resolve(REPO_ROOT, rel)) : false);
+
+/**
+ * A fetch Response double with a REAL readable body, because probeLiveTarget now
+ * caps the read while streaming instead of buffering with `await res.text()`. A
+ * mock that only offers text() would silently exercise a path production never
+ * takes.
+ */
+function streamRes(status, text, { chunkSize = 64 * 1024 } = {}) {
+  const buf = Buffer.from(String(text), 'utf8');
+  let at = 0;
+  return {
+    status,
+    body: {
+      getReader: () => ({
+        read: async () => {
+          if (at >= buf.length) return { done: true, value: undefined };
+          const value = buf.subarray(at, at + chunkSize);
+          at += value.length;
+          return { done: false, value };
+        },
+        cancel: async () => { at = buf.length; },
+      }),
+    },
+  };
+}
 
 const page = (over = {}) => ({
   path: '/x',
@@ -245,16 +270,100 @@ describe('live check — the shell-vs-prerender detector', () => {
   });
 
   it('a non-200 keeps its status so the UI can say "HTTP error" rather than "shell"', async () => {
-    const fetchImpl = async () => ({ status: 404, text: async () => 'Not found' });
+    const fetchImpl = async () => streamRes(404, 'Not found');
     const r = await probeLiveTarget('https://pecanrev.com', { id: 'home', kind: 'page', path: '/', expectTitle: 'T' }, { fetchImpl });
     expect(r).toMatchObject({ ok: true, status: 404, titleMatches: false });
   });
 
   it('builds the URL from the base and the target path', async () => {
     const seen = [];
-    const fetchImpl = async (url) => { seen.push(url); return { status: 200, text: async () => '' }; };
+    const fetchImpl = async (url) => { seen.push(url); return streamRes(200, ''); };
     await probeLiveTarget('https://example.test', { id: 'robots', kind: 'robots', path: '/robots.txt' }, { fetchImpl });
     expect(seen).toEqual(['https://example.test/robots.txt']);
+  });
+});
+
+describe('live check — the response body is capped WHILE streaming', () => {
+  it('reads a normal page through the stream and evaluates it', async () => {
+    const html = '<html><head><title>T</title></head><body><h1>Hi</h1>{"@type":"WebPage"}</body></html>';
+    const r = await probeLiveTarget(
+      'https://pecanrev.com',
+      { id: 'home', kind: 'page', path: '/', expectTitle: 'T' },
+      { fetchImpl: async () => streamRes(200, html, { chunkSize: 7 }) },
+    );
+    expect(r).toMatchObject({ ok: true, status: 200, titleMatches: true, h1Present: true, jsonLdPresent: true });
+  });
+
+  it('a hostile/huge body is ABANDONED mid-stream and reported, never buffered whole or graded truncated', async () => {
+    // 4MB in 256kB chunks: the reader must stop and cancel past the 1.5MB cap
+    // rather than pulling the lot into memory and slicing afterwards.
+    const chunk = 'x'.repeat(256 * 1024);
+    let pulled = 0;
+    let cancelled = false;
+    const body = {
+      getReader: () => ({
+        read: async () => {
+          if (pulled >= 16) return { done: true, value: undefined };
+          pulled += 1;
+          return { done: false, value: Buffer.from(chunk) };
+        },
+        cancel: async () => { cancelled = true; },
+      }),
+    };
+    const r = await probeLiveTarget(
+      'https://pecanrev.com',
+      { id: 'home', kind: 'page', path: '/', expectTitle: 'T' },
+      { fetchImpl: async () => ({ status: 200, body }) },
+    );
+    expect(r.ok).toBe(false);
+    expect(r.error).toMatch(/read cap/i);
+    expect(r.error).toMatch(/not evaluated/i);
+    expect(r).not.toHaveProperty('titleMatches'); // nothing is graded from a truncated body
+    expect(cancelled).toBe(true);
+    expect(pulled).toBeLessThan(16);            // the whole body was never read
+    expect(pulled * chunk.length).toBeLessThan(LIVE_CHECK_MAX_BYTES + chunk.length);
+  });
+
+  it('the cap is a real byte budget, not a post-hoc slice', () => {
+    expect(LIVE_CHECK_MAX_BYTES).toBe(1_500_000);
+  });
+});
+
+describe('the homepage title trap — a title match on "/" proves nothing', () => {
+  it('appShellTitle reads index.html, and it IS the registry title for "/"', () => {
+    const shell = appShellTitle();
+    expect(shell).toBeTruthy();
+    // If these ever diverge the trap is gone, but so is the reason for the flag —
+    // this assertion is the thing that tells us which world we are in.
+    expect(shell).toBe(PUBLIC_PAGES.find((e) => e.path === '/').title);
+  });
+
+  it('flags the homepage target: expected title === the app shell default', () => {
+    const shell = appShellTitle();
+    const r = evaluateLiveTarget(
+      { id: 'home', kind: 'page', path: '/', expectTitle: shell },
+      { status: 200, body: `<html><head><title>${shell}</title></head><body><div id="root"></div></body></html>`, shellTitle: shell },
+    );
+    expect(r.titleMatches).toBe(true);        // …and it is worth nothing
+    expect(r.titleIsShellDefault).toBe(true);
+    expect(r.h1Present).toBe(false);
+    expect(r.jsonLdPresent).toBe(false);
+  });
+
+  it('does NOT flag a page whose expected title is its own', () => {
+    const shell = appShellTitle();
+    const feature = PUBLIC_PAGES.find((e) => /^\/features\/[^/]+$/.test(e.path));
+    const r = evaluateLiveTarget(
+      { id: 'feature', kind: 'page', path: feature.path, expectTitle: feature.title },
+      { status: 200, body: `<title>${feature.title}</title><h1>x</h1>{"@type":"WebPage"}`, shellTitle: shell },
+    );
+    expect(r.titleIsShellDefault).toBe(false);
+    expect(r.titleMatches).toBe(true);
+  });
+
+  it('without a known shell title the flag is false, never a guess', () => {
+    const r = evaluateLiveTarget({ id: 'home', kind: 'page', path: '/', expectTitle: 'T' }, { status: 200, body: '<title>T</title>' });
+    expect(r.titleIsShellDefault).toBe(false);
   });
 });
 

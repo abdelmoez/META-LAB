@@ -13,8 +13,8 @@ h1: How to read a forest plot
 title: Forest Plots and Heterogeneity: How to Read a Meta-Analysis
 description: How to read every element of a forest plot, what I-squared, tau-squared and Q measure, and why the fixed-effect and random-effects diamonds differ.
 slug: resources/forest-plots-and-heterogeneity
-published: 2026-08-09
-updated: 2026-08-09
+published: 2026-08-10
+updated: 2026-08-10
 author: The PecanRev team
 ---
 

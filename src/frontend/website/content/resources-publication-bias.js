@@ -12,8 +12,8 @@ h1: Publication bias and small-study effects
 title: Publication Bias: Funnel Plots, Egger's Test and Trim-and-Fill
 description: What publication bias is, how to read a funnel plot, when Egger's and Begg's tests are informative, and what trim-and-fill can and cannot correct.
 slug: resources/publication-bias
-published: 2026-08-09
-updated: 2026-08-09
+published: 2026-08-10
+updated: 2026-08-10
 author: The PecanRev team
 ---
 

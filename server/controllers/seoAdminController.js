@@ -32,7 +32,7 @@ import {
   PUBLIC_PAGES, SITE_ORIGIN, absoluteUrl,
 } from '../../src/frontend/website/publicPages.js';
 import { publicBaseUrl, getPageViewSummary } from '../services/seoPageviewService.js';
-import { timeoutSignal, describeFetchError } from '../utils/fetchTimeout.js';
+import { timeoutSignal, describeFetchError, readBodyCapped } from '../utils/fetchTimeout.js';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 /** Repo root — server/controllers/ is two levels down. */
@@ -47,6 +47,19 @@ export const DESCRIPTION_MAX = 165;
 /** Live check budget. 8s is generous for a static page and short enough that an
  *  unreachable origin cannot pin an Ops request. */
 export const LIVE_CHECK_TIMEOUT_MS = 8000;
+
+/**
+ * Byte budget for ONE live-check response. The target is a page we built, so
+ * 1.5MB is already absurdly generous; the point of the cap is that the origin
+ * this fetches is configuration (PUBLIC_BASE_URL), and a misconfigured or
+ * hostile host must not be able to push unbounded bytes into an Ops request.
+ *
+ * ON EXCEEDING IT WE REPORT AN HONEST FAILURE and evaluate nothing. Grading a
+ * truncated document would be worse than useless here: a body cut at 1.5MB can
+ * lose the <h1> or the JSON-LD block that decides the prerendered-vs-shell
+ * verdict, so the console would print a confident wrong answer.
+ */
+export const LIVE_CHECK_MAX_BYTES = 1_500_000;
 
 /* ─── pure registry introspection (unit-tested without fs or a database) ──── */
 
@@ -435,8 +448,28 @@ export function liveCheckTargets(pages = PUBLIC_PAGES) {
   return targets;
 }
 
-/** Turn a fetched body into the honest per-target report. PURE. */
-export function evaluateLiveTarget(target, { status, body }) {
+/**
+ * The app shell's OWN `<title>` — the string index.html ships before React runs,
+ * and therefore the title a crawler sees when the shell is served instead of the
+ * prerendered document.
+ *
+ * This is load-bearing for the homepage row. index.html's title is (correctly)
+ * the registry title for `/`, so on `/` a title match is evidence of NOTHING:
+ * the shell and the prerendered document are indistinguishable by title alone.
+ * Reported as `titleIsShellDefault` so the UI can say so instead of implying the
+ * signal counted.
+ */
+export function appShellTitle() {
+  return extractTitle(readSafe(path.join(REPO_ROOT, 'index.html')) || '');
+}
+
+/**
+ * Turn a fetched body into the honest per-target report. PURE.
+ *
+ * @param {object} target
+ * @param {{status:number, body:string, shellTitle?:string|null}} observed
+ */
+export function evaluateLiveTarget(target, { status, body, shellTitle = null }) {
   const base = { id: target.id, kind: target.kind, path: target.path, ok: true, status };
 
   if (target.kind === 'page') {
@@ -446,6 +479,10 @@ export function evaluateLiveTarget(target, { status, body }) {
       expectedTitle: target.expectTitle || null,
       servedTitle,
       titleMatches: Boolean(target.expectTitle) && servedTitle === target.expectTitle,
+      // True when the title this page EXPECTS is the shell's default, i.e. a
+      // match proves nothing here. Never inferred from the served bytes.
+      titleIsShellDefault: Boolean(shellTitle) && Boolean(target.expectTitle)
+        && target.expectTitle === shellTitle,
       h1Present: hasH1(body),
       jsonLdPresent: hasJsonLdMarker(body),
     };
@@ -464,7 +501,9 @@ export function evaluateLiveTarget(target, { status, body }) {
  * Fetch one target. Returns a report or an honest failure — never throws.
  * `fetchImpl` is injectable so the unit tests never touch the network.
  */
-export async function probeLiveTarget(baseUrl, target, { fetchImpl = fetch, timeoutMs = LIVE_CHECK_TIMEOUT_MS } = {}) {
+export async function probeLiveTarget(baseUrl, target, {
+  fetchImpl = fetch, timeoutMs = LIVE_CHECK_TIMEOUT_MS, shellTitle = null,
+} = {}) {
   const url = `${baseUrl}${target.path}`;
   try {
     const res = await fetchImpl(url, {
@@ -472,8 +511,24 @@ export async function probeLiveTarget(baseUrl, target, { fetchImpl = fetch, time
       signal: timeoutSignal(timeoutMs),
       headers: { accept: target.kind === 'page' ? 'text/html' : '*/*' },
     });
-    const body = await res.text();
-    return { url, ...evaluateLiveTarget(target, { status: res.status, body: body.slice(0, 1_500_000) }) };
+    // Cap DURING streaming. `await res.text()` buffered the entire response and
+    // only then sliced to 1.5MB, so the slice protected nothing: an origin that
+    // answers with hundreds of MB (misconfigured, compromised, or simply not the
+    // site we think it is) exhausted memory before the limit was ever applied.
+    const read = await readBodyCapped(res, LIVE_CHECK_MAX_BYTES);
+    if (!read.ok) {
+      return {
+        id: target.id, kind: target.kind, path: target.path, url,
+        ok: false, status: typeof res.status === 'number' ? res.status : null,
+        // readBodyCapped's cap message is worded for PDF downloads; say what
+        // actually happened here. Nothing is evaluated from a truncated body.
+        error: read.error === 'PDF exceeds size limit'
+          ? `response exceeded the ${Math.round(LIVE_CHECK_MAX_BYTES / 1000)}kB read cap — not evaluated`
+          : `read failed: ${read.error}`,
+      };
+    }
+    const body = read.buffer.toString('utf8');
+    return { url, ...evaluateLiveTarget(target, { status: res.status, body, shellTitle }) };
   } catch (err) {
     return {
       id: target.id, kind: target.kind, path: target.path, url,
@@ -487,15 +542,19 @@ export async function runSeoLiveCheck(req, res) {
   const baseUrl = publicBaseUrl();
   try {
     const targets = liveCheckTargets();
+    // Read once per check, not once per target: the shell title is a file on
+    // this disk, and every page result is judged against the same string.
+    const shellTitle = appShellTitle();
     const results = [];
     // Sequential on purpose: four requests to ONE origin, and a burst from an
     // Ops click is a worse neighbour than four in a row.
-    for (const t of targets) results.push(await probeLiveTarget(baseUrl, t));
+    for (const t of targets) results.push(await probeLiveTarget(baseUrl, t, { shellTitle }));
 
     return res.json({
       baseUrl,
       checkedAt: new Date().toISOString(),
       timeoutMs: LIVE_CHECK_TIMEOUT_MS,
+      shellTitle,
       results,
     });
   } catch (err) {

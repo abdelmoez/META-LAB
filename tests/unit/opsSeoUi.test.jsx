@@ -34,7 +34,7 @@ import LiveCheckTab from '../../src/frontend/pages/admin/seo/LiveCheckTab.jsx';
 import AnalyticsTab from '../../src/frontend/pages/admin/seo/AnalyticsTab.jsx';
 import {
   REFERRER_CLASSES, REFERRER_CLASS_LABELS, CHECK_STATUS_LABEL,
-  SERVING_VERDICT_LABEL, servingVerdict, sharePct,
+  SERVING_VERDICT_LABEL, servingVerdict, servingNote, sharePct,
 } from '../../src/frontend/pages/admin/seo/fields.js';
 
 const ROOT = resolve(fileURLToPath(import.meta.url), '..', '..', '..');
@@ -204,13 +204,60 @@ describe('servingVerdict — the shell detector', () => {
     expect(SERVING_VERDICT_LABEL[v]).toMatch(/crawlers see no content/i);
   });
 
+  it('THE HOMEPAGE SIGNATURE: 200 + the shell title (which IS the "/" title) + no h1 + no JSON-LD = shell', () => {
+    // index.html's <title> is the registry title for '/', so on the homepage row
+    // titleMatches is TRUE while the bare shell is being served. Requiring all
+    // three signals to be false before saying 'shell' made the one row that
+    // matters most report 'partial' — a page that is mostly working — for the
+    // exact production failure this whole section exists to catch.
+    const homeShell = {
+      ok: true, status: 200, kind: 'page', id: 'home',
+      titleMatches: true, titleIsShellDefault: true, h1Present: false, jsonLdPresent: false,
+    };
+    expect(servingVerdict(homeShell)).toBe('shell');
+    // …and the same signature without the flag is still a shell: no <h1> and no
+    // JSON-LD means no document content was served, whatever the title says.
+    expect(servingVerdict({ ...homeShell, titleIsShellDefault: false })).toBe('shell');
+  });
+
   it('a partial render is neither a pass nor a shell', () => {
-    expect(servingVerdict({ ok: true, status: 200, titleMatches: true, h1Present: false, jsonLdPresent: false })).toBe('partial');
+    // Some content IS present — the title is what is wrong.
+    expect(servingVerdict({ ok: true, status: 200, titleMatches: false, h1Present: true, jsonLdPresent: true })).toBe('partial');
+    expect(servingVerdict({ ok: true, status: 200, titleMatches: true, h1Present: true, jsonLdPresent: false })).toBe('partial');
   });
 
   it('a failed fetch and an HTTP error are distinct, and neither is a pass', () => {
     expect(servingVerdict({ ok: false, error: 'fetch failed: timed out after 8s' })).toBe('unreachable');
     expect(servingVerdict({ ok: true, status: 503 })).toBe('http-error');
+  });
+});
+
+describe('servingNote — the title tick that is worth nothing', () => {
+  const homeOk = {
+    ok: true, status: 200, kind: 'page', id: 'home',
+    titleMatches: true, titleIsShellDefault: true, h1Present: true, jsonLdPresent: true,
+  };
+
+  it('says so when the expected title is the app shell default', () => {
+    const note = servingNote(homeOk);
+    expect(note).toMatch(/proves nothing/i);
+    expect(note).toMatch(/h1/i);
+  });
+
+  it('is null for a page with its own title, a file target, and an unreachable one', () => {
+    expect(servingNote({ ...homeOk, titleIsShellDefault: false })).toBeNull();
+    expect(servingNote({ ok: true, status: 200, kind: 'sitemap', titleIsShellDefault: true })).toBeNull();
+    expect(servingNote({ ok: false, kind: 'page', titleIsShellDefault: true })).toBeNull();
+    expect(servingNote(null)).toBeNull();
+  });
+
+  it('the live tab actually renders it — a caveat nobody sees is not a caveat', () => {
+    // Results only exist after an operator clicks, and effects never run under
+    // renderToStaticMarkup, so the wiring is pinned by source scan (the
+    // seoBeaconClient / adminVisibility precedent).
+    const src = readFileSync(resolve(PKG, 'LiveCheckTab.jsx'), 'utf8');
+    expect(src).toMatch(/servingNote/);
+    expect(src).toMatch(/seo-live-note-/);
   });
 });
 

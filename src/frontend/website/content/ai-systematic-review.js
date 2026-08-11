@@ -4,7 +4,8 @@
  * THIS PAGE IS A SCOPING DOCUMENT, NOT A PITCH. Every sentence was checked
  * against: src/research-engine/screening/ai/*, docs/ai-screening.md,
  * docs/validation/MODEL_CARD.md, server/services/{aiExtractClient,
- * extractionLlmClient,aiEmbeddingClient,screeningAiService}.js,
+ * extractionLlmClient,aiEmbeddingClient,screeningAiService,
+ * screeningEligibilityService,featureAccess}.js,
  * server/controllers/{aiExtractController,extractionController,
  * settingsController}.js, server/routes/screening.js,
  * src/research-engine/extraction/heuristicExtract.js,
@@ -18,6 +19,16 @@
  *     OPTIONAL hosted-embedding sub-signal in screening. Not one call.
  *  2. docs/privacy-ai-providers.md section 2.3 is stale on this point; it is NOT
  *     a source for this page.
+ *
+ * r2 review corrections (three claims were too strong and are now qualified):
+ *  3. The Criteria Screener (`eligibilityScreening`, default OFF) CAN write real
+ *     ScreenDecision rows under policy 'auto' — governed, system-reviewer-scoped,
+ *     never over a human, reversible, audited. It now has its own section, and the
+ *     "does not automate" bullet names it as the exception.
+ *  4. "Off by default" is not "off for everyone": featureAccess.js grants admins a
+ *     flag bypass. Only an unconfigured credential is a gate no role bypasses.
+ *  5. `requireHumanFinalDecision` IS an admin flag; the invariant is that no route
+ *     writes a decision from the relevance model whatever that flag is set to.
  *
  * The FAQ block is interpolated from the registry entry's `faq` array — the same
  * array the entry's jsonLd hands to faqJsonLd().
@@ -37,6 +48,8 @@ author: The PecanRev team
 
 Two things in PecanRev are model-assisted, and both are optional and off by default: an optional screening relevance ranking, which is a deterministic lexical model rather than a large language model and has no way to record a decision, and an optional extraction assistant, whose default provider is a deterministic server-side heuristic and whose external providers are language models an administrator must configure. Everything else in the platform — the search compiler, deduplication, the PRISMA derivation, the statistics, the risk-of-bias algorithms, the manuscript generator — is deterministic code, and we never call it AI.
 
+One further engine gets a section of its own even though no model is involved, because this page is about what is automated rather than only about what is model-assisted: an optional criteria screener that, under an off-by-default governed policy, is the one thing in PecanRev that can record an include or exclude decision without a person.
+
 ## Why publish this at all?
 
 Because "AI-powered systematic review" is now a claim that means nothing, and researchers evaluating tools have no way to tell a ranking model from a decision engine, or a rule table from a language model, without asking. A review is a method whose credibility rests on being able to say exactly how each decision was made. If a vendor cannot tell you what the model was allowed to do, you cannot report your methods honestly.
@@ -55,7 +68,7 @@ Supervised training begins only once at least ten labels exist including at leas
 
 ### What it is not allowed to do
 
-It cannot record a screening decision. This is structural rather than a setting: there is no route in the API that writes a decision from the model, human final decision is a hard-coded rule rather than a configurable one, and the product's own model card describes the property as a structural invariant. The model changes the order in which a human reads records. It never changes what happens to them.
+It cannot record a screening decision. This is structural rather than a setting: no route in the API writes a decision from the relevance model, and that holds regardless of the administrator policy flag named "require human final decision" that the screening engine's settings expose — no route consults the model's score to decide a record whatever that flag says. The product's own model card describes the property as a structural invariant. The model changes the order in which a human reads records. It never changes what happens to them.
 
 ### Honest validation, by default
 
@@ -67,6 +80,27 @@ Probability calibration is fitted from out-of-fold predictions only, and below f
 
 The feature is off by default and the routes are hidden when it is. When enabled it is leader-gated by default, scores are withheld until at least fifty screening decisions exist, blind review suppresses reviewer-derived signals both when scores are computed and when data is read, and there is a global kill switch that overrides every other toggle. A tool that changes the order in which humans read evidence should be opt-in, and this one is.
 
+## The criteria screener
+
+### What it is
+
+A second, separate screening engine, off by default, that answers your own eligibility criteria. Reviewers write the inclusion and exclusion criteria as an ordered, versioned set of yes/no questions; the engine answers each question per record with yes, no or unclear, a confidence and a quoted excerpt from the record as evidence, and proposes include, exclude or unclear overall. It is a deterministic engine working from your criteria, not a language model, and nothing leaves the server.
+
+### It is the one engine that can record a decision
+
+Every other automation described on this page stops at a suggestion. This one does not, in one specific configuration, and stating that plainly matters more than a tidier claim.
+
+Its default policy is **assist**: it suggests, a reviewer adjudicates, and nothing is written to the screening ledger. A site administrator can set the global policy to **auto**, and a project must separately opt in. Only when the feature flag, the global policy and the project setting all say auto — and the engine's confidence clears a floor, and the global kill switch is off — does a suggestion become a real screening decision.
+
+Four properties bound what that decision can be:
+
+- **It is never mistaken for a person's.** Governed auto-apply writes under a dedicated non-human reviewer identity, so it occupies its own row and structurally cannot overwrite a reviewer's decision.
+- **It stands aside for a person.** If a human has already settled that record at that stage, auto-apply is skipped entirely rather than contested.
+- **It is reversible.** An auto-applied decision is undone like any other decision.
+- **It is traceable.** Every assessment stores the engine version, the configuration version, the criteria version it was answered against, the timestamp and the confidence, and the run is written to the audit log.
+
+If you would rather nothing be decided without a person, leave the feature off or leave the policy on assist. Both are where it starts.
+
 ## Extraction assistance
 
 This is where a language model can genuinely be involved, so the detail matters.
@@ -77,9 +111,11 @@ The default extraction assistant is a heuristic, self-hosted extractor that work
 
 ### The external providers
 
-Two distinct external paths exist. Both are off by default, both require a site administrator to enable the feature **and** server-side credentials to be configured, and neither is reachable unless both are true.
+Two distinct external paths exist. Both are off by default, and both require a site administrator to enable the feature **and** server-side credentials to be configured.
 
-- **A server-proxied endpoint** that submits document text to an Anthropic model, with the model chosen by server configuration. When the feature is off the endpoint does not exist; when it is on but unconfigured the server says so rather than failing quietly.
+One caveat belongs here rather than in a footnote: **"off by default" is not "off for everyone".** Accounts holding the administrator role bypass these feature flags, so an administrator can trigger either path while the flag reads off, provided the corresponding credential is configured. The only control no role bypasses is the absence of the credential. If your posture depends on nothing leaving your server, do not configure the keys — that, not a toggle, is the guarantee.
+
+- **A server-proxied endpoint** that submits document text to an Anthropic model, with the model chosen by server configuration. When the feature is off the endpoint answers a flat 404 to everyone but an administrator; when it is on but unconfigured the server says so rather than failing quietly.
 - **An OpenAI-compatible endpoint** used by the extraction suggestion service when an administrator switches the provider from heuristic to external. The endpoint, key and model come from server environment configuration.
 
 In both cases the request is made by the server. The browser only ever talks to its own origin, provider credentials never reach the client, and the production content security policy restricts the browser to same-origin connections, so a cross-origin model call from the page would be blocked even if one were attempted. No model call is reachable from the browser: every one of them is server-proxied.
@@ -109,7 +145,7 @@ Optical character recognition for scanned PDFs runs on a pinned WebAssembly Tess
 
 ## What PecanRev does not automate
 
-- **Inclusion and exclusion decisions.** Every one is made and recorded by a person.
+- **Inclusion and exclusion decisions, in the default configuration.** Every one is made and recorded by a person. The single exception is the criteria screener described above, which is off by default, defaults to suggest-only when enabled, and — when an administrator and a project both switch it to auto — writes under a system reviewer identity that can never overwrite a person's decision. The relevance model has no such path at any setting.
 - **Risk-of-bias judgements.** The guided appraisal that pre-fills signalling answers is a deterministic cue-phrase matcher, not a model, it covers only part of each instrument, and it writes only to suggestion rows.
 - **Data values.** A suggestion is a suggestion until a person accepts it.
 - **The search strategy.** The strategy builder and its critic loop are deterministic code working against real per-database hit counts.

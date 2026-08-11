@@ -12,8 +12,8 @@ h1: Risk of bias assessment in systematic reviews
 title: Risk of Bias Assessment: RoB 2, ROBINS-I and Newcastle-Ottawa
 description: How to appraise included studies per outcome: the five RoB 2 domains, ROBINS-I for non-randomised designs, Newcastle-Ottawa scoring, and where GRADE fits.
 slug: resources/risk-of-bias-assessment
-published: 2026-08-09
-updated: 2026-08-09
+published: 2026-08-10
+updated: 2026-08-10
 author: The PecanRev team
 ---
 

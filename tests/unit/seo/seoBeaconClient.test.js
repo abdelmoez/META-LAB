@@ -24,6 +24,7 @@ import { fileURLToPath } from 'node:url';
 import {
   SEO_BEACON_ENDPOINT, seoBeaconPayload, sendSeoBeacon,
 } from '../../../src/frontend/website/useSeoBeacon.js';
+import { PUBLIC_PAGES } from '../../../src/frontend/website/publicPages.js';
 
 const ROOT = resolve(fileURLToPath(import.meta.url), '..', '..', '..', '..');
 const read = (...p) => readFileSync(resolve(ROOT, ...p), 'utf8');
@@ -103,7 +104,17 @@ describe('PageShell wiring (source scan)', () => {
   });
 
   it('the hook receives a REGISTERED path only — an unknown route beacons nothing', () => {
-    expect(src).toMatch(/useSeoBeacon\(entry \? canonicalPath : null\)/);
+    expect(src).toMatch(/useSeoBeacon\(entry \? \(entry\.canonicalPath \|\| canonicalPath\) : null\)/);
+  });
+
+  it('sends the entry CANONICAL path, so an alias rolls up instead of being dropped', () => {
+    // The registry's one alias today: /beta-waitlist canonicalises to '/'. Sending
+    // the visited path instead would hit the server allowlist (which only knows
+    // canonicalPaths) and be silently discarded.
+    const alias = PUBLIC_PAGES.find((e) => e.path !== e.canonicalPath);
+    expect(alias, 'the registry should still carry at least one alias entry').toBeTruthy();
+    expect(src).toContain('entry.canonicalPath');
+    expect(src).not.toMatch(/useSeoBeacon\(entry \? canonicalPath : null\)/);
   });
 
   it('the beacon is not wired into the authenticated app shell', () => {

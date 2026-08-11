@@ -33,7 +33,12 @@ const DEFAULTS = {
     maxStudiesPerProject: null,
   }),
   landingContent: JSON.stringify({
-    heroHeadline: 'A serious workspace for systematic reviews and meta-analysis.',
+    // 113 §4 r2 — the landing <h1>. Byte-identical to LANDING_HERO_HEADLINE in
+    // server/controllers/settingsController.js (the SSOT; not imported here because
+    // this script must stay standalone) and to DEFAULTS.heroHeadline in
+    // src/frontend/pages/Landing.jsx. The `\n` is intentional — the h1 is pre-line.
+    // Pinned by tests/unit/seo/landingHeroHeadline.test.js.
+    heroHeadline: 'PecanRev: from screening to meta-analysis,\none clean workspace for systematic reviews.',
     heroSubtitle:
       'Organize evidence, extract data, run pooled analyses, and export research-ready reports — all in one secure platform.',
     ctaText: 'Start Your Review',

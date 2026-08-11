@@ -8,6 +8,9 @@
  * Hence: escaping, omission-not-invention, the exact Disallow set, and a banned-word
  * check on the LLM-facing copy.
  */
+import { readdirSync } from 'node:fs';
+import { resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { describe, it, expect } from 'vitest';
 import {
   sitemapXml,
@@ -24,6 +27,8 @@ import {
   indexablePages,
   sitemapPages,
 } from '../../../src/frontend/website/publicPages.js';
+
+const REPO_ROOT = resolve(fileURLToPath(new URL('.', import.meta.url)), '../../..');
 
 describe('sitemapXml', () => {
   it('emits a well-formed urlset with one <url> per entry', () => {
@@ -94,7 +99,8 @@ describe('robotsTxt', () => {
 
   it.each([
     '/api/',
-    '/app',
+    '/app$',
+    '/app/',
     '/ops',
     '/sift-beta',
     '/invite/',
@@ -108,6 +114,46 @@ describe('robotsTxt', () => {
     expect(txt).toContain(`\nDisallow: ${rule}\n`);
     expect(ROBOTS_DISALLOW).toContain(rule);
   });
+
+  /**
+   * 113 r2 — a Disallow value is an UNANCHORED PREFIX. `Disallow: /app` also
+   * matched /apple-touch-icon.png, a real asset index.html links, so the icon was
+   * being withheld from every crawler. Both halves matter: the bare rule is gone,
+   * AND the two routes it existed for are still covered.
+   */
+  it('never blocks a real public/ asset by bare-prefix accident', () => {
+    const assets = readdirSync(resolve(REPO_ROOT, 'public'), { withFileTypes: true })
+      .filter((d) => d.isFile() && d.name !== 'robots.txt')
+      .map((d) => `/${d.name}`);
+    expect(assets, 'the collision case must still exist to be regression-tested')
+      .toContain('/apple-touch-icon.png');
+    for (const asset of assets) {
+      for (const rule of ROBOTS_DISALLOW) {
+        const prefix = rule.endsWith('$') ? null : rule;
+        expect(prefix && asset.startsWith(prefix), `${rule} blocks ${asset}`).toBeFalsy();
+        if (rule.endsWith('$')) expect(asset).not.toBe(rule.slice(0, -1));
+      }
+    }
+  });
+
+  it('still covers the /app route and its subtree', () => {
+    expect(ROBOTS_DISALLOW).not.toContain('/app');
+    expect(txt).toContain('\nDisallow: /app$\n');   // exactly /app
+    expect(txt).toContain('\nDisallow: /app/\n');   // /app/project/:id
+  });
+
+  /**
+   * Token-bearing routes carry their single-use token in the QUERY STRING, and
+   * robots.txt `$` means end-of-URL INCLUDING the query — so anchoring these would
+   * stop '/reset?token=…' from matching at all. They must stay bare.
+   */
+  it.each(['/reset', '/verify-email', '/accept-invitation'])(
+    '%s stays an unanchored prefix so its ?token= URL still matches',
+    (rule) => {
+      expect(ROBOTS_DISALLOW).toContain(rule);
+      expect(ROBOTS_DISALLOW).not.toContain(`${rule}$`);
+    },
+  );
 
   it('advertises the absolute sitemap URL', () => {
     expect(txt).toContain('Sitemap: https://pecanrev.com/sitemap.xml');

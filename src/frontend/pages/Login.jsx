@@ -142,7 +142,9 @@ export default function Login({ onSuccess, onRegister, onForgot, returnTo }) {
     >
       <motion.div
         variants={cardVariants}
-        initial="hidden"
+        // 113 r2 — SSR/prerender must emit the VISIBLE state: initial={false}
+        // renders at `animate` with no opacity:0 baked into crawler HTML.
+        initial={typeof window === 'undefined' ? false : 'hidden'}
         animate="visible"
         style={{
           width: "100%",

@@ -32,10 +32,13 @@ import { recordPageView } from '../services/seoPageviewService.js';
 const router = express.Router();
 
 /**
- * Tiny, dedicated body parser. `text/plain` is accepted because
- * navigator.sendBeacon sends a Blob and some browsers/extensions downgrade the
- * declared type; 2kb is far more than `{path, referrer}` can legitimately need.
- * body-parser is a no-op when the global JSON parser already ran.
+ * Tiny, dedicated body parser — BELT AND BRACES. The 2kb budget that actually
+ * binds in production is applied in server/index.js's body-parser router, which
+ * gives this exact path its own `express.json({ type: ['application/json',
+ * 'text/plain'], limit: '2kb' })` BEFORE the app-wide 10MB parser can see it.
+ * This copy only matters if the router is ever mounted somewhere without that
+ * (a unit test, a future app), and it is skipped when a body is already in hand
+ * — re-reading a consumed request stream would stall the beacon.
  */
 const beaconParser = express.json({ type: ['application/json', 'text/plain'], limit: '2kb' });
 
@@ -56,7 +59,14 @@ export function handlePageViewBeacon(req, res) {
 }
 
 router.post('/pageview', (req, res) => {
-  beaconParser(req, res, () => handlePageViewBeacon(req, res));
+  // `req._body` is body-parser's own "this stream has been read" marker; req.body
+  // is set (to `{}` at worst) by any parser that ran, including one that failed
+  // on the 2kb limit. Either means the bytes are gone — parse again and we would
+  // wait on a stream nobody is going to write to.
+  if (req._body || req.body !== undefined) return handlePageViewBeacon(req, res);
+  // The callback IGNORES its error argument on purpose: a rejected body still
+  // answers 204 (and records nothing), because this endpoint never reports.
+  return beaconParser(req, res, () => handlePageViewBeacon(req, res));
 });
 
 export default router;

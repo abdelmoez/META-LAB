@@ -1,7 +1,8 @@
 User-agent: *
 Allow: /
 Disallow: /api/
-Disallow: /app
+Disallow: /app$
+Disallow: /app/
 Disallow: /ops
 Disallow: /sift-beta
 Disallow: /invite/

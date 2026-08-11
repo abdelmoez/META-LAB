@@ -169,8 +169,28 @@ function useLandingSettings() {
 }
 
 /* ─── Motion hooks ───────────────────────────────────────────────────── */
+/**
+ * 113 r2 — TRUE ON THE SERVER, on purpose.
+ *
+ * Everything animated on this page is gated on this hook (`motionOff` in the main
+ * component, and the `reduced` prop every <Reveal> receives). Framer Motion renders
+ * its `hidden` variant as literal `opacity:0;transform:translateY(24px)` inline
+ * styles, and nothing ever runs `whileInView` in `renderToString` — so the
+ * prerendered document (dist/__prerender/index.html, served to crawlers by the edge
+ * middleware) shipped ~44 invisible blocks INCLUDING the page heading. A crawler
+ * that does not execute JS read a page whose headline is `opacity:0`.
+ *
+ * Defaulting to the reduced-motion branch when there is no `window` makes the
+ * server-rendered markup the plain, fully visible tree. The BROWSER is unaffected:
+ * src/main.jsx mounts with `createRoot`, not `hydrateRoot`, so React discards this
+ * markup and re-renders with the real `matchMedia` answer (and the effect below
+ * keeps tracking changes either way). `typeof window` rather than
+ * `import.meta.env.SSR` because this file is also imported by jsdom unit tests,
+ * where SSR is not a reliable signal but `window` is.
+ */
 function usePrefersReducedMotion() {
   const [reduced, setReduced] = useState(() => {
+    if (typeof window === 'undefined') return true;
     try { return window.matchMedia('(prefers-reduced-motion: reduce)').matches; }
     catch { return false; }
   });
@@ -600,8 +620,15 @@ function ForestPlotIllustration({ active }) {
 }
 
 /* ─── Scroll-reveal wrapper (Framer Motion) ──────────────────────────── */
+/**
+ * `whileInView` never fires without an IntersectionObserver, so on the server the
+ * motion branch would freeze at its `hidden` variant — opacity:0 in the crawlable
+ * markup. Every call site already passes `reduced={motionOff}`, which is true under
+ * SSR (see usePrefersReducedMotion); the `typeof window` check is the belt-and-braces
+ * copy so a future call site that forgets the prop cannot reintroduce the bug.
+ */
 function Reveal({ children, reduced, delay = 0, style }) {
-  if (reduced) return <div style={style}>{children}</div>;
+  if (reduced || typeof window === 'undefined') return <div style={style}>{children}</div>;
   return (
     <motion.div
       initial="hidden"

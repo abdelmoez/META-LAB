@@ -19,9 +19,10 @@
  *     workspace URL; only one of five class labels is ever persisted.
  *   - NO UNIQUE CONSTRAINT on the table, deliberately. Two concurrent beacons
  *     for the same (day, path, class) may both miss the findFirst and both
- *     insert; twins are fine because every reader SUMs. The alternative —
- *     an upsert on a composite unique — buys nothing here and would turn a
- *     racing write into a 500.
+ *     insert; twins are fine because every reader SUMs — the summary read is a
+ *     groupBy with _sum, so the database collapses them before any row reaches
+ *     this process. The alternative — an upsert on a composite unique — buys
+ *     nothing here and would turn a racing write into a 500.
  *   - NEVER THROWS. A database outage must not surface anywhere near a public
  *     page; every failure is a typed return value.
  *
@@ -79,15 +80,37 @@ export function windowStartDay(days, now = new Date()) {
 }
 
 /**
- * The allowlist: every canonicalPath in the registry. Using canonicalPath (not
- * `path`) means a duplicate/preview page counts against the page it canonicalises
- * to, which is the same rollup a search engine performs.
+ * The allowlist: every canonicalPath in the registry. A row is only ever keyed on
+ * a canonicalPath, so a duplicate/alias page counts against the page it
+ * canonicalises to — the same rollup a search engine performs.
  */
 const ALLOWED_PATHS = new Set(
   PUBLIC_PAGES
     .map((e) => (typeof e?.canonicalPath === 'string' ? e.canonicalPath : null))
     .filter(Boolean),
 );
+
+/**
+ * The ROLLUP map: every registry `path` (and every canonicalPath, mapping to
+ * itself) → the canonicalPath it is counted under. Built from the registry so it
+ * can never drift from it.
+ *
+ * This is what makes the rollup real rather than documented. `/beta-waitlist`
+ * canonicalises to `/`; before this map existed a beacon from that page was
+ * DROPPED as "not tracked" (its own path is not a canonicalPath), silently
+ * undercounting the homepage instead of rolling into it.
+ */
+const PATH_TO_CANONICAL = (() => {
+  const map = new Map();
+  for (const canon of ALLOWED_PATHS) map.set(canon, canon);
+  for (const e of PUBLIC_PAGES) {
+    const canon = typeof e?.canonicalPath === 'string' ? e.canonicalPath : null;
+    const own = typeof e?.path === 'string' && e.path ? stripTrailingSlash(e.path) : null;
+    if (!canon || !own || map.has(own)) continue;
+    map.set(own, canon);
+  }
+  return map;
+})();
 
 /** The allowlist as a sorted array (the Ops analytics table's row skeleton). */
 export function trackablePaths() {
@@ -97,6 +120,19 @@ export function trackablePaths() {
 /** True when a beacon path is one the registry canonicalises to. PURE. */
 export function isTrackablePath(pathname) {
   return typeof pathname === 'string' && ALLOWED_PATHS.has(pathname);
+}
+
+/**
+ * The canonicalPath a normalized beacon path is COUNTED UNDER, or null when the
+ * registry does not know the path at all. PURE.
+ *
+ * A canonicalPath maps to itself, so this is a superset of `isTrackablePath`:
+ * everything the allowlist accepted still passes, and an alias whose entry
+ * canonicalises elsewhere now rolls up instead of being dropped.
+ */
+export function canonicalizeBeaconPath(pathname) {
+  if (typeof pathname !== 'string') return null;
+  return PATH_TO_CANONICAL.get(pathname) || null;
 }
 
 /**
@@ -180,14 +216,18 @@ export function classifyReferrer(referrer, { host } = {}) {
  */
 export async function recordPageView({ path, referrer, host, now = new Date() } = {}) {
   const normalized = normalizeBeaconPath(path);
-  if (!normalized || !isTrackablePath(normalized)) return { ok: false, reason: 'not-tracked' };
+  // Roll up to the canonicalPath SERVER-SIDE. The client sends its entry's
+  // canonicalPath too, but the server must not depend on that: an old cached
+  // bundle, a hand-made request or a future alias would otherwise be dropped.
+  const canonical = canonicalizeBeaconPath(normalized);
+  if (!canonical) return { ok: false, reason: 'not-tracked' };
 
   const referrerClass = classifyReferrer(referrer, { host });
   const day = utcDay(now);
 
   try {
     const existing = await prisma.seoPageView.findFirst({
-      where: { day, path: normalized, referrerClass },
+      where: { day, path: canonical, referrerClass },
       select: { id: true },
     });
     if (existing) {
@@ -195,12 +235,12 @@ export async function recordPageView({ path, referrer, host, now = new Date() } 
         where: { id: existing.id },
         data: { count: { increment: 1 } },
       });
-      return { ok: true, day, path: normalized, referrerClass, created: false };
+      return { ok: true, day, path: canonical, referrerClass, created: false };
     }
     await prisma.seoPageView.create({
-      data: { day, path: normalized, referrerClass, count: 1 },
+      data: { day, path: canonical, referrerClass, count: 1 },
     });
-    return { ok: true, day, path: normalized, referrerClass, created: true };
+    return { ok: true, day, path: canonical, referrerClass, created: true };
   } catch {
     // A telemetry sink that can fail a request is worse than no telemetry.
     return { ok: false, reason: 'error' };
@@ -263,11 +303,24 @@ export async function getPageViewSummary({ days = 14, now = new Date() } = {}) {
 
   let rows = [];
   try {
-    rows = await prisma.seoPageView.findMany({
+    // groupBy, not findMany+take. The previous read took at most 20 000 raw rows
+    // with no orderBy and then presented the fold as complete: twin rows (there
+    // is no unique index, by design) multiply the row count, and 90 days × the
+    // registry × five classes can exceed the cap on its own — so an undercount
+    // would have been rendered as data. The database does the SUM instead, which
+    // collapses the twins at the source and bounds the result by the number of
+    // DISTINCT (day, path, class) keys in the window. No cap is needed.
+    const grouped = await prisma.seoPageView.groupBy({
+      by: ['day', 'path', 'referrerClass'],
       where: { day: { gte: from, lte: to } },
-      select: { day: true, path: true, referrerClass: true, count: true },
-      take: 20000,
+      _sum: { count: true },
     });
+    rows = (Array.isArray(grouped) ? grouped : []).map((g) => ({
+      day: g.day,
+      path: g.path,
+      referrerClass: g.referrerClass,
+      count: g?._sum?.count ?? 0,
+    }));
   } catch (err) {
     return {
       days: window, from, to, rows: [], totals: emptyClasses(), grandTotal: 0,

@@ -12,8 +12,8 @@ h1: How to build a systematic review search strategy
 title: Systematic Review Search Strategy: PubMed, MeSH and Boolean Logic
 description: How to turn a review question into a reproducible search: concept blocks, MeSH and free text, Boolean logic, database translation and PRISMA-S documentation.
 slug: resources/systematic-review-search-strategy
-published: 2026-08-09
-updated: 2026-08-09
+published: 2026-08-10
+updated: 2026-08-10
 author: The PecanRev team
 ---
 

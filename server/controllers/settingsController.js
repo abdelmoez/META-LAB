@@ -19,6 +19,41 @@ import {
   coerceDomainPatch, diffDomainValues, resetDomainToDefaults,
 } from '../../src/shared/opsSettingsCatalog.js';
 
+/**
+ * 113 §4 r2 — THE LANDING <h1>, and why it lives here.
+ *
+ * Landing.jsx renders `settings.heroHeadline || DEFAULTS.heroHeadline`, and
+ * GET /api/settings/public ALWAYS supplies a heroHeadline (from the stored row, or
+ * from the default below when the row predates the key). The client-side default is
+ * therefore dead in production: THIS string, or a stored one, is the H1 every
+ * visitor and every crawler actually sees. 113 changed the brand headline in
+ * Landing.jsx alone, which is why the change never reached the live page.
+ *
+ * MUST stay byte-identical to DEFAULTS.heroHeadline in src/frontend/pages/Landing.jsx
+ * (and to the copies in server/scripts/init-settings.js and Ops › Content's
+ * DEFAULT_CONTENT). tests/unit/seo/landingHeroHeadline.test.js pins all four.
+ * The `\n` is intentional: the h1 sets `white-space: pre-line`.
+ */
+export const LANDING_HERO_HEADLINE =
+  'PecanRev: from screening to meta-analysis,\none clean workspace for systematic reviews.';
+
+/**
+ * Headlines this product once SHIPPED AS THE DEFAULT — never anything an admin
+ * typed. `initDefaultSettings()` deliberately never overwrites an existing row, so
+ * bumping LANDING_HERO_HEADLINE alone would leave every deployment that has ever
+ * booted serving the old copy forever. getPublicSettings() remaps a stored value
+ * that is BYTE-EQUAL to one of these to the current default; anything else — any
+ * genuine customisation, including a one-character edit of these — is served
+ * verbatim. Append here (never edit in place) whenever the default changes again.
+ */
+export const LEGACY_HERO_HEADLINES = [
+  // Seeded by DEFAULTS below / server/scripts/init-settings.js before 113.
+  'A serious workspace for systematic reviews and meta-analysis.',
+  // Ops › Content's own DEFAULT_CONTENT before 113 — this reaches the DB whenever an
+  // admin opened the content editor and saved without touching the headline.
+  'A serious workspace for\nsystematic reviews.',
+];
+
 // Default settings keys and their initial JSON-serialised values
 const DEFAULTS = {
   // prompt37 — global brand/theme. brandColor drives the whole UI accent; the
@@ -65,7 +100,7 @@ const DEFAULTS = {
     projectDeletion: 'soft',               // deletion policy (read-mostly; hard delete disabled)
   }),
   landingContent: JSON.stringify({
-    heroHeadline: 'A serious workspace for systematic reviews and meta-analysis.',
+    heroHeadline: LANDING_HERO_HEADLINE,
     heroSubtitle:
       'Organize evidence, extract data, run pooled analyses, and export research-ready reports — all in one secure platform.',
     ctaText: 'Start Your Review',
@@ -421,6 +456,22 @@ export async function getPublicSettings(req, res) {
         } catch {
           result[key] = {};
         }
+      }
+    }
+
+    // 113 §4 r2 — LEGACY heroHeadline REMAP. See LEGACY_HERO_HEADLINES: a stored
+    // value that is byte-equal to a headline we once shipped as the default was
+    // never authored by a human, so serving the current default in its place is a
+    // correction, not an override. A missing/blank headline is filled for the same
+    // reason (Landing.jsx would otherwise fall back to the identical client copy).
+    // Anything else is left exactly as the admin saved it.
+    if (result.landingContent && typeof result.landingContent === 'object') {
+      const storedHeadline = result.landingContent.heroHeadline;
+      const isLegacyDefault = typeof storedHeadline !== 'string'
+        || !storedHeadline.trim()
+        || LEGACY_HERO_HEADLINES.includes(storedHeadline);
+      if (isLegacyDefault) {
+        result.landingContent = { ...result.landingContent, heroHeadline: LANDING_HERO_HEADLINE };
       }
     }
 

@@ -56,7 +56,7 @@ Three things about it are worth naming plainly, because they are genuine strengt
 
 ## What both platforms take seriously
 
-Both are built around the same non-negotiables: two independent reviewers, recorded exclusion reasons at full text, a consensus step for extraction disagreements, and a PRISMA flow diagram derived from what the team actually did rather than typed in afterwards. Neither tool decides whether a study is included. That is worth saying, because a comparison that implies otherwise would be misleading about both products.
+Both are built around the same non-negotiables: two independent reviewers, recorded exclusion reasons at full text, a consensus step for extraction disagreements, and a PRISMA flow diagram derived from what the team actually did rather than typed in afterwards. In their default configurations neither tool decides whether a study is included. That is worth saying, because a comparison that implies otherwise would be misleading about both products. PecanRev ships one off-by-default exception — a criteria screener an administrator can put into governed auto-apply, which writes under a system reviewer identity and never over a person's decision — and it is described on [AI in systematic reviews](/ai-systematic-review).
 
 ## How this comparison was written
 

@@ -203,7 +203,8 @@ export default function Register({ onSuccess, onBack }) {
     >
       <motion.div
         variants={cardVariants}
-        initial="hidden"
+        // 113 r2 — SSR/prerender must emit the VISIBLE state (see Login.jsx).
+        initial={typeof window === 'undefined' ? false : 'hidden'}
         animate="visible"
         style={{
           width: "100%",

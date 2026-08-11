@@ -80,10 +80,36 @@ export function sitemapXml(entries) {
  * SECURITY NOTE: robots.txt is SEO hygiene, never access control. /ops and
  * /sift-beta are 404-cloaked by AdminRoute + requireAdmin; this list is layered on
  * top of that control and does not replace it.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * 113 r2 — PREFIX HAZARD AUDIT. A `Disallow` value is an UNANCHORED PREFIX: the
+ * rule matches every URL that STARTS with it, not the route of that name. A bare
+ * `/app` therefore also matched `/apple-touch-icon.png` — a real, shipped asset
+ * referenced by index.html — and asked every crawler not to fetch the icon it
+ * needs for a rich result. Every bare entry below was audited against the actual
+ * route table (src/App.jsx), the registry (publicPages.js) and public/:
+ *
+ *   /app            COLLIDES → split into '/app$' + '/app/'. `$` anchors the bare
+ *                   route, '/app/' keeps the /app/project/:id subtree covered, and
+ *                   /apple-touch-icon.png is no longer swept up.
+ *   /ops            no collision — nothing public starts with "/ops". Left bare on
+ *   /sift-beta      purpose so the whole cloaked subtree stays covered even for
+ *                   crawlers that ignore the `$` extension (only Google and Bing
+ *                   are documented to honour it).
+ *   /reset          MUST STAY BARE. Their single-use token lives in the QUERY
+ *   /verify-email   STRING, and `$` means "end of URL" including the query — so
+ *   /accept-invit…  '/reset$' would stop matching '/reset?token=…', the exact URL
+ *                   this rule exists to keep out of an index.
+ *   /api/ /invite/  already slash-terminated; no bare-prefix hazard.
+ *   /embed/ /public/synthesis/ /__prerender/
+ *
+ * Re-run this audit before adding a bare entry, and before adding any public path
+ * or public/ asset whose name starts with an existing rule.
  */
 export const ROBOTS_DISALLOW = [
   '/api/',
-  '/app',
+  '/app$',
+  '/app/',
   '/ops',
   '/sift-beta',
   '/invite/',

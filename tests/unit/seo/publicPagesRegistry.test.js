@@ -30,9 +30,11 @@ import {
   isNonIndexablePath,
   isRegistryPath,
   isServeableSpaPath,
+  jsonLdGraph,
   matchPattern,
   normalizePath,
   organizationJsonLd,
+  SITE_NAME,
   relatedLabelFor,
   resolveRelated,
   sitemapPages,
@@ -584,6 +586,94 @@ describe('publicPages — JSON-LD (honest fields only)', () => {
   it('faqJsonLd returns null for empty input and a FAQPage otherwise', () => {
     expect(faqJsonLd([])).toBeNull();
     expect(faqJsonLd([{ question: 'Q?', answer: 'A.' }])['@type']).toBe('FAQPage');
+  });
+});
+
+/**
+ * 113 r2 — THE GRAPH MUST CLOSE OVER ITSELF.
+ *
+ * A `{'@id': …}` inside a node is a pointer, and a consumer only ever has the ONE
+ * document in front of it. `publisher: {'@id': '…/#organization'}` on a page whose
+ * graph has no Organization node is not "a reference to the homepage graph" — it is
+ * an empty stub, and every page except '/' shipped two of them (publisher +
+ * isPartOf). jsonLdGraph() now materialises the missing site nodes; this suite is
+ * what stops the regression, and it is written against the REGISTRY rather than a
+ * fixed page list so a new entry is covered the moment it is added.
+ */
+describe('publicPages — every page graph resolves its own @id references', () => {
+  const ctx = { origin: SITE_ORIGIN };
+  const pagesWithJsonLd = PUBLIC_PAGES.filter((e) => typeof e.jsonLd === 'function');
+
+  /** Every nested `{'@id': …}`, i.e. every reference a node makes to another node. */
+  const referencesIn = (value, out, isRoot = false) => {
+    if (Array.isArray(value)) {
+      for (const item of value) referencesIn(item, out, false);
+      return out;
+    }
+    if (!value || typeof value !== 'object') return out;
+    if (!isRoot && typeof value['@id'] === 'string') out.add(value['@id']);
+    for (const key of Object.keys(value)) {
+      if (key === '@id') continue;
+      referencesIn(value[key], out, false);
+    }
+    return out;
+  };
+
+  const graphFor = (entry) => entry.jsonLd({ ...ctx, path: entry.path, entry })['@graph'];
+
+  it('covers every registry page that emits JSON-LD', () => {
+    expect(pagesWithJsonLd.length).toBeGreaterThanOrEqual(30);
+  });
+
+  it.each(pagesWithJsonLd.map((e) => [e.path, e]))(
+    '%s: every referenced @id is defined as a node in the same graph',
+    (_path, entry) => {
+      const nodes = graphFor(entry);
+      const defined = new Set(nodes.map((n) => n['@id']).filter(Boolean));
+      const referenced = new Set();
+      for (const node of nodes) referencesIn(node, referenced, true);
+      for (const ref of referenced) {
+        expect(defined.has(ref), `dangling @id ${ref}`).toBe(true);
+      }
+    },
+  );
+
+  it.each(pagesWithJsonLd.map((e) => [e.path, e]))(
+    '%s: no @id is defined twice',
+    (_path, entry) => {
+      const ids = graphFor(entry).map((n) => n['@id']).filter(Boolean);
+      expect(new Set(ids).size).toBe(ids.length);
+    },
+  );
+
+  it('a page that points at the site nodes gets them materialised, not stubbed', () => {
+    // /terms is the minimal case: its entry emits ONE WebPage node, whose isPartOf
+    // points at #website — which in turn publishes from #organization.
+    const terms = getPublicPage('/terms');
+    const types = graphFor(terms).map((n) => n['@type']);
+    expect(types).toContain('WebPage');
+    expect(types).toContain('WebSite');
+    expect(types).toContain('Organization');
+  });
+
+  it('a graph that already lists a node keeps its own instance (no duplicate)', () => {
+    const home = getPublicPage('/');
+    // Unchanged from before the auto-completion: the homepage always listed all three.
+    expect(graphFor(home).map((n) => n['@type']))
+      .toEqual(['Organization', 'WebSite', 'SoftwareApplication', 'FAQPage']);
+  });
+
+  it('jsonLdGraph dedupes by @id and leaves unknown references alone', () => {
+    const org = organizationJsonLd(ctx);
+    const deduped = jsonLdGraph([org, { ...org, name: 'shadow' }]);
+    expect(deduped['@graph']).toHaveLength(1);
+    expect(deduped['@graph'][0].name).toBe(SITE_NAME);
+
+    // No builder answers to '#nope' — inventing a node would be worse than the
+    // dangling pointer, so the graph is returned untouched (and the per-page suite
+    // above is what fails if a registry entry ever ships one).
+    const unknown = jsonLdGraph([{ '@type': 'Thing', isPartOf: { '@id': `${SITE_ORIGIN}/#nope` } }]);
+    expect(unknown['@graph']).toHaveLength(1);
   });
 });
 

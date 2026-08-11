@@ -81,7 +81,7 @@ Zero-result databases are handled with the same care in the other direction. A d
 
 The diagram exports as vector SVG and as PNG, with journal size presets and an optional transparent background. The Word manuscript export embeds it as a high-resolution figure, and the reproducibility and journal-submission bundles include the figure files alongside the rest of the package.
 
-Alongside the diagram, PecanRev builds the PRISMA 2020 reporting checklist as a 26-item table grouped by section, and the PRISMA-S search-reporting checklist as 16 items, both exportable as CSV. Nine checklist items can be pre-filled from project data; each one that is says "auto-detected from project data — verify" rather than claiming the item is done.
+Alongside the diagram, PecanRev builds a checklist table covering PRISMA 2020 items 1-26 (item 27, availability of data and code, is not yet tracked), grouped by section, and the PRISMA-S search-reporting checklist as 16 items, both exportable as CSV. Nine checklist items can be pre-filled from project data; each one that is says "auto-detected from project data — verify" rather than claiming the item is done.
 
 ## What this does not do
 

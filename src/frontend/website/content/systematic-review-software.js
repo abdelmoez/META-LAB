@@ -44,7 +44,7 @@ A project starts from the research question, written in plain language, and carr
 
 You build the search by grouping terms from the question into concepts. Terms within a concept are OR-ed, concepts are AND-ed, and the parentheses are generated for you. MeSH descriptors carry their scope notes and entry terms so you can check what you are actually searching for, and synonym expansion is opt-in one term at a time rather than a bulk button.
 
-One strategy compiles to paste-ready queries for sixteen databases, including PubMed/MEDLINE, Embase, the Cochrane Library (CENTRAL), CINAHL, PsycINFO, Scopus, Web of Science, Europe PMC, ClinicalTrials.gov and the WHO ICTRP. Seven of those can be executed from inside PecanRev — PubMed, Europe PMC, ClinicalTrials.gov, Crossref, DOAJ, OpenAlex and Semantic Scholar — and each run stores the exact query that was executed against each database. Where no verified subject-heading crosswalk exists, the compiler produces a correctly formatted free-text phrase and says so instead of pretending a mapping exists.
+One strategy compiles to paste-ready queries for sixteen databases, including PubMed/MEDLINE, Embase, the Cochrane Library (CENTRAL), CINAHL, PsycINFO, Scopus, Web of Science, Europe PMC, ClinicalTrials.gov and the WHO ICTRP. Separately, seven sources can be executed from inside PecanRev — PubMed, Europe PMC, ClinicalTrials.gov, Crossref, DOAJ, OpenAlex and Semantic Scholar — and each run stores the exact query that was executed against each. The two lists are different lists, not a whole and a subset: the sixteen are compile targets you paste elsewhere, the seven are what the product can run for you, and the interface says which is which. Where no verified subject-heading crosswalk exists, the compiler produces a correctly formatted free-text phrase and says so instead of pretending a mapping exists.
 
 Read the detail: [search engine](/features/search-engine).
 
@@ -119,7 +119,7 @@ Publishing the boundaries is deliberate; a review team should choose its tooling
 - **Bayesian network meta-analysis is not available.** The network engine is frequentist only, and it reports P-scores rather than SUCRA because that is the statistic it computes.
 - **Freeman-Tukey double-arcsine and GLMM pooling of proportions are not implemented.** Proportion pooling is logit-transform only.
 - **Native Word track changes is not implemented**, and network and ranking plots are not included in the Word export.
-- **PecanRev does not decide anything for you.** Screening ranking cannot record a decision, and an extraction suggestion becomes data only when a person accepts or edits it. See [AI in systematic reviews](/ai-systematic-review) for exactly which steps are model-assisted and which are not.
+- **PecanRev does not decide anything for you by default.** Screening ranking cannot record a decision at any setting, and an extraction suggestion becomes data only when a person accepts or edits it. One engine is the exception and it is off by default: the criteria screener, which suggests only unless an administrator and a project both switch it to governed auto-apply, and which then writes under a system reviewer identity that can never overwrite a person's decision. See [AI in systematic reviews](/ai-systematic-review) for exactly which steps are automated, which are model-assisted, and what the exception can do.
 
 ## How should you choose systematic review software?
 

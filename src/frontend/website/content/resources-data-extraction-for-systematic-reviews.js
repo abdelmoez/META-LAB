@@ -12,8 +12,8 @@ h1: Data extraction for systematic reviews
 title: Data Extraction for Systematic Reviews: Forms, Outcomes and Arms
 description: How to design and pilot an extraction form, handle continuous and dichotomous outcomes, multi-arm trials and case series, and keep every value traceable.
 slug: resources/data-extraction-for-systematic-reviews
-published: 2026-08-09
-updated: 2026-08-09
+published: 2026-08-10
+updated: 2026-08-10
 author: The PecanRev team
 ---
 

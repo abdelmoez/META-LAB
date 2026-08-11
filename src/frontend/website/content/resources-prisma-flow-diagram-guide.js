@@ -12,8 +12,8 @@ h1: How to build the PRISMA 2020 flow diagram
 title: PRISMA Flow Diagram Guide: Boxes, Counts and Common Mistakes
 description: Which PRISMA 2020 flow template to use, what each box counts, where every number comes from, and the arithmetic errors peer reviewers catch most often.
 slug: resources/prisma-flow-diagram-guide
-published: 2026-08-09
-updated: 2026-08-09
+published: 2026-08-10
+updated: 2026-08-10
 author: The PecanRev team
 ---
 

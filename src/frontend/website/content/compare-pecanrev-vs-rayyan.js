@@ -57,7 +57,7 @@ Two strengths worth naming:
 
 ## What both take seriously
 
-Both support several reviewers working independently, both support blind screening so a reviewer cannot see peers' decisions, and in both the human makes every inclusion decision. Any relevance ranking in either tool changes the order records are read in, not their fate.
+Both support several reviewers working independently, both support blind screening so a reviewer cannot see peers' decisions, and in both, as configured by default, the human makes every inclusion decision. Any relevance ranking in either tool changes the order records are read in, not their fate. PecanRev has one off-by-default exception, a criteria screener an administrator can put into governed auto-apply; it writes under a system reviewer identity, never over a person's decision, and is described on [AI in systematic reviews](/ai-systematic-review).
 
 ## How this comparison was written
 

@@ -5,6 +5,8 @@
  * configurable maintenance message EXCEPT:
  *   - the public plumbing the maintenance UX itself needs:
  *     /api/health, /api/version, /api/settings/public, /api/auth/*, /api/events
+ *   - the public page-view beacon (/api/seo/pageview), whose contract is
+ *     "always 204" — a 503 there is a red error on every public page
  *   - the entire admin console (/api/admin/*) so staff can turn it back off
  *   - any request carrying a valid admin|mod session JWT (staff bypass)
  *
@@ -56,6 +58,14 @@ function isExempt(path) {
     // admin may enable maintenance precisely while onboarding a batch of invitees).
     // The token is the only credential; it stays reachable during maintenance.
     path.startsWith('/api/accept-invitation') ||
+    // 113.md phase 19 — the public page-view beacon's ONE contract is "always
+    // 204, never an error in a visitor's console". Maintenance mode answers
+    // 503 JSON, which would break that contract on every public page for as
+    // long as maintenance is on. Kept to the EXACT path (not a /api/seo prefix)
+    // so nothing else under that mount inherits the exemption; recordPageView
+    // already swallows its own database errors, so a beacon during maintenance
+    // costs at most one failed write.
+    path === '/api/seo/pageview' ||
     // 68.md P8 — a published public synthesis is an EXTERNAL, shareable artifact
     // (embedded on third-party sites, opened by anonymous readers). Its availability
     // must not hinge on this app's internal maintenance state, so the public read

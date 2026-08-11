@@ -16,7 +16,7 @@ import {
 import { createResetToken } from '../services/passwordResetService.js';
 import { getVersion } from '../version.js';
 import { bustMaintenanceCache } from '../middleware/maintenance.js';
-import { defaultFeatureFlags } from './settingsController.js';
+import { defaultFeatureFlags, LANDING_HERO_HEADLINE, LEGACY_HERO_HEADLINES } from './settingsController.js';
 import { USAGE, recordUsage } from '../utils/usage.js';
 import { forceCloseStreams } from '../realtime/bus.js';
 import { invalidateAuthState } from '../middleware/auth.js';
@@ -1665,7 +1665,17 @@ export async function getLandingContent(req, res) {
     const row = await prisma.siteSetting.findUnique({ where: { key: 'landingContent' } });
     if (!row) return res.json({});
     try {
-      return res.json(JSON.parse(row.value));
+      const content = JSON.parse(row.value);
+      // 113 r2 — mirror getPublicSettings' legacy-headline remap: a stored
+      // headline byte-equal to a SHIPPED default (never admin-typed copy) is
+      // shown as the current brand headline, so the editor displays what the
+      // public site actually serves and a no-op save can't resurrect the old
+      // string.
+      if (content && typeof content === 'object'
+          && LEGACY_HERO_HEADLINES.includes(content.heroHeadline)) {
+        content.heroHeadline = LANDING_HERO_HEADLINE;
+      }
+      return res.json(content);
     } catch {
       return res.json(row.value);
     }

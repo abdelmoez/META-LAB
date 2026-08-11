@@ -229,8 +229,12 @@ export function PageShell({ eyebrow, h1, lede, trail, updated, author, narrow = 
   // 113.md phase 19 — first-party landing counter. Effect-only, so it never runs
   // under renderToString (prerender + SSR pins) and never touches the head. The
   // path is only sent for a REGISTERED public page; the server allowlists it
-  // again, so an unknown route contributes nothing from either side.
-  useSeoBeacon(entry ? canonicalPath : null);
+  // again, so an unknown route contributes nothing from either side. What is
+  // sent is the entry's CANONICAL path, not the visited one, so an alias page
+  // counts against the page it canonicalises to — the same rollup a search
+  // engine performs, and the shape the analytics table is keyed on. The server
+  // repeats the mapping, so an old cached bundle still rolls up correctly.
+  useSeoBeacon(entry ? (entry.canonicalPath || canonicalPath) : null);
 
   return (
     <div style={{ background: C.bg, minHeight: '100vh', fontFamily: FONT, color: C.txt }}>

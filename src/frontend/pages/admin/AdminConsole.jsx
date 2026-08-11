@@ -3281,7 +3281,10 @@ const DEFAULT_CONTENT = {
     { label: 'Workflow', href: '#workflow' },
     { label: 'About',    href: '#about' },
   ],
-  heroHeadline:      'A serious workspace for\nsystematic reviews.',
+  // 113 §4 r2 — byte-identical to LANDING_HERO_HEADLINE (settingsController.js) and
+  // DEFAULTS.heroHeadline (Landing.jsx), so opening Ops › Content and saving cannot
+  // silently write the old brandless headline back over the shipped one.
+  heroHeadline:      'PecanRev: from screening to meta-analysis,\none clean workspace for systematic reviews.',
   heroSubtitle:      'Organize evidence, extract data, run pooled analyses, and export research-ready reports — from one secure platform.',
   ctaText:           'Start Your Review →',
   ctaSecondaryText:  'Sign in',

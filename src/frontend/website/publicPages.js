@@ -371,11 +371,95 @@ export function faqJsonLd(faqs) {
   };
 }
 
-/** Wrap one or more nodes into a single @graph document. */
+/**
+ * The site-level nodes jsonLdGraph() can MATERIALISE on demand, keyed by the
+ * JSONLD_IDS anchor their `@id` ends with. Order is the emission order used when
+ * more than one has to be added.
+ */
+const SITE_NODE_BUILDERS = [
+  [JSONLD_IDS.organization, organizationJsonLd],
+  [JSONLD_IDS.website, webSiteJsonLd],
+  [JSONLD_IDS.software, softwareApplicationJsonLd],
+];
+
+/**
+ * Every `@id` a node REFERENCES (i.e. every nested `{'@id': …}`), excluding the
+ * node's own identity at the root of the walk.
+ */
+function collectIdReferences(value, out, isRoot = false) {
+  if (Array.isArray(value)) {
+    for (const item of value) collectIdReferences(item, out, false);
+    return;
+  }
+  if (!value || typeof value !== 'object') return;
+  if (!isRoot && typeof value['@id'] === 'string') out.add(value['@id']);
+  for (const key of Object.keys(value)) {
+    if (key === '@id') continue;
+    collectIdReferences(value[key], out, false);
+  }
+}
+
+/**
+ * Wrap one or more nodes into a single @graph document.
+ *
+ * 113 r2 — THE GRAPH IS SELF-CONTAINED. A `{'@id': …}` is a POINTER, and a pointer
+ * to a node that is not in the same document resolves to nothing: a consumer that
+ * only ever fetches this page (which is every consumer — nothing tells it the '/'
+ * graph exists) sees `publisher` and `isPartOf` as empty stubs. Every page except
+ * the homepage shipped exactly that, because webPageJsonLd/contentArticleJsonLd/
+ * softwareApplicationJsonLd all point at `#website` / `#organization` and only the
+ * homepage entry listed those nodes.
+ *
+ * Rather than make 30-odd registry entries remember to append two boilerplate
+ * nodes (and stay correct as pages are added), the wrapper closes the graph itself:
+ *   1. nodes are DEDUPED by `@id` — first occurrence wins, so an entry that already
+ *      lists Organization keeps its own instance and nothing is emitted twice;
+ *   2. any `@id` referenced but not defined is MATERIALISED from SITE_NODE_BUILDERS,
+ *      with the origin recovered from the reference itself (the anchor is a fragment
+ *      on the site root, so stripping it yields the origin the caller used);
+ *   3. that repeats until no new node appears — WebSite pulls in Organization.
+ *
+ * A reference this file has no builder for is left alone: it belongs to a node the
+ * caller was supposed to include, and inventing one would be worse than a dangling
+ * pointer. tests/unit/seo/publicPagesRegistry.test.js fails the build if any page's
+ * graph still contains one.
+ */
 export function jsonLdGraph(nodes) {
   const list = (Array.isArray(nodes) ? nodes : [nodes]).filter(Boolean);
   if (!list.length) return null;
-  return { '@context': 'https://schema.org', '@graph': list };
+
+  const graph = [];
+  const defined = new Set();
+  for (const node of list) {
+    const id = node && typeof node['@id'] === 'string' ? node['@id'] : '';
+    if (id) {
+      if (defined.has(id)) continue;
+      defined.add(id);
+    }
+    graph.push(node);
+  }
+
+  // Bounded by the builder count: each pass can only add nodes we know how to
+  // build, and each is added at most once.
+  for (let pass = 0; pass < SITE_NODE_BUILDERS.length; pass += 1) {
+    const referenced = new Set();
+    for (const node of graph) collectIdReferences(node, referenced, true);
+    let added = false;
+    for (const [anchor, build] of SITE_NODE_BUILDERS) {
+      for (const ref of referenced) {
+        if (defined.has(ref) || !ref.endsWith(anchor)) continue;
+        const built = build({ origin: ref.slice(0, -anchor.length) });
+        // Paranoia: only accept a node that really answers to the reference.
+        if (built['@id'] !== ref) continue;
+        defined.add(ref);
+        graph.push(built);
+        added = true;
+      }
+    }
+    if (!added) break;
+  }
+
+  return { '@context': 'https://schema.org', '@graph': graph };
 }
 
 /* ─────────────────── W1-B: content-page helpers (111.md §9) ─────────────── */
@@ -1325,7 +1409,7 @@ export const PUBLIC_PAGES = [
       '/resources/prisma-flow-diagram-guide',
     ],
     jsonLd: (ctx) => jsonLdGraph([
-      contentArticleJsonLd({ ...ctx.entry, articleHeadline: 'How to conduct a systematic review', datePublished: '2026-08-09', dateModified: '2026-08-09' }, ctx),
+      contentArticleJsonLd({ ...ctx.entry, articleHeadline: 'How to conduct a systematic review', datePublished: '2026-08-10', dateModified: '2026-08-10' }, ctx),
       breadcrumbJsonLd(trail({ name: 'Resources', path: '/resources' }, { name: 'How to conduct a systematic review', path: '/resources/how-to-conduct-a-systematic-review' }), ctx),
     ]),
   },
@@ -1351,7 +1435,7 @@ export const PUBLIC_PAGES = [
       '/features/search-engine',
     ],
     jsonLd: (ctx) => jsonLdGraph([
-      contentArticleJsonLd({ ...ctx.entry, articleHeadline: 'How to build a systematic review search strategy', datePublished: '2026-08-09', dateModified: '2026-08-09' }, ctx),
+      contentArticleJsonLd({ ...ctx.entry, articleHeadline: 'How to build a systematic review search strategy', datePublished: '2026-08-10', dateModified: '2026-08-10' }, ctx),
       breadcrumbJsonLd(trail({ name: 'Resources', path: '/resources' }, { name: 'Search strategy', path: '/resources/systematic-review-search-strategy' }), ctx),
     ]),
   },
@@ -1378,7 +1462,7 @@ export const PUBLIC_PAGES = [
       '/features/data-extraction',
     ],
     jsonLd: (ctx) => jsonLdGraph([
-      contentArticleJsonLd({ ...ctx.entry, articleHeadline: 'Data extraction for systematic reviews', datePublished: '2026-08-09', dateModified: '2026-08-09' }, ctx),
+      contentArticleJsonLd({ ...ctx.entry, articleHeadline: 'Data extraction for systematic reviews', datePublished: '2026-08-10', dateModified: '2026-08-10' }, ctx),
       breadcrumbJsonLd(trail({ name: 'Resources', path: '/resources' }, { name: 'Data extraction', path: '/resources/data-extraction-for-systematic-reviews' }), ctx),
     ]),
   },
@@ -1404,7 +1488,7 @@ export const PUBLIC_PAGES = [
       '/features/risk-of-bias',
     ],
     jsonLd: (ctx) => jsonLdGraph([
-      contentArticleJsonLd({ ...ctx.entry, articleHeadline: 'Risk of bias assessment in systematic reviews', datePublished: '2026-08-09', dateModified: '2026-08-09' }, ctx),
+      contentArticleJsonLd({ ...ctx.entry, articleHeadline: 'Risk of bias assessment in systematic reviews', datePublished: '2026-08-10', dateModified: '2026-08-10' }, ctx),
       breadcrumbJsonLd(trail({ name: 'Resources', path: '/resources' }, { name: 'Risk of bias assessment', path: '/resources/risk-of-bias-assessment' }), ctx),
     ]),
   },
@@ -1430,7 +1514,7 @@ export const PUBLIC_PAGES = [
       '/features/meta-analysis',
     ],
     jsonLd: (ctx) => jsonLdGraph([
-      contentArticleJsonLd({ ...ctx.entry, articleHeadline: 'How to read a forest plot', datePublished: '2026-08-09', dateModified: '2026-08-09' }, ctx),
+      contentArticleJsonLd({ ...ctx.entry, articleHeadline: 'How to read a forest plot', datePublished: '2026-08-10', dateModified: '2026-08-10' }, ctx),
       breadcrumbJsonLd(trail({ name: 'Resources', path: '/resources' }, { name: 'Forest plots & heterogeneity', path: '/resources/forest-plots-and-heterogeneity' }), ctx),
     ]),
   },
@@ -1456,7 +1540,7 @@ export const PUBLIC_PAGES = [
       '/features/meta-analysis',
     ],
     jsonLd: (ctx) => jsonLdGraph([
-      contentArticleJsonLd({ ...ctx.entry, articleHeadline: 'Publication bias and small-study effects', datePublished: '2026-08-09', dateModified: '2026-08-09' }, ctx),
+      contentArticleJsonLd({ ...ctx.entry, articleHeadline: 'Publication bias and small-study effects', datePublished: '2026-08-10', dateModified: '2026-08-10' }, ctx),
       breadcrumbJsonLd(trail({ name: 'Resources', path: '/resources' }, { name: 'Publication bias', path: '/resources/publication-bias' }), ctx),
     ]),
   },
@@ -1483,7 +1567,7 @@ export const PUBLIC_PAGES = [
       '/features/network-meta-analysis',
     ],
     jsonLd: (ctx) => jsonLdGraph([
-      contentArticleJsonLd({ ...ctx.entry, articleHeadline: 'Network meta-analysis explained', datePublished: '2026-08-09', dateModified: '2026-08-09' }, ctx),
+      contentArticleJsonLd({ ...ctx.entry, articleHeadline: 'Network meta-analysis explained', datePublished: '2026-08-10', dateModified: '2026-08-10' }, ctx),
       breadcrumbJsonLd(trail({ name: 'Resources', path: '/resources' }, { name: 'Network meta-analysis', path: '/resources/network-meta-analysis-explained' }), ctx),
     ]),
   },
@@ -1510,7 +1594,7 @@ export const PUBLIC_PAGES = [
       '/features/prisma-flow-diagram',
     ],
     jsonLd: (ctx) => jsonLdGraph([
-      contentArticleJsonLd({ ...ctx.entry, articleHeadline: 'How to build the PRISMA 2020 flow diagram', datePublished: '2026-08-09', dateModified: '2026-08-09' }, ctx),
+      contentArticleJsonLd({ ...ctx.entry, articleHeadline: 'How to build the PRISMA 2020 flow diagram', datePublished: '2026-08-10', dateModified: '2026-08-10' }, ctx),
       breadcrumbJsonLd(trail({ name: 'Resources', path: '/resources' }, { name: 'PRISMA flow diagram', path: '/resources/prisma-flow-diagram-guide' }), ctx),
     ]),
   },

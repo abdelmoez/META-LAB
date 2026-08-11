@@ -19,14 +19,21 @@
  *      reader must add them, never count rows.
  *   4. NEVER THROWS. A rejecting database is a typed return value.
  *
- * The fake prisma below implements exactly the three operations the service
- * depends on (findFirst / update / create), so the test fails if the
- * findFirst-then-increment shape is dropped.
+ *   5. THE ROLLUP IS REAL. A registry entry whose canonicalPath is some other
+ *      page (today: /beta-waitlist → /) is COUNTED UNDER that page. The first
+ *      cut documented this and did not do it: the allowlist held canonicalPaths
+ *      only, so an alias was dropped as "not tracked" and the page it
+ *      canonicalises to was silently undercounted.
+ *
+ * The fake prisma below implements exactly the four operations the service
+ * depends on (findFirst / update / create / groupBy), so the test fails if the
+ * findFirst-then-increment shape is dropped — or if the summary goes back to
+ * reading raw rows under a `take` cap instead of letting the database SUM.
  */
 import { vi, describe, it, expect, beforeEach } from 'vitest';
 import { PUBLIC_PAGES } from '../../../src/frontend/website/publicPages.js';
 
-const db = { rows: [], seq: 0, findThrows: false, createThrows: false, findManyThrows: false };
+const db = { rows: [], seq: 0, findThrows: false, createThrows: false, groupByThrows: false };
 
 const prismaMock = {
   seoPageView: {
@@ -49,9 +56,28 @@ const prismaMock = {
       db.rows.push(row);
       return row;
     }),
-    findMany: vi.fn(async ({ where }) => {
-      if (db.findManyThrows) throw new Error('query failed');
-      return db.rows.filter((r) => r.day >= where.day.gte && r.day <= where.day.lte);
+    // The DB-side fold the service now relies on. Deliberately NOT a findMany
+    // wrapper: it returns one entry per distinct `by` key with a `_sum`, so a
+    // reader that expects raw rows (or a `take`) breaks here.
+    groupBy: vi.fn(async ({ by, where, _sum }) => {
+      if (db.groupByThrows) throw new Error('query failed');
+      expect(by).toEqual(['day', 'path', 'referrerClass']);
+      expect(_sum).toEqual({ count: true });
+      const buckets = new Map();
+      for (const r of db.rows) {
+        if (r.day < where.day.gte || r.day > where.day.lte) continue;
+        const key = `${r.day}|${r.path}|${r.referrerClass}`;
+        if (!buckets.has(key)) {
+          buckets.set(key, { day: r.day, path: r.path, referrerClass: r.referrerClass, _sum: { count: 0 } });
+        }
+        buckets.get(key)._sum.count += r.count;
+      }
+      return [...buckets.values()];
+    }),
+    // Present so an accidental return to the capped raw read is loud rather than
+    // silent — nothing in the service may call it any more.
+    findMany: vi.fn(async () => {
+      throw new Error('getPageViewSummary must groupBy, not findMany');
     }),
   },
 };
@@ -59,7 +85,7 @@ vi.mock('../../../server/db/client.js', () => ({ prisma: prismaMock }));
 
 const {
   classifyReferrer, normalizeBeaconPath, isTrackablePath, trackablePaths,
-  aggregatePageViews, recordPageView, getPageViewSummary,
+  canonicalizeBeaconPath, aggregatePageViews, recordPageView, getPageViewSummary,
   utcDay, windowStartDay, REFERRER_CLASSES,
 } = await import('../../../server/services/seoPageviewService.js');
 const { handlePageViewBeacon } = await import('../../../server/routes/seoPublic.js');
@@ -69,12 +95,15 @@ beforeEach(() => {
   db.seq = 0;
   db.findThrows = false;
   db.createThrows = false;
-  db.findManyThrows = false;
+  db.groupByThrows = false;
   vi.clearAllMocks();
 });
 
 /** A registered public path, taken from the registry rather than hardcoded. */
 const REGISTERED = PUBLIC_PAGES.find((e) => e.path === '/features/screening').canonicalPath;
+
+/** A registry entry whose canonicalPath is a DIFFERENT page (today /beta-waitlist → /). */
+const ALIAS = PUBLIC_PAGES.find((e) => e.path !== e.canonicalPath);
 
 describe('utcDay / windowStartDay', () => {
   it('keeps UTC calendar days only — no clock time survives', () => {
@@ -126,6 +155,26 @@ describe('the allowlist', () => {
     expect(isTrackablePath(REGISTERED)).toBe(true);
     for (const bad of ['/app', '/app/projects/abc123', '/ops', '/api/admin/users', '/features/not-a-page', '/resources/made-up']) {
       expect(isTrackablePath(bad), bad).toBe(false);
+    }
+  });
+});
+
+describe('canonicalizeBeaconPath — the rollup, not just the allowlist', () => {
+  it('maps every canonicalPath to itself', () => {
+    for (const p of trackablePaths()) expect(canonicalizeBeaconPath(p), p).toBe(p);
+  });
+
+  it('maps an ALIAS entry onto the page it canonicalises to', () => {
+    expect(ALIAS, 'the registry should still carry at least one alias entry').toBeTruthy();
+    expect(canonicalizeBeaconPath(ALIAS.path)).toBe(ALIAS.canonicalPath);
+    // …and that alias is NOT itself a countable key, which is exactly why the
+    // allowlist alone dropped it.
+    expect(isTrackablePath(ALIAS.path)).toBe(false);
+  });
+
+  it('still refuses everything the registry does not know', () => {
+    for (const bad of ['/app', '/ops', '/features/not-a-page', '', null, undefined, 42]) {
+      expect(canonicalizeBeaconPath(bad), String(bad)).toBeNull();
     }
   });
 });
@@ -202,6 +251,18 @@ describe('recordPageView', () => {
       ['2026-08-10', 'ai', 1],
       ['2026-08-11', 'direct', 1],
     ]);
+  });
+
+  it('ROLLS UP an alias path onto its canonicalPath instead of dropping it', async () => {
+    const r = await recordPageView({ path: ALIAS.path, referrer: '', host: 'pecanrev.com', now });
+    expect(r).toMatchObject({ ok: true, created: true, path: ALIAS.canonicalPath });
+    expect(db.rows).toHaveLength(1);
+    expect(db.rows[0].path).toBe(ALIAS.canonicalPath);
+
+    // A visit to the canonical page itself lands on the SAME row, not a twin key.
+    await recordPageView({ path: ALIAS.canonicalPath, referrer: '', host: 'pecanrev.com', now });
+    expect(db.rows).toHaveLength(1);
+    expect(db.rows[0].count).toBe(2);
   });
 
   it('writes NOTHING for an unregistered path, and says so without naming why', async () => {
@@ -357,10 +418,40 @@ describe('getPageViewSummary', () => {
   });
 
   it('reports a failed read honestly instead of showing zeros as data', async () => {
-    db.findManyThrows = true;
+    db.groupByThrows = true;
     const out = await getPageViewSummary({ days: 14, now });
     expect(out.available).toBe(false);
     expect(out.error).toBeTruthy();
     expect(out.grandTotal).toBe(0);
+  });
+
+  it('SUMS in the database — no row cap, so twins can never become an undercount', async () => {
+    // The old read was findMany({ take: 20000 }) with no orderBy: twin rows (the
+    // table has no unique index on purpose) inflate the row count, and a busy
+    // 90-day window could cross the cap and be presented as a complete total.
+    db.rows = [
+      { id: 'a', day: '2026-08-09', path: '/', referrerClass: 'search', count: 3 },
+      { id: 'b', day: '2026-08-09', path: '/', referrerClass: 'search', count: 4 }, // the twin
+      { id: 'c', day: '2026-08-10', path: '/', referrerClass: 'search', count: 5 },
+    ];
+    const out = await getPageViewSummary({ days: 14, now });
+    expect(out.grandTotal).toBe(12);
+    expect(out.rows).toHaveLength(1);
+    expect(out.rows[0]).toMatchObject({ path: '/', total: 12 });
+
+    expect(prismaMock.seoPageView.groupBy).toHaveBeenCalledTimes(1);
+    expect(prismaMock.seoPageView.findMany).not.toHaveBeenCalled();
+    const [args] = prismaMock.seoPageView.groupBy.mock.calls[0];
+    expect(args.where).toEqual({ day: { gte: '2026-07-28', lte: '2026-08-10' } });
+    expect(args).not.toHaveProperty('take');
+  });
+
+  it('treats a null _sum as zero rather than NaN', async () => {
+    prismaMock.seoPageView.groupBy.mockResolvedValueOnce([
+      { day: '2026-08-10', path: '/', referrerClass: 'search', _sum: { count: null } },
+    ]);
+    const out = await getPageViewSummary({ days: 14, now });
+    expect(out.grandTotal).toBe(0);
+    expect(out.available).toBe(true);
   });
 });

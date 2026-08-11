@@ -16,8 +16,8 @@ h1: How to conduct a systematic review
 title: How to Conduct a Systematic Review: A Step-by-Step Guide
 description: An operational eight-step walkthrough of running a systematic review, from protocol and search through screening, extraction, appraisal and reporting.
 slug: resources/how-to-conduct-a-systematic-review
-published: 2026-08-09
-updated: 2026-08-09
+published: 2026-08-10
+updated: 2026-08-10
 author: The PecanRev team
 ---
 

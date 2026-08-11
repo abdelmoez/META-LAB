@@ -427,7 +427,20 @@ const jsonLargeImport = express.json({ limit: '64mb' });
 // the controller), so the wire budget must cover base64 inflation (~27MB) plus
 // the JSON envelope. Everything else keeps the 10MB default.
 const jsonAiExtract   = express.json({ limit: '32mb' });
+// 113.md phase 19 (r2) — the UNAUTHENTICATED page-view beacon. Its router-level
+// parser only bound `text/plain`, but navigator.sendBeacon sends a Blob typed
+// `application/json`, so the real production body fell through to the 10MB
+// default above: anyone could stream 10MB into JSON.parse on a public, no-auth
+// path. `{path, referrer}` fits in 2kb with room to spare, and both content
+// types are accepted because some clients/extensions downgrade the Blob type.
+const jsonSeoBeacon   = express.json({ type: ['application/json', 'text/plain'], limit: '2kb' });
 app.use((req, res, next) => {
+  // The beacon's contract is "always 204, never an error in a visitor's
+  // console", so a parse failure (over-budget or malformed body) must NOT reach
+  // the error handler as a 413/400: the callback deliberately ignores the error
+  // argument, leaving req.body as the `{}` body-parser already assigned. The
+  // route then answers 204 and records nothing.
+  if (req.path === '/api/seo/pageview') return jsonSeoBeacon(req, res, () => next());
   // 86.md P1.8 — the 64MB budget is ONLY for the authenticated screening import
   // routes. The old suffix-only regex matched ANY path ending in `/import`
   // (e.g. an unauthenticated POST /x/import), letting anonymous clients stream a
