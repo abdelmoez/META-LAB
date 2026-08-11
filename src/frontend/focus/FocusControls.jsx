@@ -31,7 +31,12 @@ export function FocusToggle({ size = 'md', placement = 'bottom' }) {
   // No chrome to hide ⇒ no control. Better than a button that visibly does nothing.
   if (!available) return null;
 
-  const label = focus ? 'Exit focus mode' : 'Focus mode';
+  // 114.md §1/§7 — the control now also takes the browser into true fullscreen,
+  // so the copy says so. It stays honest about the fallback by describing the
+  // INTENT ("use the full screen") rather than promising a browser state we
+  // cannot guarantee: where fullscreen is refused, the navigation still goes and
+  // the workspace still takes the whole viewport.
+  const label = focus ? 'Exit focus mode' : 'Focus mode — full screen';
   return (
     <StitchTooltip
       label={label}
@@ -40,7 +45,7 @@ export function FocusToggle({ size = 'md', placement = 'bottom' }) {
     >
       <StitchIconButton
         icon={focus ? 'collapse' : 'expand'}
-        label={focus ? 'Exit focus mode' : 'Enter focus mode — hide navigation and maximise the workspace'}
+        label={focus ? 'Exit focus mode — restore navigation and leave full screen' : 'Enter focus mode — hide navigation and use the full screen'}
         title={null}
         aria-pressed={focus}
         active={focus}
@@ -148,7 +153,7 @@ export function FocusNavBar({ current, prev, next, onGo, projectName = '', stage
       <StitchTooltip label="Exit focus mode" hint={`${focusShortcutLabel()} or Esc`} placement="bottom">
         <StitchIconButton
           icon="collapse"
-          label="Exit focus mode and restore navigation"
+          label="Exit focus mode — restore navigation and leave full screen"
           title={null}
           size="sm"
           onClick={exitFocus}

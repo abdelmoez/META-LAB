@@ -246,7 +246,7 @@ function StageRail({ stages, active, onSelect, statusFor }) {
                 disabled={st.disabled}
                 aria-current={st.active ? 'step' : undefined}
                 aria-disabled={st.disabled || undefined}
-                aria-label={`Stage ${s.num}: ${s.label}${st.done ? ' — done' : ''}${st.attention ? ' — needs attention' : ''}${st.disabled ? ` — ${st.reason}` : ''}`}
+                aria-label={`Stage ${s.num}: ${s.label}${st.done ? ' — done' : ''}${st.attention ? ' — needs attention' : ''}${st.advisoryLabel ? ` — ${st.advisoryLabel}` : ''}${st.disabled ? ` — ${st.reason}` : ''}`}
                 title={st.disabled ? st.reason : undefined}
                 style={{
                   position: 'relative', display: 'flex', alignItems: 'stretch', gap: 11, width: '100%',
@@ -274,6 +274,14 @@ function StageRail({ stages, active, onSelect, statusFor }) {
                     {/* secondary status glyph — decorative; the aria-label carries the meaning */}
                     {st.done && !st.active && <span aria-hidden="true" style={{ color: C.grn, fontSize: 12, fontWeight: 800, flexShrink: 0 }}>✓</span>}
                     {st.attention && !st.done && <span aria-hidden="true" style={{ color: C.yel, fontSize: 12, fontWeight: 800, flexShrink: 0 }}>!</span>}
+                    {/* 114.md §2 — ADVISORY count: optional review items (pending vocabulary
+                        suggestions / quality notes) shown as a quiet numeral beside a stage
+                        that is otherwise complete. The aria-label already spells it out, so
+                        the pill is decorative; it never replaces the status glyph. */}
+                    {st.advisory > 0 && !st.disabled && (
+                      <span aria-hidden="true" title={st.advisoryLabel} data-testid={`search-rail-advisory-${s.id}`}
+                        style={{ color: C.muted, background: C.card2, border: `1px solid ${C.brd2}`, borderRadius: 999, fontSize: 9.5, fontWeight: 700, lineHeight: '13px', padding: '0 6px', flexShrink: 0 }}>{st.advisory}</span>
+                    )}
                     {st.disabled && <span aria-hidden="true" style={{ color: C.dim, fontSize: 11, flexShrink: 0 }}>🔒</span>}
                   </span>
                   <span style={{ fontSize: 10.5, color: st.disabled ? C.dim : C.muted, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{s.desc}</span>
@@ -968,14 +976,16 @@ function SearchWorkspaceBody({
   // ── 85.md — builder-reported honest stats: {liveTermCount, stageStatuses}. A real
   // STATE path (unlike liveRef, which never re-renders) so the pulse's empty branch
   // and the rail statuses stay reactive; identical payloads are dropped so keystroke
-  // storms never re-render this shell needlessly. ──
+  // storms never re-render this shell needlessly. 114.md §2 adds `stageAdvisories`
+  // — the review counts that ride BESIDE a stage's status without changing it. ──
   const [builderStats, setBuilderStats] = useState(null);
   const onStats = useCallback((s) => {
     if (!s) return;
     setBuilderStats((prev) => {
       if (prev && prev.liveTermCount === s.liveTermCount
-        && JSON.stringify(prev.stageStatuses) === JSON.stringify(s.stageStatuses)) return prev;
-      return { liveTermCount: s.liveTermCount, stageStatuses: s.stageStatuses };
+        && JSON.stringify(prev.stageStatuses) === JSON.stringify(s.stageStatuses)
+        && JSON.stringify(prev.stageAdvisories) === JSON.stringify(s.stageAdvisories)) return prev;
+      return { liveTermCount: s.liveTermCount, stageStatuses: s.stageStatuses, stageAdvisories: s.stageAdvisories || null };
     });
   }, []);
 
@@ -1092,18 +1102,27 @@ function SearchWorkspaceBody({
     if (builderStats) publishSearchStageStatuses(projectId, stageStatuses);
   }, [projectId, stageStatuses, builderStats]);
 
+  // 114.md §2 — the ADVISORY channel (pending vocabulary suggestions + un-dismissed
+  // warning findings). It is deliberately NOT a status: a strategy with review items
+  // is still complete, so the rail keeps its green check and shows a quiet count.
+  const stageAdvisories = (builderStats && builderStats.stageAdvisories) || null;
   const statusFor = useCallback((s) => {
     const st = stageStatuses[s.id] || 'empty';
+    const adv = (stageAdvisories && stageAdvisories[s.id]) || null;
+    const advisory = adv && Number.isFinite(adv.total) ? adv.total : 0;
     return {
       active: s.id === stage,
       // honest completion — never claimed for merely-visited stages
       done: st === 'done',
       attention: st === 'attention',
       partial: st === 'partial',
+      // optional review items sitting beside the status (never demoting it)
+      advisory,
+      advisoryLabel: advisory > 0 ? `${advisory} suggestion${advisory === 1 ? '' : 's'} to review` : '',
       disabled: stageDisabled(s),
       reason: DISABLED_REASON,
     };
-  }, [stageStatuses, stage, stageDisabled]);
+  }, [stageStatuses, stageAdvisories, stage, stageDisabled]);
 
   // The persistent Search Builder. Its phase follows the active builder stage; on non-
   // builder stages it stays in 'build' so stepping around never churns the phase or

@@ -952,6 +952,51 @@ test.describe('98.md — the staged Search Workspace (concept board)', () => {
     await expect(sp.suggestionRow('Standard MeSH term for "hypertension"')).toHaveCount(0);
   });
 
+  /* 114.md §2 — the red "Build your search" bug, end to end.
+     Select & Build Key Terms rendered its description in the DANGER tone because
+     a single PENDING VOCABULARY SUGGESTION forced the stage to 'attention' — and
+     a suggestion exists for almost every real strategy (any term carrying a
+     vocab record), so a complete, runnable search read as a failure. Suggestions
+     are advisory now: the stage is 'done' the moment a concept carries a live
+     term. Asserted on `data-status` + the aria-label (the a11y contract), never
+     on colour, and re-checked after a reload because the rejection/dismissal
+     memory that used to keep the red alive is PERSISTED state. */
+  test('114.md §2 — a valid strategy reads COMPLETE in the stepper; a pending suggestion never demotes it', async ({ page, tmpProject }) => {
+    const sp = new SearchPage(page);
+    const termsStep = page.getByTestId('stitch-stepper-step-terms');
+
+    // Nothing built yet → honestly "Not started" (never a false green).
+    await sp.gotoStage(tmpProject.id, 'terms');
+    await expect(termsStep).toHaveAttribute('data-status', 'empty');
+
+    // A live term WITH a vocab record = a valid strategy that ALSO has one
+    // pending suggestion — exactly the state that used to render red.
+    await sp.seedStrategy(tmpProject.id, [{
+      id: 'g1', label: 'Concept 1', op: 'AND', source: 'user_added',
+      terms: [{
+        id: 'tm1', text: 'heart failure', type: 'freetext', field: 'tiab', source: 'user_added',
+        vocab: { mesh: 'Heart Failure', meshUI: 'D006333', synonyms: ['cardiac failure'], source: 'core' },
+      }],
+    }]);
+    await sp.gotoStage(tmpProject.id, 'terms');
+    await expect(sp.activeConcept).toBeVisible({ timeout: 15_000 });
+    await expect(page.getByTestId('sb-suggestions-toggle')).toHaveText(/Show suggestions \(1\)/);
+
+    await expect(termsStep).toHaveAttribute('data-status', 'done');
+    await expect(termsStep).toHaveAttribute('aria-label', /Complete/);
+    await expect(termsStep).not.toHaveAttribute('aria-label', /Needs attention/);
+
+    // The suggestion review UI is untouched, and the status survives a reload
+    // (advisories recompute from the persisted rejection memory).
+    await sp.gotoStage(tmpProject.id, 'terms');
+    await expect(termsStep).toHaveAttribute('data-status', 'done');
+
+    // Emptying the strategy returns the stage to 'empty' — completion is live.
+    await sp.seedStrategy(tmpProject.id, [{ id: 'g1', label: 'Concept 1', op: 'AND', source: 'user_added', terms: [] }]);
+    await sp.gotoStage(tmpProject.id, 'terms');
+    await expect(termsStep).toHaveAttribute('data-status', 'empty');
+  });
+
   test('97.md Phase 16 — a stale write is REJECTED (409) and the view reconciles with a visible notice, never clobbering the newer doc', async ({ page, tmpProject }) => {
     const sp = new SearchPage(page);
     await seedGroup(sp, tmpProject.id, 'imaging');

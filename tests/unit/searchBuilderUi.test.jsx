@@ -1104,6 +1104,29 @@ describe('SearchBuilderTab — the canvas is wired to the board (110.md §2, sou
     expect(tabSrc).toContain('@media (max-width:640px){.sb-concept-canvas{'); // narrow viewports shed canvas padding
   });
 
+  /* 114.md §3 — the canvas is promoted to the PRIMARY level of the page without
+     touching a single surface colour (the plane/card arithmetic pinned below is
+     what keeps the hierarchy legible in all four theme × design-system combos,
+     and the e2e channel-delta guard measures it live). The promotion is spacing,
+     the border-token step and the head treatment — so those are what is pinned. */
+  it('primacy comes from spacing + the border-token step + the head rule, never from a new surface', () => {
+    const canvasRules = tabSrc.slice(tabSrc.indexOf('.sb-concept-canvas{'), tabSrc.indexOf('@media (max-width:640px)'));
+    // Breathing room above AND below (adjacent-sibling margins collapse, so these
+    // ARE the gaps to the informational stack above and the meaning panel below).
+    expect(canvasRules).toContain('margin:18px 0 20px;');
+    // The edge steps up one token — brd → brd2 — rather than inventing a colour.
+    expect(canvasRules).toMatch(/\.sb-concept-canvas\{border:1px solid \$\{C\.brd2\}/);
+    // A short accent hairline closes the head; the title outranks the card h4s.
+    expect(canvasRules).toContain('.sb-canvas-head::after{content:"";position:absolute;');
+    expect(canvasRules).toMatch(/\.sb-canvas-title\{margin:0;font-size:15\.5px/);
+    // The canvas itself must STILL be unpositioned/unfiltered — every board popover
+    // anchors to its own local wrapper and a positioned ancestor here re-anchors it.
+    // (`position:relative` is allowed only on the popover-free head.)
+    const canvasBlock = canvasRules.slice(0, canvasRules.indexOf('.sb-canvas-head'));
+    expect(canvasBlock).not.toMatch(/position:\s*relative/);
+    expect(canvasBlock).not.toMatch(/transform:|filter:|opacity:/);
+  });
+
   it('the plane and the de-emphasis ARE --t-bg, never --t-surf and never accent-tinted', () => {
     // Regression pin, two lessons:
     //  1. The Stitch legacyRemap sends BOTH --t-surf and --t-card to p.card, so a

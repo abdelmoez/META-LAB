@@ -27,7 +27,7 @@ import { liveTermsOf } from "../../research-engine/searchBuilder/termLiveness.js
 import { setTermDisabled } from "../../research-engine/searchBuilder/searchState.js";
 import { splitTermInput, addTypedTerms } from "../../research-engine/searchBuilder/termEntry.js";
 import { pendingSuggestions, suggestionCount, rejectionKey, resetSuggestionMemory } from "../../research-engine/searchBuilder/suggestionReview.js";
-import { computeStageStatuses } from "../../research-engine/searchBuilder/stageStatus.js";
+import { computeStageModel } from "../../research-engine/searchBuilder/stageStatus.js";
 import {
   recordRemoveTerm, recordRemoveConcept, recordDisable, recordBulkAccept,
   recordReorderConcept, recordReorderTerm, recordMergeConcepts, recordSplitConcept,
@@ -2114,17 +2114,22 @@ export default function SearchBuilderTab({projectId,question:questionProp,pico,a
   /* ── 85.md A2 — honest per-stage statuses + live-term count, reported upward ──
      The workspace overlays the two keys this layer cannot know (mode chosen,
      ready-for-screening) and feeds its rail + the white side-menu stepper + the
-     PubMed pulse's real "add terms" empty branch. Ref-wrapped like the other seams. */
+     PubMed pulse's real "add terms" empty branch. Ref-wrapped like the other seams.
+     114.md §2/§8 — ONE model call now returns the statuses AND the additive
+     advisory counts (pending suggestions / warning findings, which no longer
+     demote a valid strategy to 'attention'). The retired refine-stage inputs
+     (question/filters/hitState) are no longer threaded: stageStatus.js ignores
+     them, so passing them only made this memo churn on unrelated state. */
   const liveTermCount=useMemo(()=>concepts.reduce((n,c)=>n+liveTermsOf(c).length,0),[concepts]);
-  const stageStatuses=useMemo(()=>computeStageStatuses({
-    concepts,question,filters,overrides,databases:selectedDbs,
-    rejected:rejectedSuggestions,dismissedWarnings,hitState,
-  }),[concepts,question,filters,overrides,selectedDbs,rejectedSuggestions,dismissedWarnings,hitState]);
+  const stageModel=useMemo(()=>computeStageModel({
+    concepts,overrides,databases:selectedDbs,
+    rejected:rejectedSuggestions,dismissedWarnings,
+  }),[concepts,overrides,selectedDbs,rejectedSuggestions,dismissedWarnings]);
   const onStatsRef=useRef(onStats); onStatsRef.current=onStats;
   useEffect(()=>{
     if(!loaded||typeof onStatsRef.current!=="function") return;
-    onStatsRef.current({liveTermCount,stageStatuses});
-  },[loaded,liveTermCount,stageStatuses]);
+    onStatsRef.current({liveTermCount,stageStatuses:stageModel.statuses,stageAdvisories:stageModel.advisories});
+  },[loaded,liveTermCount,stageModel]);
 
   /* ── 85.md A2 — master-detail active concept (Terms & Vocabulary) ─────────── */
   const conceptIndexById=useMemo(()=>{const m={};concepts.forEach((c,i)=>{m[c.id]=i;});return m;},[concepts]);
@@ -2944,16 +2949,39 @@ export default function SearchBuilderTab({projectId,question:questionProp,pico,a
    local relative wrapper, and a new positioned or filtered ancestor here would
    silently re-anchor or clip them. The de-emphasis is a surface swap for the
    same reason — never an opacity or filter. */
-.sb-concept-canvas{border:1px solid ${C.brd};border-radius:16px;padding:14px 14px 12px;margin:2px 0 4px;
+/* 114.md §3 — PRIMACY, still without a pasted-on card. The plane, the wash and
+   every surface colour are untouched (that arithmetic above is what keeps the
+   hierarchy legible in all four combos); the promotion is carried by the three
+   things that cost no colour:
+     · SPACING — margin 2/4 → 18/20. Adjacent siblings collapse their margins, so
+       the informational stack above (sb-inline-hints &c., margin-bottom 10) and
+       the meaning panel below (margin-top 12) yield exactly 18px / 20px moats
+       instead of stacking to 28/32. The canvas is the only element on the stage
+       with a gap that size — the separation reads deliberate.
+     · EDGE — --t-brd → --t-brd2, the next step of the SAME border token pair, so
+       the frame is drawn rather than hinted. Channel-sum |border − plane|
+       (r+g+b) per combo: legacy day 47→101, legacy night 105→164, stitch light
+       51→140, stitch night 60→133. Visible in every combination, loud in none
+       (brd2 is the house "stronger hairline" everywhere else too) — and, being a
+       token step, it stays correct if the palettes are re-tuned.
+     · HEAD — a short accent hairline closes the head and a slightly larger title
+       outranks the h4s inside the cards. The accent is 32px of RULE, not a
+       colour cue: the divider (and the type/space step) carries the hierarchy
+       for anyone who cannot see the hue (114.md §7). */
+.sb-concept-canvas{border:1px solid ${C.brd2};border-radius:16px;padding:16px 16px 14px;margin:18px 0 20px;
   background-color:${C.bg};
   background-image:radial-gradient(${alpha(C.txt,'12')} 1px,transparent 1px),linear-gradient(180deg,${alpha(C.acc,'08')} 0,transparent 150px);
   background-size:18px 18px,auto;background-position:-1px -1px,0 0;background-repeat:repeat,no-repeat;
   box-shadow:inset 0 1px 0 ${alpha(C.bg,'40')},0 1px 2px var(--t-shadow);}
 /* The head names the surface without stealing weight from the cards: mono
-   eyebrow + a real h3 (the workspace h2 is "Pecan Search Engine") + a count. */
-.sb-canvas-head{display:flex;align-items:baseline;gap:9px;flex-wrap:wrap;margin:0 2px 11px;}
+   eyebrow + a real h3 (the workspace h2 is "Pecan Search Engine") + a count,
+   closed by the accent hairline. A positioning context is safe HERE and only
+   here: the head holds no popovers, while the canvas itself must stay
+   unpositioned — see the anchoring note above. */
+.sb-canvas-head{position:relative;display:flex;align-items:baseline;gap:9px;flex-wrap:wrap;margin:0 2px 12px;padding-bottom:9px;}
+.sb-canvas-head::after{content:"";position:absolute;left:0;bottom:0;width:32px;height:2px;border-radius:2px;background:${C.acc};}
 .sb-canvas-eyebrow{font-family:${MONO};font-size:8.5px;font-weight:700;letter-spacing:1.3px;text-transform:uppercase;color:${C.acc};}
-.sb-canvas-title{margin:0;font-size:14.5px;font-weight:700;letter-spacing:-0.2px;color:${C.txt};}
+.sb-canvas-title{margin:0;font-size:15.5px;font-weight:700;letter-spacing:-0.2px;color:${C.txt};}
 .sb-canvas-count{font-size:9.5px;font-weight:700;letter-spacing:0.3px;color:${C.muted};background:${C.card2};border:1px solid ${C.brd2};border-radius:999px;padding:1px 8px;}
 /* Cards ON the canvas: the open (working) card is lifted and ringed; the rest
    settle back into the plane while one is open, and come back on hover/focus.
@@ -2984,7 +3012,7 @@ export default function SearchBuilderTab({projectId,question:questionProp,pico,a
 .sb-concept-canvas[data-has-active="true"] .sb-card-shell[data-compact="true"]:hover,
 .sb-concept-canvas[data-has-active="true"] .sb-card-shell[data-compact="true"]:focus-within,
 .sb-concept-canvas[data-has-active="true"] .sb-card-shell[data-compact="true"]:focus-visible{background:${C.card};box-shadow:0 0 0 1px ${alpha(C.acc,'66')},0 8px 20px var(--t-shadow);}
-@media (max-width:640px){.sb-concept-canvas{padding:12px 9px 10px;border-radius:14px;}.sb-canvas-head{margin-bottom:9px;}}
+@media (max-width:640px){.sb-concept-canvas{padding:12px 9px 10px;border-radius:14px;margin:12px 0 14px;}.sb-canvas-head{margin-bottom:10px;padding-bottom:7px;}}
 .sb-card-chevron{transition:transform .18s var(--ease-out,cubic-bezier(.22,.61,.36,1));}
 .sb-card-chevron[data-open="true"]{transform:rotate(180deg);}
 .sb-card-body-enter{animation:sbCardBodyIn .2s var(--ease-out,cubic-bezier(.22,.61,.36,1));}

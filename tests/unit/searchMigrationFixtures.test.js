@@ -9,8 +9,9 @@
  *      signature-idempotent (loading and re-picking never changes the byte
  *      signature, so historical saves never trigger a spurious autosave);
  *   2. compileStrategy(…, 'pubmed') — the strategy compiler accepts the shape;
- *   3. computeStageStatuses — the stage rail derives without throwing and
- *      always emits all 6 stage ids (98.md §3 — no 'question' status);
+ *   3. computeStageModel — the stage rail derives without throwing and always
+ *      emits all 6 stage ids (98.md §3 — no 'question' status) plus the 114.md
+ *      §2 advisory counts;
  *   4. diffStrategies(x, x) — the version-diff round-trip reports no changes
  *      for an identical snapshot (identity stability incl. legacy picoField).
  *
@@ -23,7 +24,7 @@ import { describe, it, expect } from 'vitest';
 import {
   pickPersisted, serializeSearchState, seedStateFromQuestion,
 } from '../../src/research-engine/searchBuilder/searchState.js';
-import { computeStageStatuses, STAGE_IDS } from '../../src/research-engine/searchBuilder/stageStatus.js';
+import { computeStageStatuses, computeStageModel, STAGE_IDS } from '../../src/research-engine/searchBuilder/stageStatus.js';
 import { searchQualityCheck } from '../../src/research-engine/searchBuilder/crossConcept.js';
 import { compileStrategy } from '../../src/research-engine/searchBuilder/compilers/index.js';
 import { diffStrategies } from '../../src/research-engine/searchBuilder/versionDiff.js';
@@ -186,16 +187,24 @@ describe('96.md Phase 10 — migration fixtures load through every seam (QA L30)
         expect(typeof r.query).toBe('string');
         expect(Array.isArray(r.warnings)).toBe(true);
       });
-      it('derives all 6 stage statuses without throwing', () => {
-        const st = computeStageStatuses({
+      it('derives all 6 stage statuses (+ the advisory channel) without throwing', () => {
+        const opts = {
           concepts: fx.concepts,
-          question: fx.questionSnapshot || '',
-          filters: fx.filters, overrides: fx.overrides,
+          overrides: fx.overrides,
           databases: fx.databases, dismissedWarnings: fx.dismissedWarnings,
           rejected: fx.rejectedSuggestions, searchMode: fx.searchMode || null,
-        });
+        };
+        const { statuses: st, advisories } = computeStageModel(opts);
         expect(Object.keys(st).sort()).toEqual([...STAGE_IDS].sort());
         for (const id of STAGE_IDS) expect(['done', 'partial', 'empty', 'attention']).toContain(st[id]);
+        // 114.md §2 — advisories recompute from the SAME persisted inputs
+        // (rejectedSuggestions / dismissedWarnings), so a reload reproduces them.
+        expect(computeStageStatuses(opts)).toEqual(st);
+        for (const k of ['suggestions', 'warnings', 'total']) {
+          expect(Number.isFinite(advisories.terms[k])).toBe(true);
+          expect(advisories.terms[k]).toBeGreaterThanOrEqual(0);
+        }
+        expect(advisories.terms.total).toBe(advisories.terms.suggestions + advisories.terms.warnings);
       });
       it('round-trips versionDiff: an identical snapshot reports NO changes', () => {
         const d = diffStrategies(fx, fx);
@@ -208,9 +217,9 @@ describe('96.md Phase 10 — migration fixtures load through every seam (QA L30)
 
   it('L23 sanity — the legacy five-group scaffold raises NO empty-group warnings', () => {
     // Intentionally-empty C/O scaffold groups must not wake historical projects
-    // up with `empty:<id>` warnings (crossConcept exempts legacy groups); any
-    // remaining 'attention' can only come from live suggestions, never from the
-    // scaffold's empty groups.
+    // up with `empty:<id>` warnings (crossConcept exempts legacy groups). Since
+    // 114.md §2 those warnings are advisory rather than a status anyway — this
+    // pins that a migrated project opens with a clean advisory count too.
     const findings = searchQualityCheck(LEGACY_FIVE_GROUP.concepts);
     expect(findings.filter((w) => w.id.startsWith('empty:'))).toEqual([]);
   });

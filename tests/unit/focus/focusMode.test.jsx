@@ -6,13 +6,14 @@
  *   2. the user can still navigate, using the SAME step model as the sidebar —
  *      including its locks, so Next cannot smuggle anyone past a closed gate.
  */
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { MemoryRouter } from 'react-router-dom';
 import StitchAppShell from '../../../src/frontend/stitch/shell/StitchAppShell.jsx';
 import { AuthProvider } from '../../../src/frontend/context/AuthContext.jsx';
 import {
   FocusModeProvider, FocusSurface, isFocusToggleEvent, isTypingTarget,
+  createFullscreenBridge,
 } from '../../../src/frontend/focus/FocusModeContext.jsx';
 import { FocusToggle, FocusNavBar } from '../../../src/frontend/focus/FocusControls.jsx';
 import {
@@ -179,6 +180,13 @@ describe('the Focus Mode control', () => {
     expect(html).toContain('aria-pressed="false"');
   });
 
+  it('114.md §1/§7 — the label admits it takes the whole screen now', () => {
+    expect(withSurface(true, false)).toContain('hide navigation and use the full screen');
+    expect(withSurface(true, true)).toContain('leave full screen');
+    // The hooks the rest of the suite (and the e2e spec) key off are untouched.
+    expect(withSurface(true, false)).toContain('data-testid="focus-toggle"');
+  });
+
   it('reports its pressed state and offers the way back once active', () => {
     const html = withSurface(true, true);
     expect(html).toContain('aria-pressed="true"');
@@ -253,5 +261,172 @@ describe('the keyboard shortcut', () => {
     expect(isTypingTarget({ tagName: 'DIV', isContentEditable: true })).toBe(true);
     expect(isTypingTarget({ tagName: 'DIV' })).toBe(false);
     expect(isTypingTarget(null)).toBe(false);
+  });
+});
+
+/* ═══════════════ true browser fullscreen (114.md §1) ═══════════════ */
+
+/**
+ * The repo runs no jsdom, so the Fullscreen API contract is driven against a
+ * hand-rolled document — the same approach usePageHead.test.js takes for
+ * applyHead. The stub implements exactly the calls createFullscreenBridge makes,
+ * plus a `fire` to play the browser's part.
+ *
+ * The provider itself only ever calls enter() from inside setFocus and leave()
+ * from every exit path, so these assertions ARE the provider's behaviour; the
+ * wiring in a real browser is covered by e2e/focus/fullscreen.spec.ts.
+ */
+function fakeDoc({ prefixed = false, none = false, reject = false } = {}) {
+  const listeners = {};
+  const root = {};
+  const doc = {
+    documentElement: root,
+    fullscreenElement: null,
+    webkitFullscreenElement: null,
+    addEventListener: (type, fn) => { (listeners[type] = listeners[type] || []).push(fn); },
+    removeEventListener: (type, fn) => {
+      listeners[type] = (listeners[type] || []).filter((f) => f !== fn);
+    },
+    /** Play the browser: dispatch the change event both spellings fan into. */
+    fire: (type = prefixed ? 'webkitfullscreenchange' : 'fullscreenchange') => {
+      (listeners[type] || []).forEach((f) => f());
+    },
+    count: (type) => (listeners[type] || []).length,
+  };
+  const key = prefixed ? 'webkitFullscreenElement' : 'fullscreenElement';
+  if (!none) {
+    root[prefixed ? 'webkitRequestFullscreen' : 'requestFullscreen'] = vi.fn(() => {
+      if (reject) return Promise.reject(new Error('denied by permissions policy'));
+      doc[key] = root;
+      return Promise.resolve();
+    });
+    doc[prefixed ? 'webkitExitFullscreen' : 'exitFullscreen'] = vi.fn(() => {
+      doc[key] = null;
+      return Promise.resolve();
+    });
+  }
+  return doc;
+}
+
+describe('the fullscreen bridge', () => {
+  it('takes the DOCUMENT ELEMENT fullscreen, not a shell div', async () => {
+    const doc = fakeDoc();
+    const fs = createFullscreenBridge(doc);
+    await expect(fs.enter()).resolves.toBe(true);
+    expect(doc.documentElement.requestFullscreen).toHaveBeenCalledTimes(1);
+    expect(fs.element()).toBe(doc.documentElement);
+    expect(fs.isOwned()).toBe(true);
+  });
+
+  it('exits only when something is actually fullscreen — and never twice', async () => {
+    const doc = fakeDoc();
+    const fs = createFullscreenBridge(doc);
+
+    // Nothing is fullscreen (the plain viewport-only fallback, or a second exit):
+    // exitFullscreen must not be called at all.
+    await expect(fs.leave()).resolves.toBe(false);
+    expect(doc.exitFullscreen).not.toHaveBeenCalled();
+
+    await fs.enter();
+    await expect(fs.leave()).resolves.toBe(true);
+    expect(doc.exitFullscreen).toHaveBeenCalledTimes(1);
+    expect(fs.element()).toBe(null);
+
+    // Escape fires BOTH our keydown and fullscreenchange — the double exit is a
+    // no-op, not a second API call.
+    await expect(fs.leave()).resolves.toBe(false);
+    expect(doc.exitFullscreen).toHaveBeenCalledTimes(1);
+  });
+
+  it('reports OUR fullscreen ending externally (browser Esc / F11 / the OS)', async () => {
+    const doc = fakeDoc();
+    const fs = createFullscreenBridge(doc);
+    const onEnded = vi.fn();
+    const detach = fs.attach(onEnded);
+
+    await fs.enter();
+    doc.fire(); // the ENTER event — nothing ended yet
+    expect(onEnded).not.toHaveBeenCalled();
+
+    doc.fullscreenElement = null; // the browser took it away behind our back
+    doc.fire();
+    expect(onEnded).toHaveBeenCalledTimes(1);
+
+    // Idempotent: a repeat event (or a late one after our own exit) says nothing.
+    doc.fire();
+    expect(onEnded).toHaveBeenCalledTimes(1);
+
+    detach();
+    expect(doc.count('fullscreenchange')).toBe(0);
+    expect(doc.count('webkitfullscreenchange')).toBe(0);
+  });
+
+  it('ignores a fullscreen that was never ours (a video, say)', () => {
+    const doc = fakeDoc();
+    const fs = createFullscreenBridge(doc);
+    const onEnded = vi.fn();
+    fs.attach(onEnded);
+
+    doc.fullscreenElement = { tagName: 'VIDEO' }; // somebody else entered
+    doc.fire();
+    doc.fullscreenElement = null;                 // …and left again
+    doc.fire();
+
+    expect(onEnded).not.toHaveBeenCalled();
+    expect(fs.isOwned()).toBe(false);
+  });
+
+  it('a refused request degrades to the viewport-only mode instead of breaking', async () => {
+    const doc = fakeDoc({ reject: true });
+    const fs = createFullscreenBridge(doc);
+    const onEnded = vi.fn();
+    fs.attach(onEnded);
+
+    await expect(fs.enter()).resolves.toBe(false); // rejection swallowed
+    expect(fs.isOwned()).toBe(false);              // ownership released…
+
+    // …so the change event that a denial can still produce never yanks the user
+    // back out of the Focus Mode layout they just asked for.
+    doc.fire();
+    expect(onEnded).not.toHaveBeenCalled();
+    await expect(fs.leave()).resolves.toBe(false);
+  });
+
+  it('speaks the webkit-prefixed dialect too', async () => {
+    const doc = fakeDoc({ prefixed: true });
+    const fs = createFullscreenBridge(doc);
+    const onEnded = vi.fn();
+    fs.attach(onEnded);
+
+    await expect(fs.enter()).resolves.toBe(true);
+    expect(doc.documentElement.webkitRequestFullscreen).toHaveBeenCalledTimes(1);
+    doc.webkitFullscreenElement = null;
+    doc.fire('webkitfullscreenchange');
+    expect(onEnded).toHaveBeenCalledTimes(1);
+  });
+
+  it('a browser with no Fullscreen API at all is a no-op, not a crash', async () => {
+    const fs = createFullscreenBridge(fakeDoc({ none: true }));
+    await expect(fs.enter()).resolves.toBe(false);
+    await expect(fs.leave()).resolves.toBe(false);
+    // …and neither is a document (SSR / the prerenderer).
+    const ssr = createFullscreenBridge(null);
+    await expect(ssr.enter()).resolves.toBe(false);
+    await expect(ssr.leave()).resolves.toBe(false);
+    expect(ssr.element()).toBe(null);
+    expect(typeof ssr.attach(() => {})).toBe('function');
+  });
+
+  it('RELOAD: restoring focus from sessionStorage requests nothing', () => {
+    // The provider builds a bridge on mount and attaches its listener; enter() is
+    // only ever called from setFocus. A reload therefore restores the LAYOUT with
+    // no fullscreen request — no browser grants one without a fresh user gesture,
+    // and faking one is not on the table. The next click re-enters properly.
+    const doc = fakeDoc();
+    const fs = createFullscreenBridge(doc);
+    fs.attach(() => {});
+    expect(doc.documentElement.requestFullscreen).not.toHaveBeenCalled();
+    expect(fs.isOwned()).toBe(false);
+    expect(fs.element()).toBe(null);
   });
 });
