@@ -16,6 +16,7 @@
  * reader. The native `title` attribute is suppressed deliberately — 104.md asks for
  * a designed tooltip, and leaving `title` on would stack a browser one underneath.
  */
+import { useEffect, useRef } from 'react';
 import { StitchIconButton } from '../stitch/primitives/core.jsx';
 import { StitchTooltip } from '../stitch/primitives/overlay.jsx';
 import { Icon } from '../components/icons.jsx';
@@ -25,35 +26,92 @@ import { stepTitle } from '../stitch/nav/workflowSequence.js';
 
 /* ════════════════════════ the toggle ════════════════════════ */
 
+/**
+ * The words the toggle uses, as a pure function of the two states it reports.
+ *
+ * Exported and pure because 114-r2 §5 is a CLAIM-HONESTY requirement, and the
+ * only way to pin both branches is to test them without a browser: the enter
+ * copy may promise a full screen (it describes an intent the app really acts
+ * on), but the EXIT copy describes where the user already is. Focus Mode
+ * routinely outlives fullscreen — a refused request, a reload, F11, an Escape
+ * the browser consumed to close an overlay — and in every one of those states
+ * "leave full screen" is a button lying about a screen that is plainly not full.
+ */
+export function focusToggleCopy(focus, isFullscreen) {
+  if (!focus) {
+    return {
+      icon: 'expand',
+      tip: 'Focus mode — full screen',
+      aria: 'Enter focus mode — hide navigation and use the full screen',
+      hint: focusShortcutLabel(),
+    };
+  }
+  return {
+    icon: 'collapse',
+    tip: 'Exit focus mode',
+    aria: isFullscreen
+      ? 'Exit focus mode — restore navigation and leave full screen'
+      : 'Exit focus mode — restore navigation',
+    hint: `${focusShortcutLabel()} or Esc`,
+  };
+}
+
+/** How long after a toggle a freshly-mounted control may claim keyboard focus. */
+const RETENTION_MS = 1500;
+
 export function FocusToggle({ size = 'md', placement = 'bottom' }) {
-  const { focus, toggleFocus } = useFocusMode();
+  const { focus, isFullscreen, toggleFocus, focusChangedAt } = useFocusMode();
   const available = useFocusAvailable();
+  const hostRef = useRef(null);
+
+  /**
+   * 114.md §7 — "focus is not lost". Entering or leaving Focus Mode swaps which
+   * chrome is mounted, so the very button the user just pressed is unmounted and
+   * `document.activeElement` falls back to <body>: a keyboard user's next Tab
+   * restarts from the top of the document. The replacement instance takes the
+   * focus back.
+   *
+   * Three guards keep this surgical rather than a focus thief:
+   *   - `focusChangedAt` must be recent. A first paint (including a
+   *     sessionStorage restore, which sets it to 0) is not a transition, so a
+   *     page must never load with this control focused.
+   *   - activeElement must have been LOST. If anything real still holds focus —
+   *     someone typing, a dialog, a control the page moved focus to — we leave
+   *     it exactly where it is.
+   *   - it runs per (focus, focusChangedAt) pair, so a re-render for any other
+   *     reason cannot re-trigger it.
+   */
+  useEffect(() => {
+    if (!available || typeof document === 'undefined') return;
+    if (!focusChangedAt || Date.now() - focusChangedAt > RETENTION_MS) return;
+    const btn = hostRef.current && hostRef.current.querySelector('button');
+    if (!btn) return;
+    const active = document.activeElement;
+    if (active && active !== document.body && active !== document.documentElement) return;
+    btn.focus();
+  }, [focus, focusChangedAt, available]);
+
   // No chrome to hide ⇒ no control. Better than a button that visibly does nothing.
   if (!available) return null;
 
-  // 114.md §1/§7 — the control now also takes the browser into true fullscreen,
-  // so the copy says so. It stays honest about the fallback by describing the
-  // INTENT ("use the full screen") rather than promising a browser state we
-  // cannot guarantee: where fullscreen is refused, the navigation still goes and
-  // the workspace still takes the whole viewport.
-  const label = focus ? 'Exit focus mode' : 'Focus mode — full screen';
+  const copy = focusToggleCopy(focus, isFullscreen);
   return (
-    <StitchTooltip
-      label={label}
-      hint={`${focusShortcutLabel()}${focus ? ' or Esc' : ''}`}
-      placement={placement}
-    >
-      <StitchIconButton
-        icon={focus ? 'collapse' : 'expand'}
-        label={focus ? 'Exit focus mode — restore navigation and leave full screen' : 'Enter focus mode — hide navigation and use the full screen'}
-        title={null}
-        aria-pressed={focus}
-        active={focus}
-        size={size}
-        onClick={toggleFocus}
-        data-testid="focus-toggle"
-      />
-    </StitchTooltip>
+    // `display: contents` so reaching the button for focus restoration costs the
+    // layout nothing — the wrapper generates no box of its own.
+    <span ref={hostRef} style={{ display: 'contents' }}>
+      <StitchTooltip label={copy.tip} hint={copy.hint} placement={placement}>
+        <StitchIconButton
+          icon={copy.icon}
+          label={copy.aria}
+          title={null}
+          aria-pressed={focus}
+          active={focus}
+          size={size}
+          onClick={toggleFocus}
+          data-testid="focus-toggle"
+        />
+      </StitchTooltip>
+    </span>
   );
 }
 
@@ -115,7 +173,8 @@ function NavButton({ item, dir, onGo }) {
  *                  worth keeping — losing it is how people edit the wrong review).
  */
 export function FocusNavBar({ current, prev, next, onGo, projectName = '', stageLabel = '' }) {
-  const { exitFocus } = useFocusMode();
+  const { exitFocus, enterFullscreen, isFullscreen } = useFocusMode();
+  const exitCopy = focusToggleCopy(true, isFullscreen);
   return (
     <div
       data-testid="focus-nav-bar"
@@ -150,10 +209,28 @@ export function FocusNavBar({ current, prev, next, onGo, projectName = '', stage
 
       <span aria-hidden="true" style={{ width: 1, height: 20, background: salpha(S.outlineVariant, 0.55) }} />
 
-      <StitchTooltip label="Exit focus mode" hint={`${focusShortcutLabel()} or Esc`} placement="bottom">
+      {/* Focused but windowed — after a reload, a refused request, or a
+          fullscreen the browser ended on its own. The toggle cannot serve here
+          (it exits Focus Mode), and only a fresh user gesture can get fullscreen
+          back, so this offers one. It is absent whenever fullscreen is actually
+          held, which is the normal case. */}
+      {isFullscreen ? null : (
+        <StitchTooltip label="Enter full screen" placement="bottom">
+          <StitchIconButton
+            icon="expand"
+            label="Enter full screen — hide the browser chrome too"
+            title={null}
+            size="sm"
+            onClick={enterFullscreen}
+            data-testid="focus-fullscreen"
+          />
+        </StitchTooltip>
+      )}
+
+      <StitchTooltip label={exitCopy.tip} hint={exitCopy.hint} placement="bottom">
         <StitchIconButton
           icon="collapse"
-          label="Exit focus mode — restore navigation and leave full screen"
+          label={exitCopy.aria}
           title={null}
           size="sm"
           onClick={exitFocus}

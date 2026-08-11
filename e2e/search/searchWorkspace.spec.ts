@@ -986,15 +986,27 @@ test.describe('98.md — the staged Search Workspace (concept board)', () => {
     await expect(termsStep).toHaveAttribute('aria-label', /Complete/);
     await expect(termsStep).not.toHaveAttribute('aria-label', /Needs attention/);
 
+    // 114.md §2 r2 — and the review count is VISIBLE on that green step. The
+    // advisory used to die at the store boundary (statuses published, advisories
+    // dropped), and the only surface that rendered it was the in-body rail this
+    // shell hides — so the user was told nothing about the pending suggestion.
+    // It replaces the step's static helper copy and is announced in the aria-label.
+    await expect(termsStep).toContainText('1 suggestion to review');
+    await expect(termsStep).not.toContainText('Build your search');
+    await expect(termsStep).toHaveAttribute('aria-label', /Complete \(1 suggestion to review\)/);
+
     // The suggestion review UI is untouched, and the status survives a reload
     // (advisories recompute from the persisted rejection memory).
     await sp.gotoStage(tmpProject.id, 'terms');
     await expect(termsStep).toHaveAttribute('data-status', 'done');
+    await expect(termsStep).toContainText('1 suggestion to review');
 
-    // Emptying the strategy returns the stage to 'empty' — completion is live.
+    // Emptying the strategy returns the stage to 'empty' — completion is live, and
+    // with nothing to review the step falls back to its ordinary helper copy.
     await sp.seedStrategy(tmpProject.id, [{ id: 'g1', label: 'Concept 1', op: 'AND', source: 'user_added', terms: [] }]);
     await sp.gotoStage(tmpProject.id, 'terms');
     await expect(termsStep).toHaveAttribute('data-status', 'empty');
+    await expect(termsStep).not.toContainText('suggestion to review');
   });
 
   test('97.md Phase 16 — a stale write is REJECTED (409) and the view reconciles with a visible notice, never clobbering the newer doc', async ({ page, tmpProject }) => {

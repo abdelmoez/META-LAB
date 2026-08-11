@@ -6,6 +6,7 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import {
   getSearchMode, publishSearchMode, subscribeSearchMode, __resetSearchModeStore,
   getSearchStageStatuses, publishSearchStageStatuses, subscribeSearchStageStatuses,
+  getSearchStageAdvisories, searchAdvisoryLabel,
 } from '../../src/features/searchWorkspace/searchModeStore.js';
 
 beforeEach(() => __resetSearchModeStore());
@@ -109,5 +110,117 @@ describe('searchModeStore — 85.md per-stage statuses (additive)', () => {
     publishSearchStageStatuses('p1', STATUSES);
     __resetSearchModeStore();
     expect(getSearchStageStatuses('p1')).toBeUndefined();
+  });
+});
+
+/* 114.md §2 r2 — the ADVISORY channel crosses the store boundary.
+   The bug: the workspace computed { statuses, advisories } but this publisher took
+   statuses ONLY, so the review counts were dropped here — and since the in-body rail
+   that rendered them is suppressed whenever the white side-menu stepper drives the
+   stages, the advisory pill was unreachable in the production Stitch shell. */
+describe('searchModeStore — 114.md §2 advisories ride WITH the statuses', () => {
+  const MODEL = {
+    statuses: { terms: 'done', mode: 'empty' },
+    advisories: { terms: { suggestions: 2, warnings: 1, total: 3 } },
+  };
+
+  it('the { statuses, advisories } model form publishes BOTH channels', () => {
+    expect(getSearchStageAdvisories('p1')).toBeUndefined();
+    publishSearchStageStatuses('p1', MODEL);
+    expect(getSearchStageStatuses('p1')).toEqual(MODEL.statuses);
+    expect(getSearchStageAdvisories('p1')).toEqual(MODEL.advisories);
+  });
+
+  it('the legacy statuses-only form still works and never invents advisories', () => {
+    publishSearchStageStatuses('p1', { terms: 'done' });
+    expect(getSearchStageStatuses('p1')).toEqual({ terms: 'done' });
+    expect(getSearchStageAdvisories('p1')).toBeUndefined();
+  });
+
+  it('a statuses-only publish never CLEARS advisories a model publish established', () => {
+    publishSearchStageStatuses('p1', MODEL);
+    publishSearchStageStatuses('p1', { terms: 'partial' });
+    expect(getSearchStageStatuses('p1')).toEqual({ terms: 'partial' });
+    expect(getSearchStageAdvisories('p1')).toEqual(MODEL.advisories);
+  });
+
+  it('subscribers receive (statuses, advisories); both are idempotent on deep-equal', () => {
+    const seen = [];
+    subscribeSearchStageStatuses('p1', (s, a) => seen.push([s, a]));
+    publishSearchStageStatuses('p1', MODEL);
+    expect(seen).toHaveLength(1);
+    expect(seen[0][0]).toEqual(MODEL.statuses);
+    expect(seen[0][1]).toEqual(MODEL.advisories);
+    // Deep-equal republish (a fresh object every render) → no notification at all.
+    publishSearchStageStatuses('p1', {
+      statuses: { mode: 'empty', terms: 'done' },
+      advisories: { terms: { suggestions: 2, warnings: 1, total: 3 } },
+    });
+    expect(seen).toHaveLength(1);
+  });
+
+  it('an ADVISORY-only change notifies with a FRESH statuses reference (the stepper must repaint)', () => {
+    const seen = [];
+    publishSearchStageStatuses('p1', MODEL);
+    const before = getSearchStageStatuses('p1');
+    subscribeSearchStageStatuses('p1', (s, a) => seen.push([s, a]));
+    // Accepting one suggestion: the status holds at 'done', only the count moves.
+    publishSearchStageStatuses('p1', {
+      statuses: { terms: 'done', mode: 'empty' },
+      advisories: { terms: { suggestions: 1, warnings: 1, total: 2 } },
+    });
+    expect(seen).toHaveLength(1);
+    expect(seen[0][1].terms.total).toBe(2);
+    expect(seen[0][0]).toEqual(before);
+    expect(seen[0][0]).not.toBe(before);          // new reference → React re-renders
+    expect(getSearchStageStatuses('p1')).toBe(seen[0][0]);
+  });
+
+  it('sanitizes junk advisories (bad counts → 0; a missing total is derived; junk map ignored)', () => {
+    publishSearchStageStatuses('p1', {
+      statuses: { terms: 'done' },
+      advisories: { terms: { suggestions: 2 }, bad: 7, worse: null, neg: { suggestions: -3, warnings: 'x' } },
+    });
+    expect(getSearchStageAdvisories('p1')).toEqual({
+      terms: { suggestions: 2, warnings: 0, total: 2 },   // total derived from the split
+      neg: { suggestions: 0, warnings: 0, total: 0 },
+    });
+    publishSearchStageStatuses('p2', { statuses: { terms: 'done' }, advisories: 'nonsense' });
+    expect(getSearchStageAdvisories('p2')).toBeUndefined();
+  });
+
+  it('__resetSearchModeStore clears advisories too', () => {
+    publishSearchStageStatuses('p1', MODEL);
+    __resetSearchModeStore();
+    expect(getSearchStageAdvisories('p1')).toBeUndefined();
+  });
+});
+
+/* 114.md §2 r2 (minor ×3) — the ONE honest wording. The old copy hard-coded the noun
+   "suggestions" onto `total`, so a strategy carrying only QUALITY WARNINGS was
+   announced as "2 suggestions to review". The split fields exist so the label can
+   stay true; these three wordings are the contract every surface shares. */
+describe('searchAdvisoryLabel — the three honest wordings', () => {
+  it('suggestions only → "N suggestions to review"', () => {
+    expect(searchAdvisoryLabel({ suggestions: 2, warnings: 0, total: 2 })).toBe('2 suggestions to review');
+    expect(searchAdvisoryLabel({ suggestions: 1, warnings: 0, total: 1 })).toBe('1 suggestion to review');
+  });
+  it('warnings only → "N quality notes to review" (never called a suggestion)', () => {
+    expect(searchAdvisoryLabel({ suggestions: 0, warnings: 3, total: 3 })).toBe('3 quality notes to review');
+    expect(searchAdvisoryLabel({ suggestions: 0, warnings: 1, total: 1 })).toBe('1 quality note to review');
+  });
+  it('mixed → "N suggestions, M quality notes" (both kinds named)', () => {
+    expect(searchAdvisoryLabel({ suggestions: 2, warnings: 1, total: 3 })).toBe('2 suggestions, 1 quality note');
+    expect(searchAdvisoryLabel({ suggestions: 1, warnings: 2, total: 3 })).toBe('1 suggestion, 2 quality notes');
+  });
+  it('nothing to review → empty string (callers render no pill)', () => {
+    expect(searchAdvisoryLabel({ suggestions: 0, warnings: 0, total: 0 })).toBe('');
+    expect(searchAdvisoryLabel(null)).toBe('');
+    expect(searchAdvisoryLabel(undefined)).toBe('');
+    expect(searchAdvisoryLabel({})).toBe('');
+  });
+  it('a total with no split stays generic rather than guessing a noun', () => {
+    expect(searchAdvisoryLabel({ total: 4 })).toBe('4 items to review');
+    expect(searchAdvisoryLabel({ total: 1 })).toBe('1 item to review');
   });
 });

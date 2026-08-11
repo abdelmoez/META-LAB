@@ -92,6 +92,11 @@ export function isTypingTarget(el) {
  */
 export function isFocusToggleEvent(e) {
   if (!e || !e.shiftKey) return false;
+  // Key repeat is NOT a second press. Holding the combination down fires keydown
+  // at the OS repeat rate, and a toggle driven by that machine-guns the layout
+  // (and, since 114.md, the browser's own fullscreen) dozens of times a second.
+  // One physical press, one toggle.
+  if (e.repeat) return false;
   if (!(e.ctrlKey || e.metaKey)) return false;
   if (e.altKey) return false;
   const k = (e.key || '').toLowerCase();
@@ -137,38 +142,39 @@ export function focusShortcutLabel() {
  * usePageHead's applyHead is (tests/unit/seo/usePageHead.test.js).
  */
 export function createFullscreenBridge(doc) {
-  // Did WE ask for the current fullscreen? Only then does its ending mean "leave
-  // Focus Mode". Anything else on the page is free to go fullscreen and back.
+  // Three facts, deliberately NOT collapsed into one boolean — the r2 review
+  // found a real bug for each pair that used to be conflated:
+  //
+  //   wanted  — INTENT. What the app last asked for, known the instant it asks.
+  //             This is the authority: a grant that lands after the user already
+  //             toggled off must undo itself rather than strand the browser in
+  //             fullscreen with the app's layout back to normal.
+  //   pending — a request is in flight and has not been observed to land. Cleared
+  //             by the first change event, by the request settling, or by a
+  //             fullscreenerror.
+  //   owned   — we have OBSERVED our own element in fullscreen. Never assumed at
+  //             call time: prefixed WebKit refuses silently (undefined return, no
+  //             rejection, no event), and an optimistic `owned = true` there left
+  //             a stale claim that a FOREIGN video's exit would then cash in.
+  let wanted = false;
+  let pending = false;
   let owned = false;
+
+  const root = () => (doc ? doc.documentElement : null);
 
   const element = () => {
     if (!doc) return null;
     return doc.fullscreenElement || doc.webkitFullscreenElement || null;
   };
 
-  /** Best-effort enter. Resolves false (never throws, never rejects) on refusal. */
-  const enter = () => {
-    const root = doc && doc.documentElement;
-    const req = root && (root.requestFullscreen || root.webkitRequestFullscreen);
-    if (typeof req !== 'function') return Promise.resolve(false); // unsupported ⇒ fallback
-    owned = true;
-    try {
-      // Older WebKit returns undefined rather than a promise — Promise.resolve
-      // normalises both shapes.
-      return Promise.resolve(req.call(root)).then(
-        () => true,
-        () => { owned = false; return false; },
-      );
-    } catch {
-      owned = false;
-      return Promise.resolve(false);
-    }
+  /** Is the thing currently in fullscreen OUR element (the document root)? */
+  const oursIsFullscreen = () => {
+    const r = root();
+    return !!r && element() === r;
   };
 
-  /** Best-effort leave. Safe to call twice — nothing fullscreen ⇒ nothing to do. */
-  const leave = () => {
-    owned = false;
-    if (!element()) return Promise.resolve(false);
+  /** Raw exitFullscreen. No bookkeeping — callers decide whether it is theirs. */
+  const rawExit = () => {
     const exit = doc && (doc.exitFullscreen || doc.webkitExitFullscreen);
     if (typeof exit !== 'function') return Promise.resolve(false);
     try {
@@ -179,34 +185,125 @@ export function createFullscreenBridge(doc) {
   };
 
   /**
-   * Answer, once, "did OUR fullscreen just end because of something outside the
-   * app?". False while anything is still fullscreen (that is an ENTER, or a
-   * hand-off) and false when we never owned it (a video finishing).
+   * Reconcile our bookkeeping with what the document actually shows, and answer
+   * "did OUR fullscreen just end without us asking?".
+   *
+   * Called from the change listener AND from the request settling, because the
+   * two orders both happen in the wild: a real browser fires fullscreenchange
+   * and then resolves the promise, while old WebKit returns undefined and may
+   * never fire anything at all.
    */
-  const consumeExternalExit = () => {
-    if (element()) return false;
+  const observe = () => {
+    if (oursIsFullscreen()) {
+      // Only a request of OURS can arm ownership. Somebody else fullscreening
+      // the document root is possible and is not ours to end.
+      if (pending || wanted) owned = true;
+      pending = false;
+      // INTENT WINS. The whole pre-grant window is a hole the old code fell
+      // through: leave() saw nothing fullscreen, returned without exiting, and
+      // the grant that landed a moment later was simply ignored — browser
+      // fullscreen with the chrome back and no state saying so. Undo it here.
+      if (owned && !wanted) {
+        owned = false;
+        rawExit();
+      }
+      return false;
+    }
+    // Not ours: nothing is fullscreen, or somebody else's element is.
+    pending = false;
     if (!owned) return false;
     owned = false;
     return true;
   };
 
-  /** Subscribe to both the standard and the prefixed change event. */
-  const attach = (onOursEnded) => {
+  /** Best-effort enter. Resolves false (never throws, never rejects) on refusal. */
+  const enter = () => {
+    const r = root();
+    const req = r && (r.requestFullscreen || r.webkitRequestFullscreen);
+    if (typeof req !== 'function') {
+      // Unsupported ⇒ the viewport-only fallback. There is no intent to track:
+      // no grant is ever coming, so nothing must be undone later.
+      wanted = false;
+      pending = false;
+      return Promise.resolve(false);
+    }
+    wanted = true;
+    pending = true;
+    const refused = () => { pending = false; wanted = false; return false; };
+    try {
+      // Older WebKit returns undefined rather than a promise — Promise.resolve
+      // normalises both shapes.
+      return Promise.resolve(req.call(r)).then(() => {
+        // The settle is evidence too. observe() arms ownership if the grant is
+        // real, and performs the deferred exit if the user has since left.
+        observe();
+        return owned;
+      }, refused);
+    } catch {
+      return Promise.resolve(refused());
+    }
+  };
+
+  /** Best-effort leave. Safe to call twice — nothing of ours ⇒ nothing to do. */
+  const leave = () => {
+    // Drop the intent FIRST and unconditionally: even when there is nothing to
+    // exit yet, a grant still in flight now knows to exit itself on arrival.
+    wanted = false;
+    const wasOurs = owned;
+    owned = false;
+    // Only exit what we put there. A <video> the researcher opened fullscreen
+    // is not ours to close just because they left Focus Mode.
+    if (!wasOurs) return Promise.resolve(false);
+    if (!element()) return Promise.resolve(false);
+    return rawExit();
+  };
+
+  /**
+   * Subscribe to the fullscreen lifecycle.
+   *
+   * @param {function} onOursEnded fired once when OUR fullscreen ends without us
+   *        asking (browser Escape, F11, the OS, an overlay dismissal).
+   * @param {function} [onChange]  fired after EVERY reconciliation — enter, exit,
+   *        foreign, or error — so a subscriber can mirror `isOwned()` into state.
+   */
+  const attach = (onOursEnded, onChange) => {
     if (!doc || typeof doc.addEventListener !== 'function') return () => {};
-    const handler = () => { if (consumeExternalExit()) onOursEnded(); };
+    const ping = () => { if (typeof onChange === 'function') onChange(); };
+    const handler = () => {
+      const ended = observe();
+      ping();
+      if (ended && typeof onOursEnded === 'function') onOursEnded();
+    };
+    // A request can die without ever producing a change event: a permissions
+    // policy, an iframe with no `allow="fullscreen"`, a kiosk lock. Dropping the
+    // intent here is what stops a later, unrelated fullscreen being mistaken for
+    // the grant we were still waiting on.
+    const onError = () => { pending = false; wanted = false; ping(); };
     doc.addEventListener('fullscreenchange', handler);
     doc.addEventListener('webkitfullscreenchange', handler);
+    doc.addEventListener('fullscreenerror', onError);
+    doc.addEventListener('webkitfullscreenerror', onError);
     return () => {
       doc.removeEventListener('fullscreenchange', handler);
       doc.removeEventListener('webkitfullscreenchange', handler);
+      doc.removeEventListener('fullscreenerror', onError);
+      doc.removeEventListener('webkitfullscreenerror', onError);
     };
   };
 
-  return { enter, leave, attach, element, isOwned: () => owned };
+  return {
+    enter, leave, attach, element, isOwned: () => owned, isWanted: () => wanted,
+  };
 }
 
 export function FocusModeProvider({ children, initial = null }) {
   const [focus, setFocusState] = useState(() => (initial == null ? readStored() : !!initial));
+  // Focus Mode and browser fullscreen are two different things that usually move
+  // together and sometimes do NOT: a refused request, a reload, F11, an Escape
+  // aimed at an overlay. Exposing the observed fullscreen state separately is
+  // what lets the controls describe the state the user is actually in instead of
+  // promising to "leave full screen" from a windowed page (114-r2 §5).
+  const [isFullscreen, setIsFullscreen] = useState(false);
   // Ref-count of mounted focusable surfaces. Used ONLY to decide whether the
   // keyboard shortcut should claim its combination — a DOM-time question, so an
   // effect is the right tool. Whether the BUTTON renders is answered synchronously
@@ -221,6 +318,16 @@ export function FocusModeProvider({ children, initial = null }) {
   if (fsRef.current === null) {
     fsRef.current = createFullscreenBridge(typeof document === 'undefined' ? null : document);
   }
+  // When `focus` last actually changed, so a control that MOUNTS as a result of
+  // the change can tell that apart from a first paint (114.md §7 — see
+  // FocusToggle). 0 means "never toggled this page-load", which is also the
+  // state after a sessionStorage restore: a restore must not move focus.
+  const changedAtRef = useRef(0);
+
+  /** Mirror the bridge's observed ownership into render state. Idempotent. */
+  const syncFullscreen = useCallback(() => {
+    setIsFullscreen(!!(fsRef.current && fsRef.current.isOwned()));
+  }, []);
 
   const setFocus = useCallback((on) => {
     const prev = focusRef.current;
@@ -229,6 +336,7 @@ export function FocusModeProvider({ children, initial = null }) {
     // browser's own fullscreenchange) can fire together and only the first lands.
     if (next === prev) return;
     focusRef.current = next;
+    changedAtRef.current = Date.now();
     writeStored(next);
     setFocusState(next);
     // Layout first (above), then the browser. Deliberately fire-and-forget: a
@@ -239,13 +347,25 @@ export function FocusModeProvider({ children, initial = null }) {
     // the layout back, but no browser will grant fullscreen without a fresh user
     // gesture, so the page comes back focused-but-windowed. That is the documented
     // fallback — the alternative is a hack that fakes a gesture, and there isn't
-    // an honest one. The next click of the control enters true fullscreen again.
-    if (next) fsRef.current.enter();
-    else fsRef.current.leave();
-  }, []);
+    // an honest one. The focus bar's "Enter full screen" button (which only
+    // appears in exactly that windowed state) is the way back up.
+    const settled = next ? fsRef.current.enter() : fsRef.current.leave();
+    settled.then(syncFullscreen, syncFullscreen);
+  }, [syncFullscreen]);
 
   const toggleFocus = useCallback(() => setFocus((p) => !p), [setFocus]);
   const exitFocus = useCallback(() => setFocus(false), [setFocus]);
+
+  /**
+   * Re-request real fullscreen while already focused — the only honest answer to
+   * the windowed-focus states (a reload, a refusal, an external exit), because a
+   * fresh user gesture is exactly what the browser was missing. Entering Focus
+   * Mode first if it is off keeps one entry point for callers.
+   */
+  const enterFullscreen = useCallback(() => {
+    if (!focusRef.current) { setFocus(true); return; }
+    fsRef.current.enter().then(syncFullscreen, syncFullscreen);
+  }, [setFocus, syncFullscreen]);
 
   /** A focusable shell registers on mount so the shortcut knows it has a target. */
   const registerSurface = useCallback(() => {
@@ -285,16 +405,24 @@ export function FocusModeProvider({ children, initial = null }) {
     };
     window.addEventListener('keydown', onKey);
     // Browser-Escape, F11 and OS-level exits end fullscreen without ever touching
-    // our state. 114.md §1: "the UI must not remain in a false full-screen state".
-    // Only OUR fullscreen ending counts — see createFullscreenBridge.
-    const detachFullscreen = fsRef.current.attach(() => {
-      if (focusRef.current) exitFocus();
-    });
+    // our state. 114.md §1 says the UI must not remain in a false full-screen
+    // state — and that is ALL it says. It does NOT say the layout must collapse.
+    //
+    // 114-r2 §2: it must not. Escape inside fullscreen is not interceptable — the
+    // browser exits whatever the page does with the event — so a researcher
+    // dismissing a modal or an autocomplete produces exactly this event. Tearing
+    // the whole focus layout down there ejected them from a mode they never asked
+    // to leave. So we degrade to the documented focused-but-windowed state: the
+    // false fullscreen claim is dropped (syncFullscreen re-reads the bridge, the
+    // exit copy stops promising to leave a full screen we are not in), and no
+    // layout state changes. Plain Escape still exits Focus Mode entirely through
+    // the window keydown handler above, which is idempotent alongside this one.
+    const detachFullscreen = fsRef.current.attach(syncFullscreen, syncFullscreen);
     return () => {
       window.removeEventListener('keydown', onKey);
       detachFullscreen();
     };
-  }, [toggleFocus, exitFocus]);
+  }, [toggleFocus, exitFocus, syncFullscreen]);
 
   // A body-level attribute lets CSS respond (e.g. reclaiming the shell's padding)
   // without threading the flag through every stylesheet.
@@ -307,8 +435,12 @@ export function FocusModeProvider({ children, initial = null }) {
   }, [focus]);
 
   const value = useMemo(() => ({
-    focus, setFocus, toggleFocus, exitFocus, registerSurface,
-  }), [focus, setFocus, toggleFocus, exitFocus, registerSurface]);
+    focus, isFullscreen, setFocus, toggleFocus, exitFocus, enterFullscreen, registerSurface,
+    // Read through the memo rather than held as state: it changes exactly when
+    // `focus` does, so the memo already recomputes at the right moment and the
+    // provider avoids a second render for a value only an effect ever reads.
+    focusChangedAt: changedAtRef.current,
+  }), [focus, isFullscreen, setFocus, toggleFocus, exitFocus, enterFullscreen, registerSurface]);
 
   return <FocusModeContext.Provider value={value}>{children}</FocusModeContext.Provider>;
 }
@@ -328,9 +460,12 @@ export function useFocusMode() {
 const noop = () => {};
 const OFF = {
   focus: false,
+  isFullscreen: false,
+  focusChangedAt: 0,
   setFocus: noop,
   toggleFocus: noop,
   exitFocus: noop,
+  enterFullscreen: noop,
   registerSurface: () => noop,
 };
 

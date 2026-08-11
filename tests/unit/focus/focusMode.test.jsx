@@ -15,7 +15,7 @@ import {
   FocusModeProvider, FocusSurface, isFocusToggleEvent, isTypingTarget,
   createFullscreenBridge,
 } from '../../../src/frontend/focus/FocusModeContext.jsx';
-import { FocusToggle, FocusNavBar } from '../../../src/frontend/focus/FocusControls.jsx';
+import { FocusToggle, FocusNavBar, focusToggleCopy } from '../../../src/frontend/focus/FocusControls.jsx';
 import {
   buildWorkflowSequence, sequenceIndex, sequenceNeighbours, stepTitle,
 } from '../../../src/frontend/stitch/nav/workflowSequence.js';
@@ -182,9 +182,27 @@ describe('the Focus Mode control', () => {
 
   it('114.md §1/§7 — the label admits it takes the whole screen now', () => {
     expect(withSurface(true, false)).toContain('hide navigation and use the full screen');
-    expect(withSurface(true, true)).toContain('leave full screen');
     // The hooks the rest of the suite (and the e2e spec) key off are untouched.
     expect(withSurface(true, false)).toContain('data-testid="focus-toggle"');
+  });
+
+  it('114-r2 §5 — the EXIT copy only promises a full screen we are actually in', () => {
+    // Focus Mode outlives fullscreen: a refused request, a reload, F11, an
+    // Escape the browser ate to close an overlay. A server render is exactly one
+    // of those states (nothing has been granted), so the honest copy is the
+    // windowed one — and "leave full screen" must be absent, not merely rare.
+    const windowed = withSurface(true, true);
+    expect(windowed).toContain('Exit focus mode — restore navigation');
+    expect(windowed).not.toContain('leave full screen');
+
+    // Both branches pinned at the source, since no server render can produce a
+    // real fullscreen to assert the other one through.
+    expect(focusToggleCopy(true, true).aria).toBe('Exit focus mode — restore navigation and leave full screen');
+    expect(focusToggleCopy(true, false).aria).toBe('Exit focus mode — restore navigation');
+    expect(focusToggleCopy(false, false).aria).toContain('use the full screen');
+    // Esc is only offered as a way out once there is something to get out of.
+    expect(focusToggleCopy(false, false).hint).not.toContain('Esc');
+    expect(focusToggleCopy(true, false).hint).toContain('Esc');
   });
 
   it('reports its pressed state and offers the way back once active', () => {
@@ -225,6 +243,18 @@ describe('the focus bar navigation', () => {
     expect(html).toContain('aria-label="Workflow navigation"');
   });
 
+  it('114-r2 §5 — offers the way back UP when focus outlived fullscreen', () => {
+    // Server render ⇒ nothing was ever granted ⇒ the windowed-focus state. The
+    // toggle cannot serve here (it exits Focus Mode entirely) and only a fresh
+    // user gesture can restore fullscreen, so the bar carries one button that
+    // asks for it. It is the ONLY state in which that button exists.
+    expect(html).toContain('data-testid="focus-fullscreen"');
+    expect(html).toContain('Enter full screen — hide the browser chrome too');
+    expect(html).toContain('data-testid="focus-exit"');
+    // …and the exit beside it does not claim a full screen either.
+    expect(html).not.toContain('leave full screen');
+  });
+
   it('disables an arrow with no destination instead of hiding it', () => {
     const start = renderToStaticMarkup(
       <FocusModeProvider initial>
@@ -255,6 +285,14 @@ describe('the keyboard shortcut', () => {
     expect(isFocusToggleEvent(ev({ ctrlKey: true, key: 'g' }))).toBe(false);
   });
 
+  it('114-r2 — a HELD combination is one toggle, not an auto-repeat machine gun', () => {
+    // keydown repeats at the OS rate while the keys are down. Each repeat used to
+    // be a full enter/exit cycle, browser fullscreen and all.
+    expect(isFocusToggleEvent(ev({ ctrlKey: true, repeat: true }))).toBe(false);
+    expect(isFocusToggleEvent(ev({ metaKey: true, repeat: true }))).toBe(false);
+    expect(isFocusToggleEvent(ev({ ctrlKey: true, repeat: false }))).toBe(true);
+  });
+
   it('knows a text-entry surface when it sees one', () => {
     expect(isTypingTarget({ tagName: 'INPUT' })).toBe(true);
     expect(isTypingTarget({ tagName: 'TEXTAREA' })).toBe(true);
@@ -276,7 +314,7 @@ describe('the keyboard shortcut', () => {
  * from every exit path, so these assertions ARE the provider's behaviour; the
  * wiring in a real browser is covered by e2e/focus/fullscreen.spec.ts.
  */
-function fakeDoc({ prefixed = false, none = false, reject = false } = {}) {
+function fakeDoc({ prefixed = false, none = false, reject = false, defer = false } = {}) {
   const listeners = {};
   const root = {};
   const doc = {
@@ -291,12 +329,22 @@ function fakeDoc({ prefixed = false, none = false, reject = false } = {}) {
     fire: (type = prefixed ? 'webkitfullscreenchange' : 'fullscreenchange') => {
       (listeners[type] || []).forEach((f) => f());
     },
+    /** …and the refusal the spec sends when a request cannot be honoured. */
+    fireError: (type = prefixed ? 'webkitfullscreenerror' : 'fullscreenerror') => {
+      (listeners[type] || []).forEach((f) => f());
+    },
     count: (type) => (listeners[type] || []).length,
+    grant: async () => {},
   };
   const key = prefixed ? 'webkitFullscreenElement' : 'fullscreenElement';
   if (!none) {
+    let settle = null;
     root[prefixed ? 'webkitRequestFullscreen' : 'requestFullscreen'] = vi.fn(() => {
       if (reject) return Promise.reject(new Error('denied by permissions policy'));
+      // `defer` models the timing 114-r2 §1 is about: requestFullscreen returns a
+      // promise that stays pending until the user agent decides, and everything
+      // the app does in between happens with nothing fullscreen at all.
+      if (defer) return new Promise((res) => { settle = res; });
       doc[key] = root;
       return Promise.resolve();
     });
@@ -304,6 +352,20 @@ function fakeDoc({ prefixed = false, none = false, reject = false } = {}) {
       doc[key] = null;
       return Promise.resolve();
     });
+    /**
+     * Grant a deferred request in the order the spec mandates: the element goes
+     * fullscreen, fullscreenchange fires, and only THEN does the request promise
+     * settle. Getting that order right is the point — the bridge has to arm
+     * ownership from the event, not from the promise.
+     */
+    doc.grant = async () => {
+      doc[key] = root;
+      doc.fire();
+      if (settle) { const s = settle; settle = null; s(); }
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    };
   }
   return doc;
 }
@@ -415,6 +477,107 @@ describe('the fullscreen bridge', () => {
     await expect(ssr.leave()).resolves.toBe(false);
     expect(ssr.element()).toBe(null);
     expect(typeof ssr.attach(() => {})).toBe('function');
+  });
+
+  /* ─────────── 114-r2: intent is the authority ─────────── */
+
+  it('arms ownership from the CHANGE EVENT, before the request promise settles', async () => {
+    // The real order is event-then-promise. A bridge that only learns from the
+    // promise is blind for the whole gap in between.
+    const doc = fakeDoc({ defer: true });
+    const fs = createFullscreenBridge(doc);
+    fs.attach(() => {});
+
+    const entering = fs.enter();
+    expect(fs.isOwned()).toBe(false); // nothing observed yet — nothing claimed
+    expect(fs.isWanted()).toBe(true); // …but the intent is on record
+
+    await doc.grant();
+    expect(fs.isOwned()).toBe(true);
+    await expect(entering).resolves.toBe(true);
+  });
+
+  it('114-r2 §1 — a toggle-off inside the pre-grant window undoes the grant', async () => {
+    const doc = fakeDoc({ defer: true });
+    const fs = createFullscreenBridge(doc);
+    const onEnded = vi.fn();
+    fs.attach(onEnded);
+
+    const entering = fs.enter();
+    expect(fs.element()).toBe(null); // the hole: nothing is fullscreen YET
+
+    // The user toggles straight back off. There is nothing to exit, so the old
+    // bridge returned and forgot — and the grant landed a moment later with the
+    // chrome already back: browser fullscreen, owned false, focus false, and no
+    // control anywhere admitting it.
+    await expect(fs.leave()).resolves.toBe(false);
+    expect(doc.exitFullscreen).not.toHaveBeenCalled();
+    expect(fs.isWanted()).toBe(false);
+
+    await doc.grant();
+    await entering;
+
+    expect(doc.exitFullscreen).toHaveBeenCalledTimes(1);
+    expect(fs.element()).toBe(null);
+    expect(fs.isOwned()).toBe(false);
+    // We asked for this exit; it is not an external one and must not be reported
+    // as though the browser did it behind our back.
+    expect(onEnded).not.toHaveBeenCalled();
+  });
+
+  it('114-r2 §3 — a SILENT refusal never leaves a stale ownership claim', async () => {
+    // Prefixed WebKit can refuse by doing nothing at all: undefined return, no
+    // rejection, no event. Claiming ownership at call time meant the next
+    // foreign fullscreen to end — a video the researcher opened — cashed in that
+    // stale claim and threw them out of Focus Mode.
+    const doc = fakeDoc({ prefixed: true });
+    doc.documentElement.webkitRequestFullscreen = vi.fn(() => undefined);
+    const fs = createFullscreenBridge(doc);
+    const onEnded = vi.fn();
+    fs.attach(onEnded);
+
+    await expect(fs.enter()).resolves.toBe(false);
+    expect(fs.isOwned()).toBe(false);
+
+    doc.webkitFullscreenElement = { tagName: 'VIDEO' };
+    doc.fire('webkitfullscreenchange');
+    doc.webkitFullscreenElement = null;
+    doc.fire('webkitfullscreenchange');
+
+    expect(onEnded).not.toHaveBeenCalled();
+    expect(fs.isOwned()).toBe(false);
+  });
+
+  it('114-r2 §3 — a fullscreenerror drops the pending intent', async () => {
+    const doc = fakeDoc({ defer: true });
+    const fs = createFullscreenBridge(doc);
+    fs.attach(() => {});
+
+    fs.enter();
+    expect(fs.isWanted()).toBe(true);
+
+    doc.fireError();
+    expect(fs.isWanted()).toBe(false);
+    expect(fs.isOwned()).toBe(false);
+
+    // Whatever happens on the page afterwards, the refused request has stopped
+    // being something we might still adopt as ours.
+    await doc.grant();
+    expect(fs.isOwned()).toBe(false);
+  });
+
+  it('114-r2 §4 — leave() never closes a fullscreen that was not ours', async () => {
+    const doc = fakeDoc();
+    const fs = createFullscreenBridge(doc);
+    fs.attach(() => {});
+
+    const video = { tagName: 'VIDEO' };
+    doc.fullscreenElement = video; // the researcher's own video, mid-playback
+    doc.fire();
+
+    await expect(fs.leave()).resolves.toBe(false);
+    expect(doc.exitFullscreen).not.toHaveBeenCalled();
+    expect(doc.fullscreenElement).toBe(video);
   });
 
   it('RELOAD: restoring focus from sessionStorage requests nothing', () => {

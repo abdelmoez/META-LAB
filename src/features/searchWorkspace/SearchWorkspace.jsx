@@ -71,7 +71,7 @@ import { STAGES, stagesFor, stageAfterModeChange, reconcileStageUrl } from './se
 // (StitchProjectSubnav → useSearchMode) re-scopes its stage list immediately, no reload.
 // 85.md — also publish the honest per-stage statuses so the side-menu stepper glyphs
 // reflect real completion (navConfig.searchSubmenu reads the same store).
-import { publishSearchMode, publishSearchStageStatuses } from './searchModeStore.js';
+import { publishSearchMode, publishSearchStageStatuses, searchAdvisoryLabel } from './searchModeStore.js';
 // 98.md §5 — ONE engine-wide Beginner Mode (provider + header toggle + hook).
 import { BeginnerModeProvider, BeginnerModeToggle, useBeginnerMode } from './beginnerMode.jsx';
 import { Icon } from '../../frontend/components/icons.jsx';
@@ -1097,15 +1097,19 @@ function SearchWorkspaceBody({
       screening: screeningReady ? 'done' : (base.screening || 'empty'),
     };
   }, [builderStats, searchMode, screeningReady]);
-  useEffect(() => {
-    // Store publish is deep-equal-idempotent, so republishing per render is safe.
-    if (builderStats) publishSearchStageStatuses(projectId, stageStatuses);
-  }, [projectId, stageStatuses, builderStats]);
-
   // 114.md §2 — the ADVISORY channel (pending vocabulary suggestions + un-dismissed
   // warning findings). It is deliberately NOT a status: a strategy with review items
   // is still complete, so the rail keeps its green check and shows a quiet count.
   const stageAdvisories = (builderStats && builderStats.stageAdvisories) || null;
+  useEffect(() => {
+    // Store publish is deep-equal-idempotent, so republishing per render is safe.
+    // 114.md §2 r2 — advisories travel WITH the statuses: this in-body rail is hidden
+    // whenever the white side-menu stepper drives the stages (`railHidden`), so the
+    // store is the only path by which the counts can reach the stepper the production
+    // Stitch shell actually renders. Dropping them here is what made the pill invisible.
+    if (builderStats) publishSearchStageStatuses(projectId, { statuses: stageStatuses, advisories: stageAdvisories });
+  }, [projectId, stageStatuses, stageAdvisories, builderStats]);
+
   const statusFor = useCallback((s) => {
     const st = stageStatuses[s.id] || 'empty';
     const adv = (stageAdvisories && stageAdvisories[s.id]) || null;
@@ -1116,9 +1120,11 @@ function SearchWorkspaceBody({
       done: st === 'done',
       attention: st === 'attention',
       partial: st === 'partial',
-      // optional review items sitting beside the status (never demoting it)
+      // optional review items sitting beside the status (never demoting it). The
+      // wording is composed from the SPLIT counts by the shared helper — calling a
+      // quality warning a "suggestion" was the 114.md §2 r2 honesty bug.
       advisory,
-      advisoryLabel: advisory > 0 ? `${advisory} suggestion${advisory === 1 ? '' : 's'} to review` : '',
+      advisoryLabel: searchAdvisoryLabel(adv),
       disabled: stageDisabled(s),
       reason: DISABLED_REASON,
     };

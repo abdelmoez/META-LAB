@@ -38,7 +38,10 @@ import { stagesFor as searchStagesFor, resolveStageAlias } from '../../../featur
 // (computeStageStatuses) to this pure store; the submenu attaches them additively so
 // the white stepper shows real progress. Glyph-less fallback (status:null) when the
 // workspace was never mounted this session. Pure module, no React — nav-safe import.
-import { getSearchStageStatuses } from '../../../features/searchWorkspace/searchModeStore.js';
+// 114.md §2 r2 — the same store now carries the ADVISORY counts (review items that
+// ride beside a status without demoting it) and the ONE honest label for them, so the
+// stepper and the in-body rail can never word the same count differently.
+import { getSearchStageStatuses, getSearchStageAdvisories, searchAdvisoryLabel } from '../../../features/searchWorkspace/searchModeStore.js';
 
 /* ─── 1. GLOBAL purple-rail destinations (app-level, shown on every Stitch page) ─
    design2.md Part 1: the purple rail holds ONLY global, application-level
@@ -385,19 +388,33 @@ function searchSubmenu(ctx = {}) {
     const stageStatuses = (ctx.searchStageStatuses && typeof ctx.searchStageStatuses === 'object')
       ? ctx.searchStageStatuses
       : (getSearchStageStatuses(ctx.projectId) || null);
-    stageItems = searchStagesFor(ctx.searchMode).map((s) => ({
-      key: s.id,
-      label: s.label,
-      icon: SEARCH_STAGE_ICONS[s.id] || 'search',
-      href: searchStageHref(s.id, ctx),
-      completionKey: null, // no per-stage completion truth in the pure nav layer
-      countKey: null,
-      screening: false,
-      desc: s.desc || null,
-      stage: s.id,
-      // 85.md additive: 'done'|'partial'|'empty'|'attention' from the live workspace.
-      status: stageStatuses ? (stageStatuses[s.id] || null) : null,
-    }));
+    // 114.md §2 r2 — the ADVISORY counts, same precedence rule (explicit ctx wins,
+    // else the shared store). Zero-total stages carry no advisory at all, so a clean
+    // strategy's step keeps its ordinary helper copy.
+    const stageAdvisories = (ctx.searchStageAdvisories && typeof ctx.searchStageAdvisories === 'object')
+      ? ctx.searchStageAdvisories
+      : (getSearchStageAdvisories(ctx.projectId) || null);
+    stageItems = searchStagesFor(ctx.searchMode).map((s) => {
+      const adv = stageAdvisories ? stageAdvisories[s.id] : null;
+      const label = adv ? searchAdvisoryLabel(adv) : '';
+      return {
+        key: s.id,
+        label: s.label,
+        icon: SEARCH_STAGE_ICONS[s.id] || 'search',
+        href: searchStageHref(s.id, ctx),
+        completionKey: null, // no per-stage completion truth in the pure nav layer
+        countKey: null,
+        screening: false,
+        desc: s.desc || null,
+        stage: s.id,
+        // 85.md additive: 'done'|'partial'|'empty'|'attention' from the live workspace.
+        status: stageStatuses ? (stageStatuses[s.id] || null) : null,
+        // 114.md §2 r2 additive: { total, label } — the stepper renders `label` in the
+        // step's muted secondary line. NEVER folded into `status` (rollUpStatus and
+        // every glyph stay advisory-blind: a stage with review items is still done).
+        advisory: label ? { total: adv.total, label } : null,
+      };
+    });
   } else {
     // Legacy (flag OFF): the single 'Search' destination the classic wizard opens.
     const searchTab = TABS.find((t) => t.id === 'search');

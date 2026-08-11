@@ -140,6 +140,73 @@ describe('85.md — additive per-stage `status` on the Search submenu items', ()
   });
 });
 
+/* 114.md §2 r2 — the ADVISORY count reaches the WHITE STEPPER.
+   The in-body rail's advisory pill never renders in the production Stitch shell (the
+   side-menu stepper hides that rail), so the counts have to travel: workspace → store
+   → submenu item.advisory → step.count. They ride BESIDE the status and never demote
+   it: a strategy with pending review items is still 'done'. */
+describe('114.md §2 — per-stage advisory counts on the Search submenu + stepper', () => {
+  beforeEach(() => __resetSearchModeStore());
+
+  const MODEL = {
+    statuses: { terms: 'done', mode: 'done' },
+    advisories: { terms: { suggestions: 2, warnings: 0, total: 2 }, mode: { suggestions: 0, warnings: 0, total: 0 } },
+  };
+
+  it('no advisories published → advisory:null on every stage item', () => {
+    const items = submenuForCategory('search', CTX);
+    for (const it2 of items.filter((i) => !i.utility)) expect(it2.advisory).toBeNull();
+  });
+
+  it('attaches { total, label } from the shared store, and NOTHING for a clean stage', () => {
+    publishSearchStageStatuses('p1', MODEL);
+    const byKey = Object.fromEntries(submenuForCategory('search', CTX).map((i) => [i.key, i]));
+    expect(byKey.terms.advisory).toEqual({ total: 2, label: '2 suggestions to review' });
+    expect(byKey.mode.advisory).toBeNull();     // total 0 → no pill, no count line
+    expect(byKey.strategy.advisory).toBeNull(); // no advisory for this stage at all
+  });
+
+  it('an explicit ctx.searchStageAdvisories wins over the store (host threading / tests)', () => {
+    publishSearchStageStatuses('p1', MODEL);
+    const byKey = Object.fromEntries(submenuForCategory('search', {
+      ...CTX,
+      searchStageAdvisories: { terms: { suggestions: 0, warnings: 1, total: 1 } },
+    }).map((i) => [i.key, i]));
+    expect(byKey.terms.advisory).toEqual({ total: 1, label: '1 quality note to review' });
+  });
+
+  it('the label is composed honestly per split — suggestions / quality notes / both', () => {
+    const labelFor = (adv) => submenuForCategory('search', { ...CTX, searchStageAdvisories: { terms: adv } })
+      .find((i) => i.key === 'terms').advisory.label;
+    expect(labelFor({ suggestions: 2, warnings: 0, total: 2 })).toBe('2 suggestions to review');
+    expect(labelFor({ suggestions: 0, warnings: 2, total: 2 })).toBe('2 quality notes to review');
+    expect(labelFor({ suggestions: 2, warnings: 1, total: 3 })).toBe('2 suggestions, 1 quality note');
+  });
+
+  it('submenuSteps threads the advisory into `count` — which the stepper shows INSTEAD of desc', () => {
+    publishSearchStageStatuses('p1', MODEL);
+    const byKey = Object.fromEntries(submenuSteps('search', CTX, { statusMap: {} }).map((s) => [s.key, s]));
+    // The stage keeps its earned status (green/done) — the count never demotes it.
+    expect(byKey.terms.status).toBe('done');
+    expect(byKey.terms.count).toBe('2 suggestions to review');
+    // …and a stage with nothing to review keeps its ordinary helper copy.
+    expect(byKey.mode.count).toBeNull();
+    expect(byKey.strategy.count).toBeNull();
+    expect(typeof byKey.strategy.desc).toBe('string');
+  });
+
+  it('advisories NEVER reach a utility row, and an attention stage is unaffected', () => {
+    publishSearchStageStatuses('p1', {
+      statuses: { terms: 'attention' },
+      advisories: { terms: { suggestions: 0, warnings: 0, total: 0 } },
+    });
+    const byKey = Object.fromEntries(submenuSteps('search', CTX, { statusMap: {} }).map((s) => [s.key, s]));
+    expect(byKey.terms.status).toBe('attention');
+    expect(byKey.terms.count).toBeNull();   // a blocker is not a review item
+    expect(byKey.living.count).toBeNull();
+  });
+});
+
 describe('75.md recs (Finding 1) — flag OFF falls back to the legacy single-Search submenu', () => {
   // With searchWorkspaceV2 off (default prod) the body renders the legacy
   // SearchWizard/SearchTab, which has NO `?stage=` support. The submenu must NOT show a

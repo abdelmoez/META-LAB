@@ -9,9 +9,17 @@
  *     the browser's tabs/address bar go too (a CSS-only "big page" would leave
  *     document.fullscreenElement null — that is the whole point of asserting it);
  *   - every exit path — our button, Escape, and a fullscreen that ends OUTSIDE
- *     the app — leaves BOTH halves consistent. A page that stays in the focus
- *     layout after the browser dropped fullscreen is the "false full-screen
- *     state" the prompt names explicitly;
+ *     the app — leaves BOTH halves consistent. "Consistent" is not "identical":
+ *     114-r2 §2 separates them deliberately. Escape inside fullscreen cannot be
+ *     intercepted — the browser exits whatever the page does with the event — so
+ *     a researcher closing a modal or an autocomplete produces the same
+ *     fullscreenchange as a deliberate exit. Collapsing the whole focus layout
+ *     there ejected them from a mode they never asked to leave. So an external
+ *     exit degrades to focused-but-windowed (the documented reload state) and
+ *     the CONTROLS stop claiming a full screen; only a deliberate exit — the
+ *     button, or a plain Escape our keydown handler sees — unwinds the layout.
+ *     The "false full-screen state" the prompt forbids is a UI still claiming
+ *     fullscreen, and that is what is asserted below;
  *   - the Previous/Next bar keeps working while fullscreen.
  *
  * Chromium only: fullscreen grants depend on the window manager, and the WebKit /
@@ -64,6 +72,14 @@ test.describe('114.md §1 — Focus Mode enters true browser fullscreen', () => 
     const covered = await page.evaluate(() => window.innerHeight >= window.screen.height * 0.9);
     expect(covered).toBe(true);
 
+    // 114.md §7 — "focus is not lost". The header toggle the user just pressed is
+    // unmounted by the transition, which drops document.activeElement to <body>
+    // and restarts a keyboard user's Tab order at the top of the document. The
+    // control that replaces it takes the focus back.
+    await expect
+      .poll(() => page.evaluate(() => document.activeElement?.getAttribute('data-testid') ?? null), { timeout: 5_000 })
+      .toBe('focus-toggle');
+
     // The one control Focus Mode keeps is the one that gets back out.
     await toggle.click();
     await expect(bar).toHaveCount(0);
@@ -80,28 +96,71 @@ test.describe('114.md §1 — Focus Mode enters true browser fullscreen', () => 
     await expect(bar).toBeVisible();
     await expect.poll(() => rootIsFullscreen(page), { timeout: 10_000 }).toBe(true);
 
-    // Escape is the browser's own way out of fullscreen; the app state must follow
-    // it whichever half moves first (our keydown handler, or fullscreenchange).
+    // A PLAIN Escape — nothing focused that wants it, nobody typing — is a
+    // deliberate "get me out", and it stays a full exit in one press: the window
+    // keydown handler sees it and unwinds the layout and fullscreen together.
+    // (The keydown reaching the page and the browser's own fullscreen exit can
+    // both fire from one physical press; the exit path is idempotent, so whichever
+    // lands first the result below is the same.) This is the counterpart to the
+    // external-exit test: there the layout must SURVIVE, because that Escape was
+    // aimed at an overlay and never reached us.
     await page.keyboard.press('Escape');
     await expect(bar).toHaveCount(0);
     await expect.poll(() => anyFullscreen(page), { timeout: 10_000 }).toBe(false);
     await expect(page.getByTestId('stitch-top-header')).toBeVisible();
   });
 
-  test('fullscreen ending OUTSIDE the app drops Focus Mode with it', async ({ page, tmpProject }) => {
+  test('fullscreen ending OUTSIDE the app degrades to windowed focus, it does not eject', async ({ page, tmpProject }) => {
     await openWorkspace(page, tmpProject.id);
     const bar = page.getByTestId('focus-nav-bar');
 
     await page.getByTestId('focus-toggle').click();
     await expect(bar).toBeVisible();
     await expect.poll(() => rootIsFullscreen(page), { timeout: 10_000 }).toBe(true);
+    // While we really are fullscreen, the exit control says so.
+    await expect(page.getByTestId('focus-exit')).toHaveAttribute('aria-label', /leave full screen/);
+    await expect(page.getByTestId('focus-fullscreen')).toHaveCount(0);
 
-    // Stand in for the browser/OS exit (F11, the window manager, the Esc overlay):
-    // fullscreen ends without any app control being touched.
+    // Stand in for every exit the app cannot intercept: F11, the window manager,
+    // and — the one that matters — the Escape a researcher aimed at an overlay,
+    // which the browser consumes to leave fullscreen no matter what the page does.
     await page.evaluate(() => document.exitFullscreen());
+    await expect.poll(() => anyFullscreen(page), { timeout: 10_000 }).toBe(false);
+
+    // 114-r2 §2: the LAYOUT stays. Being dropped back to full chrome mid-thought
+    // because a modal was dismissed is the bug this test exists to prevent.
+    await expect(bar).toBeVisible();
+    await expect(page.getByTestId('stitch-top-header')).toHaveCount(0);
+
+    // …but nothing may keep CLAIMING a full screen that is gone: the exit copy
+    // drops the promise, and the way back up appears.
+    await expect(page.getByTestId('focus-exit')).toHaveAttribute('aria-label', 'Exit focus mode — restore navigation');
+    await expect(page.getByTestId('focus-toggle')).toHaveAttribute('aria-label', 'Exit focus mode — restore navigation');
+    await expect(page.getByTestId('focus-fullscreen')).toBeVisible();
+
+    // The deliberate exit still works from here, and is still one press.
+    await page.keyboard.press('Escape');
     await expect(bar).toHaveCount(0);
     await expect(page.getByTestId('stitch-top-header')).toBeVisible();
-    expect(await anyFullscreen(page)).toBe(false);
+  });
+
+  test('the way back UP: windowed focus can re-enter real fullscreen with one gesture', async ({ page, tmpProject }) => {
+    await openWorkspace(page, tmpProject.id);
+    await page.getByTestId('focus-toggle').click();
+    await expect(page.getByTestId('focus-nav-bar')).toBeVisible();
+    await expect.poll(() => rootIsFullscreen(page), { timeout: 10_000 }).toBe(true);
+
+    await page.evaluate(() => document.exitFullscreen());
+    await expect(page.getByTestId('focus-fullscreen')).toBeVisible();
+
+    // A fresh user gesture is exactly what the browser was missing — which is why
+    // this is a button and not something the app can do on its own after a reload.
+    await page.getByTestId('focus-fullscreen').click();
+    await expect.poll(() => rootIsFullscreen(page), { timeout: 10_000 }).toBe(true);
+    await expect(page.getByTestId('focus-fullscreen')).toHaveCount(0);
+
+    await page.getByTestId('focus-exit').click();
+    await expect.poll(() => anyFullscreen(page), { timeout: 10_000 }).toBe(false);
   });
 
   test('Previous/Next still navigates while the page is fullscreen', async ({ page, tmpProject }) => {

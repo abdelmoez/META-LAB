@@ -14,6 +14,10 @@
  * - `status` uses the shared navStatus vocabulary ('done' | 'partial' | 'empty' |
  *   'attention'); the Screen category maps the live screeningSteps vocabulary onto
  *   it and carries a live `count` ("312 unresolved", "1,796 remaining").
+ * - `count` is the step's live secondary line and REPLACES `desc` when present. The
+ *   Search category fills it with the 114.md §2 ADVISORY label ("2 suggestions to
+ *   review") — counts only, never a status change: the step's glyph and tone are
+ *   whatever `status` earned, so a complete stage with review items stays green.
  * - `disabled` mirrors an unavailable destination (e.g. screening sub-pages with no
  *   linked workspace) so the stepper shows them disabled with an explanation.
  */
@@ -83,13 +87,20 @@ export function submenuSteps(category, ctx = {}, opts = {}) {
   return items.map((it) => {
     const utility = !!it.utility;
     if (!utility) n += 1;
+    // 114.md §2 r2 — the ADVISORY count for a Search stage (pending vocabulary
+    // suggestions + un-dismissed quality notes). It rides in `count`, which the
+    // stepper renders INSTEAD of `desc` on the muted secondary line — a review
+    // count is more useful than static helper copy, and it is deliberately muted,
+    // never the danger tone: the step keeps whatever status it earned ('done' stays
+    // green). Steps with nothing to review keep their helper copy untouched.
+    const advisory = (!utility && it.advisory && it.advisory.label) ? it.advisory : null;
     return {
       key: it.key, label: it.label, icon: it.icon, href: it.href,
       num: utility ? null : n,
       // 85.md — an item may carry its OWN honest status (the Search workflow stages,
       // published by the mounted workspace); it wins over the legacy statusMap truth.
       status: utility ? null : (it.status || statusMap[it.completionKey] || 'empty'),
-      count: null,
+      count: advisory ? advisory.label : null,
       desc: utility ? null : (it.desc || STEP_DESC[it.completionKey] || null),
       disabled: !it.href,
       groupLabel: it.groupLabel || null,
