@@ -15,7 +15,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   PROPORTION_META_FIELDS, UNCLASSIFIED, UNCLASSIFIED_LABEL,
-  formatProportionDisplay, proportionEquation,
+  formatProportionDisplay, proportionEquation, formatProportionValue,
   effectiveDenominatorPopulation, effectiveActionStatus,
   denominatorPopulationLabel, actionStatusLabel, denominatorCustomText,
   requiresCustomDenominator, isProportionMetaUnclassified,
@@ -335,6 +335,29 @@ describe('mkStudy mints the three fields as "" (BOTH factories — 107.md §15)'
   });
 });
 
+/* ══════════════ 116.md §45 — the always-visible "Proportion: 0.390 (39.0%)" ══════════════ */
+
+describe('formatProportionValue (116.md §45)', () => {
+  it('renders raw proportion + percent: 23/59 → "0.390 (39.0%)"', () => {
+    expect(formatProportionValue('23', '59')).toBe('0.390 (39.0%)');
+    expect(formatProportionValue('18', '100')).toBe('0.180 (18.0%)');
+  });
+  it('zero events and all events are valid data', () => {
+    expect(formatProportionValue('0', '59')).toBe('0.000 (0.0%)');
+    expect(formatProportionValue('59', '59')).toBe('1.000 (100.0%)');
+  });
+  it('shares formatProportionDisplay\'s null contract exactly', () => {
+    for (const [e, t] of [['', ''], ['23', ''], ['', '59'], ['5', '0'], ['-1', '59'], ['60', '59'], ['abc', '59']]) {
+      expect(formatProportionValue(e, t)).toBeNull();
+      expect(formatProportionDisplay(e, t)).toBeNull();
+    }
+  });
+  it('honours the ops percent-decimals setting with two extra proportion decimals', () => {
+    expect(formatProportionValue('18', '100', 0)).toBe('0.18 (18%)');   // the §45 worked example
+    expect(formatProportionValue('23', '59', 2)).toBe('0.3898 (38.98%)');
+  });
+});
+
 /* ══════════════════════ §8E — validation ══════════════════════ */
 
 const CUSTOM_REQUIRED = 'Custom denominator description is required for Other/custom.';
@@ -342,11 +365,25 @@ const prop = (over = {}) => ({ ...mkStudyEngine(), author: 'Smith', year: '2024'
 const msgs = (s) => validateStudy(s).map((i) => i.msg);
 const errs = (s) => validateStudy(s).filter((i) => i.sev === 'error');
 
-describe('validateStudy — Other/custom requires its description (107.md §8E)', () => {
-  it('Other/custom + blank description → a BLOCKING error', () => {
-    const issues = errs(prop({ denominatorPopulation: 'other', denominatorCustom: '' }));
-    expect(issues.map((i) => i.msg)).toContain(CUSTOM_REQUIRED);
-    expect(issues.find((i) => i.msg === CUSTOM_REQUIRED).field).toBe('denominatorCustom');
+describe('validateStudy — Other/custom requires its description (107.md §8E, 116.md §41)', () => {
+  // 116.md §41 (C3) — deliberately RE-PINNED from 107.md: this used to be a BLOCKING
+  // error, which blocked ✓ Complete, which blocked the engine's only es-derivation
+  // site — one metadata field silently kept a valid proportion out of every analysis.
+  // The rule is now a WARNING: still named, still nagging, never gating the statistics.
+  it('Other/custom + blank description → a WARNING, never a blocking error', () => {
+    const issues = validateStudy(prop({ denominatorPopulation: 'other', denominatorCustom: '' }));
+    const hit = issues.find((i) => i.msg === CUSTOM_REQUIRED);
+    expect(hit).toBeTruthy();
+    expect(hit.sev).toBe('warn');
+    expect(hit.field).toBe('denominatorCustom');
+    expect(errs(prop({ denominatorPopulation: 'other', denominatorCustom: '' }))).toHaveLength(0);
+  });
+
+  it('…and the monolithStats copy downgraded in lockstep (116.md §41)', () => {
+    const issues = validateStudyMonolith(prop({ denominatorPopulation: 'other', denominatorCustom: '' }));
+    const hit = issues.find((i) => i.msg === CUSTOM_REQUIRED);
+    expect(hit).toBeTruthy();
+    expect(hit.sev).toBe('warn');
   });
 
   it('whitespace-only description does not satisfy the requirement', () => {

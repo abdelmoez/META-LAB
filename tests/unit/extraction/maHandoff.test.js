@@ -143,5 +143,73 @@ describe('no MA-compatible element', () => {
     const { patch, warnings } = consensusToStudyPatch([plainEl], {});
     expect(patch.a).toBeUndefined();
     expect(warnings.join(' ')).toMatch(/no MA-compatible/i);
+    // 116.md §41 (C5) — the warning names the proportion path too.
+    expect(warnings.join(' ')).toMatch(/proportion/i);
+  });
+});
+
+/* ══════════════ 116.md §41 (C5) — single-arm proportion handoff ══════════════ */
+
+describe('proportion handoff (116.md §41 — the mapper no longer filters proportions out)', () => {
+  const propEl = mkElement(
+    { name: 'Diagnostic yield', type: 'proportion_outcome', armScope: 'study', maCompatible: 'proportion', outcome: 'Diagnostic yield', timepoint: '12 months' },
+    () => 'P1',
+  );
+
+  it('builds a string-typed events/total patch (no es without esType)', () => {
+    const { patch, warnings } = consensusToStudyPatch([propEl], { [valueKey('P1', '')]: { events: 18, total: 100 } });
+    expect(patch.events).toBe('18');
+    expect(patch.total).toBe('100');
+    expect(typeof patch.events).toBe('string');
+    expect(patch.es).toBeUndefined();
+    expect(patch.outcome).toBe('Diagnostic yield');
+    expect(patch.timepoint).toBe('12 months');
+    expect(warnings).toEqual([]);
+  });
+
+  it('computes the logit es/lo/hi via calcES("PROP") when requested', () => {
+    const { patch, esInputs } = consensusToStudyPatch([propEl], { [valueKey('P1', '')]: { events: 18, total: 100 } }, { esType: 'PROP' });
+    const expected = calcES('PROP', { events: 18, total: 100 });
+    expect(esInputs).toEqual({ events: 18, total: 100 });
+    expect(Number(patch.es)).toBeCloseTo(expected.es, 12);
+    expect(Number(patch.lo)).toBeCloseTo(expected.lo, 12);
+    expect(Number(patch.hi)).toBeCloseTo(expected.hi, 12);
+    expect(patch.esType).toBe('PROP');
+    expect(patch.source).toBe('calculated');
+  });
+
+  it('resolves an arm-scoped proportion through the intervention arm', () => {
+    const armEl = mkElement(
+      { name: 'Response rate', type: 'proportion_outcome', armScope: 'arm', maCompatible: 'proportion' },
+      () => 'P2',
+    );
+    const { patch } = consensusToStudyPatch([armEl], { [valueKey('P2', 'intervention')]: { events: 7, total: 20 } });
+    expect(patch.events).toBe('7');
+    expect(patch.total).toBe('20');
+  });
+
+  it('warns and omits es for missing totals or events > total (no fabricated es)', () => {
+    const missing = consensusToStudyPatch([propEl], { [valueKey('P1', '')]: { events: 18 } }, { esType: 'PROP' });
+    expect(missing.patch.es).toBeUndefined();
+    expect(missing.warnings.join(' ')).toMatch(/denominator|missing/i);
+    const impossible = consensusToStudyPatch([propEl], { [valueKey('P1', '')]: { events: 120, total: 100 } }, { esType: 'PROP' });
+    expect(impossible.patch.es).toBeUndefined();
+    expect(impossible.warnings.join(' ')).toMatch(/exceed/i);
+  });
+
+  it('rejects a non-proportion esType for proportion data', () => {
+    const { patch, warnings } = consensusToStudyPatch([propEl], { [valueKey('P1', '')]: { events: 18, total: 100 } }, { esType: 'OR' });
+    expect(patch.es).toBeUndefined();
+    expect(warnings.join(' ')).toMatch(/not valid for proportion/i);
+  });
+
+  it('dichotomous/continuous elements still take precedence (existing paths untouched)', () => {
+    const { patch } = consensusToStudyPatch([dichEl, propEl], {
+      [valueKey('D1', 'intervention')]: { events: 10, total: 50 },
+      [valueKey('D1', 'comparator')]: { events: 5, total: 50 },
+      [valueKey('P1', '')]: { events: 18, total: 100 },
+    });
+    expect(patch.a).toBe('10');
+    expect(patch.events).toBeUndefined();
   });
 });

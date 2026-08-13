@@ -513,6 +513,52 @@ describe('ArticleWorkspace SSR — PROP row (107.md §8A/§8B/§8C/§9)', () => 
   });
 });
 
+/* ══════════════ 116.md §45 — the always-visible Proportion line (SSR) ══════════════ */
+
+describe('ArticleWorkspace SSR — "Proportion: 0.390 (39.0%)" (116.md §45)', () => {
+  const render = (study) => renderToStaticMarkup(
+    <ArticleWorkspace projectId="p1" study={study} article={{ id: study.id, status: 'in_progress' }} studies={[study]} />,
+  );
+
+  it('renders the raw proportion + percent line for a filled PROP row', () => {
+    const html = render(classified());
+    expect(html).toContain('data-testid="pex-prop-value"');
+    expect(html).toContain('Proportion: ');
+    expect(html).toContain('0.390 (39.0%)');
+  });
+
+  it('renders it ALONGSIDE (never replacing) the two metadata selects', () => {
+    const html = render(classified());
+    expect(html).toContain('data-testid="pex-prop-value"');
+    expect(html).toContain('data-testid="pex-field-denominatorPopulation"');
+    expect(html).toContain('data-testid="pex-field-actionStatus"');
+  });
+
+  // 116.md §133 — adding/removing the metadata never makes the effect information
+  // disappear: classified and legacy rows show the identical proportion line.
+  it('shows the same proportion whether or not the row is classified (§133)', () => {
+    const classifiedHtml = render(classified({ events: '4', total: '10' }));
+    const legacyHtml = render(legacyRow());
+    for (const html of [classifiedHtml, legacyHtml]) {
+      expect(html).toContain('data-testid="pex-prop-value"');
+      expect(html).toContain('0.400 (40.0%)');
+      expect(html).toContain('4 / 10 = 40.0%');
+    }
+  });
+
+  it('shows an em dash, never a number, for invalid/incomplete input', () => {
+    for (const s of [classified({ total: '' }), classified({ events: '60', total: '59' }), classified({ events: '', total: '' })]) {
+      const html = render(s);
+      expect(html).toContain('data-testid="pex-prop-value"');
+      expect(html).not.toMatch(/Proportion: <\/span><span>\d/);
+    }
+  });
+
+  it('does not render for a non-PROP row', () => {
+    expect(render(row({ id: 'x', esType: 'OR', a: '5', b: '5', c: '5', d: '5' }))).not.toContain('data-testid="pex-prop-value"');
+  });
+});
+
 describe('ESCalcInline SSR — the classic tab shows the same derived % (107.md §9)', () => {
   it('renders "23 / 59 = 39.0%" live beside the events/total inputs', () => {
     const html = renderToStaticMarkup(<ESCalcInline s={classified()} ch={() => {}} />);

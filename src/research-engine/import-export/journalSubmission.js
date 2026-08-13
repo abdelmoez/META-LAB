@@ -12,6 +12,10 @@
 // 107.md §8F — human LABELS for the per-estimate proportion metadata (self-healing:
 // an unknown or absent value resolves to '', never a fabricated category).
 import { denominatorPopulationLabel, actionStatusLabel, exportedDenominatorCustom } from '../extraction/proportionMeta.js';
+// 116.md §41/§46 — the derive-at-analysis-boundary view: this enumerator feeds
+// summaryPool (Overview/GRADE/report) and the journal ZIP, and must recognise the same
+// raw-data PROP rows the Analysis tab now pools (lockstep with enumerateOutcomePairs).
+import { hasUsableEffect, withPoolableViews } from '../statistics/monolithStats.js';
 
 /** Filesystem-safe slug for ZIP entry names. */
 export function safeName(s, fallback = 'item') {
@@ -30,7 +34,8 @@ export function getOutcomePairs(studies) {
   const list = Array.isArray(studies) ? studies : [];
   const seen = new Set();
   const pairs = [];
-  list.filter(s => s && s.es !== '' && s.es != null && !isNaN(+s.es)).forEach(s => {
+  // 116.md §41 — raw-data PROP rows (derived view) count as having an effect size.
+  list.filter(s => s && hasUsableEffect(s)).forEach(s => {
     const oc = String(s.outcome || '').trim();
     const tp = String(s.timepoint || '').trim();
     const key = `${oc}|||${tp}`;
@@ -46,16 +51,18 @@ export function getOutcomePairs(studies) {
   return pairs;
 }
 
-/** Studies belonging to a given outcome pair (numeric ES only). PURE. */
+/** Studies belonging to a given outcome pair (numeric ES only). PURE.
+ *  116.md §41 — returns the poolable VIEWS (derived es/lo/hi for raw-data PROP rows),
+ *  so the ZIP figures/CSV and summaryPool describe the same pool as the Analysis tab. */
 export function filterStudiesForOutcome(studies, outcome) {
   const list = Array.isArray(studies) ? studies : [];
   if (!outcome) return [];
-  return list.filter(s => {
+  return withPoolableViews(list.filter(s => {
     if (!s) return false;
     const oc = String(s.outcome || '').trim();
     const tp = String(s.timepoint || '').trim();
-    return oc === String(outcome.outcome || '').trim() && tp === String(outcome.timepoint || '').trim() && s.es !== '' && s.es != null && !isNaN(+s.es);
-  });
+    return oc === String(outcome.outcome || '').trim() && tp === String(outcome.timepoint || '').trim() && hasUsableEffect(s);
+  }));
 }
 
 function csvEsc(v) {

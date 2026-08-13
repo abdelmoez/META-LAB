@@ -223,6 +223,37 @@ describe('validateValue — dichotomous_outcome', () => {
   });
 });
 
+/* ══════════════ 116.md §41 (C5) — the single-arm proportion element ══════════════ */
+
+describe('proportion_outcome element (116.md §41)', () => {
+  const el = mkElement({ name: 'Yield', type: 'proportion_outcome', maCompatible: 'proportion' }, () => 'a');
+
+  it('is a known ELEMENT_TYPE with the {events,total} object shape', () => {
+    expect(el.type).toBe('proportion_outcome');
+    expect(el.maCompatible).toBe('proportion');
+    expect(normalizeValue(el, { events: '18', total: '100' })).toEqual({ events: 18, total: 100 });
+  });
+
+  it('obeys the same integrity rules as dichotomous values', () => {
+    expect(validateValue(el, { events: '18', total: '100' }).ok).toBe(true);
+    expect(validateValue(el, { events: 120, total: 100 }).errors.join()).toMatch(/exceed/);
+    expect(validateValue(el, { events: -1, total: 10 }).ok).toBe(false);
+    expect(validateValue(el, { events: 1.5, total: 10 }).ok).toBe(false);
+    expect(validateValue(el, {}).ok).toBe(true);   // not required → empty is fine
+  });
+
+  it('validateElement enforces the maCompatible/type pairing', () => {
+    const bad = mkElement({ name: 'x', type: 'numeric', maCompatible: 'proportion' }, () => 'a');
+    expect(validateElement(bad).ok).toBe(false);
+    expect(validateElement(bad).errors.join()).toMatch(/proportion_outcome/);
+    expect(validateElement(el).ok).toBe(true);
+  });
+
+  it('mkElement still nulls unknown maCompatible values', () => {
+    expect(mkElement({ name: 'x', maCompatible: 'ratio' }, () => 'a').maCompatible).toBeNull();
+  });
+});
+
 describe('validateValue — continuous_outcome', () => {
   const el = mkElement({ name: 'Score', type: 'continuous_outcome', armScope: 'arm', maCompatible: 'continuous' }, () => 'a');
 

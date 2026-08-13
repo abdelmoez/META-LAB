@@ -34,6 +34,10 @@ import {
   effectiveDenominatorPopulation, effectiveActionStatus, denominatorCustomText, UNCLASSIFIED,
   isDenominatorPopulationKey, isActionStatusKey, exportedDenominatorCustom,
 } from '../extraction/proportionMeta.js';
+// 116.md §41/§46 — the derive-at-analysis-boundary view. `isPoolableRow` below must stay
+// equivalent to runMeta's own row selection, and runMeta now pools derived views of
+// raw-data PROP rows, so the predicate here is applied to the SAME view.
+import { poolableStudyView } from './monolithStats.js';
 
 /** How the unclassified/legacy state is named EVERYWHERE it is user-visible. */
 export const UNCLASSIFIED_GROUP_LABEL = 'Not classified (legacy)';
@@ -102,8 +106,13 @@ export function isProportionRow(study) {
  */
 export function isPoolableRow(study) {
   if (!study) return false;
-  return study.es !== '' && study.lo !== '' && study.hi !== ''
-    && !isNaN(+study.es) && !isNaN(+study.lo) && !isNaN(+study.hi);
+  // 116.md §41 — runMeta pools `poolableStudyView(row)`, so the predicate inspects the
+  // same view: a raw-data PROP row (valid events/total, no stored es) is poolable, and
+  // its metadata therefore enters both the compatibility check and the override
+  // signature — the gate signature and the pooled set can never drift.
+  const s = poolableStudyView(study);
+  return s.es !== '' && s.lo !== '' && s.hi !== ''
+    && !isNaN(+s.es) && !isNaN(+s.lo) && !isNaN(+s.hi);
 }
 
 /** The poolable subset. Byte stability: the SAME array back when nothing is dropped. */
@@ -235,21 +244,34 @@ function lineFor(field, bucket) {
  * with an effect size but no 95% CI is not in the diamond, so it can neither create a
  * conflict nor be counted in the override signature.
  *
+ * ── 116.md §41/§49 — the two-tier outcome ─────────────────────────────────────────
+ * 107.md shipped every conflict as BLOCKING, including the NORMAL mid-classification
+ * state: the moment the first row of an outcome was classified, `category-and-
+ * unclassified` blocked Analysis, Forest, Sensitivity and the summary table at once
+ * ("a metadata safeguard must not make Analysis show nothing", 116.md §49). Softened:
+ *   • ≥2 REAL categories (or ≥2 different custom definitions) → still BLOCKING,
+ *     resolved only by the persisted filter/override flow (107.md §12 semantics);
+ *   • ONE real category + unclassified rows → a WARNING: pooling proceeds, with a
+ *     visible advisory naming the unclassified count. The unclassified rows are still
+ *     reported on their OWN line and are never merged into a category.
+ *
  * @param {Array<object>} rows  studies[] rows for one outcome pair
- * @returns {{applicable:boolean, blocking:boolean, infoOnly:boolean,
+ * @returns {{applicable:boolean, blocking:boolean, warning:boolean, infoOnly:boolean,
  *            issues:Array<{field:string,fieldLabel:string,kind:string,
  *                          values:Array<{value:string,label:string,count:number,studies:string[],ids:string[]}>,
  *                          unclassifiedCount:number,totalAffected:number}>,
+ *            warnings:Array<same shape as issues>,
  *            unclassifiedFields:string[], propCount:number}}
  */
 export function checkProportionCompatibility(rows) {
   const list = Array.isArray(rows) ? rows.filter((s) => isProportionRow(s) && isPoolableRow(s)) : [];
   // Nothing is pooled below two estimates, so there is nothing to warn about.
   if (list.length < 2) {
-    return { applicable: false, blocking: false, infoOnly: false, issues: [], unclassifiedFields: [], propCount: list.length };
+    return { applicable: false, blocking: false, warning: false, infoOnly: false, issues: [], warnings: [], unclassifiedFields: [], propCount: list.length };
   }
 
   const issues = [];
+  const warnings = [];
   const unclassifiedFields = [];
 
   for (const field of PROPORTION_CATEGORY_FIELDS) {
@@ -264,14 +286,17 @@ export function checkProportionCompatibility(rows) {
     const values = realKeys.map((k) => lineFor(field, buckets.get(k)));
     // The legacy rows are ALWAYS their own line, last, and never merged into a category.
     if (unclassified) values.push(lineFor(field, unclassified));
-    issues.push({
+    const entry = {
       field,
       fieldLabel: PROPORTION_FIELD_LABEL[field],
       kind: realKeys.length >= 2 ? 'mixed-categories' : 'category-and-unclassified',
       values,
       unclassifiedCount,
       totalAffected: list.length,
-    });
+    };
+    // 116.md §49 — one real category + unclassified rows is the mid-classification
+    // state: WARN (pool proceeds), never block. Two real categories still block.
+    if (realKeys.length >= 2) issues.push(entry); else warnings.push(entry);
   }
 
   // 107.md §11 — "custom denominator definitions that may differ". Two estimates whose
@@ -283,14 +308,18 @@ export function checkProportionCompatibility(rows) {
       const values = [...buckets.values()]
         .sort((a, b) => (a.value < b.value ? -1 : a.value > b.value ? 1 : 0))
         .map((b) => lineFor('denominatorCustom', b));
-      issues.push({
+      const realTexts = [...buckets.keys()].filter((k) => k !== UNCLASSIFIED);
+      const entry = {
         field: 'denominatorCustom',
         fieldLabel: PROPORTION_FIELD_LABEL.denominatorCustom,
-        kind: 'mixed-custom-definitions',
+        kind: realTexts.length >= 2 ? 'mixed-custom-definitions' : 'category-and-unclassified',
         values,
         unclassifiedCount: buckets.has(UNCLASSIFIED) ? buckets.get(UNCLASSIFIED).count : 0,
         totalAffected: others.length,
-      });
+      };
+      // 116.md §49 — same two-tier rule: two DIFFERENT descriptions block; one
+      // description + undescribed rows is the mid-classification state and warns.
+      if (realTexts.length >= 2) issues.push(entry); else warnings.push(entry);
     }
   }
 
@@ -298,8 +327,10 @@ export function checkProportionCompatibility(rows) {
   return {
     applicable: true,
     blocking,
-    infoOnly: !blocking && unclassifiedFields.length > 0,
+    warning: warnings.length > 0,
+    infoOnly: !blocking && !warnings.length && unclassifiedFields.length > 0,
     issues,
+    warnings,
     unclassifiedFields,
     propCount: list.length,
   };

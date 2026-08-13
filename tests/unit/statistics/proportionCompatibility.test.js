@@ -10,6 +10,16 @@
  *    §21 regression guard: projects extracted before this feature keep working);
  *  - two different free-text 'Other/custom' denominators are a conflict;
  *  - an override is consent for a SPECIFIC estimate set — change the set and it goes stale.
+ *
+ * 116.md §41/§49 — deliberately RE-PINNED from the 107.md behaviour:
+ *  - ONE real category + unclassified rows is now a WARNING (`check.warnings`), not a
+ *    block: the pool proceeds with a visible advisory naming the unclassified count.
+ *    The unclassified rows keep their OWN line and are still never merged/grouped
+ *    into a real category. ≥2 real categories (or ≥2 different custom definitions)
+ *    still BLOCK behind the persisted filter/override flow.
+ *  - `isPoolableRow` now inspects runMeta's poolable VIEW: a PROP row with valid raw
+ *    events/total and NO stored es/lo/hi is poolable (derived at the analysis
+ *    boundary), so its metadata enters the check and the override signature.
  */
 import { describe, it, expect } from 'vitest';
 import {
@@ -103,22 +113,28 @@ describe('checkProportionCompatibility — mixed real categories block', () => {
   });
 });
 
-describe('checkProportionCompatibility — real + unclassified is a conflict, reported separately', () => {
+describe('checkProportionCompatibility — real + unclassified WARNS (116.md §49), reported separately', () => {
   const rows = [
     prop({ id: '1', author: 'Smith', year: '2024', denominatorPopulation: 'all_patients_tested', actionStatus: 'implemented' }),
     prop({ id: '2', author: 'Jones', year: '2023', denominatorPopulation: 'all_patients_tested', actionStatus: 'implemented' }),
     legacy({ id: '3', author: 'Old', year: '2011' }),
   ];
   const c = checkProportionCompatibility(rows);
+  const warnByField = (check) => Object.fromEntries(check.warnings.map((i) => [i.field, i]));
 
-  it('blocks on BOTH fields (each has one real category plus legacy rows)', () => {
-    expect(c.blocking).toBe(true);
-    expect(c.issues.map((i) => i.field).sort()).toEqual(['actionStatus', 'denominatorPopulation']);
-    expect(c.issues.every((i) => i.kind === 'category-and-unclassified')).toBe(true);
+  // 116.md §49 — the mid-classification state must not make Analysis show nothing:
+  // it is a WARNING (pool proceeds, advisory shown), never a block.
+  it('WARNS on BOTH fields (each has one real category plus legacy rows) without blocking', () => {
+    expect(c.blocking).toBe(false);
+    expect(c.warning).toBe(true);
+    expect(c.issues).toEqual([]);
+    expect(c.warnings.map((i) => i.field).sort()).toEqual(['actionStatus', 'denominatorPopulation']);
+    expect(c.warnings.every((i) => i.kind === 'category-and-unclassified')).toBe(true);
+    expect(c.infoOnly).toBe(false);   // the warning card supersedes the §21 info note
   });
 
   it('lists the legacy rows as their own line, last, never merged into a category', () => {
-    const issue = byField(c).denominatorPopulation;
+    const issue = warnByField(c).denominatorPopulation;
     expect(issue.unclassifiedCount).toBe(1);
     const last = issue.values[issue.values.length - 1];
     expect(last.value).toBe('');
@@ -134,10 +150,11 @@ describe('checkProportionCompatibility — real + unclassified is a conflict, re
       prop({ id: '1', actionStatus: 'unclear', denominatorPopulation: 'all_patients_tested' }),
       legacy({ id: '2', denominatorPopulation: 'all_patients_tested' }),
     ]);
-    const issue = byField(c2).actionStatus;
-    expect(issue).toBeTruthy();                       // 'unclear' + legacy is still a conflict
+    const issue = warnByField(c2).actionStatus;
+    expect(issue).toBeTruthy();                       // 'unclear' + legacy is still reported
     expect(issue.values.map((v) => v.label)).toEqual(['Unclear', UNCLASSIFIED_GROUP_LABEL]);
     expect(issue.values.map((v) => v.count)).toEqual([1, 1]);
+    expect(c2.blocking).toBe(false);                  // …but as a warning, not a wall
   });
 
   it('treats an unknown/hand-edited value as unclassified, not as a third category', () => {
@@ -145,8 +162,23 @@ describe('checkProportionCompatibility — real + unclassified is a conflict, re
       prop({ id: '1', denominatorPopulation: 'all_patients_tested', actionStatus: 'implemented' }),
       prop({ id: '2', denominatorPopulation: 'made_up_value', actionStatus: 'implemented' }),
     ]);
-    const issue = byField(c2).denominatorPopulation;
+    const issue = warnByField(c2).denominatorPopulation;
     expect(issue.values.map((v) => v.label)).toEqual(['All patients tested', UNCLASSIFIED_GROUP_LABEL]);
+    expect(c2.blocking).toBe(false);
+  });
+
+  // 116.md §49 — the block tier is reserved for ≥2 REAL categories.
+  it('two real categories still BLOCK (unchanged 107.md semantics)', () => {
+    const c2 = checkProportionCompatibility([
+      prop({ id: '1', denominatorPopulation: 'all_patients_tested', actionStatus: 'implemented' }),
+      prop({ id: '2', denominatorPopulation: 'plp_molecular_diagnoses', actionStatus: 'implemented' }),
+      legacy({ id: '3' }),
+    ]);
+    expect(c2.blocking).toBe(true);
+    expect(c2.issues.map((i) => i.field)).toEqual(['denominatorPopulation']);
+    // the legacy row still rides the blocking issue's value list, on its own line
+    const issue = byField(c2).denominatorPopulation;
+    expect(issue.values[issue.values.length - 1].label).toBe(UNCLASSIFIED_GROUP_LABEL);
   });
 });
 
@@ -192,9 +224,14 @@ describe('checkProportionCompatibility — custom denominator definitions', () =
     expect(c.issues).toEqual([]);
   });
 
-  it('an undescribed Other/custom row is its own line, named honestly', () => {
+  // 116.md §49 — one real description + undescribed rows is the mid-classification
+  // state: reported as a WARNING (pool proceeds), the undescribed row on its own line.
+  it('an undescribed Other/custom row is its own WARNING line, named honestly', () => {
     const c = checkProportionCompatibility([other('1', 'Patients with a VUS'), other('2', '')]);
-    const issue = byField(c).denominatorCustom;
+    expect(c.blocking).toBe(false);
+    const issue = c.warnings.find((i) => i.field === 'denominatorCustom');
+    expect(issue).toBeTruthy();
+    expect(issue.kind).toBe('category-and-unclassified');
     expect(issue.values.map((v) => v.label)).toContain(UNCLASSIFIED_GROUP_LABEL);
     expect(issue.unclassifiedCount).toBe(1);
   });
@@ -319,16 +356,26 @@ describe('poolable subset — the check describes the pool, not every ES-bearing
   /** An effect size with no 95% CI: extracted, but never weighted by runMeta. */
   const noCI = (id, denom) => prop({ id, author: 'A' + id, lo: '', hi: '', denominatorPopulation: denom, actionStatus: 'implemented' });
 
-  it('isPoolableRow is runMeta’s own predicate', () => {
+  it('isPoolableRow is runMeta’s own predicate (view-aware, 116.md §41)', () => {
     expect(isPoolableRow(prop())).toBe(true);
+    // A stored numeric es with a blank CI stays UNpoolable — the stored effect wins
+    // and is never shadowed by a raw-data derivation.
     expect(isPoolableRow(prop({ lo: '' }))).toBe(false);
     expect(isPoolableRow(prop({ hi: '' }))).toBe(false);
-    expect(isPoolableRow(prop({ es: '' }))).toBe(false);
+    // 116.md §41 — es blank + valid raw events/total → poolable via the derived view.
+    expect(isPoolableRow(prop({ es: '' }))).toBe(true);
+    // …but not when the raw data is missing or invalid.
+    expect(isPoolableRow(prop({ es: '', events: '' }))).toBe(false);
+    expect(isPoolableRow(prop({ es: '', total: '' }))).toBe(false);
+    expect(isPoolableRow(prop({ es: '', events: '90', total: '59' }))).toBe(false);
     expect(isPoolableRow(prop({ hi: 'abc' }))).toBe(false);
     expect(isPoolableRow(null)).toBe(false);
     // and it really agrees with runMeta on the same rows
     const rows = [full('1', 'all_patients_tested'), full('2', 'all_patients_tested'), noCI('3', 'all_patients_tested')];
     expect(runMeta(rows, 'random').k).toBe(rows.filter(isPoolableRow).length);
+    // agreement holds for raw-only rows too
+    const rawRows = [full('1', 'all_patients_tested'), prop({ id: 'r', es: '', lo: '', hi: '' })];
+    expect(runMeta(rawRows, 'random').k).toBe(rawRows.filter(isPoolableRow).length);
   });
 
   it('poolableRows returns the SAME array when nothing is dropped (byte stability)', () => {

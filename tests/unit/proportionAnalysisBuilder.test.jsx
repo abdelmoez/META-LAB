@@ -79,7 +79,14 @@ describe('shared outcome scoping helpers', () => {
   });
   it('studiesForPair applies isExcludedFromAnalysis (the 86.md P1.6 defect)', () => {
     const pair = enumerateOutcomePairs(rows)[0];
-    expect(studiesForPair(rows, pair).map((s) => s.id)).toEqual(['1']);
+    // 116.md §41 — deliberately RE-PINNED: row 4 (es:'' but valid events/total) is now
+    // analyzable through the derived view; the excluded row 3 still never appears.
+    expect(studiesForPair(rows, pair).map((s) => s.id)).toEqual(['1', '4']);
+    const derived = studiesForPair(rows, pair).find((s) => s.id === '4');
+    expect(derived._derivedEs).toBe(true);
+    expect(derived.es).not.toBe('');
+    // …and the derivation is a computed VIEW: the stored row is untouched.
+    expect(rows.find((s) => s.id === '4').es).toBe('');
     expect(studiesForPair(rows, null)).toEqual([]);
   });
   it('pairIsProportion reads the pair measure, falling back to the dominant one', () => {
@@ -623,6 +630,152 @@ describe('SensitivityTab — outcome scoping (86.md P1.6)', () => {
     const h = renderToStaticMarkup(createElement(SensitivityTab, { project: project(HOMOGENEOUS) }));
     expect(h).toContain('LEAVE-ONE-OUT ANALYSIS');
     expect(h).not.toContain('Select an outcome above');
+  });
+});
+
+/* ══════════════ 116.md §41/§46 — raw-data proportions are first-class ══════════════ */
+
+describe('116.md §46 — a PROP outcome with ONLY raw events/total pools end-to-end', () => {
+  /** Extraction leaves exactly this: events/total captured, es/lo/hi never backfilled. */
+  const RAW = [
+    prop({ id: '1', author: 'Smith', year: '2024', es: '', lo: '', hi: '', events: '18', total: '100', denominatorPopulation: '', actionStatus: '' }),
+    prop({ id: '2', author: 'Jones', year: '2023', es: '', lo: '', hi: '', events: '25', total: '90', denominatorPopulation: '', actionStatus: '' }),
+    prop({ id: '3', author: 'Kim', year: '2021', es: '', lo: '', hi: '', events: '10', total: '80', denominatorPopulation: '', actionStatus: '' }),
+  ];
+
+  it('AnalysisTab pools it (no "no studies with an effect size" dead end)', () => {
+    const html = renderAnalysis(project(RAW));
+    expect(html).toContain('POOLED EFFECT');
+    expect(html).not.toContain('No studies with an effect size yet');
+    expect(html).not.toContain('Enter an effect size and 95% CI');
+  });
+
+  it('ForestTab draws it and offers the publication export', () => {
+    const html = renderForest(project(RAW));
+    expect(html).toContain('PUBLICATION-STYLE FIGURE');
+    expect(html).toContain('Export figure');
+  });
+
+  it('SensitivityTab runs the robustness checks over it', () => {
+    const html = renderSensitivity(project(RAW));
+    expect(html).toContain('LEAVE-ONE-OUT ANALYSIS');
+    expect(html).toContain('FUNNEL PLOT');
+  });
+
+  it('the stored rows are never mutated by rendering (derived values stay views)', () => {
+    const before = JSON.stringify(RAW);
+    renderAnalysis(project(RAW));
+    renderForest(project(RAW));
+    renderSensitivity(project(RAW));
+    expect(JSON.stringify(RAW)).toBe(before);
+  });
+});
+
+/* ══════════════ 116.md §49 — warn tier: one category + unclassified pools ══════════════ */
+
+describe('116.md §49 — one real category + unclassified rows POOLS with a visible advisory', () => {
+  const MIX = [
+    prop({ id: '1', author: 'Smith', year: '2024', denominatorPopulation: 'all_patients_tested' }),
+    prop({ id: '2', author: 'Jones', year: '2023', es: '-0.20', lo: '-0.80', hi: '0.40', denominatorPopulation: 'all_patients_tested' }),
+    legacy({ id: '3', author: 'Old', year: '2011', es: '0.10', lo: '-0.50', hi: '0.70' }),
+  ];
+
+  it('AnalysisTab shows the pooled result AND the advisory naming the unclassified count', () => {
+    const html = renderAnalysis(project(MIX));
+    expect(html).toContain('POOLED EFFECT');
+    expect(html).not.toContain('Result hidden until you confirm');
+    expect(html).toContain('Pooled with unclassified estimates');
+    expect(html).toContain('1 of 3 pooled estimates');
+    // the unclassified rows keep their own honestly-named line
+    expect(html).toContain(UNCLASSIFIED_GROUP_LABEL);
+    // the per-category filter affordance survives the downgrade
+    expect(html).toContain('Only All patients tested');
+    expect(html).toContain(`Only ${UNCLASSIFIED_GROUP_LABEL}`);
+  });
+
+  it('ForestTab and SensitivityTab render outputs plus the same advisory', () => {
+    const f = renderForest(project(MIX));
+    expect(f).toContain('PUBLICATION-STYLE FIGURE');
+    expect(f).toContain('Pooled with unclassified estimates');
+    const s = renderSensitivity(project(MIX));
+    expect(s).toContain('LEAVE-ONE-OUT ANALYSIS');
+    expect(s).toContain('Pooled with unclassified estimates');
+  });
+
+  it('two REAL categories still block (unchanged 107.md flow)', () => {
+    const html = renderAnalysis(project(MIXED));
+    expect(html).toContain('Result hidden until you confirm');
+    expect(html).not.toContain('POOLED EFFECT');
+  });
+});
+
+/* ══════════════ 116.md §50 — the itemized empty/blocked states ══════════════ */
+
+describe('116.md §50 — AnalysisTab explains WHY instead of a blank panel', () => {
+  it('itemizes the problems when no outcome is analyzable at all', () => {
+    const broken = [
+      prop({ id: '1', es: '', lo: '', hi: '', events: '23', total: '' }),
+      prop({ id: '2', author: 'B', es: '', lo: '', hi: '', events: '9', total: '' }),
+      prop({ id: '3', author: 'C', es: '', lo: '', hi: '', events: '120', total: '100' }),
+    ];
+    const html = renderAnalysis(project(broken));
+    expect(html).toContain('WHY THIS ANALYSIS IS UNAVAILABLE');
+    expect(html).toContain('2 studies are missing total sample size.');
+    expect(html).toContain('1 study has events greater than total.');
+    expect(html).toContain('At least 2 eligible studies are required for pooling.');
+  });
+
+  it('itemizes pair-scoped problems when a selected outcome cannot pool', () => {
+    const rows = [
+      prop({ id: '1', es: '', lo: '', hi: '', events: '18', total: '100' }),
+      prop({ id: '2', author: 'B', es: '', lo: '', hi: '', events: '120', total: '100' }),
+    ];
+    const html = renderAnalysis(project(rows));
+    expect(html).toContain('WHY THIS ANALYSIS IS UNAVAILABLE');
+    expect(html).toContain('1 study has events greater than total.');
+    expect(html).toContain('At least 2 eligible studies are required for pooling.');
+  });
+
+  it('the blocked state names the incompatibility with its count', () => {
+    const html = renderAnalysis(project(MIXED));
+    expect(html).toContain('WHY THIS RESULT IS HIDDEN');
+    expect(html).toContain('3 studies use an incompatible denominator population.');
+  });
+});
+
+/* ══════════════ 116.md §133 — metadata edits never hide the analysis (SSR) ══════════════ */
+
+describe('116.md §133 — adding/editing denominatorPopulation/actionStatus keeps every output', () => {
+  const RAW2 = [
+    prop({ id: '1', author: 'Smith', year: '2024', es: '', lo: '', hi: '', events: '18', total: '100', denominatorPopulation: '', actionStatus: '' }),
+    prop({ id: '2', author: 'Jones', year: '2023', es: '', lo: '', hi: '', events: '25', total: '90', denominatorPopulation: '', actionStatus: '' }),
+  ];
+  const classifyFirst = (rows, patch) => rows.map((s, i) => (i === 0 ? { ...s, ...patch } : s));
+  const expectAllOutputs = (rows) => {
+    expect(enumerateOutcomePairs(rows).map((p) => p.key)).toEqual([KEY]);   // analyzability
+    const a = renderAnalysis(project(rows));
+    expect(a).toContain('POOLED EFFECT');                                    // pooled result presence
+    expect(a).not.toContain('Result hidden until you confirm');
+    const f = renderForest(project(rows));
+    expect(f).toContain('PUBLICATION-STYLE FIGURE');                         // forest-data presence
+    expect(f).not.toContain('Forest plot hidden until you confirm');
+  };
+
+  it('baseline: the unclassified raw pair produces every output', () => {
+    expectAllOutputs(RAW2);
+  });
+  it('adding a denominatorPopulation to one row changes nothing', () => {
+    expectAllOutputs(classifyFirst(RAW2, { denominatorPopulation: 'all_patients_tested' }));
+  });
+  it('adding an actionStatus to one row changes nothing', () => {
+    expectAllOutputs(classifyFirst(RAW2, { actionStatus: 'implemented' }));
+  });
+  it('editing a classification (and clearing it again) changes nothing', () => {
+    expectAllOutputs(classifyFirst(RAW2, { denominatorPopulation: 'plp_molecular_diagnoses', actionStatus: 'unclear' }));
+    expectAllOutputs(classifyFirst(RAW2, { denominatorPopulation: '', actionStatus: '' }));
+  });
+  it('classifying BOTH rows identically changes nothing', () => {
+    expectAllOutputs(RAW2.map((s) => ({ ...s, denominatorPopulation: 'all_patients_tested', actionStatus: 'implemented' })));
   });
 });
 

@@ -44,7 +44,7 @@ import { DENOMINATOR_POPULATIONS, ACTION_STATUSES } from '../../../research-engi
 import {
   PROPORTION_META_FIELDS, UNCLASSIFIED_LABEL, effectiveDenominatorPopulation,
   effectiveActionStatus, requiresCustomDenominator, formatProportionDisplay,
-  denominatorPopulationPatch,
+  formatProportionValue, denominatorPopulationPatch,
 } from '../../../research-engine/extraction/proportionMeta.js';
 import { studyDocApi } from '../unified/studyDocApi.js';
 // 109.md §29 — Ops-configured percentage DISPLAY precision (presentational only).
@@ -613,6 +613,11 @@ export default function ArticleWorkspace({
     ? formatProportionDisplay((study || {}).events, (study || {}).total, opsGov.percentDisplayDecimals)
     : null;
   const propEquation = propPct === null ? '' : `${String((study || {}).events).trim()} / ${String((study || {}).total).trim()} = ${propPct}`;
+  // 116.md §45 — the always-visible "Proportion: 0.390 (39.0%)" line: raw proportion +
+  // percent, computed live, shown ALONGSIDE (never replacing) the two metadata selects.
+  const propValue = isProp
+    ? formatProportionValue((study || {}).events, (study || {}).total, opsGov.percentDisplayDecimals)
+    : null;
   const denomPop = effectiveDenominatorPopulation(study || {});
   const actionStatus = effectiveActionStatus(study || {});
 
@@ -892,6 +897,17 @@ export default function ArticleWorkspace({
                     <span aria-hidden="true">{propEquation}</span>
                     <span style={SR_ONLY}>Calculated proportion: {propPct}</span>
                   </>)}
+              </div>
+            )}
+
+            {/* 116.md §45 — the restored effect information: `Proportion: 0.390 (39.0%)`,
+                always visible for a PROP row the instant Events + Total are valid. It
+                complements the metadata selects below — they never displace it. */}
+            {isProp && (
+              <div data-testid="pex-prop-value"
+                style={{ marginTop: 4, fontSize: 12, fontFamily: "'IBM Plex Mono',monospace", color: propValue === null ? C.dim : C.txt }}>
+                <span style={{ color: C.muted }}>Proportion: </span>
+                {propValue === null ? <span aria-hidden="true">—</span> : <span>{propValue}</span>}
               </div>
             )}
 

@@ -29,7 +29,7 @@ import { orderStudies, EXTRACTION_SORTS, DEFAULT_EXTRACTION_SORT } from "../../p
 import { isNonPrimary } from "../../../research-engine/import-export/referenceParsers.js";
 import { SOURCE_OPTIONS, DATA_NATURE, ADJUST_OPTIONS, EXTRACT_FLAGS, ES_TYPES, DENOMINATOR_POPULATIONS, ACTION_STATUSES } from "../../../research-engine/project-model/monolithConstants.js";
 // 107.md §8/§9 — per-estimate proportion metadata + the derived percentage.
-import { UNCLASSIFIED_LABEL, effectiveDenominatorPopulation, effectiveActionStatus, requiresCustomDenominator, formatProportionDisplay, denominatorPopulationPatch, exportedDenominatorCustom } from "../../../research-engine/extraction/proportionMeta.js";
+import { UNCLASSIFIED_LABEL, effectiveDenominatorPopulation, effectiveActionStatus, requiresCustomDenominator, formatProportionDisplay, formatProportionValue, denominatorPopulationPatch, exportedDenominatorCustom } from "../../../research-engine/extraction/proportionMeta.js";
 import { calcES, CONVERSIONS, validateStudy, findDuplicates, checkPoolability } from "../../../research-engine/statistics/monolithStats.js";
 import { AI_FEATURES_ENABLED, callClaude, fetchCitationAI, fileToBase64, fetchByDOI, fetchByPMID, safeParseJSON } from "../../services/aiService.js";
 import { openExportDialog } from "../exportDialogBridge.js";
@@ -62,6 +62,14 @@ function ESCalcInline({s,ch,chFields}){
   const[res,setRes]=useState(null);
   const[err,setErr]=useState("");
   const[note,setNote]=useState("");
+  // 116.md §45 (C4 staleness fix) — the local calculator type was seeded ONCE at mount,
+  // so changing the row's Measure select afterwards left the calculator (and its
+  // events/total inputs + derived %) on the previous type until remount. Follow the
+  // row's measure whenever it changes; a manual calculator-type pick still sticks
+  // until the row's measure moves again.
+  useEffect(()=>{
+    if(s.esType&&s.esType!==type){ setType(s.esType); setRes(null); setErr(""); setNote(""); }
+  },[s.esType]); // eslint-disable-line react-hooks/exhaustive-deps
   // 107.md §9 — derived at render (no state), so it tracks events/total live.
   // 109.md §29 — DISPLAY precision only; events/total and every computation are
   // untouched, and the hook resolves to the shipped 1 dp until the snapshot lands.
@@ -405,6 +413,9 @@ function StudyCard({s,idx,updStudy,delStudy,dup,onClone}){
   const[open,setOpen]=useState(false);
   const[showMeta,setShowMeta]=useState(false);
   const[showConv,setShowConv]=useState(false);
+  // 116.md §45 — display precision for the always-visible Proportion line (hook called
+  // unconditionally here; the PROP block below is conditional).
+  const opsGov=useOpsGovernance();
   const ch=(k,v)=>updStudy(s.id,k,v);
   // 107.md §8A (review fix) — a multi-key write, so a value and the companion field it
   // invalidates land in ONE project update instead of two sequential single-key writes.
@@ -527,6 +538,15 @@ function StudyCard({s,idx,updStudy,delStudy,dup,onClone}){
           (§8C). The values are read through the self-healing readers, so an unknown
           stored value shows as unclassified instead of a blank select. */}
       {s.esType==="PROP"&&(<div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:12}}>
+        {/* 116.md §45 — the always-visible effect information for a PROP row: raw
+            proportion + percent, computed live from events/total, rendered ABOVE the
+            metadata selects so classification complements the statistic instead of
+            displacing it. Em dash (never a misleading number) while inputs are
+            blank/invalid; the calculator's equation line and DATA CHECKS explain why. */}
+        {(()=>{const pv=formatProportionValue(s.events,s.total,opsGov.percentDisplayDecimals);return(
+          <div data-testid="sc-prop-value" style={{gridColumn:"1 / -1",fontSize:12,fontFamily:"'IBM Plex Mono',monospace",color:pv===null?C.dim:C.txt}}>
+            <span style={{color:C.muted}}>Proportion: </span>{pv===null?<span aria-hidden="true">—</span>:<span>{pv}</span>}
+          </div>);})()}
         <div><label style={lbl}>Denominator population <HelpTip text="Which population this proportion's DENOMINATOR counts. Belongs to this estimate — a second proportion from the same paper can use a different denominator."/></label>
           <select value={effectiveDenominatorPopulation(s)} onChange={e=>chFields(denominatorPopulationPatch(s,e.target.value))} style={inp}>
             <option value="">{UNCLASSIFIED_LABEL}</option>

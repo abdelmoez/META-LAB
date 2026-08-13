@@ -40,6 +40,9 @@
 export const ELEMENT_TYPES = [
   'dichotomous_outcome',
   'continuous_outcome',
+  // 116.md §41 (C5) — single-arm proportion { events, total }: the assisted pipeline
+  // used to have NO proportion path at all, so maHandoff filtered these outcomes out.
+  'proportion_outcome',
   'categorical',
   'baseline',
   'study_design',
@@ -53,7 +56,7 @@ export const ELEMENT_TYPES = [
 ];
 
 /** Types whose value is entered as an OBJECT (per-subfield), not a scalar. */
-export const OBJECT_VALUE_TYPES = ['dichotomous_outcome', 'continuous_outcome'];
+export const OBJECT_VALUE_TYPES = ['dichotomous_outcome', 'continuous_outcome', 'proportion_outcome'];
 
 /** Types treated as free/normalized text when comparing or validating. */
 export const TEXT_LIKE_TYPES = ['text', 'study_design', 'intervention_detail', 'comparator_detail'];
@@ -90,7 +93,8 @@ export function mkElement(partial = {}, idFn = DEFAULT_ID_FN) {
     armScope,
     outcome: typeof p.outcome === 'string' ? p.outcome : '',
     maCompatible:
-      p.maCompatible === 'dichotomous' || p.maCompatible === 'continuous'
+      // 116.md §41 (C5) — 'proportion' marks a single-arm events/total element.
+      p.maCompatible === 'dichotomous' || p.maCompatible === 'continuous' || p.maCompatible === 'proportion'
         ? p.maCompatible
         : null,
     notes: typeof p.notes === 'string' ? p.notes : '',
@@ -272,8 +276,8 @@ export function validateElement(el) {
   if (!el.name || !String(el.name).trim()) errors.push('name is required');
   if (!ELEMENT_TYPES.includes(el.type)) errors.push(`type "${el.type}" is not a known ELEMENT_TYPE`);
   if (el.armScope !== 'study' && el.armScope !== 'arm') errors.push('armScope must be "study" or "arm"');
-  if (el.maCompatible !== null && el.maCompatible !== 'dichotomous' && el.maCompatible !== 'continuous') {
-    errors.push('maCompatible must be null, "dichotomous", or "continuous"');
+  if (el.maCompatible !== null && el.maCompatible !== 'dichotomous' && el.maCompatible !== 'continuous' && el.maCompatible !== 'proportion') {
+    errors.push('maCompatible must be null, "dichotomous", "continuous", or "proportion"');
   }
   if (el.type === 'categorical' && !Array.isArray(el.allowedValues)) {
     errors.push('categorical element must have an allowedValues array');
@@ -288,6 +292,9 @@ export function validateElement(el) {
   }
   if (el.maCompatible === 'continuous' && el.type !== 'continuous_outcome') {
     errors.push('maCompatible "continuous" requires type continuous_outcome');
+  }
+  if (el.maCompatible === 'proportion' && el.type !== 'proportion_outcome') {
+    errors.push('maCompatible "proportion" requires type proportion_outcome');
   }
   return { ok: errors.length === 0, errors };
 }
@@ -308,7 +315,9 @@ export function isMissing(v) {
  */
 export function normalizeValue(el, raw) {
   const type = el && el.type;
-  if (type === 'dichotomous_outcome') {
+  // 116.md §41 (C5) — proportion shares the dichotomous {events, total} value shape:
+  // one arm's events over its total, no comparator.
+  if (type === 'dichotomous_outcome' || type === 'proportion_outcome') {
     const o = raw && typeof raw === 'object' ? raw : {};
     return {
       events: normNum(o.events),
@@ -363,7 +372,8 @@ export function validateValue(el, value) {
   const normalized = normalizeValue(el, value);
   const type = el && el.type;
 
-  if (type === 'dichotomous_outcome') {
+  if (type === 'dichotomous_outcome' || type === 'proportion_outcome') {
+    // 116.md §41 (C5) — the proportion value obeys the same integrity rules.
     const { events, total } = normalized;
     const bothMissing = events === null && total === null;
     if (el.required && bothMissing) errors.push('required outcome is empty');

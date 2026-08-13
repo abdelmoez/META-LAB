@@ -35,6 +35,10 @@ import { valueKey } from './model.js';
 const DEFAULT_ARMS = ['intervention', 'comparator'];
 const DICHOTOMOUS_ES = new Set(['OR', 'RR', 'RD']);
 const CONTINUOUS_ES = new Set(['MD', 'SMD']);
+// 116.md §41 (C5) — single-arm proportion: this mapper used to recognise ONLY
+// dichotomous/continuous elements, so a proportion outcome was silently filtered out
+// of the handoff ("a mapper filters proportion outcomes out", 116.md §42 — confirmed).
+const PROPORTION_ES = new Set(['PROP']);
 
 /**
  * consensusToStudyPatch(elements, consensusValues, opts?) — build a study patch.
@@ -46,9 +50,10 @@ export function consensusToStudyPatch(elements = [], consensusValues = {}, opts 
   const warnings = [];
   const patch = {};
 
-  // Find the MA-compatible element pair (dichotomous or continuous).
+  // Find the MA-compatible element set (dichotomous, continuous, or single-arm proportion).
   const dichEls = elements.filter((e) => e.maCompatible === 'dichotomous');
   const contEls = elements.filter((e) => e.maCompatible === 'continuous');
+  const propEls = elements.filter((e) => e.maCompatible === 'proportion');
 
   let esInputs = null;
 
@@ -60,8 +65,13 @@ export function consensusToStudyPatch(elements = [], consensusValues = {}, opts 
     esInputs = buildContinuous(contEls, consensusValues, expArm, ctrlArm, patch, warnings);
     applyOutcomeMeta(contEls, patch);
     maybeCalcES(opts.esType, CONTINUOUS_ES, esInputs, patch, warnings, 'continuous');
+  } else if (propEls.length) {
+    // 116.md §41 (C5) — single-arm proportion handoff: events/total from one group.
+    esInputs = buildProportion(propEls, consensusValues, expArm, patch, warnings);
+    applyOutcomeMeta(propEls, patch);
+    maybeCalcES(opts.esType, PROPORTION_ES, esInputs, patch, warnings, 'proportion');
   } else {
-    warnings.push('no MA-compatible (dichotomous/continuous) element found — nothing to hand off');
+    warnings.push('no MA-compatible (dichotomous/continuous/proportion) element found — nothing to hand off');
   }
 
   return { patch, esInputs, warnings };
@@ -140,6 +150,42 @@ function parseDichotomousValue(v) {
   const events = numOr(v.events);
   const total = numOr(v.total);
   if (events === null && total === null) return null;
+  return { events, total };
+}
+
+/* ── Single-arm proportion (116.md §41 C5) ────────────────────────────────── */
+
+/**
+ * buildProportion — resolve ONE group's { events, total } and write the study-blob
+ * `events`/`total` strings. A proportion element is usually study-scoped (armKey ''),
+ * but an arm-scoped element resolves through the intervention arm first, mirroring
+ * the dichotomous resolver's precedence. No comparator is involved.
+ */
+function buildProportion(els, values, expArm, patch, warnings) {
+  let resolved = null;
+  for (const el of els) {
+    // Study-scoped first (the natural shape for a single-arm rate)…
+    const direct = parseDichotomousValue(values[valueKey(el.id, '')]);
+    if (direct) { resolved = direct; break; }
+    // …then the intervention arm of an arm-scoped element.
+    const armed = parseDichotomousValue(values[valueKey(el.id, expArm)]);
+    if (armed) { resolved = armed; break; }
+  }
+  if (!resolved) {
+    warnings.push('missing consensus proportion value (events/total)');
+    listUnresolved(els, values, [expArm], warnings);
+    return null;
+  }
+  const { events, total } = resolved;
+  if (total == null) warnings.push('missing denominator (total) for the proportion');
+  if (events == null || total == null) return null;
+  if (events > total) {
+    warnings.push('events exceed total in the reconciled proportion — check the data');
+    return null;
+  }
+  patch.events = String(events);
+  patch.total = String(total);
+  patch.dataNature = 'primary';
   return { events, total };
 }
 

@@ -214,3 +214,24 @@ export function proportionEquation(events, total, decimals) {
   if (pct === null) return null;
   return `${raw(events)} / ${raw(total)} = ${pct}`;
 }
+
+/**
+ * formatProportionValue(events, total, decimals) — 116.md §45. The always-visible
+ * "raw proportion + percent" pair the extraction UIs render as
+ * `Proportion: 0.390 (39.0%)`. Display-only, like formatProportionDisplay: nothing is
+ * stored, and the analysis keeps deriving from events/total (calcES('PROP') owns the
+ * logit transform — this line shows the RAW proportion, deliberately untransformed).
+ * Validity rules and the null contract are formatProportionDisplay's, verbatim, so the
+ * two lines can never disagree about when a number may be shown. The raw proportion
+ * carries two more decimals than the percent (0-3 dp percent → 2-5 dp proportion) so
+ * neither reads as more precise than the other.
+ * @returns {string|null}  e.g. '0.390 (39.0%)', or null when nothing should be shown
+ */
+export function formatProportionValue(events, total, decimals) {
+  const pct = formatProportionDisplay(events, total, decimals);
+  if (pct === null) return null;
+  const e = num(events);
+  const t = num(total);
+  const prop = (e / t).toFixed(percentDecimals(decimals) + 2);
+  return `${prop} (${pct})`;
+}

@@ -30,8 +30,54 @@ export function normalCDF(z) {
   for(let i=4;i>=0;i--) poly=a[i]+t*poly;
   return 0.5*(1+sign*(1-poly*t*Math.exp(-za*za)));
 }
+/* ── 116.md §41/§46 — derive-at-the-analysis-boundary for single-arm proportions ──
+   A PROP row with valid raw events/total but no manually backfilled es/lo/hi used to be
+   INVISIBLE to every pool (runMeta and each availability detector key on es+lo+hi), so
+   extraction said "complete" while Analysis said "no studies with an effect size" — the
+   §41 regression. `poolableStudyView` returns a DERIVED, non-persisted view of such a
+   row with es/lo/hi computed through the EXACT transformation the "✓ Complete" backfill
+   uses (calcES('PROP') logit + its 0/all-event continuity correction, rounded with the
+   same 6-dp fix as deriveEffectSizeFromRaw — pinned by a parity test). Rules:
+     • a stored, numeric es always wins (reviewer-entered / Complete-backfilled rows keep
+       byte-identical behaviour; the view is only built when the row has NO usable es);
+     • the derived values are a COMPUTED VIEW — they are never written back to the row
+       (no autosave, no syncHash, no provenance churn); `_derivedEs:true` marks them;
+     • scope is deliberately PROP-only (116.md D1) — other raw measures keep the
+       Complete-time backfill as their only bridge. */
+export function poolableStudyView(s){
+  if(!s) return s;
+  // hasEffectSize (deriveEffectSize.js), verbatim: a stored numeric es wins.
+  if(s.es!==""&&s.es!==null&&s.es!==undefined&&!isNaN(+s.es)) return s;
+  if(s.esType!=="PROP") return s;
+  const ev=s.events, tot=s.total;
+  if(ev===""||ev===null||ev===undefined||tot===""||tot===null||tot===undefined) return s;
+  const r=calcES("PROP",{events:ev,total:tot});   // rejects total<1, events<0, events>total
+  if(!r||isNaN(+r.es)||isNaN(+r.lo)||isNaN(+r.hi)) return s;
+  const fx=(n)=>String(+Number(n).toFixed(6));    // deriveEffectSizeFromRaw's rounding, verbatim
+  return {...s,es:fx(r.es),lo:fx(r.lo),hi:fx(r.hi),_derivedEs:true};
+}
+
+/** Map a study list through poolableStudyView. Byte-stability: returns the SAME array
+ *  reference when no row needed a derived view, so legacy memo chains are unchanged. */
+export function withPoolableViews(studies){
+  const list=Array.isArray(studies)?studies:[];
+  let changed=false;
+  const out=list.map(s=>{const v=poolableStudyView(s);if(v!==s)changed=true;return v;});
+  return changed?out:list;
+}
+
+/** 116.md §46 — the availability predicate the outcome enumerators share: "does this row
+ *  carry (or derive) a usable effect size?". Mirrors the old `s.es!==""&&!isNaN(+s.es)`
+ *  check, applied to the poolable view so raw-data PROP rows count. */
+export function hasUsableEffect(s){
+  const v=poolableStudyView(s);
+  return !!v&&v.es!==""&&v.es!==null&&v.es!==undefined&&!isNaN(+v.es);
+}
+
 export function runMeta(studies, method="random", opts={}) {
-  const valid=studies.filter(s=>s.es!==""&&s.lo!==""&&s.hi!==""&&!isNaN(+s.es)&&!isNaN(+s.lo)&&!isNaN(+s.hi));
+  // 116.md §41/§46 — pool the poolable VIEWS: raw-data PROP rows derive es/lo/hi here,
+  // at the analysis boundary; nothing is written back to the stored rows.
+  const valid=withPoolableViews(studies).filter(s=>s.es!==""&&s.lo!==""&&s.hi!==""&&!isNaN(+s.es)&&!isNaN(+s.lo)&&!isNaN(+s.hi));
   if(valid.length<2) return null;
   const d=valid.map(s=>{
     const es=+s.es,lo=+s.lo,hi=+s.hi,se=(hi-lo)/(2*Z975),w=1/(se*se);
@@ -117,7 +163,8 @@ export function runMeta(studies, method="random", opts={}) {
    precision and did NOT match Egger 1997 / metafor — now fixed to OLS.)
    Ref: Egger M, Davey Smith G, Schneider M, Minder C. BMJ. 1997;315:629-634. */
 export function eggersTest(studies) {
-  var valid = studies.filter(function(s){ return s.es!==""&&s.lo!==""&&s.hi!==""&&!isNaN(+s.es)&&!isNaN(+s.lo)&&!isNaN(+s.hi); });
+  // 116.md §41 — same derived views as runMeta, so the regression covers the same pool.
+  var valid = withPoolableViews(studies).filter(function(s){ return s.es!==""&&s.lo!==""&&s.hi!==""&&!isNaN(+s.es)&&!isNaN(+s.lo)&&!isNaN(+s.hi); });
   if (valid.length < 3) return null;
   var pts=[];
   for (var i=0;i<valid.length;i++){
@@ -148,7 +195,8 @@ export function eggersTest(studies) {
 
 /* Leave-one-out sensitivity analysis */
 export function leaveOneOut(studies, method, opts) {
-  var valid = studies.filter(function(s){ return s.es!==""&&s.lo!==""&&s.hi!==""&&!isNaN(+s.es)&&!isNaN(+s.lo)&&!isNaN(+s.hi); });
+  // 116.md §41 — same derived views as runMeta, so each omission removes a pooled row.
+  var valid = withPoolableViews(studies).filter(function(s){ return s.es!==""&&s.lo!==""&&s.hi!==""&&!isNaN(+s.es)&&!isNaN(+s.lo)&&!isNaN(+s.hi); });
   if (valid.length < 3) return [];
   return valid.map(function(omitted, idx){
     var subset = valid.filter(function(_,i){ return i!==idx; });
@@ -177,7 +225,8 @@ export function leaveOneOut(studies, method, opts) {
    random-effects over-imputed — now fixed.)
    Ref: Duval S, Tweedie R. Biometrics 2000;56:455-463. */
 export function trimFill(studies, method, opts){
-  var valid = studies.filter(function(s){ return s.es!==""&&s.lo!==""&&s.hi!==""&&!isNaN(+s.es)&&!isNaN(+s.lo)&&!isNaN(+s.hi); });
+  // 116.md §41 — same derived views as runMeta.
+  var valid = withPoolableViews(studies).filter(function(s){ return s.es!==""&&s.lo!==""&&s.hi!==""&&!isNaN(+s.es)&&!isNaN(+s.lo)&&!isNaN(+s.hi); });
   if (valid.length < 3) return null;
   var mdl = method||"random";
   // The Duval–Tweedie L0 iteration uses its OWN closed-form DL moment estimator
@@ -246,7 +295,8 @@ export function trimFill(studies, method, opts){
 /* Influence diagnostics: per-study leave-one-out tau², I², and a standardised
    influence score (how many pooled-SE units the estimate moves when omitted). */
 export function influenceDiagnostics(studies, method, opts){
-  var valid = studies.filter(function(s){ return s.es!==""&&s.lo!==""&&s.hi!==""&&!isNaN(+s.es)&&!isNaN(+s.lo)&&!isNaN(+s.hi); });
+  // 116.md §41 — same derived views as runMeta.
+  var valid = withPoolableViews(studies).filter(function(s){ return s.es!==""&&s.lo!==""&&s.hi!==""&&!isNaN(+s.es)&&!isNaN(+s.lo)&&!isNaN(+s.hi); });
   if (valid.length < 3) return [];
   var full = runMeta(valid, method||"random", opts||{});
   if(!full) return [];
@@ -530,7 +580,9 @@ export function analysisTypeWarnings(studies){
   const num=v=>v!==""&&v!=null&&!isNaN(+v);
   const out=[];
   studies.forEach(s=>{
-    if(s.es==="") return; // only studies that will actually be pooled
+    // 116.md §41 — "will actually be pooled" now includes raw-data PROP rows whose
+    // es is derived at the analysis boundary, so their mismatch checks must fire too.
+    if(s.es===""&&!hasUsableEffect(s)) return; // only studies that will actually be pooled
     const who=(s.author||"a study")+(s.year?` ${s.year}`:"");
     const has2x2=["a","b","c","d"].some(k=>num(s[k]));
     const hasFull2x2=["a","b","c","d"].every(k=>num(s[k]));
@@ -700,8 +752,14 @@ export function validateStudy(s){
   if(s.esType==="PROP"){
     const denom=s.denominatorPopulation==null?"":String(s.denominatorPopulation).trim();
     const action=s.actionStatus==null?"":String(s.actionStatus).trim();
+    // 116.md §41 (C3) — downgraded from a BLOCKING error to a warning: the missing
+    // description used to dead-end the ✓ Complete action (422), which dead-ended the
+    // engine's only es-derivation site, so one metadata field silently kept a valid
+    // proportion out of every analysis. A metadata gap must never block the
+    // statistical path; the pair-level custom-definition compatibility check still
+    // guards against pooling contradictory custom denominators.
     if(denom==="other"&&!String(s.denominatorCustom==null?"":s.denominatorCustom).trim())
-      add("error","denominatorCustom","Custom denominator description is required for Other/custom.");
+      add("warn","denominatorCustom","Custom denominator description is required for Other/custom.");
     if(denom&&!isDenominatorPopulationKey(denom))
       add("warn","denominatorPopulation",`Unrecognised denominator population "${denom}" — pick one of the listed options.`);
     if(action&&!isActionStatusKey(action))
@@ -751,7 +809,8 @@ export { findDuplicates } from "../validation/study-validator.js";
 
 /* Project-level poolability gate: should these studies be pooled at all? */
 export function checkPoolability(studies){
-  const valid=studies.filter(s=>s.es!==""&&s.lo!==""&&s.hi!==""&&!isNaN(+s.es)&&!isNaN(+s.lo)&&!isNaN(+s.hi));
+  // 116.md §41 — judged over the same derived views runMeta pools.
+  const valid=withPoolableViews(studies).filter(s=>s.es!==""&&s.lo!==""&&s.hi!==""&&!isNaN(+s.es)&&!isNaN(+s.lo)&&!isNaN(+s.hi));
   const blockers=[],warnings=[];
   if(valid.length<2){ blockers.push("Fewer than 2 studies have a usable effect size + 95% CI."); return {ok:false,blockers,warnings,valid}; }
 

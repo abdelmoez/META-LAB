@@ -15,6 +15,11 @@ import { ADJUST_LABEL, DATA_NATURE_LABEL, isNonPrimary } from '../project-model/
 // label maps are plain objects, so 'constructor'/'toString' read truthy and suppressed this
 // warning while the readers still showed the row as unclassified (review fix).
 import { isDenominatorPopulationKey, isActionStatusKey } from '../extraction/proportionMeta.js';
+// 116.md §41 — the derive-at-analysis-boundary view for raw-data PROP rows, so this
+// copy's checkPoolability/analysisTypeWarnings judge exactly the pool runMeta builds.
+// (monolithStats already imports findDuplicates from this file; both sides only touch
+// each other's exports inside function bodies, so the module cycle is eval-safe.)
+import { withPoolableViews, hasUsableEffect } from '../statistics/monolithStats.js';
 
 /**
  * validateStudy(s)
@@ -78,8 +83,12 @@ export function validateStudy(s) {
   if (s.esType === "PROP") {
     const denom = s.denominatorPopulation == null ? "" : String(s.denominatorPopulation).trim();
     const action = s.actionStatus == null ? "" : String(s.actionStatus).trim();
+    // 116.md §41 (C3) — downgraded from a BLOCKING error to a warning: as an error it
+    // blocked ✓ Complete (422 via completionGate/completionService), which blocked the
+    // engine's only es-derivation site, so one metadata field silently kept a valid
+    // proportion out of every analysis. Metadata must never gate the statistical path.
     if (denom === "other" && !String(s.denominatorCustom == null ? "" : s.denominatorCustom).trim())
-      add("error", "denominatorCustom", "Custom denominator description is required for Other/custom.");
+      add("warn", "denominatorCustom", "Custom denominator description is required for Other/custom.");
     if (denom && !isDenominatorPopulationKey(denom))
       add("warn", "denominatorPopulation", `Unrecognised denominator population "${denom}" — pick one of the listed options.`);
     if (action && !isActionStatusKey(action))
@@ -163,7 +172,8 @@ export function analysisTypeWarnings(studies) {
   const out = [];
 
   studies.forEach(s => {
-    if (s.es === "") return; // only studies that will actually be pooled
+    // 116.md §41 — pooled rows now include raw-data PROP rows (derived views).
+    if (s.es === "" && !hasUsableEffect(s)) return; // only studies that will actually be pooled
     const who       = (s.author || "a study") + (s.year ? ` ${s.year}` : "");
     const has2x2    = ["a","b","c","d"].some(k => num(s[k]));
     const hasFull2x2 = ["a","b","c","d"].every(k => num(s[k]));
@@ -220,7 +230,9 @@ export function analysisTypeWarnings(studies) {
  * }}
  */
 export function checkPoolability(studies) {
-  const valid = studies.filter(
+  // 116.md §41 — judged over the same derived views runMeta pools (lockstep with the
+  // monolithStats copy; docs/case-series-106.md records why both copies must move).
+  const valid = withPoolableViews(studies).filter(
     s => s.es !== "" && s.lo !== "" && s.hi !== "" &&
          !isNaN(+s.es) && !isNaN(+s.lo) && !isNaN(+s.hi)
   );

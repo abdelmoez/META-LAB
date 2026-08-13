@@ -10,6 +10,12 @@ import { Z975, normalCDF, chiSquareCDF, tCDF, tCrit } from './math-helpers.js';
 // RoadMap/2.md — opt-in τ² estimators (DL default; existing results byte-for-byte unchanged).
 import { estimateTau2, TAU2_METHODS } from './tau2.js';
 export { estimateTau2, TAU2_METHODS, TAU2_LABELS } from './tau2.js';
+// 116.md §41/§46 — derive-at-the-analysis-boundary for raw-data PROP rows. This is the
+// SECOND engine copy (manuscript draft/tables, server living/GRADE/public-synthesis and
+// the /api/meta endpoints import it), so it must pool the SAME derived views as the
+// monolithStats copy or the manuscript would contradict the Analysis tab. The ONE view
+// implementation is imported, never re-derived here (§123 one source of truth).
+import { withPoolableViews } from './monolithStats.js';
 
 /**
  * runMeta(studies, method)
@@ -25,7 +31,8 @@ export { estimateTau2, TAU2_METHODS, TAU2_LABELS } from './tau2.js';
  *     method, W, tau, fixed, random, hksj, predInt }
  */
 export function runMeta(studies, method = "random", opts = {}) {
-  const valid = studies.filter(
+  // 116.md §41 — pool the poolable views (raw-data PROP rows derive es/lo/hi here).
+  const valid = withPoolableViews(studies).filter(
     s => s.es !== "" && s.lo !== "" && s.hi !== "" &&
          !isNaN(+s.es) && !isNaN(+s.lo) && !isNaN(+s.hi)
   );
@@ -182,7 +189,8 @@ export function runMeta(studies, method = "random", opts = {}) {
  * @returns {object|null}  { intercept, seInt, t, pval, dof, k } or null if k < 3
  */
 export function eggersTest(studies) {
-  const valid = studies.filter(
+  // 116.md §41 — same derived views as runMeta.
+  const valid = withPoolableViews(studies).filter(
     s => s.es !== "" && s.lo !== "" && s.hi !== "" &&
          !isNaN(+s.es) && !isNaN(+s.lo) && !isNaN(+s.hi)
   );
@@ -229,7 +237,8 @@ export function eggersTest(studies) {
  * @returns {Array}  Array of { omitted, omittedId, pES, lo95, hi95, I2, pval }
  */
 export function leaveOneOut(studies, method) {
-  const valid = studies.filter(
+  // 116.md §41 — same derived views as runMeta.
+  const valid = withPoolableViews(studies).filter(
     s => s.es !== "" && s.lo !== "" && s.hi !== "" &&
          !isNaN(+s.es) && !isNaN(+s.lo) && !isNaN(+s.hi)
   );
@@ -280,7 +289,8 @@ export function leaveOneOut(studies, method) {
  * @returns {object|null}  { k0, adjusted, imputed, side, base } or null
  */
 export function trimFill(studies, method) {
-  const valid = studies.filter(
+  // 116.md §41 — same derived views as runMeta.
+  const valid = withPoolableViews(studies).filter(
     s => s.es !== "" && s.lo !== "" && s.hi !== "" &&
          !isNaN(+s.es) && !isNaN(+s.lo) && !isNaN(+s.hi)
   );
@@ -373,7 +383,8 @@ export function trimFill(studies, method) {
  * @returns {Array}  Array of { id, label, pES, tau2, I2, dffit, tau2Drop, i2Drop, influential }
  */
 export function influenceDiagnostics(studies, method) {
-  const valid = studies.filter(
+  // 116.md §41 — same derived views as runMeta.
+  const valid = withPoolableViews(studies).filter(
     s => s.es !== "" && s.lo !== "" && s.hi !== "" &&
          !isNaN(+s.es) && !isNaN(+s.lo) && !isNaN(+s.hi)
   );

@@ -14,6 +14,10 @@
 import { validateStudy } from '../../validation/study-validator.js';
 import { analysisReady } from './syncState.js';
 import { hasAnyValue, progressOf } from './articleStatus.js';
+// 116.md §41/§47 — derive-at-analysis-boundary awareness: a PROP row with valid raw
+// events/total DOES enter the meta-analysis now, so the info line must not claim
+// otherwise (it directly contradicted the Analysis tab — the §41 regression's wording).
+import { hasUsableEffect } from '../../statistics/monolithStats.js';
 
 /** Severity tiers (76.md §17). */
 export const SEVERITY = Object.freeze({ INFO: 'info', WARN: 'warn', BLOCK: 'block' });
@@ -43,7 +47,13 @@ export function evaluateCompletion(study = {}) {
   if (!hasAnyValue(study)) {
     info.push({ field: 'values', msg: 'No values captured yet — this article has nothing to analyse.' });
   } else if (!analysisReady(study)) {
-    info.push({ field: 'es', msg: 'No effect size yet — this article will not enter the meta-analysis until one is derived.' });
+    // 116.md §41 — a PROP row with valid events/total is analyzable WITHOUT a stored
+    // es/lo/hi (the analysis derives it); say so instead of the contradicting warning.
+    if (hasUsableEffect(study)) {
+      info.push({ field: 'es', msg: 'Effect size is derived automatically from events/total for analysis — marking complete also stores it on the row.' });
+    } else {
+      info.push({ field: 'es', msg: 'No effect size yet — this article will not enter the meta-analysis until one is derived.' });
+    }
   }
   if (!study.outcome) {
     info.push({ field: 'outcome', msg: 'Outcome is unnamed — name it so this article groups with the same outcome across studies.' });

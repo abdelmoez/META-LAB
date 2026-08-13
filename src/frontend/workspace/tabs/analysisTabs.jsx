@@ -24,7 +24,10 @@ import { rasterizeSvg, downloadBlob, downloadText } from "../../components/expor
 import { fmtNum, fmtES, fmtP, fmtPct, fmtI2, fmtWeight, normalizePrecision, DECIMAL_OPTIONS } from "../../../research-engine/format/precision.js";
 import { isNonPrimary } from "../../../research-engine/import-export/referenceParsers.js";
 import { ES_TYPES, DATA_NATURE_LABEL, ADJUST_LABEL, SOURCE_LABEL } from "../../../research-engine/project-model/monolithConstants.js";
-import { normalCDF, runMeta, eggersTest, leaveOneOut, trimFill, influenceDiagnostics, subgroupAnalysis, analysisTypeWarnings, CONVERSIONS, checkPoolability, TAU2_METHODS, TAU2_LABELS } from "../../../research-engine/statistics/monolithStats.js";
+import { normalCDF, runMeta, eggersTest, leaveOneOut, trimFill, influenceDiagnostics, subgroupAnalysis, analysisTypeWarnings, CONVERSIONS, checkPoolability, TAU2_METHODS, TAU2_LABELS, poolableStudyView, withPoolableViews, hasUsableEffect } from "../../../research-engine/statistics/monolithStats.js";
+// 116.md §47/§50 — the itemized "why is this analysis unavailable" detector. Shared and
+// pure; this file only renders its reasons where the blank result panel used to be.
+import { pairEligibility, blockedByCompatibilityReasons } from "../../../research-engine/statistics/analysisEligibility.js";
 // 86.md P1.17 — studies a reviewer excluded ("exclude from analysis") or archived
 // must not pool. Shared predicate so Analysis, GRADE, living-review and public
 // synthesis all agree on what is analyzable.
@@ -68,7 +71,11 @@ import {
 export function enumerateOutcomePairs(studies){
   const list=Array.isArray(studies)?studies:[];
   const seen=new Set(), pairs=[];
-  list.filter(s=>s&&s.es!==""&&!isNaN(+s.es)&&!isExcludedFromAnalysis(s)).forEach(s=>{
+  // 116.md §41/§46 — `hasUsableEffect` extends the old `es!==""&&!isNaN(+es)` predicate
+  // to the poolable VIEW, so a PROP row with valid raw events/total (and no manual
+  // es/lo/hi backfill) makes its outcome visible to Analysis. Kept in lockstep with
+  // runMeta's own row selection (both go through poolableStudyView).
+  list.filter(s=>s&&hasUsableEffect(s)&&!isExcludedFromAnalysis(s)).forEach(s=>{
     const oc=(s.outcome||"").trim(), tp=(s.timepoint||"").trim();
     const key=`${oc}|||${tp}`;
     if(!seen.has(key)){ seen.add(key); pairs.push({outcome:oc,timepoint:tp,esType:(s.esType||"").trim(),key}); }
@@ -88,10 +95,26 @@ export function enumerateOutcomePairs(studies){
 
 export function studiesForPair(studies,pair){
   if(!pair) return [];
+  // 116.md §41/§46 — same predicate as enumerateOutcomePairs, and the returned rows are
+  // the poolable VIEWS (derived es/lo/hi for raw-data PROP rows), so every consumer —
+  // runMeta, the compatibility gate, the contributions/data tables, the exporters —
+  // sees one consistent row set. Views are computed, never written back (rows with a
+  // stored es come back as the SAME object reference).
+  return withPoolableViews((Array.isArray(studies)?studies:[]).filter(s=>{
+    if(!s) return false;
+    const oc=(s.outcome||"").trim(), tp=(s.timepoint||"").trim();
+    return oc===pair.outcome && tp===pair.timepoint && hasUsableEffect(s)&&!isExcludedFromAnalysis(s);
+  }));
+}
+
+/** 116.md §50 — ALL of a pair's rows (exclusions applied, but NO effect-size predicate):
+ *  the eligibility detector must see the very rows whose problems it explains. */
+export function allRowsForPair(studies,pair){
+  if(!pair) return [];
   return (Array.isArray(studies)?studies:[]).filter(s=>{
     if(!s) return false;
     const oc=(s.outcome||"").trim(), tp=(s.timepoint||"").trim();
-    return oc===pair.outcome && tp===pair.timepoint && s.es!==""&&!isNaN(+s.es)&&!isExcludedFromAnalysis(s);
+    return oc===pair.outcome && tp===pair.timepoint && !isExcludedFromAnalysis(s);
   });
 }
 
@@ -121,7 +144,7 @@ export function dominantEsType(rows){
   return types.slice().sort((a,b)=>types.filter(t=>t===b).length-types.filter(t=>t===a).length)[0];
 }
 
-const NO_PROP_CHECK=Object.freeze({applicable:false,blocking:false,infoOnly:false,issues:[],unclassifiedFields:[],propCount:0});
+const NO_PROP_CHECK=Object.freeze({applicable:false,blocking:false,warning:false,infoOnly:false,issues:[],warnings:[],unclassifiedFields:[],propCount:0});
 
 /**
  * 107.md §11/§12 — THE pooling gate, in one place.
@@ -195,8 +218,9 @@ export function groupRowsForSubgroup(studies,groupKey){
  */
 export function crossPairRowsForGrouping(allStudies,pair,groupKey){
   if(!pair||(groupKey!=="timepoint"&&groupKey!=="outcome")) return null;
-  const base=(Array.isArray(allStudies)?allStudies:[])
-    .filter(s=>s&&s.es!==""&&!isNaN(+s.es)&&!isExcludedFromAnalysis(s));
+  // 116.md §41 — same view-aware predicate + views as studiesForPair.
+  const base=withPoolableViews((Array.isArray(allStudies)?allStudies:[])
+    .filter(s=>s&&hasUsableEffect(s)&&!isExcludedFromAnalysis(s)));
   if(groupKey==="outcome") return base;
   const name=(pair.outcome||"").trim();
   return base.filter(s=>(s.outcome||"").trim()===name);
@@ -368,6 +392,8 @@ const ISSUE_HEADLINE={
   },
   denominatorCustom:{
     "mixed-custom-definitions":"The selected estimates describe their custom denominator differently:",
+    // 116.md §49 — the warning-tier sibling: one description + undescribed rows.
+    "category-and-unclassified":"Some Other/custom estimates have no denominator description yet:",
   },
 };
 const STUDY_LIST_CAP=6;
@@ -496,6 +522,43 @@ export function ProportionCompatibilityPanel({check,filters,override,stale,onSet
       );
     })}
 
+    {/* ── 116.md §49 — WARNING CARDS (mid-classification). ONE real category mixed with
+        unclassified rows no longer blocks: the pool PROCEEDS, and this advisory names
+        the unclassified count. The unclassified rows keep their OWN line — they are
+        never merged into (or counted as) a category. ── */}
+    {(c.warnings||[]).map((issue)=>{
+      const headline=(ISSUE_HEADLINE[issue.field]&&ISSUE_HEADLINE[issue.field][issue.kind])
+        ||`Some selected estimates are not classified for ${issue.fieldLabel.toLowerCase()}:`;
+      return(
+        <div key={`warn-${issue.field}`} data-testid={`prop-warning-${issue.field}`}
+          style={{background:"var(--t-yel-bg)",border:`1px solid ${themeAlpha(C.yel,'66')}`,borderLeft:`4px solid ${C.yel}`,borderRadius:8,padding:"12px 16px"}}>
+          <div style={{fontSize:12,fontWeight:700,color:C.yel,marginBottom:6}}>⚠ Pooled with unclassified estimates</div>
+          <div style={{fontSize:12,color:C.txt,lineHeight:1.6}}>{headline}</div>
+          <ul style={{margin:"8px 0 6px",paddingLeft:20,fontSize:12,color:C.txt,lineHeight:1.7}}>
+            {issue.values.map((v)=>(
+              <li key={v.value||"__unclassified__"}>
+                <strong>{v.label}</strong>: {v.count} estimate{v.count===1?"":"s"}
+                {v.studies.length?(<span style={{color:C.muted}}> — {v.studies.slice(0,STUDY_LIST_CAP).join(", ")}{v.studies.length>STUDY_LIST_CAP?`, +${v.studies.length-STUDY_LIST_CAP} more`:""}</span>):null}
+              </li>
+            ))}
+          </ul>
+          <div style={{fontSize:11,color:C.muted,lineHeight:1.6}}>
+            {issue.unclassifiedCount} of {issue.totalAffected} pooled estimate{issue.totalAffected===1?"":"s"} {issue.unclassifiedCount===1?"is":"are"} not classified —
+            the pool proceeds, but confirm they estimate the same quantity. Classify them in Data Extraction, or filter to one group.
+          </div>
+          {onSetFilter&&(
+            <div style={{marginTop:10,display:"flex",gap:6,flexWrap:"wrap",alignItems:"center"}}>
+              <span style={{fontSize:11,color:C.muted}}>Filter to one:</span>
+              {issue.values.filter((v)=>!(issue.field==="denominatorCustom"&&!v.value)).map((v)=>(
+                <button key={v.value||"__unclassified__"} onClick={()=>onSetFilter(issue.field,v.value||UNCLASSIFIED_FILTER)}
+                  style={{...btnS("ghost"),fontSize:11,padding:"4px 10px"}}>Only {v.label}</button>
+              ))}
+            </div>
+          )}
+        </div>
+      );
+    })}
+
     {/* ── COMPACT: point at the tab that owns the resolutions ── */}
     {compact&&!honored&&c.blocking&&(
       <div style={{background:C.card,border:`1px solid ${C.brd}`,borderRadius:8,padding:"10px 14px",fontSize:11,color:C.muted,lineHeight:1.6}}>
@@ -548,6 +611,25 @@ export function ProportionCompatibilityPanel({check,filters,override,stale,onSet
       </div>
     )}
   </div>);
+}
+
+/**
+ * 116.md §50 — the itemized "why is this analysis unavailable" list. Replaces the blank
+ * result panel's single generic line with specific, counted reasons ("3 studies are
+ * missing total sample size."). Presentational + exported so SSR tests pin the strings;
+ * the reasons themselves come from the pure analysisEligibility module.
+ */
+export function AnalysisEligibilityNotice({reasons,title}){
+  const list=(Array.isArray(reasons)?reasons:[]).filter(Boolean);
+  if(!list.length) return null;
+  return(
+    <div data-testid="analysis-eligibility" style={{marginTop:14,textAlign:"left",display:"inline-block",background:C.bg,border:`1px solid ${C.brd}`,borderRadius:8,padding:"12px 16px"}}>
+      <div style={{fontSize:10,fontWeight:700,color:C.muted,letterSpacing:0.8,marginBottom:6}}>{title||"WHY THIS ANALYSIS IS UNAVAILABLE"}</div>
+      <ul style={{margin:0,paddingLeft:18,fontSize:12,color:C.txt,lineHeight:1.8}}>
+        {list.map((r,i)=><li key={`${r.code}-${i}`}>{r.message}</li>)}
+      </ul>
+    </div>
+  );
 }
 
 /* ════════════ TAB: ANALYSIS ════════════ */
@@ -664,6 +746,15 @@ export function AnalysisTab({project,updateProject,onApplyPrecisionToAll,current
     [project,activeOutcome,filteredStudies,esType]);
   const{isPropPair,check:propCheck,override:propOverride,stale:propStale,honored:propHonored,blocked:propBlocked}=gate;
 
+  // 116.md §50 — the itemized eligibility verdict for the CURRENT scope: the selected
+  // pair's rows (no effect-size predicate — the problem rows must be visible to it), or
+  // every non-archived row when no outcome is enumerable at all.
+  const eligibility=useMemo(()=>{
+    if(activeOutcome) return pairEligibility(allRowsForPair(studies,activeOutcome));
+    if(outcomePairs.length===0) return pairEligibility(studies);
+    return null;
+  },[studies,activeOutcome,outcomePairs.length]);
+
   const outcomeKey=activeOutcome?activeOutcome.key:"";
   const setProportionFilter=(field,value)=>{
     if(!updateProject||!outcomeKey) return;
@@ -724,7 +815,8 @@ export function AnalysisTab({project,updateProject,onApplyPrecisionToAll,current
       )}
       {outcomePairs.length>1&&effectiveKey&&(
         <div style={{marginTop:8,fontSize:11,color:C.muted}}>
-          Showing {filteredStudies.length} of {studies.filter(s=>s.es!==""&&!isNaN(+s.es)).length} studies with an ES. The others belong to different outcomes and are excluded from this pool.
+          {/* 116.md §41 — count usable effects through the derived view too. */}
+          Showing {filteredStudies.length} of {studies.filter(s=>hasUsableEffect(s)).length} studies with an ES. The others belong to different outcomes and are excluded from this pool.
         </div>
       )}
       {(()=>{
@@ -883,6 +975,8 @@ export function AnalysisTab({project,updateProject,onApplyPrecisionToAll,current
       <div style={{fontSize:12}}>Each outcome must be analysed separately. Choose one from the dropdown.</div>
     </div>):!result?(<div style={{background:C.card,border:`1px solid ${C.brd}`,borderRadius:8,padding:40,textAlign:"center",color:C.muted}}>
       <div style={{fontSize:36,marginBottom:10}}>📊</div>{proportionFilters?"No pooled result for the current filter — at least 2 estimates with an effect size and 95% CI must match it.":"Enter an effect size and 95% CI for at least 2 studies (Data Extraction tab)"}
+      {/* 116.md §50 — never a blank panel: name the specific problems, with counts. */}
+      {eligibility&&!eligibility.ok&&<div><AnalysisEligibilityNotice reasons={eligibility.reasons}/></div>}
     </div>):((pool.blockers.length>0&&!forceShow)||propBlocked)?(
       <div style={{background:C.card,border:`1px solid ${C.brd}`,borderRadius:8,padding:32,textAlign:"center",color:C.muted}}>
         <div style={{fontSize:32,marginBottom:10}}>🛑</div>
@@ -890,6 +984,8 @@ export function AnalysisTab({project,updateProject,onApplyPrecisionToAll,current
         <div style={{fontSize:12,maxWidth:480,margin:"0 auto",lineHeight:1.6}}>{propBlocked&&!(pool.blockers.length>0&&!forceShow)
           ?"These estimates do not all measure the same quantity (see above). Filter to one category, stratify on the Subgroup tab, correct the extraction metadata, exclude the estimates — or record an explicit override."
           :"The studies appear incompatible to pool (see above). Forcing a pooled number here could be misleading. Fix the data, or click the button above to override."}</div>
+        {/* 116.md §50 — the blocked state states its reason with counts too. */}
+        {propBlocked&&<div><AnalysisEligibilityNotice title="WHY THIS RESULT IS HIDDEN" reasons={blockedByCompatibilityReasons(propCheck)}/></div>}
       </div>
     ):(<div style={{display:"flex",flexDirection:"column",gap:16}}>
 
@@ -1034,7 +1130,7 @@ export function AnalysisTab({project,updateProject,onApplyPrecisionToAll,current
             <div style={{fontWeight:700,color:C.txt}}>Heterogeneity</div><div>Cochran's Q = Σwᵢ(yᵢ − ȳ)²; I² = max(0, (Q − df)/Q) × 100; τ² = max(0, (Q − df)/(ΣW − ΣW²/ΣW)).</div>
             <div style={{fontWeight:700,color:C.txt}}>Significance</div><div>z = pooled ES / SE; two-sided p from the standard normal distribution.</div>
             <div style={{fontWeight:700,color:C.txt}}>Transforms</div><div>{esType&&ES_TYPES[esType]?.log?"Ratio measures are pooled on the natural-log scale and back-transformed for display.":esType==="PROP"?"Proportions are pooled on the logit scale and back-transformed.":esType==="COR"?"Correlations are pooled as Fisher's z.":"No transform applied to the stored effect sizes."}</div>
-            <div style={{fontWeight:700,color:C.txt}}>Excluded</div><div>{studies.length-result.k} of {studies.length} studies not in this pool ({studies.filter(s=>s.es==="").length} without an effect size{valid.length>result.k?", plus those missing a CI":""}).</div>
+            <div style={{fontWeight:700,color:C.txt}}>Excluded</div><div>{studies.length-result.k} of {studies.length} studies not in this pool ({studies.filter(s=>!hasUsableEffect(s)).length} without an effect size{valid.length>result.k?", plus those missing a CI":""}).</div>
           </div>
           <InfoBox color={C.dim}>Computation runs locally in your browser. For a regulatory submission, confirm key results in established software (R <em>metafor</em>, RevMan, or Stata). Random-effects τ² estimators can underestimate uncertainty when k is small — consider this a planning/checking tool.</InfoBox>
         </div>)}
