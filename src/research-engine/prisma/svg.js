@@ -53,6 +53,82 @@ function wrap(text, maxChars) {
   return out.length ? out : [''];
 }
 
+/* ── 116.md §18/§19 — dynamic node sizing ─────────────────────────────────────
+ *
+ * The reusable per-box text-fitting strategy. Boxes previously drew every line
+ * UNWRAPPED: the fixed "Records marked as ineligible by automation tools (n = 0)"
+ * sub-line (~59 chars ≈ 300px at 10.5px Georgia) escaped its 250px box and
+ * crossed the column gap, and any long free-text exclusion reason did the same.
+ * Box HEIGHT already follows the line count and the 105.md connectors already
+ * follow box geometry, so wrapping the lines before they are drawn is the whole
+ * fix — nothing else in the layout needs restructuring.
+ */
+
+/** Average character width as a fraction of font size (Georgia ≈ 0.52 em). The
+ *  text-extent regression test uses the SAME estimate, so overflow cannot ship
+ *  again without a red test. */
+export const CHAR_W_EM = 0.52;
+const BOX_FONT_PX = 10.5;
+const BOX_PAD_X = 10;           // left text inset; mirrored on the right
+/** A single logical line may occupy at most this many physical lines; anything
+ *  longer is ellipsized — the diagram is the summary, the inspector the detail. */
+const MAX_PHYSICAL_LINES = 3;
+
+/** Hard-break a single overlong token (a DOI, a pasted sentence with no spaces). */
+function breakToken(token, maxChars) {
+  const out = [];
+  let rest = String(token);
+  while (rest.length > maxChars) {
+    out.push(rest.slice(0, maxChars));
+    rest = rest.slice(maxChars);
+  }
+  if (rest) out.push(rest);
+  return out;
+}
+
+/**
+ * wrapBoxLines(lines, w) → physical lines fitting a box of width `w`.
+ * Indented sub-lines ("   Duplicate records removed …") keep a hanging indent on
+ * their continuation lines, so wrapped sub-items still read as sub-items.
+ * Pure.
+ */
+export function wrapBoxLines(lines, w) {
+  const maxChars = Math.max(8, Math.floor((w - BOX_PAD_X * 2) / (BOX_FONT_PX * CHAR_W_EM)));
+  const out = [];
+  for (const raw of lines) {
+    const s = String(raw == null ? '' : raw);
+    if (s.length <= maxChars) { out.push(s); continue; }
+    const indent = (s.match(/^\s*/) || [''])[0];
+    const contIndent = indent + '  ';
+    const contMax = Math.max(4, maxChars - contIndent.length);
+    const words = s.trim().split(/\s+/).flatMap((t) => (
+      t.length > contMax ? breakToken(t, contMax) : [t]
+    ));
+    const physical = [];
+    let line = '';
+    let budget = maxChars - indent.length;
+    for (const word of words) {
+      if (!line) line = word;
+      else if (line.length + 1 + word.length <= budget) line += ' ' + word;
+      else {
+        physical.push((physical.length ? contIndent : indent) + line);
+        line = word;
+        budget = contMax;
+      }
+    }
+    if (line) physical.push((physical.length ? contIndent : indent) + line);
+    if (physical.length > MAX_PHYSICAL_LINES) {
+      const kept = physical.slice(0, MAX_PHYSICAL_LINES);
+      kept[MAX_PHYSICAL_LINES - 1] = kept[MAX_PHYSICAL_LINES - 1]
+        .slice(0, Math.max(1, maxChars - 1)) + '…';
+      out.push(...kept);
+    } else {
+      out.push(...physical);
+    }
+  }
+  return out.length ? out : [''];
+}
+
 /**
  * buildPrismaFlowSVG(flow, opts) → { svg, W, H }
  *
@@ -109,14 +185,20 @@ export function buildPrismaFlowSVG(flow, opts = {}) {
   const boxes = [];              // geometry, returned for the interactive overlay
   const geom = new Map();        // boxId → { x, y, w, h } — the layout's memory
   const drawBox = (boxId, x, yy, w, lines, style = {}) => {
-    const h = Math.max(30, 12 + lines.length * 15);
+    // 116.md §18/§19 — EVERY box wraps its text to its own width and grows in
+    // height to fit. The first logical line is the (bold) label, so the emphasis
+    // follows its wrapped continuations too.
+    const logical = lines;
+    const boldUpTo = style.bold ? wrapBoxLines([logical[0]], w).length : 0;
+    const wrapped = wrapBoxLines(logical, w);
+    const h = Math.max(30, 12 + wrapped.length * 15);
     const fill = style.fill || '#ffffff';
     const stroke = style.stroke || LINE;
     let s = `<g data-box="${esc(boxId)}">`
       + `<rect x="${x}" y="${yy}" width="${w}" height="${h}" fill="${fill}" stroke="${stroke}" stroke-width="1.2" rx="3"/>`;
-    lines.forEach((ln, i) => {
+    wrapped.forEach((ln, i) => {
       s += `<text x="${x + 10}" y="${yy + 19 + i * 15}" font-family="${FF}" font-size="10.5"`
-        + ` font-weight="${style.bold && i === 0 ? '700' : '400'}" fill="${INK}">${esc(ln)}</text>`;
+        + ` font-weight="${i < boldUpTo ? '700' : '400'}" fill="${INK}">${esc(ln)}</text>`;
     });
     s += '</g>';
     const box = { id: boxId, x, y: yy, w, h };

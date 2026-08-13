@@ -10,7 +10,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   derivePrismaFlow, reconcilePrismaFlow, dispositionOf, armOf,
-  identificationSource, DISPOSITIONS,
+  identificationSource, DISPOSITIONS, IDENTIFICATION_SOURCES,
   buildRecordProjections, resolveDecisions, resolveRetrieval,
   BOXES, UPDATED_REVIEW_BOXES, COLUMN_HEADERS, FOOTNOTES, SOURCE_CITATION,
 } from '../../../src/research-engine/prisma/index.js';
@@ -410,6 +410,118 @@ describe('projection — mapping PecanRev tables onto the model', () => {
       requests: [{ recordId: 'z', status: 'received' }],
     });
     expect(viaRequest.z.retrieved).toBe(true);
+  });
+});
+
+describe('116.md §13/§14 — arm placement follows attribution, not the import mechanism', () => {
+  // 116.md §13 consciously SUPERSEDES the 103.md §2 default: a FILE import with no
+  // database attribution is a manual upload → other-methods arm. An executed
+  // search (origin search|api) and any file whose record OR batch names a real
+  // database stay in the db arm.
+  it('scenario B: a file import with no reliable database metadata → other methods', () => {
+    const [p] = buildRecordProjections({
+      records: [{ id: 'f1', sourceDb: '', importBatchId: 'b1' }],
+    });
+    expect(p.origin).toBe('file');
+    expect(identificationSource(p)).toBe('manual');
+    expect(armOf(p)).toBe('other');
+    const f = derivePrismaFlow([p]);
+    expect(f.counts.identifiedOther).toBe(1);
+    expect(f.counts.identifiedDb).toBe(0);
+    expect(reconcilePrismaFlow(f).ok).toBe(true);
+  });
+
+  it('scenario A: a file whose records name a real database stays in the db arm (§14)', () => {
+    const [p] = buildRecordProjections({
+      records: [{ id: 'f2', sourceDb: 'Embase', importBatchId: 'b1' }],
+    });
+    expect(identificationSource(p)).toBe('database');
+    expect(armOf(p)).toBe('db');
+  });
+
+  it('a batch-declared sourceDatabase attributes its records (record.sourceDb || batch declaration)', () => {
+    const [p] = buildRecordProjections({
+      records: [{ id: 'f3', sourceDb: '', importBatchId: 'b1' }],
+      batchById: { b1: { sourceDatabase: 'embase' } },
+    });
+    expect(p.sourceDb).toBe('Embase'); // canonical key → display label
+    expect(armOf(p)).toBe('db');
+    // The record's own sourceDb wins over the batch declaration.
+    const [own] = buildRecordProjections({
+      records: [{ id: 'f4', sourceDb: 'Scopus', importBatchId: 'b1' }],
+      batchById: { b1: { sourceDatabase: 'embase' } },
+    });
+    expect(own.sourceDb).toBe('Scopus');
+  });
+
+  it('an executed search stays in the db arm even unnamed', () => {
+    expect(identificationSource({ origin: 'search', sourceDb: '' })).toBe('database');
+    expect(identificationSource({ origin: 'api', sourceDb: '' })).toBe('database');
+  });
+
+  it('the explicit per-record override outranks everything (§14 correction)', () => {
+    const [p] = buildRecordProjections({
+      records: [{ id: 'f5', sourceDb: 'PubMed', importBatchId: 'b1', identificationSource: 'prior_review' }],
+    });
+    expect(identificationSource(p)).toBe('prior_review');
+    expect(armOf(p)).toBe('other');
+    // The new detailed buckets all live in the other arm.
+    for (const id of ['prior_review', 'reference_list', 'author_contact']) {
+      expect(IDENTIFICATION_SOURCES[id].arm).toBe('other');
+    }
+  });
+
+  it('carries sourceDetail through the projection for the inspector', () => {
+    const [p] = buildRecordProjections({
+      records: [{ id: 'f6', sourceDb: '', sourceDetail: 'reference list of Smith 2020' }],
+    });
+    expect(p.sourceDetail).toBe('reference list of Smith 2020');
+  });
+});
+
+describe('116.md §15 — final review + conflict resolutions reach the flow', () => {
+  it('finalStatus=rejected maps to excluded_full_text with the rejectedReason', () => {
+    // The leader finalize-reject path writes ONLY ScreenRecord fields — no
+    // full_text ScreenDecision row exists, so this mapping is the only way the
+    // record leaves "awaiting full-text".
+    const [p] = buildRecordProjections({
+      records: [{
+        id: 'x1', sourceDb: 'PubMed', currentStage: 'full_text',
+        promotedAt: '2026-01-01', finalStatus: 'rejected', rejectedReason: 'wrong population',
+      }],
+    });
+    expect(p.fullTextDecision).toBe('exclude');
+    expect(p.exclusionReason).toBe('wrong population');
+    expect(dispositionOf(p)).toBe('excluded_full_text');
+    const f = derivePrismaFlow([p]);
+    expect(f.counts.reportsExcluded).toBe(1);
+    expect(f.exclusionReasons[0].label).toBe('Wrong population'); // §16 display
+    expect(reconcilePrismaFlow(f).ok).toBe(true);
+  });
+
+  it('finalStatus=rejected outranks reviewer include decisions', () => {
+    const [p] = buildRecordProjections({
+      records: [{ id: 'x2', sourceDb: 'PubMed', currentStage: 'full_text', finalStatus: 'rejected' }],
+      decisionsByRecord: { x2: { titleAbstract: 'include', fullText: 'include', exclusionReason: '' } },
+    });
+    expect(p.included).toBe(false);
+    expect(dispositionOf(p)).toBe('excluded_full_text');
+  });
+
+  it('a resolved conflict (synthesized resolved decision) settles a T/A split', () => {
+    // The loader synthesizes ScreenConflict resolutions as resolved:true rows;
+    // the resolver's precedence (resolved > unanimity > null) then applies.
+    const d = resolveDecisions([
+      { recordId: 'c1', stage: 'title_abstract', verdict: 'include' },
+      { recordId: 'c1', stage: 'title_abstract', verdict: 'exclude' },
+      { recordId: 'c1', stage: 'title_abstract', verdict: 'exclude', resolved: true, reason: 'Off topic' },
+    ]);
+    expect(d.c1.titleAbstract).toBe('exclude');
+    const [p] = buildRecordProjections({
+      records: [{ id: 'c1', sourceDb: 'PubMed' }],
+      decisionsByRecord: d,
+    });
+    expect(dispositionOf(p)).toBe('excluded_screening');
   });
 });
 

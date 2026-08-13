@@ -16,9 +16,16 @@ const fx = name => readFileSync(
 describe('parseCSV', () => {
   const recs = parseCSV(fx('sample.csv'));
 
-  it('parses every data row into a canonical record', () => {
+  it('parses every data row into a canonical record (no format token — 116.md §14)', () => {
     expect(recs).toHaveLength(3);
-    recs.forEach(r => { expect(r).toHaveProperty('id'); expect(r.source).toBe('CSV'); expect(r.dupOf).toBeNull(); });
+    recs.forEach(r => { expect(r).toHaveProperty('id'); expect(r.source).toBe(''); expect(r.sourceDb).toBe(''); expect(r.dupOf).toBeNull(); });
+  });
+
+  it('keeps a RECOGNIZED explicit database column, drops an unrecognised one (116.md §14)', () => {
+    const good = parseCSV('Title,Database\nA paper,Scopus');
+    expect(good[0].sourceDb).toBe('Scopus');
+    const junk = parseCSV('Title,Database\nA paper,My Filing Cabinet');
+    expect(junk[0].sourceDb).toBe('');
   });
 
   it('maps headers case-insensitively to canonical fields', () => {
@@ -63,9 +70,10 @@ describe('parseCSV', () => {
 describe('parseCIW (Web of Science tagged)', () => {
   const recs = parseCIW(fx('sample.ciw'));
 
-  it('parses PT…ER blocks, ignoring the FN/VR/EF file header', () => {
+  it('parses PT…ER blocks, ignoring the FN/VR/EF file header (no format token — 116.md §14)', () => {
     expect(recs).toHaveLength(2);
-    expect(recs.every(r => r.source === 'CIW')).toBe(true);
+    expect(recs.every(r => r.source === '')).toBe(true);
+    expect(recs.every(r => r.sourceDb === '')).toBe(true);
   });
 
   it('prefers AF full names and joins continuation authors', () => {
@@ -102,7 +110,7 @@ describe('parseTXT', () => {
     const r = parseTXT('A first study title\nA second study title\n');
     expect(r).toHaveLength(2);
     expect(r[0].title).toBe('A first study title');
-    expect(r[0].source).toBe('TXT');
+    expect(r[0].source).toBe(''); // 116.md §14 — no format token
   });
 });
 

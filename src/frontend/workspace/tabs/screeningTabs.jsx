@@ -298,7 +298,10 @@ export function PRISMATab({project,updNested,updateProject,activeId,setTab}){
   // below comes from them. The manual fields stay only as the fallback for a
   // project with no linked records, because the core principle is that PRISMA must
   // never depend on a number the user typed when PecanRev already knows it.
-  const{flow,reconciliation,records,loading:flowLoading}=usePrismaFlow(linkedSiftId(project));
+  // 116.md §8/§11 — the flow payload is slim (counts only); the inspector pages
+  // its record lists from the box endpoint, and `refetch` re-derives the counts
+  // after any inspector edit so the diagram always shows post-edit numbers.
+  const{flow,reconciliation,loading:flowLoading,refetch}=usePrismaFlow(linkedSiftId(project));
   const live=!!flow;
   const ch=(k,v)=>updNested("prisma",k,v);
   const addR=()=>ch("reasons",[...prisma.reasons,{id:uid(),r:"",n:""}]);
@@ -352,7 +355,8 @@ export function PRISMATab({project,updNested,updateProject,activeId,setTab}){
       {live?(
         <div style={{background:C.card,border:`1px solid ${C.brd}`,borderRadius:8,padding:16,minWidth:0}}>
           <div style={{fontSize:11,fontWeight:700,color:C.muted,letterSpacing:1,marginBottom:12}}>PRISMA 2020 FLOW — DERIVED FROM RECORDS</div>
-          <PrismaFlowDiagram flow={flow} reconciliation={reconciliation} records={records}/>
+          <PrismaFlowDiagram flow={flow} reconciliation={reconciliation}
+            screenProjectId={linkedSiftId(project)} onChanged={refetch}/>
         </div>
       ):(
       <div style={{background:C.card,border:`1px solid ${C.brd}`,borderRadius:8,padding:20,display:"flex",flexDirection:"column",alignItems:"center"}}>

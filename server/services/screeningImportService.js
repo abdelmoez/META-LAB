@@ -435,6 +435,11 @@ async function dedupeAndInsertRecordsSerialized(projectId, records, opts = {}) {
       source,
       // 96.md D12 — first-class run attribution (replaces parsing the synthetic fileHash).
       searchRunId,
+      // 116.md §14 — an importer-declared search is PERSISTED at import time (the
+      // 104.md batch fields), not lost until an after-the-fact Import History
+      // PATCH. Absent declaration keeps the schema defaults ('' / null).
+      sourceDatabase: String(sourceDatabase || '').trim().slice(0, 100),
+      searchedAt: searchedAt ? new Date(searchedAt) : null,
       fileHash, fileSize,
       importedById, importedByName, parser,
     },
@@ -450,23 +455,26 @@ async function dedupeAndInsertRecordsSerialized(projectId, records, opts = {}) {
         title:    String(r.title || '').slice(0, 1000),
         authors:  Array.isArray(r.authors) ? r.authors.join('; ').slice(0, 500) : String(r.authors || '').slice(0, 500),
         year:     String(r.year || ''),
-        journal:  String(r.journal || r.source || '').slice(0, 300),
+        // 116.md §14 — no `r.source` fallback: parsers used to stamp the FILE
+        // FORMAT there ("RIS", "BibTeX"…), so a record with no journal field got
+        // `journal: "RIS"`. donorShape (the merge path) already refused exactly
+        // this; the insert path now matches it.
+        journal:  String(r.journal || '').slice(0, 300),
         doi:      String(r.doi || '').slice(0, 200),
         pmid:     String(r.pmid || '').slice(0, 50),
         abstract: String(r.abstract || '').slice(0, 5000),
         keywords: Array.isArray(r.keywords) ? r.keywords.join('; ') : String(r.keywords || ''),
-        // 104.md — a record's database attribution is what the FILE said, or what
-        // the importer explicitly declared it to be. It is NEVER the file format.
-        //
-        // This used to fall back to `format`, so every RIS file with no per-record
-        // source stamped `sourceDb: 'ris'` on its records. Those strings flow
-        // straight into the search-provenance layer and the PRISMA source rows, so
-        // a manuscript could end up reporting that the team "searched Ris" — exactly
-        // the "internal values should not accidentally appear in a manuscript"
-        // failure the prompt names. An empty sourceDb is honest and already handled
-        // everywhere downstream: provenance drops unattributed records rather than
-        // inventing a database, and PRISMA labels them "Unspecified source".
-        sourceDb: String(r.sourceDb || r.source || sourceDatabase || '').slice(0, 100),
+        // 104.md/116.md §14 — a record's database attribution is what the FILE
+        // reliably said (parsers now emit `sourceDb` ONLY for a RECOGNIZED
+        // database name — RIS `DB` tag, EndNote remote-database-name, nbib ⇒
+        // PubMed), or what the importer explicitly declared. It is NEVER the file
+        // format: the old `|| r.source` fallback re-poisoned sourceDb with format
+        // tokens on every import because parsers always filled `source`, which is
+        // how a manuscript could report that the team "searched Ris". An empty
+        // sourceDb is honest and handled everywhere downstream: provenance drops
+        // unattributed records rather than inventing a database, and PRISMA
+        // labels them "Unspecified source".
+        sourceDb: String(r.sourceDb || sourceDatabase || '').slice(0, 100),
         rawData:  JSON.stringify(r).slice(0, 2000),
       })),
     });

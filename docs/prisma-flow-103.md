@@ -68,6 +68,16 @@ One deliberate call: a file import whose records carry **no usable source name**
 database arm rather than being reclassified as "other methods". Moving it across arms would
 misreport the search, which is worse than an unnamed database.
 
+> **Superseded by 116.md §13 (v4.21.0).** A file import with NO database attribution —
+> record `sourceDb` blank AND no batch-declared `sourceDatabase` (104.md) — now classifies
+> into the **other-methods arm** (`manual` bucket): a hand-uploaded file is a manual upload,
+> not an unnamed database search. The projection first threads the batch's declared
+> database into each record's effective attribution, so any file that genuinely came from a
+> database (record `DB` tag, EndNote remote-database-name, nbib ⇒ PubMed, or a declared
+> batch `sourceDatabase`) keeps the database arm. Executed searches (`origin: search|api`)
+> stay in the database arm even unnamed. A per-record override
+> (`ScreenRecord.identificationSource`) allows explicit correction either way.
+
 ---
 
 ## 3. Retrieval — the stage that did not exist

@@ -72,16 +72,19 @@ describe('the standalone /sift-beta scope', () => {
 describe('BLOB_SCOPES — what one autosave 409 invalidates (108.md §15)', () => {
   it('includes every stage whose mutations land in the Project.data blob', () => {
     for (const s of ['extraction', 'analysis', 'forest', 'sensitivity', 'subgroup',
-      'manuscript', 'grade', 'report', 'prisma', 'rob', 'pico', 'prospero', 'control', 'nma']) {
+      'manuscript', 'grade', 'report', 'rob', 'pico', 'prospero', 'control', 'nma']) {
       expect(isBlobScope(s)).toBe(true);
     }
   });
 
-  it('EXCLUDES the relational screening scope and the search document scope', () => {
+  it('EXCLUDES the relational screening, prisma and search scopes', () => {
     // A blob CAS refusal says nothing about ScreenDecision rows or keyword ops, and
     // the Search Builder owns its own clear-on-remote-adoption rule.
     expect(isBlobScope('screening')).toBe(false);
     expect(isBlobScope('search')).toBe(false);
+    // 116.md §10 — the prisma scope records RELATIONAL record edits (inspector
+    // PATCH), so an autosave 409 must not clear its stack.
+    expect(isBlobScope('prisma')).toBe(false);
   });
 
   it('excludes the read-only / non-recording pages', () => {

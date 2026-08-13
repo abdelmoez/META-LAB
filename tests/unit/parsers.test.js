@@ -181,9 +181,20 @@ describe('parseRIS', () => {
     expect(recs[0].abstract).toContain('abstract text');
   });
 
-  it('parsed record has source set to "RIS"', () => {
+  it('never stamps the file format as a source (116.md §14)', () => {
+    // A plain RIS file names no database, so both source fields stay blank —
+    // blank is honest (104.md invariant: sourceDb must NEVER be a format token).
     const recs = parseRIS(risText);
-    expect(recs[0].source).toBe('RIS');
+    expect(recs[0].source).toBe('');
+    expect(recs[0].sourceDb).toBe('');
+  });
+
+  it('keeps a RECOGNIZED database from the RIS DB tag (116.md §14)', () => {
+    const withDb = 'TY  - JOUR\nTI  - Embase export\nDB  - Embase\nER  -\n';
+    expect(parseRIS(withDb)[0].sourceDb).toBe('Embase');
+    // An unrecognised DB value must not be promoted into a database claim.
+    const withJunk = 'TY  - JOUR\nTI  - Junk export\nDB  - MyLocalLibrary\nER  -\n';
+    expect(parseRIS(withJunk)[0].sourceDb).toBe('');
   });
 
   it('parses multiple records', () => {
@@ -239,9 +250,10 @@ describe('parseBibTeX', () => {
     expect(recs[0].doi).toBe('10.5678/bibtex.2023');
   });
 
-  it('parsed record has source set to "BibTeX"', () => {
+  it('never stamps the file format as a source (116.md §14)', () => {
     const recs = parseBibTeX(bibtexText);
-    expect(recs[0].source).toBe('BibTeX');
+    expect(recs[0].source).toBe('');
+    expect(recs[0].sourceDb).toBe('');
   });
 
   it('parses multiple BibTeX entries', () => {
@@ -286,9 +298,10 @@ describe('parseNBIB', () => {
     expect(recs[0].doi).toBe('10.9999/nbib.2023');
   });
 
-  it('parsed record has source set to "PubMed"', () => {
+  it('detects PubMed as the DATABASE (nbib is PubMed\'s own format — 116.md §14)', () => {
     const recs = parseNBIB(nbibText);
-    expect(recs[0].source).toBe('PubMed');
+    expect(recs[0].sourceDb).toBe('PubMed');
+    expect(recs[0].source).toBe('');
   });
 
   it('returns empty array for empty string', () => {

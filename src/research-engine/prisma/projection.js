@@ -15,6 +15,8 @@
  * Pure — no DOM/React/network/Prisma. The server fetches; this maps.
  */
 
+import { dbLabel } from '../search/searchProvenance.js';
+
 const clean = (s) => String(s == null ? '' : s).trim();
 const arr = (v) => (Array.isArray(v) ? v : []);
 
@@ -34,7 +36,8 @@ const arr = (v) => (Array.isArray(v) ? v : []);
  * @param {object} input
  *   records        ScreenRecord rows (id, sourceDb, isDuplicate, isPrimary,
  *                  duplicateGroupId, currentStage, finalStatus, promotedAt,
- *                  acceptedAt, rejectedReason, handoffStudyId)
+ *                  acceptedAt, rejectedReason, handoffStudyId, importBatchId,
+ *                  identificationSource, sourceDetail)
  *   sourcesByRecord  { [recordId]: { origin, runId, batchId, provider } } from
  *                  ScreenRecordSource — how the record ENTERED the project.
  *   dedupByRecord  { [recordId]: { stage, method } } — where a duplicate was caught.
@@ -42,6 +45,9 @@ const arr = (v) => (Array.isArray(v) ? v : []);
  *                  FullTextCandidate / FullTextRequest / ScreenPdfAttachment.
  *   decisionsByRecord { [recordId]: { titleAbstract, fullText, exclusionReason } }
  *                  the RESOLVED decision per stage (quorum/consensus already applied).
+ *   batchById      { [batchId]: { sourceDatabase } } — 116.md §14: the batch-level
+ *                  researcher-declared database (104.md), threaded in so a record's
+ *                  EFFECTIVE database is record.sourceDb || its batch's declaration.
  *   studyIdByRecord  { [recordId]: studyId } — §9 report→study link.
  *   quantStudyIds  Set|Array of study ids contributing to the meta-analysis.
  * @returns {Array} projections
@@ -53,6 +59,7 @@ export function buildRecordProjections(input = {}) {
   const dedup = input.dedupByRecord || {};
   const retrieval = input.retrievalByRecord || {};
   const decisions = input.decisionsByRecord || {};
+  const batchById = input.batchById || {};
   const studyIds = input.studyIdByRecord || {};
   const quant = input.quantStudyIds instanceof Set
     ? input.quantStudyIds
@@ -77,8 +84,14 @@ export function buildRecordProjections(input = {}) {
       : (clean(r.currentStage) === 'full_text' || !!r.promotedAt);
 
     const titleAbstract = d.titleAbstract || null;
-    const fullText = d.fullText || null;
-    const included = clean(r.finalStatus) === 'accepted' || fullText === 'include';
+    // 116.md §15 — a leader finalize-reject writes ONLY ScreenRecord.finalStatus =
+    // 'rejected' (+ rejectedReason); no full_text ScreenDecision row exists on that
+    // path, so without this mapping the record stayed "awaiting full-text" forever
+    // and the reports-excluded box under-counted. The final status is the project's
+    // RESOLVED position, so it outranks individual reviewer decisions either way.
+    const finalStatus = clean(r.finalStatus);
+    const fullText = finalStatus === 'rejected' ? 'exclude' : (d.fullText || null);
+    const included = finalStatus === 'accepted' || fullText === 'include';
 
     const studyId = clean(studyIds[id] || r.handoffStudyId || '');
 
@@ -90,10 +103,25 @@ export function buildRecordProjections(input = {}) {
     const origin = clean(s.origin)
       || (r.importBatchId ? 'file' : 'manual');
 
+    // 116.md §14 — the record's EFFECTIVE database: what the record itself says,
+    // else what the researcher declared for its import batch (104.md
+    // ScreenImportBatch.sourceDatabase, stored as a canonical key → display label).
+    // Declared batch attribution keeps an Embase RIS export in the database arm
+    // even though the file itself never named a database.
+    const batch = batchById[clean(r.importBatchId || '') || clean(s.batchId || '')] || {};
+    const sourceDb = clean(r.sourceDb)
+      || (clean(batch.sourceDatabase) ? dbLabel(batch.sourceDatabase) : '');
+
     return {
       id,
       origin,
-      sourceDb: clean(r.sourceDb),
+      sourceDb,
+      // 116.md §13/§14 — the per-record correction override + preserved free-text
+      // detail ("reference list of Smith 2020"). model.identificationSource() gives
+      // the explicit override absolute precedence.
+      identificationSource: clean(r.identificationSource),
+      sourceDetail: clean(r.sourceDetail),
+      importBatchId: clean(r.importBatchId || ''),
       runId: clean(s.runId),
       batchId: clean(s.batchId),
 

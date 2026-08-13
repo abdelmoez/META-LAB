@@ -45,9 +45,13 @@ describe('§17/§21 — the diagram is PRISMA 2020, not the old single column', 
   });
 
   it('draws all three official removal sub-lines', () => {
-    expect(built.svg).toContain('Duplicate records removed');
-    expect(built.svg).toContain('Records marked as ineligible by automation tools');
-    expect(built.svg).toContain('Records removed for other reasons');
+    // 116.md §18 — the automation-tools sub-line WRAPS inside its box now (it
+    // used to overflow ~300px of text into a 250px box), so the official wording
+    // is asserted across the wrapped <text> runs rather than as one line.
+    const textOnly = built.svg.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ');
+    expect(textOnly).toContain('Duplicate records removed');
+    expect(textOnly).toContain('Records marked as ineligible by automation tools');
+    expect(textOnly).toContain('Records removed for other reasons');
   });
 
   it('gives the other-methods column NO screening box', () => {
@@ -112,16 +116,18 @@ describe('§12 — counts are inspectable', () => {
     expect(html).toContain('aria-label="Inspect Records screened');
   });
 
-  it('the inspector answers "which records created this number?"', () => {
-    const records = FLOW.boxes.excluded_screening.ids.slice(0, 3).map((id) => ({
-      id, title: `Study ${id}`, year: '2024', sourceDb: 'PubMed',
-    }));
+  it('the inspector explains the count and pages its records from the server (116.md §9/§11)', () => {
+    // 116.md §11 — the record list is FETCHED (paginated box endpoint), never a
+    // client-side filter over a shipped array; the initial render carries the
+    // header, the §9.3 explanation and the loading state.
     const html = renderToStaticMarkup(
-      <PrismaInspector boxId="excluded_screening" flow={FLOW} records={records} />,
+      <PrismaInspector boxId="excluded_screening" flow={FLOW} screenProjectId="sp1" />,
     );
     expect(html).toContain('Records excluded');
-    expect(html).toContain('Study r');
     expect(html).toContain(`n = ${FLOW.counts.excludedScreen}`);
+    expect(html).toContain('resolved decisions'); // the explanation, not raw internals
+    expect(html).toContain('stitch-prisma-search');
+    expect(html).toContain('Loading records');
   });
 
   it('shows the §12 duplicate-stage breakdown', () => {
@@ -132,11 +138,14 @@ describe('§12 — counts are inspectable', () => {
   });
 
   it('is honest that import-discarded duplicates cannot be listed', () => {
+    // The phantom count reaches the inspector two ways: the breakdown row here
+    // (initial render), and the server's `uninspectable` notice once the box
+    // endpoint responds (asserted in the loader/endpoint tests).
     const f = derivePrismaFlow(many(3, {}), { unrecordedDuplicates: 25 });
     const html = renderToStaticMarkup(
-      <PrismaInspector boxId="removed_before_screening" flow={f} records={[]} />,
+      <PrismaInspector boxId="removed_before_screening" flow={f} screenProjectId="sp1" />,
     );
-    expect(html).toMatch(/cannot be listed individually/i);
+    expect(html).toMatch(/not stored as records/i);
   });
 
   it('renders a plain diagram when interaction is off (export preview)', () => {

@@ -105,7 +105,10 @@ r.post('/projects/:pid/transfer-owner',   M.transferOwner);
 r.get('/projects/:pid/overview',          OV.getOverview);
 r.get('/projects/:pid/audit',             OV.getAuditLog);
 // 103.md §10/§12 — record-derived PRISMA flow + its reconciliation report.
+// 116.md §11 — slim payload (counts only, no id arrays).
 r.get('/projects/:pid/prisma',            OV.getPrismaFlow);
+// 116.md §9-§12 — the paginated, searchable record list behind ONE PRISMA box.
+r.get('/projects/:pid/prisma/box/:boxId/records', OV.getPrismaBoxRecords);
 
 // Project chat (Part 6) — members only, polling via ?since
 r.get('/projects/:pid/chat',              CH.listMessages);
@@ -133,6 +136,9 @@ r.get('/projects/:pid/keyword-stats',    S.getKeywordStats);
 // so concurrent leaders no longer clobber each other's whole list.
 r.post('/projects/:pid/keywords/ops',    S.keywordOps);
 r.post('/projects/:pid/records',         S.createRecord);
+// 116.md §10 — record METADATA editing (PRISMA inspector write path). Decision
+// state stays with the domain actions (decision / finalize / revert) below.
+r.patch('/projects/:pid/records/:rid',   S.updateRecordMetadata);
 r.delete('/projects/:pid/records/:rid',  S.deleteRecord);
 r.post('/projects/:pid/records/:rid/open', S.markOpened);
 

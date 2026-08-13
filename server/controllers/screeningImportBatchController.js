@@ -35,7 +35,7 @@ export function batchSearchRunId(b) {
 }
 
 /** The additive per-batch wire shape shared by both history endpoints. */
-function shapeBatch(b, remaining) {
+export function shapeBatch(b, remaining) {
   return {
     id: b.id, filename: b.filename, format: b.format, source: b.source || 'file',
     // 96.md — additive fields (existing keys byte-compatible).
@@ -45,6 +45,14 @@ function shapeBatch(b, remaining) {
     preDedupCount: b.preDedupCount, duplicateCount: b.duplicateCount, rejectedCount: b.rejectedCount,
     remainingCount: remaining[b.id] || 0,
     importedByName: b.importedByName, createdAt: b.createdAt,
+    // 116.md §14 — the 104.md manual-search record. These were PERSISTED by the
+    // search-record PATCH but never returned here, so the Import History UI
+    // showed a just-saved database/date as blank forever. Additive keys;
+    // `contributesToReview` defaults true exactly as the schema does.
+    sourceDatabase: b.sourceDatabase || '',
+    searchedAt: b.searchedAt || null,
+    contributesToReview: b.contributesToReview !== false,
+    exclusionNote: b.exclusionNote || '',
   };
 }
 

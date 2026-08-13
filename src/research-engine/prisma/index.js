@@ -12,3 +12,5 @@ export * from './derive.js';
 export * from './reconcile.js';
 export * from './projection.js';
 export * from './svg.js';
+// 116.md §16/§17 — reason grouping + conservative display formatting.
+export { groupKey as reasonGroupKey, displayReason, preferredDisplay } from './reasonFormat.js';

@@ -54,6 +54,9 @@ const prisma = new PrismaClient();
  */
 const FORMAT_TOKENS = new Set([
   'ris', 'csv', 'tsv', 'nbib', 'bibtex', 'bib', 'enw', 'endnote', 'txt', 'xml',
+  // 116.md §14 — 'ciw' was missing, so CIW-stamped rows were never repaired.
+  // ('wos' stays OUT: it is a genuine Web of Science alias, not a format token.)
+  'ciw',
   'json', 'medline', 'pubmed-xml', 'file', 'auto', 'unknown', 'undefined', 'null',
 ]);
 

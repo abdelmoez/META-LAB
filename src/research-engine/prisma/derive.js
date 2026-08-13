@@ -43,6 +43,7 @@ import {
   armOf, identificationSource, dispositionOf, isRemovedBeforeScreening,
   IDENTIFICATION_SOURCES,
 } from './model.js';
+import { groupKey as reasonGroupKey, preferredDisplay } from './reasonFormat.js';
 
 const arr = (v) => (Array.isArray(v) ? v : []);
 const clean = (s) => String(s == null ? '' : s).trim();
@@ -72,6 +73,25 @@ function breakdown(records, keyFn, labelFn) {
       ids: rows.map((r) => r.id),
     }))
     .sort((a, b) => (b.n - a.n) || (a.label < b.label ? -1 : 1));
+}
+
+/**
+ * 116.md §16/§17 — a free-text reason rollup. Rows are GROUPED under the
+ * casefolded/whitespace-collapsed key (so "Wrong population" and "wrong
+ * population " are one row, not two) and LABELLED with the most frequent original
+ * casing, conservatively sentence-cased for display. Records with no recorded
+ * reason group under their own honest row. The stored strings are never touched —
+ * this is aggregation-time formatting only.
+ */
+function reasonBreakdown(records, valueFn) {
+  return breakdown(
+    records,
+    (r) => reasonGroupKey(valueFn(r)) || reasonGroupKey('Reason not recorded'),
+    (key, rows) => {
+      const raws = rows.map(valueFn).filter((v) => clean(v));
+      return raws.length ? preferredDisplay(raws) : 'Reason not recorded';
+    },
+  );
 }
 
 /**
@@ -232,23 +252,28 @@ export function derivePrismaFlow(records, opts = {}) {
       unknown: 'Stage not recorded',
     }[k] || k))),
     byMethod: breakdown(removedDuplicate, (r) => clean(r.dedupMethod) || 'unknown'),
-    byReason: breakdown(removedOther, (r) => clean(r.removedReason) || 'Reason not recorded'),
+    // 116.md §17 — same grouping/display rules as the exclusion reasons.
+    byReason: reasonBreakdown(removedOther, (r) => r.removedReason),
   };
 
-  const exclusionReasons = breakdown(
+  // 116.md §16/§17 — reasons are grouped case/whitespace-insensitively and
+  // displayed with conservative sentence-case. This single rollup feeds the SVG
+  // reason lines, the inspector and the manuscript adapter, so they cannot
+  // disagree on either the grouping or the wording.
+  const exclusionReasons = reasonBreakdown(
     [...excludedFtDb, ...excludedFtOther],
-    (r) => clean(r.exclusionReason) || 'Reason not recorded',
+    (r) => r.exclusionReason,
   );
   // Per-arm too: the two columns are independent flows, so the other-methods
   // column must never display the database column's reasons (a wrong diagram, not
   // a cosmetic slip).
   const exclusionReasonsByArm = {
-    db: breakdown(excludedFtDb, (r) => clean(r.exclusionReason) || 'Reason not recorded'),
-    other: breakdown(excludedFtOther, (r) => clean(r.exclusionReason) || 'Reason not recorded'),
+    db: reasonBreakdown(excludedFtDb, (r) => r.exclusionReason),
+    other: reasonBreakdown(excludedFtOther, (r) => r.exclusionReason),
   };
-  const notRetrievedReasons = breakdown(
+  const notRetrievedReasons = reasonBreakdown(
     [...notRetrievedDb, ...notRetrievedOther],
-    (r) => clean(r.notRetrievedReason) || 'Reason not recorded',
+    (r) => r.notRetrievedReason,
   );
 
   /* ── flat scalars, for consumers that only want numbers ──────────────────── */

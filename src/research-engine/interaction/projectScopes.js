@@ -80,13 +80,19 @@ export function legacyTabScope(tab) {
  * NOT blob-backed, and therefore deliberately absent:
  *   - `screening` — relational rows (ScreenDecision / keyword ops with their own
  *     server-side pre-image CAS); a blob conflict says nothing about them;
+ *   - `prisma` — 116.md §10: the entries this scope records are PRISMA-inspector
+ *     record edits, which are RELATIONAL ScreenRecord mutations through the
+ *     screening PATCH endpoint. A blob CAS refusal says nothing about them (the
+ *     page's legacy manual-number fields do write the blob, but they record no
+ *     history entries), so clearing this scope on a 409 would only destroy valid
+ *     relational undo state;
  *   - `search` — its own SearchDocument row + revision envelope, and its stack has
  *     its own clear-on-remote-adoption rule inside SearchBuilderTab;
  *   - `living` / `citation` / `methods` / `history` / `overview` — no blob writes
  *     that this round records.
  */
 export const BLOB_SCOPES = Object.freeze(new Set([
-  'control', 'pico', 'prospero', 'prisma', 'extraction', 'rob',
+  'control', 'pico', 'prospero', 'extraction', 'rob',
   'analysis', 'forest', 'sensitivity', 'subgroup', 'nma',
   'grade', 'manuscript', 'report',
 ]));

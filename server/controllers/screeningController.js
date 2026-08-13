@@ -92,6 +92,9 @@ import { recordUsage, USAGE } from '../utils/usage.js';
 // is a usage event (per-decision rows live in ScreenDecision already).
 import { recordEvent, recordFirstEvent } from '../services/analytics.js';
 import { ensureScreenModuleForMetaLab } from '../screening/ensureWorkspace.js';
+// 116.md §10/§13 — record-metadata editing from the PRISMA inspector: the
+// identification-source override validates against the model's own bucket ids.
+import { IDENTIFICATION_SOURCE_IDS } from '../../src/research-engine/prisma/model.js';
 
 // Parse a comma-separated keyword param into a clean phrase list.
 function parseKeywordParam(v) {
@@ -990,6 +993,125 @@ export async function createRecord(req, res) {
   }
 }
 
+/* ── 116.md §10 — record metadata editing (the PRISMA inspector's write path) ──
+ *
+ * PATCH /projects/:pid/records/:rid — bibliographic/provenance METADATA only.
+ * Decision-state changes (include↔exclude, retrieval) are NOT accepted here: they
+ * go through the existing domain actions (saveDecision / finalizeRecord /
+ * revertFinalReview), which own their side-effects. The one decision-adjacent
+ * field allowed is `rejectedReason` — re-wording an ALREADY-rejected record's
+ * exclusion reason (leader/conflict-resolver only), which changes reporting, not
+ * state.
+ *
+ * Permission: the same bar as putting records INTO the project (importRecords) —
+ * owner/leader, or an active non-viewer member with canImportRecords. Outsiders
+ * keep the existence-hiding 404. Blind mode: a non-leader must not edit the
+ * fields the wire hides from them (authors/journal).
+ */
+const RECORD_PATCH_FIELDS = Object.freeze({
+  title: { cap: 1000 },
+  authors: { cap: 500, blindHidden: true },
+  year: { cap: 4, validate: (v) => (v === '' || /^\d{4}$/.test(v)) || 'year must be a 4-digit year' },
+  journal: { cap: 300, blindHidden: true },
+  doi: { cap: 200, normalize: (v) => v.replace(/^https?:\/\/(dx\.)?doi\.org\//i, '') },
+  pmid: { cap: 50, validate: (v) => (v === '' || /^\d+$/.test(v)) || 'pmid must be digits only' },
+  sourceDb: { cap: 100 },
+  identificationSource: {
+    cap: 40,
+    validate: (v) => (v === '' || IDENTIFICATION_SOURCE_IDS.includes(v)) || 'identificationSource is not a known PRISMA bucket',
+  },
+  sourceDetail: { cap: 300 },
+  rejectedReason: { cap: 500, requiresFinalize: true },
+});
+
+export async function updateRecordMetadata(req, res) {
+  try {
+    const access = await getProjectAccess(req.params.pid, req.user);
+    if (!access) return res.status(404).json({ error: 'Project not found' });
+    const p = access.project;
+    const canEdit = access.isOwner || access.isLeader
+      || !!(access.active && access.member && access.member.role !== 'viewer' && access.perms.canImportRecords);
+    if (!canEdit) return res.status(403).json({ error: 'You do not have permission to edit records in this project' });
+
+    const rec = await prisma.screenRecord.findFirst({
+      where: { id: req.params.rid, projectId: p.id },
+    });
+    if (!rec) return res.status(404).json({ error: 'Record not found' });
+
+    const blind = p.blindMode && !access.isLeader;
+    const canFinalize = !!(access.isLeader || access.canResolveConflicts);
+
+    const body = req.body || {};
+    const data = {};
+    const changed = {};
+    for (const [field, spec] of Object.entries(RECORD_PATCH_FIELDS)) {
+      if (body[field] === undefined) continue;
+      if (spec.blindHidden && blind) {
+        return res.status(403).json({ error: `Blind mode hides ${field} from you, so it cannot be edited here` });
+      }
+      if (spec.requiresFinalize) {
+        if (!canFinalize) return res.status(403).json({ error: 'Only the project leader can edit the final exclusion reason' });
+        if (rec.finalStatus !== 'rejected') {
+          return res.status(400).json({ error: 'rejectedReason applies only to a record with a final rejection' });
+        }
+      }
+      let v = String(body[field] == null ? '' : body[field]).trim();
+      if (spec.normalize) v = spec.normalize(v);
+      if (spec.validate) {
+        const ok = spec.validate(v);
+        if (ok !== true) return res.status(400).json({ error: ok });
+      }
+      v = v.slice(0, spec.cap);
+      const before = String(rec[field] == null ? '' : rec[field]);
+      if (v === before) continue;
+      data[field] = v;
+      changed[field] = { from: before.slice(0, 200), to: v.slice(0, 200) };
+    }
+    // A body with no editable field at all is a caller error, not a silent no-op.
+    if (!Object.keys(body).some((k) => RECORD_PATCH_FIELDS[k])) {
+      return res.status(400).json({ error: 'No editable field in request' });
+    }
+    if (!Object.keys(data).length) {
+      // Nothing actually changed — idempotent success (the inspector's undo path
+      // may legitimately re-apply the current state).
+      return res.json({ record: shapeUpdatedRecord(rec, blind), changed: {} });
+    }
+
+    const updated = await prisma.screenRecord.update({ where: { id: rec.id }, data });
+
+    await writeAudit(p.id, req.user, 'RECORD_UPDATED', {
+      entityType: 'record', entityId: rec.id, details: { changed },
+    });
+    void touchProjectActivity(p.linkedMetaLabProjectId);
+    // Thin poke (no content, no actor) — open PRISMA tabs refetch the flow.
+    emitToProjectMembers(p.id, { type: 'record.updated', ids: [rec.id] }, { exclude: req.user.id });
+
+    return res.json({ record: shapeUpdatedRecord(updated, blind), changed });
+  } catch (err) {
+    console.error('[screening] updateRecordMetadata:', err.message);
+    return res.status(500).json({ error: 'Internal server error' });
+  }
+}
+
+/** The PATCH response shape — blind-mode suppression matches listRecords (81.md). */
+function shapeUpdatedRecord(r, blind) {
+  return {
+    id: r.id,
+    title: r.title,
+    authors: blind ? '' : r.authors,
+    journal: blind ? '' : r.journal,
+    year: r.year,
+    doi: r.doi,
+    pmid: r.pmid,
+    sourceDb: r.sourceDb,
+    identificationSource: r.identificationSource || '',
+    sourceDetail: r.sourceDetail || '',
+    rejectedReason: r.rejectedReason || '',
+    currentStage: r.currentStage,
+    finalStatus: r.finalStatus,
+  };
+}
+
 export async function deleteRecord(req, res) {
   try {
     const p = await getOwnedProject(req.params.pid, req.user.id);
@@ -1384,6 +1506,19 @@ export async function importRecords(req, res) {
     const { format = 'ris', content = '', filename = 'import', force } = req.body || {};
     if (!content.trim()) return res.status(400).json({ error: 'content is required' });
 
+    // 116.md §14 — the importer may declare the search up front ("this RIS file is
+    // an Embase export, searched on the 3rd"): persisted on the batch (104.md
+    // fields) so provenance + PRISMA read it without a second, after-the-fact
+    // PATCH. Optional; validation mirrors updateImportBatchSearch.
+    const sourceDatabase = String(req.body?.sourceDatabase || '').trim().slice(0, 100);
+    let searchedAt = null;
+    if (req.body?.searchedAt) {
+      const d = new Date(req.body.searchedAt);
+      if (Number.isNaN(d.getTime())) return res.status(400).json({ error: 'searchedAt is not a valid date.' });
+      if (d.getTime() > Date.now()) return res.status(400).json({ error: 'A search date cannot be in the future.' });
+      searchedAt = d;
+    }
+
     // Task 19: import fingerprint — sha256 of the CRLF-normalized raw content,
     // computed SERVER-side (a client-supplied hash could trivially bypass the
     // warning). Normalizing line endings makes the same file from Windows/Mac
@@ -1430,6 +1565,8 @@ export async function importRecords(req, res) {
         fileHash, fileSize: Buffer.byteLength(content, 'utf8'),
         importedById: req.user.id, importedByName: access.member?.name || req.user.email || '',
         parser: detectedFormat, maxRecords,
+        // 116.md §14 — importer-declared search provenance (optional).
+        sourceDatabase, searchedAt,
       });
     } catch (e) {
       if (e && e.code === 'CAPACITY') return res.status(400).json({ error: e.message });

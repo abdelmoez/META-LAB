@@ -59,6 +59,12 @@ export const IDENTIFICATION_SOURCES = Object.freeze({
   citation: { arm: 'other', label: 'Citation searching' },
   website: { arm: 'other', label: 'Websites' },
   organisation: { arm: 'other', label: 'Organisations' },
+  // 116.md §13 — the detailed other-methods vocabulary a researcher can correct a
+  // record into (per-record identificationSource override). PRISMA 2020 draws them
+  // all in the other-methods arm; the detailed bucket stays inspectable.
+  prior_review: { arm: 'other', label: 'Previous review' },
+  reference_list: { arm: 'other', label: 'Reference lists' },
+  author_contact: { arm: 'other', label: 'Author contact' },
   manual: { arm: 'other', label: 'Hand-searching / manually added' },
   other: { arm: 'other', label: 'Other methods' },
 });
@@ -90,11 +96,18 @@ export function identificationSource(rec) {
   if (kind === 'register') return 'register';
   if (kind === 'database') return 'database';
 
-  // A file import whose records carry no usable source name. It genuinely came
-  // from a database search we cannot name, so it stays in the database arm rather
-  // than being quietly reclassified as "other methods" — moving it across arms
-  // would misreport the search, which is worse than an unnamed database.
-  if (origin === 'search' || origin === 'file' || origin === 'api') return 'database';
+  // An EXECUTED search (a Pecan run or an API pull) genuinely queried a database,
+  // so it stays in the database arm even when the provider name did not survive.
+  if (origin === 'search' || origin === 'api') return 'database';
+  // 116.md §13 — a FILE import with NO database attribution (record sourceDb blank
+  // AND no batch-declared sourceDatabase — the projection threads the batch value
+  // into `sourceDb` before this runs) is a manual upload, not an unnamed database
+  // search. It enters the other-methods arm. This consciously SUPERSEDES the
+  // 103.md §2 default ("stays in the database arm"): pretending a hand-uploaded
+  // RIS file was a database search misreports the search methodology, and any file
+  // that genuinely came from a database keeps the db arm the moment its record or
+  // batch names one (§14).
+  if (origin === 'file') return 'manual';
   return 'other';
 }
 

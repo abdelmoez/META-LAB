@@ -729,6 +729,14 @@ model ScreenRecord {
   // being destroyed, so a later re-accept can RESTORE it rather than start blank.
   // Nullable → `prisma db push` stays additive-safe.
   revertedExtractionSnapshot String?
+  // 116.md §13/§14 — per-record PRISMA identification correction: an explicit
+  // override of the derived identification bucket (validated against
+  // IDENTIFICATION_SOURCE_IDS; prisma/model.js gives it absolute precedence) plus
+  // the preserved free-text detail ("reference list of Smith 2020",
+  // "author contact, Prof. X"). Nullable → `prisma db push` stays additive-safe;
+  // legacy rows read null ≡ "derive automatically".
+  identificationSource       String?
+  sourceDetail               String?
   createdAt                  DateTime              @default(now())
   updatedAt                  DateTime              @updatedAt
 

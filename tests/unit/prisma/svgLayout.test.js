@@ -265,6 +265,84 @@ describe('the two identification arms feed the single included box', () => {
   });
 });
 
+/* ═══════════════ 116.md §18/§19 — no text escapes its box ═══════════════ */
+
+describe('text extents: no text run may exceed its box width', () => {
+  // The regression that motivated §18: "Records marked as ineligible by
+  // automation tools (n = 0)" is ~59 chars ≈ 300+px at 10.5px Georgia, drawn in a
+  // 250px box. drawBox now wraps every line; this suite measures every <text>
+  // inside every <g data-box> with the SAME character-width estimate wrapBoxLines
+  // uses, so an overflow cannot ship without a red test.
+  const CHAR_W = 10.5 * 0.52; // px per character (svg.js CHAR_W_EM at the box font)
+
+  const decode = (s) => s
+    .replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"');
+
+  /** Every `<text>` run inside each box group, with its x and content. */
+  function boxTexts(svg) {
+    const out = [];
+    const groupRe = /<g data-box="([^"]+)">([\s\S]*?)<\/g>/g;
+    let g;
+    while ((g = groupRe.exec(svg))) {
+      const textRe = /<text x="([-\d.]+)"[^>]*>([^<]*)<\/text>/g;
+      let t;
+      while ((t = textRe.exec(g[2]))) {
+        out.push({ boxId: g[1], x: +t[1], content: decode(t[2]) });
+      }
+    }
+    return out;
+  }
+
+  const LONG_REASON = 'Population did not meet the pre-specified inclusion criteria for age, comorbidity burden and prior treatment exposure as defined in the registered protocol (secondary screening of supplementary appendix material)';
+  const cases = {
+    'both columns, deep reasons': buildPrismaFlowSVG(DEEP, { perSource: true }),
+    'empty review (the fixed automation line)': buildPrismaFlowSVG(derivePrismaFlow([])),
+    'updated-review template': buildPrismaFlowSVG(DEEP, { updated: true, perSource: true }),
+    'long automation line + 200-char reason + long source label (§21 Scenario E)': buildPrismaFlowSVG(derivePrismaFlow([
+      ...many(6, { sourceDb: 'the Cochrane Central Register of Controlled Trials (CENTRAL)' }),
+      ...many(4, {
+        screeningDecision: 'include', soughtRetrieval: true, retrieved: true,
+        fullTextDecision: 'exclude', exclusionReason: LONG_REASON,
+      }),
+      ...many(2, { screeningDecision: 'include', soughtRetrieval: true, retrieved: true, fullTextDecision: 'include', included: true }),
+    ]), { perSource: true }),
+  };
+
+  for (const [name, built] of Object.entries(cases)) {
+    it(`${name}: every text run stays inside its box`, () => {
+      const byId = Object.fromEntries(built.boxes.map((b) => [b.id, b]));
+      const texts = boxTexts(built.svg);
+      expect(texts.length).toBeGreaterThan(0);
+      for (const t of texts) {
+        const box = byId[t.boxId];
+        expect(box, `text in unknown box ${t.boxId}`).toBeTruthy();
+        const right = t.x + t.content.length * CHAR_W;
+        expect(right, `"${t.content}" escapes ${t.boxId} (${right.toFixed(0)} > ${(box.x + box.w).toFixed(0)})`)
+          .toBeLessThanOrEqual(box.x + box.w);
+        expect(t.x).toBeGreaterThanOrEqual(box.x);
+      }
+    });
+  }
+
+  it('the automation-tools sub-line WRAPS instead of overflowing (the §18 bug)', () => {
+    const built = cases['empty review (the fixed automation line)'];
+    const texts = boxTexts(built.svg).filter((t) => t.boxId === 'removed_before_screening');
+    // The official sub-line is now split across ≥2 runs…
+    expect(texts.some((t) => /Records marked as ineligible/.test(t.content))).toBe(true);
+    expect(texts.some((t) => /automation tools/.test(t.content))).toBe(true);
+    expect(texts.some((t) => /Records marked as ineligible by automation tools \(n = \d+\)/.test(t.content))).toBe(false);
+    // …and the box grew to hold them (was 4 lines ⇒ 72px before wrapping).
+    const box = built.boxes.find((b) => b.id === 'removed_before_screening');
+    expect(box.h).toBeGreaterThan(72);
+  });
+
+  it('a very long reason is capped with an ellipsis — the inspector is the detail layer', () => {
+    const built = cases['long automation line + 200-char reason + long source label (§21 Scenario E)'];
+    const texts = boxTexts(built.svg).filter((t) => t.boxId === 'excluded_full_text_db');
+    expect(texts.some((t) => t.content.endsWith('…'))).toBe(true);
+  });
+});
+
 /* ═══════════════ live view and export are one drawing ═══════════════ */
 
 describe('export and live view use the same layout', () => {

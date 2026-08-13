@@ -7,6 +7,25 @@
  */
 
 import { uid } from '../project-model/defaults.js';
+// 116.md §14 — recognized-database detection: a parser may state where a record
+// came from ONLY when the file itself names a database the shared vocabulary
+// recognises. Both modules are pure (shared client/server).
+import { dbKind } from '../search/searchProvenance.js';
+
+/**
+ * recognizedDatabase(value) — the trimmed value when it names a database or
+ * register the canonical vocabulary (searchProvenance CANONICAL_ALIASES/DB_KINDS
+ * + classifySource) recognises; '' otherwise. 116.md §14: "If an RIS file
+ * contains a record originally exported from Embase, and that information can be
+ * reliably detected, do not throw it away" — and, symmetrically, never promote an
+ * unrecognised token (least of all a file-format name) into a database claim.
+ * Pure.
+ */
+export function recognizedDatabase(value) {
+  const v = String(value == null ? "" : value).trim();
+  if (!v) return "";
+  return dbKind(v, v) !== "other" ? v : "";
+}
 
 /**
  * stripBom(text)
@@ -41,7 +60,7 @@ export function normTitle(t) {
  * Build a canonical record object from raw parsed fields.
  * Strips DOI URL prefixes, assigns a fresh uid, initialises screening fields.
  *
- * @param {object} r  Raw parsed fields: { title, authors, year, journal, doi, pmid, abstract, source }
+ * @param {object} r  Raw parsed fields: { title, authors, year, journal, doi, pmid, abstract, source, sourceDb }
  * @returns {object}  Canonical record
  */
 export function mkRecord(r) {
@@ -55,6 +74,10 @@ export function mkRecord(r) {
     pmid:      r.pmid     || "",
     abstract:  r.abstract || "",
     source:    r.source   || "",
+    // 116.md §14 — the ORIGINAL database, only when reliably detected from the
+    // file itself (RIS `DB` tag, EndNote remote-database-name, nbib ⇒ PubMed).
+    // Parsers no longer stamp the file FORMAT anywhere near a source field.
+    sourceDb:  r.sourceDb || "",
     // 59.md Change 1 — pass through a normalised screening decision when present.
     decision:  normalizeImportedDecision(r.decision),
     reviewer2: "",
@@ -130,14 +153,22 @@ export function parseRIS(text) {
       if (!cur.pmid) cur.pmid = val; cur._last = null;
     } else if (tag === "ID" && /^\d+$/.test(val)) {
       if (!cur.pmid) cur.pmid = val; cur._last = null;
+    } else if (tag === "DB") {
+      // 116.md §14 — Ovid/Embase/Scopus/ProQuest/EBSCO exports name their source
+      // database in the standard `DB` tag. Kept only when the vocabulary
+      // recognises it (below); an unrecognised value stays out of sourceDb.
+      if (!cur.db) cur.db = val; cur._last = null;
     } else {
       cur._last = null;
     }
   });
 
+  // 116.md §14 — no format token in `source` any more ("RIS" is how the record
+  // was PARSED, never where it came from); the recognized `DB` tag becomes the
+  // record's original database.
   return recs
     .filter(r => r.title || r.authors.length)
-    .map(r => mkRecord({ ...r, authors: r.authors.join("; "), source: "RIS" }));
+    .map(r => mkRecord({ ...r, authors: r.authors.join("; "), sourceDb: recognizedDatabase(r.db) }));
 }
 
 /**
@@ -176,7 +207,10 @@ export function parseNBIB(text) {
 
   return recs
     .filter(r => r.title || r.pmid)
-    .map(r => mkRecord({ ...r, authors: r.authors.join("; "), source: "PubMed" }));
+    // nbib is PubMed's OWN export format, so "PubMed" here is genuine database
+    // detection, not invention (116.md §14) — carried as sourceDb, not as a
+    // format token in `source`.
+    .map(r => mkRecord({ ...r, authors: r.authors.join("; "), sourceDb: "PubMed" }));
 }
 
 /**
@@ -219,7 +253,8 @@ export function parseBibTeX(text) {
     const auth  = grab("author");
     rec.authors = auth ? auth.split(/\s+and\s+/).join("; ") : "";
 
-    if (rec.title || rec.authors) recs.push(mkRecord({ ...rec, source: "BibTeX" }));
+    // 116.md §14 — no format token: BibTeX has no reliable database field.
+    if (rec.title || rec.authors) recs.push(mkRecord(rec));
   });
 
   return recs;
@@ -255,7 +290,9 @@ export function parseEndNoteXML(text) {
         journal: txt("periodical full-title") || txt("titles secondary-title"),
         doi:     txt("electronic-resource-num"),
         abstract: txt("abstract"),
-        source:  "EndNote",
+        // 116.md §14 — EndNote records carry the database they were fetched from
+        // in <remote-database-name>; kept only when recognised. No format token.
+        sourceDb: recognizedDatabase(txt("remote-database-name")),
       }));
     }
   } catch (e) { /* malformed XML — return whatever was parsed so far */ }
@@ -279,6 +316,9 @@ const CSV_FIELD_SYNONYMS = {
   abstract: ["abstract", "ab", "summary"],
   url:      ["url", "link", "fulltext url", "full text url", "full-text url"],
   keywords: ["keywords", "keyword", "author keywords", "de", "index keywords", "id"],
+  // 116.md §14 — an explicit database column (recognized-only; a Scopus "Source"
+  // column stays a journal via the mapping above, which is correct for Scopus).
+  sourceDb: ["database", "source database", "database name", "database provider"],
   // 59.md Change 1 — round-trip the screening decision column written by export
   // (and accept common synonyms) so a pre-labelled benchmark dataset imports already
   // screened. Values are normalised in normalizeImportedDecision().
@@ -338,7 +378,7 @@ function sniffDelimiter(text) {
 }
 
 /** Build a record from a header-mapped row; attaches url/keywords only if present. */
-function rowToRecord(map, cells, source) {
+function rowToRecord(map, cells) {
   const get = field => {
     const idx = map.indexOf(field);
     return idx >= 0 ? String(cells[idx] ?? "").trim() : "";
@@ -356,7 +396,8 @@ function rowToRecord(map, cells, source) {
     doi:      get("doi"),
     pmid,
     abstract: get("abstract"),
-    source,
+    // 116.md §14 — no format token; only a recognized explicit database column.
+    sourceDb: recognizedDatabase(get("sourceDb")),
     decision: get("decision"), // 59.md Change 1 — round-trip the screening decision
   });
   const url = get("url");
@@ -382,7 +423,7 @@ export function parseCSV(text, delim) {
   const map = mapHeader(rows[0]);
   if (!map.includes("title") && !map.includes("doi")) return []; // not a reference table
   return rows.slice(1)
-    .map(cells => rowToRecord(map, cells, "CSV"))
+    .map(cells => rowToRecord(map, cells))
     .filter(r => r.title || r.doi || r.pmid);
 }
 
@@ -407,7 +448,7 @@ export function parseTXT(text) {
   return text.replace(/\r\n?/g, "\n").split("\n")
     .map(l => l.trim())
     .filter(Boolean)
-    .map(line => mkRecord({ title: line, source: "TXT" }));
+    .map(line => mkRecord({ title: line })); // 116.md §14 — no format token
 }
 
 /**
@@ -465,7 +506,8 @@ export function parseCIW(text) {
       const authors = (r.af.length ? r.af : r.au).join("; ");
       const rec = mkRecord({
         title: r.title, authors, year: r.year,
-        journal: r.journal, doi: r.doi, pmid: r.pmid, abstract: r.abstract, source: "CIW",
+        // 116.md §14 — no format token ("CIW" is a file format, not a source).
+        journal: r.journal, doi: r.doi, pmid: r.pmid, abstract: r.abstract,
       });
       if (r.url) rec.url = r.url;
       if (r.keywords && r.keywords.length) rec.keywords = r.keywords.join("; ");

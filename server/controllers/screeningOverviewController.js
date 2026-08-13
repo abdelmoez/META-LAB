@@ -7,8 +7,13 @@ import { prisma } from '../db/client.js';
 import { getProjectAccess, ensureLeaderMember } from '../screening/access.js';
 import { mlAccessFromMember } from '../screening/metalabAccess.js';
 import { getEffectiveQuorum } from '../screening/settings.js';
-// 103.md §10 — the canonical, record-derived PRISMA flow.
-import { loadPrismaFlow } from '../screening/prismaFlowService.js';
+// 103.md §10 — the canonical, record-derived PRISMA flow. 116.md §11 — served
+// slim (counts only); per-box record lists page through getPrismaBoxRecords.
+import { loadPrismaFlow, slimPrismaFlow } from '../screening/prismaFlowService.js';
+import {
+  BOX_IDS, boxMeta, dispositionOf, DISPOSITION_LABELS,
+  reasonGroupKey, displayReason,
+} from '../../src/research-engine/prisma/index.js';
 // 110.md §1 — multi-reviewer whole-project progress.
 import { computeScreeningProgress } from '../../src/research-engine/screening/screeningProgress.js';
 import { ELIGIBILITY_ENGINE_REVIEWER_ID } from '../services/screeningEligibilityService.js';
@@ -346,9 +351,231 @@ export async function getPrismaFlow(req, res) {
     if (!result) return res.json({ flow: null, reconciliation: null, empty: true });
 
     const { flow, reconciliation } = result;
-    return res.json({ flow, reconciliation, empty: false });
+    // 116.md §11 — SLIM wire shape: counts + labelled breakdown rows, no id
+    // arrays. The ids stay server-side; the box endpoint serves the record lists.
+    return res.json({ flow: slimPrismaFlow(flow), reconciliation, empty: false });
   } catch (err) {
     console.error('[screening] getPrismaFlow error:', err.message);
+    return res.status(500).json({ error: 'Internal server error' });
+  }
+}
+
+/* ════════════ 116.md §9-§12 — the per-box record list ════════════ */
+
+const BOX_PAGE_LIMIT_DEFAULT = 50;
+const BOX_PAGE_LIMIT_MAX = 200;
+
+/** Facet option rows [{ value, label, n }], sorted by n desc then label. */
+function facetRows(counts) {
+  return Array.from(counts.values())
+    .sort((a, b) => (b.n - a.n) || (a.label < b.label ? -1 : 1));
+}
+
+function countFacet(map, value, label) {
+  const key = String(value);
+  const cur = map.get(key);
+  if (cur) cur.n += 1;
+  else map.set(key, { value: key, label, n: 1 });
+}
+
+/**
+ * GET /projects/:pid/prisma/box/:boxId/records — 116.md §9/§11/§12.
+ *
+ * The paginated, searchable record list behind ONE PRISMA box. The flow is
+ * re-derived server-side (one pass — §19), the box's id set selects the records,
+ * and q + facet filters + cursor/limit are applied HERE so a 50k-record box never
+ * ships to the client.
+ *
+ * Query: q (title/DOI/PMID), source (casefolded effective source), status
+ * (disposition id), reason (casefolded exclusion/not-retrieved reason), retrieval
+ * (retrieved|not_retrieved|pending), cursor (opaque offset), limit (≤200).
+ *
+ * Blinding follows the listRecords convention (81.md): under blindMode a
+ * non-leader gets authors/journal suppressed AT THE WIRE, and no reviewer
+ * identity ever appears in this list.
+ */
+export async function getPrismaBoxRecords(req, res) {
+  try {
+    const access = await getProjectAccess(req.params.pid, req.user);
+    if (!access) return res.status(404).json({ error: 'Project not found' });
+    await ensureLeaderMember(access.project);
+    const p = access.project;
+
+    const boxId = String(req.params.boxId || '');
+    // An unknown box id is a nonexistent resource, not a validation hint (§9).
+    if (!BOX_IDS.includes(boxId)) return res.status(404).json({ error: 'Unknown PRISMA box' });
+    const meta = boxMeta(boxId);
+
+    const limitRaw = Number.parseInt(String(req.query.limit ?? ''), 10);
+    const limit = Number.isFinite(limitRaw)
+      ? Math.min(Math.max(limitRaw, 1), BOX_PAGE_LIMIT_MAX)
+      : BOX_PAGE_LIMIT_DEFAULT;
+    const cursorRaw = Number.parseInt(String(req.query.cursor ?? ''), 10);
+    const offset = Number.isFinite(cursorRaw) ? Math.max(cursorRaw, 0) : 0;
+    const q = String(req.query.q || '').trim().toLowerCase();
+    const fSource = String(req.query.source || '').trim().toLowerCase();
+    const fStatus = String(req.query.status || '').trim();
+    const fReason = String(req.query.reason || '').trim().toLowerCase();
+    const fRetrieval = String(req.query.retrieval || '').trim();
+
+    const result = await loadPrismaFlow(p.id);
+    const box = result && result.flow && result.flow.boxes && result.flow.boxes[boxId];
+    if (!result || !box) {
+      return res.json({
+        boxId, unit: meta.unit, total: 0, listed: 0, uninspectable: 0,
+        records: [], nextCursor: null, facets: {}, blindMode: !!p.blindMode,
+        isLeader: !!access.isLeader, canEdit: false, canFinalize: false,
+      });
+    }
+
+    // The studies box counts DISTINCT studies (ids are study keys, not record
+    // ids); its inspectable rows are the included REPORTS, grouped by studyId in
+    // the response so the §9 "studies + reports attached" shape is explicit.
+    const recordIds = boxId === 'included_studies'
+      ? result.flow.boxes.included_reports.ids
+      : box.ids;
+    const idSet = new Set(recordIds);
+
+    const projById = new Map(result.projections.map((pr) => [pr.id, pr]));
+
+    // One indexed query, display columns only (same class of cost as the flow
+    // load itself), then in-memory membership + filters — the listRecords
+    // in-memory path precedent.
+    const rows = await prisma.screenRecord.findMany({
+      where: { projectId: p.id },
+      select: {
+        id: true, title: true, authors: true, year: true, journal: true,
+        doi: true, pmid: true, sourceDb: true, importBatchId: true,
+        isDuplicate: true, isPrimary: true, duplicateGroupId: true,
+        currentStage: true, finalStatus: true, rejectedReason: true,
+        identificationSource: true, sourceDetail: true, createdAt: true,
+      },
+      orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+    });
+
+    const batches = await prisma.screenImportBatch.findMany({
+      where: { projectId: p.id },
+      select: { id: true, filename: true, format: true, sourceDatabase: true, createdAt: true },
+    });
+    const batchById = new Map(batches.map((b) => [b.id, b]));
+
+    const blind = p.blindMode && !access.isLeader;
+
+    const sourceFacet = new Map();
+    const statusFacet = new Map();
+    const reasonFacet = new Map();
+    const retrievalFacet = new Map();
+
+    const candidates = [];
+    for (const r of rows) {
+      if (!idSet.has(r.id)) continue;
+      const proj = projById.get(r.id) || {};
+      const disp = dispositionOf(proj);
+      const effectiveSource = proj.sourceDb || '';
+      const sourceKey = effectiveSource.toLowerCase() || 'unspecified';
+      const reasonValue = disp === 'not_retrieved' ? proj.notRetrievedReason : proj.exclusionReason;
+      const reasonKey = reasonGroupKey(reasonValue) || 'unrecorded';
+      const retrieval = proj.soughtRetrieval
+        ? (proj.retrieved === true ? 'retrieved' : proj.retrieved === false ? 'not_retrieved' : 'pending')
+        : '';
+
+      countFacet(sourceFacet, sourceKey, effectiveSource || 'Unspecified source');
+      countFacet(statusFacet, disp, DISPOSITION_LABELS[disp] || disp);
+      if (reasonGroupKey(reasonValue)) countFacet(reasonFacet, reasonKey, displayReason(reasonValue));
+      if (retrieval) {
+        countFacet(retrievalFacet, retrieval, retrieval === 'retrieved' ? 'Retrieved'
+          : retrieval === 'not_retrieved' ? 'Not retrieved' : 'Retrieval pending');
+      }
+
+      if (q) {
+        const hay = `${r.title || ''}\n${r.doi || ''}\n${r.pmid || ''}`.toLowerCase();
+        if (!hay.includes(q)) continue;
+      }
+      if (fSource && sourceKey !== fSource) continue;
+      if (fStatus && disp !== fStatus) continue;
+      if (fReason && reasonKey !== fReason) continue;
+      if (fRetrieval && retrieval !== fRetrieval) continue;
+
+      candidates.push({ r, proj, disp, effectiveSource, retrieval });
+    }
+
+    const pageItems = candidates.slice(offset, offset + limit);
+    const nextCursor = offset + pageItems.length < candidates.length
+      ? String(offset + pageItems.length)
+      : null;
+
+    // §10 — who may edit metadata here: the same bar as editing/importing records
+    // in Screening (owner/leader, or an active non-viewer member with the
+    // import-records permission). Decision actions follow finalizeRecord's bar.
+    const canEdit = access.isOwner || access.isLeader
+      || !!(access.active && access.member && access.member.role !== 'viewer' && access.perms.canImportRecords);
+    const canFinalize = !!(access.isLeader || access.canResolveConflicts);
+
+    const records = pageItems.map(({ r, proj, disp, effectiveSource, retrieval }) => {
+      const batch = r.importBatchId ? batchById.get(r.importBatchId) : null;
+      return {
+        id: r.id,
+        title: r.title,
+        // 81.md blind-mode convention (listRecords): author/journal info is
+        // suppressed at the wire for non-leaders, not just visually.
+        authors: blind ? '' : r.authors,
+        journal: blind ? '' : r.journal,
+        year: r.year,
+        doi: r.doi,
+        pmid: r.pmid,
+        sourceDb: r.sourceDb,
+        effectiveSource,
+        identificationSource: r.identificationSource || '',
+        sourceDetail: r.sourceDetail || '',
+        importBatch: batch
+          ? {
+            id: batch.id, filename: batch.filename, format: batch.format,
+            sourceDatabase: batch.sourceDatabase || '',
+          }
+          : null,
+        importedAt: (batch && batch.createdAt) || r.createdAt,
+        isDuplicate: !!r.isDuplicate,
+        isPrimary: !!r.isPrimary,
+        duplicateGroupId: r.duplicateGroupId || null,
+        currentStage: r.currentStage,
+        finalStatus: r.finalStatus,
+        rejectedReason: r.rejectedReason || '',
+        disposition: disp,
+        dispositionLabel: DISPOSITION_LABELS[disp] || disp,
+        exclusionReason: proj.exclusionReason ? displayReason(proj.exclusionReason) : '',
+        notRetrievedReason: proj.notRetrievedReason ? displayReason(proj.notRetrievedReason) : '',
+        retrieval,
+        studyId: proj.studyId || '',
+      };
+    });
+
+    return res.json({
+      boxId,
+      unit: meta.unit,
+      total: box.n,
+      listed: candidates.length,
+      // Import-time duplicates were discarded before becoming records: counted,
+      // never listable (103.md §2) — the panel says so instead of looking short.
+      uninspectable: Math.max(0, box.n - recordIds.length),
+      records,
+      nextCursor,
+      // Facets are computed over the WHOLE box (pre-filter) so options don't
+      // vanish as they are used; sent on the first page only.
+      facets: offset === 0
+        ? {
+          source: facetRows(sourceFacet),
+          status: facetRows(statusFacet),
+          reason: facetRows(reasonFacet),
+          retrieval: facetRows(retrievalFacet),
+        }
+        : undefined,
+      blindMode: !!p.blindMode,
+      isLeader: !!access.isLeader,
+      canEdit,
+      canFinalize,
+    });
+  } catch (err) {
+    console.error('[screening] getPrismaBoxRecords error:', err.message);
     return res.status(500).json({ error: 'Internal server error' });
   }
 }
