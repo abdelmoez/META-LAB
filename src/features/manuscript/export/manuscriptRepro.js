@@ -118,10 +118,13 @@ export async function buildReproPackage(project, draft, opts = {}) {
   // Forest plot (SVG + PNG) when an analysis exists. The vector SVG comes from the
   // PURE builder so it survives even if PNG rasterization (DOM canvas) fails.
   if (primary && primary.result) {
-    const fsvg = forestSvg(primary.result, { esType: primary.pair.esType, title: primary.pair.label, prec: opts.prec });
+    // 116.md §26/§32 — the bundle's figure carries the persisted axis name and favours
+    // texts, so forest_plot.svg/png match the figure the reviewer approved on screen.
+    const figOpts = { esType: primary.pair.esType, ...(primary.figure || {}), title: primary.pair.label, prec: opts.prec };
+    const fsvg = forestSvg(primary.result, figOpts);
     if (fsvg) entries.push({ name: 'figures/forest_plot.svg', text: fsvg });
     try {
-      const fp = await forestPng(primary.result, { esType: primary.pair.esType, title: primary.pair.label, prec: opts.prec });
+      const fp = await forestPng(primary.result, figOpts);
       if (fp && fp.blob) entries.push({ name: 'figures/forest_plot.png', blob: fp.blob });
     } catch { warnings.push('Forest plot PNG could not be rasterized in this environment (SVG included).'); }
   } else {

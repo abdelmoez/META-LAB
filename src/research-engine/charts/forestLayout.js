@@ -17,7 +17,7 @@
  *              fixed{es,lo,hi}, random{es,lo,hi}, optional predInt{lo,hi}, method.
  *     opts     { variant:'live'|'pub', esType, showCounts, showWeights, showPI,
  *                title, esLabel, favLow, favHigh, nullLine, logScale,
- *                footerTexts:string[] }
+ *                formatValue:(storedValue)=>string, footerTexts:string[] }
  *
  *   The layout is PURE data: numbers, strings and small records. It contains no
  *   colours, no fonts, no markup — the two renderers are thin skins that decide
@@ -41,6 +41,11 @@
  *   4. Tick labels are de-collided against their own approximate text width, so
  *      an axis is readable at 2 studies and at 50, for a 0.1-wide and a 40-wide
  *      domain alike.
+ *   5. EVERY text cell owns its column. Study names are truncated to the name
+ *      band; the "ES [95% CI]" cell instead WIDENS its column to fit, because a
+ *      truncated number is a wrong number. A raw-unit mean difference
+ *      ("-1234.500 [-2345.600, -123.400]") used to be drawn straight over the
+ *      two weight columns at the same baseline on the live plot.
  *
  * Pure, framework-free ES module (no React, no DOM). Importable by the engine,
  * the frontend and Node tests.
@@ -192,7 +197,7 @@ export const FOREST_METRICS = Object.freeze({
     tickSize: 10, favSize: 9, axisLabelSize: 11, footSize: 10, footLead: 13,
     tickLabelGap: 15, favGap: 16, axisLabelGap: 18, footGap: 24, footPad: 6,
     markerMin: 5, markerMax: 13, markerF: 2.2, diamondH: 7,
-    tickMinGap: 8, favMinPlotW: 130, favArrowW: 6, nameCap: 26,
+    tickMinGap: 8, favMinPlotW: 130, favArrowW: 6, nameCap: 26, effPad: 8,
   }),
   pub: Object.freeze({
     charW: 0.52,                                  // Georgia
@@ -203,7 +208,7 @@ export const FOREST_METRICS = Object.freeze({
     tickSize: 9.5, favSize: 9, axisLabelSize: 11, footSize: 9.5, footLead: 13,
     tickLabelGap: 15, favGap: 16, axisLabelGap: 18, footGap: 24, footPad: 18,
     markerMin: 5, markerMax: 13, markerF: 2.2, diamondH: 6.5,
-    tickMinGap: 8, favMinPlotW: 130, favArrowW: 6, nameCap: 26,
+    tickMinGap: 8, favMinPlotW: 130, favArrowW: 6, nameCap: 26, effPad: 8,
   }),
 });
 
@@ -390,6 +395,32 @@ export function computeForestLayout(result, opts = {}) {
   const showCounts = opts.showCounts !== false && (anyExp || anyCtrl);
   const showPI = !!(result.predInt && opts.showPI !== false);
 
+  /* ── effect / CI cell strings (invariant 5) ──────────────────────────────
+     A skin hands in its OWN value formatter (the live plot's bounded chart
+     formatter, the publication builder's export-precision one) and the layout
+     builds the cell strings from it. Two things follow: the string the layout
+     MEASURES is exactly the string the renderer PRINTS, and the effect column
+     can size itself to the widest cell instead of letting a raw-unit mean
+     difference run across the weight columns. A caller that passes no formatter
+     gets no strings and the fixed column width, byte-for-byte as before. */
+  const fmtCell = typeof opts.formatValue === 'function' ? opts.formatValue : null;
+  const ciCell = fmtCell ? ((es, lo, hi) => `${fmtCell(es)} [${fmtCell(lo)}, ${fmtCell(hi)}]`) : null;
+  const rowEsTexts = ciCell ? studies.map((s) => ciCell(s._es, s._lo, s._hi)) : null;
+  const diamondEsText = ciCell ? {
+    fixed: result.fixed ? ciCell(result.fixed.es, result.fixed.lo, result.fixed.hi) : '',
+    random: result.random ? ciCell(result.random.es, result.random.lo, result.random.hi) : '',
+  } : null;
+  const piEsText = (ciCell && showPI) ? `${fmtCell(result.predInt.lo)} to ${fmtCell(result.predInt.hi)}` : '';
+  // The column grows only when something genuinely does not fit, so a project
+  // with ordinary values keeps the historical geometry exactly.
+  const effTexts = ciCell
+    ? [...rowEsTexts, diamondEsText.fixed, diamondEsText.random, piEsText].filter(Boolean)
+    : [];
+  const effW = effTexts.reduce(
+    (w, t) => Math.max(w, Math.ceil(approxTextWidth(t, M.cellSize, M.charW)) + M.effPad),
+    M.effW,
+  );
+
   /* ── columns ─────────────────────────────────────────────────────────── */
   const cExp = showCounts ? M.countW : 0;
   const cCtrl = showCounts ? M.countW : 0;
@@ -402,7 +433,7 @@ export function computeForestLayout(result, opts = {}) {
   const plotW = M.plotW;
   const xPlotEnd = xPlot + plotW;
   const xEff = xPlotEnd + M.gapAfter;
-  const xW = xEff + M.effW;
+  const xW = xEff + effW;
   const xW2 = xW + cW;
   const W = xW2 + cW2 + M.marginR;
   const contentW = W - M.marginL - M.marginR;
@@ -494,6 +525,7 @@ export function computeForestLayout(result, opts = {}) {
       es: place(s._es),
       lo: place(s._lo),
       hi: place(s._hi),
+      esText: rowEsTexts ? rowEsTexts[i] : '',
       size: markerSize(pct),
       weightFixedPct: +s._wFixedPct || 0,
       weightRandomPct: +s._wRandomPct || 0,
@@ -507,6 +539,7 @@ export function computeForestLayout(result, opts = {}) {
   const mkDiamond = (key, obj, label, y) => (obj ? {
     key, label, y, markerY: y - 3.5, strong: method === key,
     es: place(obj.es), lo: place(obj.lo), hi: place(obj.hi),
+    esText: diamondEsText ? diamondEsText[key] : '',
     value: obj, height: M.diamondH,
   } : null);
   const diamonds = [
@@ -517,6 +550,7 @@ export function computeForestLayout(result, opts = {}) {
     y: yPI, markerY: yPI - 3.5, label: 'Prediction interval',
     lo: place(result.predInt.lo), hi: place(result.predInt.hi),
     centre: place(result.random ? result.random.es : result.pES), value: result.predInt,
+    esText: piEsText,
   } : null;
 
   /* ── favours labels (116.md §25) ─────────────────────────────────────── */
@@ -563,7 +597,7 @@ export function computeForestLayout(result, opts = {}) {
     k, showCounts, showWeights, showPI,
     columns: {
       xName, nameW: M.nameW, xExp, cExp, xCtrl, cCtrl,
-      xPlot, plotW, xPlotEnd, xEff, cEff: M.effW, xW, cW, xW2, cW2,
+      xPlot, plotW, xPlotEnd, xEff, cEff: effW, xW, cW, xW2, cW2,
       W, contentW, maxNameChars,
     },
     title: { text: rawTitle, lines: titleLines, size: titleSize, blockH: titleBlockH, y: M.marginT + titleSize, lead: titleSize + 5 },

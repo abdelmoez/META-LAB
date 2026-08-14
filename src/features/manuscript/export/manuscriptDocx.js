@@ -430,7 +430,14 @@ export async function buildManuscriptDocx(project, draft, opts = {}) {
       const match = (a.pairKey && analyses.find((x) => x && x.pair && x.pair.key === a.pairKey))
         || ((a.id === 'figure:forest-primary' || (a.aliasIds || []).includes('figure:forest-primary')) ? primary : null);
       if (!match || !match.result) return null;
-      return forestPng(match.result, { esType: match.pair.esType, title: '', prec, targetWidthPx: 2200 });
+      // 116.md §26/§32 — the reviewer's persisted axis name and favours texts reach the
+      // Word file (the artifact that is actually submitted). They used to stop at the
+      // journal ZIP, so a figure captioned "Favours intervention / Favours control" on
+      // screen shipped as "favours lower / favours higher" in the manuscript. The TITLE
+      // is deliberately still empty: Word numbers and captions the figure itself.
+      return forestPng(match.result, {
+        esType: match.pair.esType, ...(match.figure || {}), title: '', prec, targetWidthPx: 2200,
+      });
     }
     if (a.builderId === 'rob') return robPng(robAssessments, { studies: project.studies, targetWidthPx: 1800 });
     if (a.builderId === 'funnel') {

@@ -183,7 +183,9 @@ export function buildPubForestSVG(result,opts){
     if(isLog&&logOut) return fmtES(+x,prec);
     return fmtES(+x,prec);
   };
-  const fmtCI=(lo,hi)=>`[${fmt(lo)}, ${fmt(hi)}]`;
+  /* The "ES [95% CI]" / "lo to hi" cell strings are built by the LAYOUT from `fmt`
+     (see formatValue below) so the column can be sized around the very text that
+     is printed; the composition itself is unchanged. */
 
   // ---- footer text (handed to the layout so it wraps + sizes the canvas) ----
   // 116.md §31 — p-values ALWAYS through fmtP: "< 0.001" floor, never "= 0.00".
@@ -206,6 +208,10 @@ export function buildPubForestSVG(result,opts){
     favHigh:o.favHigh||"",
     nullLine:o.nullLine,
     logScale:logOut,
+    // 116.md §22 — the layout builds the "ES [95% CI]" cells with the EXPORT
+    // formatter, so it can widen the effect column when a raw-unit value would
+    // otherwise reach back across the plot band.
+    formatValue:fmt,
     footerTexts:[het,line2],
   });
   if(!L) return null;
@@ -281,7 +287,7 @@ export function buildPubForestSVG(result,opts){
     } else {
       svg+=`<rect x="${(r.es.x-sq/2).toFixed(1)}" y="${(cy-sq/2).toFixed(1)}" width="${sq.toFixed(1)}" height="${sq.toFixed(1)}" fill="${BOX}"/>`;
     }
-    svg+=txt(xEff+cEff, y, `${fmt(r.study._es)} ${fmtCI(r.study._lo,r.study._hi)}`, 10, {anchor:"end"});
+    svg+=txt(xEff+cEff, y, r.esText, 10, {anchor:"end"});
     if(showWeights){
       svg+=txt(xW+cW-4, y, fmtWeight(r.weightFixedPct,prec)+"%", 9.5, {anchor:"end",fill:GREY});
       svg+=txt(xW2+cW2-4, y, fmtWeight(r.weightRandomPct,prec)+"%", 9.5, {anchor:"end",fill:GREY});
@@ -294,7 +300,7 @@ export function buildPubForestSVG(result,opts){
   diamonds.forEach(d=>{
     svg+=txt(xName,d.y,d.label,10.5,{bold:true});
     svg+=`<polygon points="${d.es.x.toFixed(1)},${(d.markerY-d.height).toFixed(1)} ${d.hi.x.toFixed(1)},${d.markerY.toFixed(1)} ${d.es.x.toFixed(1)},${(d.markerY+d.height).toFixed(1)} ${d.lo.x.toFixed(1)},${d.markerY.toFixed(1)}" fill="${d.strong?"#000000":"#ffffff"}" stroke="#000000" stroke-width="1.1"/>`;
-    svg+=txt(xEff+cEff,d.y,`${fmt(d.value.es)} ${fmtCI(d.value.lo,d.value.hi)}`,10,{anchor:"end",bold:d.strong});
+    svg+=txt(xEff+cEff,d.y,d.esText,10,{anchor:"end",bold:d.strong});
     if(showWeights){ svg+=txt((d.key==="fixed"?xW+cW:xW2+cW2)-4,d.y,"100%",9.5,{anchor:"end",fill:GREY}); }
   });
 
@@ -305,7 +311,7 @@ export function buildPubForestSVG(result,opts){
     svg+=endCap(pi.lo,pi.markerY,GREY,1.4);
     svg+=endCap(pi.hi,pi.markerY,GREY,1.4);
     svg+=`<rect x="${(pi.centre.x-3).toFixed(1)}" y="${(pi.markerY-3).toFixed(1)}" width="6" height="6" fill="none" stroke="${GREY}" stroke-width="1"/>`;
-    svg+=txt(xEff+cEff,pi.y,`${fmt(pi.value.lo)} to ${fmt(pi.value.hi)}`,9.5,{anchor:"end",italic:true,fill:GREY});
+    svg+=txt(xEff+cEff,pi.y,pi.esText,9.5,{anchor:"end",italic:true,fill:GREY});
   }
 
   // ---- x-axis ----

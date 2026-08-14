@@ -20,6 +20,11 @@ import { countsToPrismaShape } from '../../../research-engine/manuscript/index.j
  * persisted per-figure labels (axis name, favours texts) must reach the DOCX and the
  * repro bundle exactly as they reach the screen; anything absent stays undefined so
  * the builder keeps its own defaults (counts/weights ON) byte-for-byte.
+ *
+ * Callers do NOT read analysisSettings themselves: `primaryAnalysis`/`allAnalyses`
+ * resolve the labels once (research-engine/charts/forestFigureConfig.js) and hand them
+ * over on the analysis entry as `.figure`, so the Word export, the repro bundle and the
+ * in-app preview cannot drift from each other or from the screen.
  */
 function forestOpts(opts = {}) {
   const o = { esType: opts.esType, title: opts.title, prec: opts.prec };

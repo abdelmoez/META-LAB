@@ -36,6 +36,10 @@
 
 import { runMeta as defaultRunMeta, eggersTest } from '../statistics/meta-analysis.js';
 import { getOutcomePairs, filterStudiesForOutcome } from '../import-export/journalSubmission.js';
+// 116.md §26/§32 — the per-figure labels a forest plot carries. Resolved HERE, on the
+// analysis entry, so the Word export, the reproducibility bundle and the in-app figure
+// preview all draw the labels the reviewer persisted — the same ones the screen shows.
+import { forestFigureLabels } from '../charts/forestFigureConfig.js';
 // 116.md §31 — p-values ALWAYS through fmtP/fmtPExpr: a 2-dp project printed
 // "P = 0.00" for p = 0.004 because these call sites used fmtNum. fmtP floors at
 // three places and collapses anything below the floor to a strict inequality.
@@ -97,7 +101,11 @@ export function primaryAnalysis(project, opts = {}) {
   if (!best) return null;
   const result = best.subset.length >= 2
     ? runMeta(best.subset, analysis.model, { tau2Method: analysis.tau2Method }) : null;
-  return { pair: best.pair, subset: best.subset, result, model: analysis.model, tau2Method: analysis.tau2Method };
+  return {
+    pair: best.pair, subset: best.subset, result,
+    model: analysis.model, tau2Method: analysis.tau2Method,
+    figure: forestFigureLabels(project, best.pair),
+  };
 }
 
 /**
@@ -116,6 +124,9 @@ export function allAnalyses(project, opts = {}) {
     pair, subset,
     result: subset.length >= 2 ? runMeta(subset, analysis.model, { tau2Method: analysis.tau2Method }) : null,
     model: analysis.model, tau2Method: analysis.tau2Method,
+    // 116.md §26/§32 — the persisted axis name / favours texts ride with the analysis
+    // so every figure consumer gets them without re-reading analysisSettings itself.
+    figure: forestFigureLabels(project, pair),
   }));
 }
 

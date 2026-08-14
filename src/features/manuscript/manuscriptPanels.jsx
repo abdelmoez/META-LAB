@@ -128,6 +128,9 @@ function useFigureSvgs(m, { forest = false, prisma = false }) {
   const [state, setState] = useState({ forest: null, prisma: null, loading: true, error: '' });
   const primaryResult = m.primary && m.primary.result;
   const esType = m.primary && m.primary.pair && m.primary.pair.esType;
+  // 116.md §26/§32 — the preview shows the persisted axis name / favours texts, so it
+  // is the same figure the export writes (primaryAnalysis resolves them onto the entry).
+  const figure = (m.primary && m.primary.figure) || null;
   useEffect(() => {
     let alive = true;
     setState((s) => ({ ...s, loading: true, error: '' }));
@@ -136,7 +139,7 @@ function useFigureSvgs(m, { forest = false, prisma = false }) {
         const fig = await import('./export/figures.js');
         const next = { forest: null, prisma: null, loading: false, error: '' };
         if (prisma) next.prisma = fig.prismaSvg(m.prismaCounts);
-        if (forest && primaryResult) next.forest = fig.forestSvg(primaryResult, { esType });
+        if (forest && primaryResult) next.forest = fig.forestSvg(primaryResult, { esType, ...(figure || {}) });
         if (alive) setState(next);
       } catch (e) {
         if (alive) setState({ forest: null, prisma: null, loading: false, error: (e && e.message) || 'Could not render figures.' });
@@ -144,7 +147,7 @@ function useFigureSvgs(m, { forest = false, prisma = false }) {
     })();
     return () => { alive = false; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [forest, prisma, primaryResult, esType, m.prismaCounts]);
+  }, [forest, prisma, primaryResult, esType, figure, m.prismaCounts]);
   return state;
 }
 

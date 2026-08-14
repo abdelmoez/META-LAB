@@ -81,6 +81,8 @@ import { openExportDialog, registerExportDialog } from "./exportDialogBridge.js"
    src/frontend/workspace/charts/svgBuilders.js (prompt46 Phase 4) and imported
    here. ForestPlot / FunnelPlot live in the sibling charts.jsx. */
 import { SVG_XML_HEADER, presetTag, liveSvgToString, buildPrismaSVG, buildPubForestSVG } from "./charts/svgBuilders.js";
+// 116.md §26/§32 — ONE resolver for every forest surface's text + no-effect authority.
+import { resolveForestFigure } from "../../research-engine/charts/forestFigureConfig.js";
 import { ForestPlot, FunnelPlot } from "./charts/charts.jsx";
 
 /* ════════════ STATISTICS / VALIDATION (extracted prompt46 Phase 2 — verbatim, monolith-own copies) ════════════ */
@@ -683,7 +685,13 @@ export default function MetaLab({ initialProjectId = null, initialTab = null, on
     const prec=precOverride||p.analysisPrecision; // prompt32 Task 8 — honor export-dialog precision
     const dv=x=>x==null?"—":isProp?fmtPct(bt(x),prec)+"%":isLog?fmtES(bt(x),prec):fmtES(+x,prec);
     const esc=s=>String(s==null?"":s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
-    const forest=res?buildPubForestSVG(res,{esType,esLabel:t.scale||"Effect",nullLine:0,showCounts:true,showWeights:true,title:"",prec}):null;
+    /* 116.md §26/§32/§124 — the report draws the SAME figure the Forest tab shows.
+       It used to pass `nullLine:0` (which overrode the ES_TYPES no-effect value — a
+       silent corruption for AUC, whose null is 0.5) and name the axis from
+       `ES_TYPES[esType].scale`, the STORED-scale name, so the report captioned a
+       back-transformed ratio axis "lnOR". The registry owns the null; an unset
+       esLabel means "auto" and the layout derives one name for every surface. */
+    const forest=res?buildPubForestSVG(res,{esType,...resolveForestFigure(p,_pooled.pair),showCounts:true,showWeights:true,prec}):null;
     const prismaFig=buildPrismaSVG(pr,{title:""});
     const grade=p.grade||{};
     const gradeRows=GRADE_DOMAINS.map(d=>{const o=GRADE_OPTIONS.find(x=>x.v===grade[d.id]);return `<tr><td>${esc(d.label)}</td><td>${o?esc(o.label):"—"}</td></tr>`;}).join("");
@@ -792,17 +800,17 @@ export default function MetaLab({ initialProjectId = null, initialTab = null, on
     // intervals that matched no analysis anywhere in the app. Reuse the RESOLVED
     // analysis (the manuscript's authority) instead of recomputing with defaults.
     const zipAnalysis=resolveAnalysis(project);
-    const figureLabels=(project.analysisSettings&&project.analysisSettings.figureLabels)||{};
     for(const pair of pairs){
       const fs=jsFilterStudies(studies,pair);
       const result=runMeta(fs,zipAnalysis.model,{tau2Method:zipAnalysis.tau2Method});
       if(!result){ warnings.push(`Forest plot for "${pair.label}" skipped (not enough data).`); continue; }
       const esType=(fs.map(s=>s.esType).filter(Boolean)[0])||pair.esType||"";
-      const t=ES_TYPES[esType]||{};
-      // 116.md §26/§32 — the reviewer's persisted per-figure labels reach the ZIP too.
-      const fl=figureLabels[pair.key]||{};
-      const esLabel=fl.esLabel||((t.scale||"Effect size")+(t.log?" (back-transformed)":esType==="PROP"?" (%)":""));
-      const built=buildPubForestSVG(result,{esType,esLabel,favLow:fl.favLow||"",favHigh:fl.favHigh||"",showCounts:true,showWeights:true,title:fl.title||pair.label||"",prec,noBg:transparent});
+      // 116.md §26/§32 — the reviewer's persisted per-figure labels reach the ZIP through
+      // the shared resolver. The local fallback used to name the axis from the STORED
+      // scale ("lnOR (back-transformed)", "logit (%)") while the same figure on screen
+      // said "Odds Ratio" / "Proportion (%)"; an unset label now means "auto" and the
+      // layout derives ONE name for every surface.
+      const built=buildPubForestSVG(result,{esType,...resolveForestFigure(project,pair,{defaultTitle:pair.label||""}),showCounts:true,showWeights:true,prec,noBg:transparent});
       if(!built){ warnings.push(`Forest plot for "${pair.label}" skipped (not enough studies to draw).`); continue; }
       let slug=jsSafeName(pair.label,`outcome-${forestN+1}`);
       if(usedForestSlugs.has(slug)) slug=`${slug}-${forestN+1}`; // distinct labels can slugify identically → keep unique

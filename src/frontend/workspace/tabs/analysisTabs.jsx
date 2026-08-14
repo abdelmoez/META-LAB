@@ -44,6 +44,8 @@ import { isExcludedFromAnalysis } from "../../../research-engine/statistics/stud
 import * as MonolithStats from "../../../research-engine/statistics/monolithStats.js";
 import { openExportDialog } from "../exportDialogBridge.js";
 import { SVG_XML_HEADER, presetTag, liveSvgToString, buildPubForestSVG, esMeasureName } from "../charts/svgBuilders.js";
+// 116.md §26/§32 — ONE resolver for every forest surface's text + no-effect authority.
+import { resolveForestFigure } from "../../../research-engine/charts/forestFigureConfig.js";
 import { ForestPlot, FunnelPlot } from "../charts/charts.jsx";
 import { BubblePlot, buildBubbleSVG } from "../BubblePlot.jsx";
 import { C, btnS, inp, th, tagS } from "../ui/styles.js";
@@ -170,6 +172,8 @@ export function pairFigureLabels(project,pair){
   return (pair&&m&&m[pair.key])||EMPTY_FIGURE_LABELS;
 }
 const EMPTY_FIGURE_LABELS=Object.freeze({});
+/** Resolved-figure default for surfaces rendered without a project (tests, storybooks). */
+const EMPTY_FIGURE_CONFIG=Object.freeze({title:"",esLabel:"",favLow:"",favHigh:""});
 const EMPTY_COLUMNS=Object.freeze([]);
 /** 116.md §54 — the OPTIONAL contributions columns chosen for one outcome pair
  *  (analysisSettings.contributionColumns[pairKey] = ['country','xf_ab12cd34']). Scope is
@@ -1623,7 +1627,8 @@ export function AnalysisTab({project,updateProject,onApplyPrecisionToAll,current
       {/* RESEARCH-READY EXPORT — 107.md §13: the classification columns and metadata
           lines appear ONLY when a filter/override was actually used. */}
       <ResearchExport result={result} esType={esType} method={method} studies={filteredStudies} prec={prec}
-        proportionFilters={proportionFilters} proportionOverride={propHonored?propOverride:null}/>
+        proportionFilters={proportionFilters} proportionOverride={propHonored?propOverride:null}
+        figure={resolveForestFigure(project,activeOutcome)}/>
 
       {/* COPYABLE STRUCTURED OUTPUTS */}
       <ResultsWriteup result={result} interp={interp} esType={esType} method={method} methodLabel={methodLabel} studies={filteredStudies} prec={prec}/>
@@ -1743,7 +1748,10 @@ export function proportionClassCell(study,field){
 
 /* ════════════ RESEARCH-READY EXPORT ════════════ */
 /* Builds study-level + pooled + heterogeneity tables and offers copy / CSV / Excel(.xls) / publication table */
-export function ResearchExport({result,esType,method,studies,prec,proportionFilters,proportionOverride}){
+/** 116.md §26/§32 — `figure` is the RESOLVED per-figure configuration
+ *  (resolveForestFigure): title/axis-name/favours text as the reviewer persisted them,
+ *  empty meaning "auto". It carries NO no-effect override — the registry owns that. */
+export function ResearchExport({result,esType,method,studies,prec,proportionFilters,proportionOverride,figure=EMPTY_FIGURE_CONFIG}){
   const[copied,setCopied]=useState("");
   const[showTable,setShowTable]=useState(false);
   if(!result) return null;
@@ -1854,7 +1862,19 @@ export function ResearchExport({result,esType,method,studies,prec,proportionFilt
       })} style={btnS("ghost")}>⬇ Export results…</button>
       <button onClick={()=>copy(xlsTable.replace(/<[^>]+>/g,m=>m),"pub")} style={btnS("ghost")}>{copied==="pub"?"✓ Copied HTML":"📋 Copy HTML table"}</button>
       <button onClick={()=>{
-        const pubOpts={esType,esLabel:(t.scale||"Effect size")+(isLog?" (back-transformed)":isProp?" (%)":""),nullLine:0,showCounts:anyCounts,showWeights:true,title:"",prec};
+        /* 116.md §26/§32/§124 — the SAME resolved figure configuration the Forest tab
+           renders on screen. Two things were wrong here and are now impossible:
+             • `nullLine:0` overrode the registry's no-effect value. It is a no-op for
+               every measure whose nullVal is already 0, and a silent corruption for
+               AUC (nullVal 0.5): the exported figure drew "no effect" at AUC = 0 and
+               stretched the axis to −0.09…1.03 while the screen showed 0.45…0.98.
+               ES_TYPES is the only source of that value now.
+             • the axis was named from `ES_TYPES[esType].scale`, the STORED-scale name,
+               so a back-transformed ratio axis read "lnOR (back-transformed)" and a
+               percent axis "logit (%)" — while the same figure on screen said
+               "Odds Ratio" / "Proportion (%)". An empty esLabel means "auto" and the
+               layout derives ONE name for every surface. */
+        const pubOpts={esType,...figure,showCounts:anyCounts,showWeights:true,prec};
         openExportDialog({
           id:"analysis-forest",
           title:"Forest plot (publication, white background)",

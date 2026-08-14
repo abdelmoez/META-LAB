@@ -48,6 +48,10 @@ export function ForestPlot({result,esLabel="",nullLine=null,esType="",showCounts
   const modelLine=`Filled diamond: ${result.method==="fixed"?"common / fixed effect":"random effects"}${result.hksj?`  ·  HKSJ 95% CI: ${fmtV(result.hksj.lo,prec)} to ${fmtV(result.hksj.hi,prec)} (t-based)`:""}`;
   const L=computeForestLayout(result,{
     variant:"live",esType,showCounts,showWeights,title,esLabel,favLow,favHigh,nullLine,
+    // 116.md §22 — the layout builds the "ES [95% CI]" cells with THIS formatter, so
+    // the string it measures (and sizes the effect column around) is the string drawn
+    // below. A raw-unit mean difference no longer lands on top of the weight columns.
+    formatValue:v=>fmtV(v,prec),
     footerTexts:[hetLine,modelLine],
   });
   if(!L) return(<div style={{background:C.card,border:`1px solid ${C.brd}`,borderRadius:8,padding:40,textAlign:"center",color:C.muted}}>
@@ -93,7 +97,7 @@ export function ForestPlot({result,esLabel="",nullLine=null,esType="",showCounts
       {ticks.map(t=><line key={"g"+t.v} x1={t.x} y1={RG.rowsTop} x2={t.x} y2={RG.bandBottom} stroke={t.isNull?nullGrid:FC.brd} strokeWidth={t.isNull?1.5:0.5} strokeDasharray={t.isNull?"none":"3,3"}/>)}
       {L.nullLine.show&&<line x1={L.nullLine.x} y1={RG.rowsTop} x2={L.nullLine.x} y2={RG.yPI+8} stroke={FC.muted} strokeWidth={1}/>}
       {rows.map((r)=>{
-        const s=r.study,cy=r.markerY,sq=r.size;
+        const cy=r.markerY,sq=r.size;
         return(<g key={r.id}>
           <text x={CO.xName} y={r.y} fontSize={11} fill={FC.txt}>{r.name}</text>
           {colCounts&&<text x={CO.xExp} y={r.y} fontSize={10} fill={FC.muted}>{r.counts.exp}</text>}
@@ -104,7 +108,7 @@ export function ForestPlot({result,esLabel="",nullLine=null,esType="",showCounts
           {r.es.clamped
             ? <polygon points={r.es.clamped<0?`${r.es.x},${cy} ${r.es.x+sq},${cy-sq/2} ${r.es.x+sq},${cy+sq/2}`:`${r.es.x},${cy} ${r.es.x-sq},${cy-sq/2} ${r.es.x-sq},${cy+sq/2}`} fill={FC.acc}/>
             : <rect x={r.es.x-sq/2} y={cy-sq/2} width={sq} height={sq} fill={FC.acc} rx={1}/>}
-          <text x={CO.xEff} y={r.y} fontSize={10} fill={FC.muted}>{fmtV(s._es,prec)} [{fmtV(s._lo,prec)}, {fmtV(s._hi,prec)}]</text>
+          <text x={CO.xEff} y={r.y} fontSize={10} fill={FC.muted}>{r.esText}</text>
           {showWeights&&<text x={CO.xW} y={r.y} fontSize={10} fill={FC.dim}>{chartWeight(r.weightFixedPct)}%</text>}
           {showWeights&&<text x={CO.xW2} y={r.y} fontSize={10} fill={FC.dim}>{chartWeight(r.weightRandomPct)}%</text>}
         </g>);
@@ -118,14 +122,22 @@ export function ForestPlot({result,esLabel="",nullLine=null,esType="",showCounts
           <text x={CO.xName} y={d.y} fontSize={11} fill={d.strong?FC.grn:FC.muted} fontWeight={d.strong?700:400}>{d.label}</text>
           <polygon points={`${d.es.x},${d.markerY-d.height} ${d.hi.x},${d.markerY} ${d.es.x},${d.markerY+d.height} ${d.lo.x},${d.markerY}`}
             fill={d.strong?FC.grn:"none"} stroke={FC.grn} strokeWidth={1.1} opacity={d.strong?0.9:1}/>
-          <text x={CO.xEff} y={d.y} fontSize={10} fill={d.strong?FC.grn:FC.muted} fontWeight={d.strong?700:400}>{fmtV(d.value.es,prec)} [{fmtV(d.value.lo,prec)}, {fmtV(d.value.hi,prec)}]</text>
+          <text x={CO.xEff} y={d.y} fontSize={10} fill={d.strong?FC.grn:FC.muted} fontWeight={d.strong?700:400}>{d.esText}</text>
           {showWeights&&<text x={d.key==="fixed"?CO.xW:CO.xW2} y={d.y} fontSize={10} fill={d.strong?FC.grn:FC.dim}>100%</text>}
         </g>
       ))}
+      {/* 116.md §22 (c) — the prediction interval is an interval like any other: the
+          layout deliberately keeps it OUT of the domain anchors (at small k it is an
+          order of magnitude wider than the data), so running past the frame is its
+          NORMAL case and it gets the same truncation arrows the study rows and the
+          publication builder use. Drawing it flush to the edge with a plain dashed
+          line is exactly the silent clamping this stage removed. */}
       {pi&&(<g>
         <text x={CO.xName} y={pi.y} fontSize={9.5} fill={FC.dim} fontStyle="italic">{pi.label}</text>
         <line x1={pi.lo.x} y1={pi.markerY} x2={pi.hi.x} y2={pi.markerY} stroke={FC.dim} strokeWidth={1.4} strokeDasharray="4,2"/>
-        <text x={CO.xEff} y={pi.y} fontSize={9.5} fill={FC.dim} fontStyle="italic">{fmtV(pi.value.lo,prec)} to {fmtV(pi.value.hi,prec)}</text>
+        {endCap(pi.lo,pi.markerY,FC.dim,"pilo")}
+        {endCap(pi.hi,pi.markerY,FC.dim,"pihi")}
+        <text x={CO.xEff} y={pi.y} fontSize={9.5} fill={FC.dim} fontStyle="italic">{pi.esText}</text>
       </g>)}
       {/* x-axis: its own line below the diamond band, then de-collided ticks */}
       <line x1={CO.xPlot} y1={RG.axisY} x2={CO.xPlotEnd} y2={RG.axisY} stroke={FC.muted} strokeWidth={1}/>
