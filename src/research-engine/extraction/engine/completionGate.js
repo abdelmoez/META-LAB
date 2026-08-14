@@ -17,7 +17,14 @@ import { hasAnyValue, progressOf } from './articleStatus.js';
 // 116.md §41/§47 — derive-at-analysis-boundary awareness: a PROP row with valid raw
 // events/total DOES enter the meta-analysis now, so the info line must not claim
 // otherwise (it directly contradicted the Analysis tab — the §41 regression's wording).
-import { hasUsableEffect } from '../../statistics/monolithStats.js';
+// 116.md §46 (r2) — the predicate is `derivesPropEffect`, NOT "has a usable effect":
+// `hasUsableEffect` is true for ANY row with a stored es, so the derivation message
+// fired for reviewer-typed effect sizes on every measure — claiming an events/total
+// derivation that does not exist, and a store-on-complete that cannot happen
+// (deriveEffectSizeFromRaw returns null once `es` is set). Imported from the
+// dependency-free poolableRow module — the SAME guard `poolableStudyView` uses — so
+// the server completion path does not pull the meta-analysis engine in through here.
+import { derivesPropEffect, hasStoredEffect, hasStoredInterval } from '../../statistics/poolableRow.js';
 
 /** Severity tiers (76.md §17). */
 export const SEVERITY = Object.freeze({ INFO: 'info', WARN: 'warn', BLOCK: 'block' });
@@ -49,8 +56,22 @@ export function evaluateCompletion(study = {}) {
   } else if (!analysisReady(study)) {
     // 116.md §41 — a PROP row with valid events/total is analyzable WITHOUT a stored
     // es/lo/hi (the analysis derives it); say so instead of the contradicting warning.
-    if (hasUsableEffect(study)) {
+    // 116.md §46 (r2) — gated on ACTUAL derivation. Every clause of this sentence is
+    // only true for a row `poolableStudyView` derives: an events/total source, a value
+    // that did not exist before, and a Complete action that really does store it.
+    if (derivesPropEffect(study)) {
       info.push({ field: 'es', msg: 'Effect size is derived automatically from events/total for analysis — marking complete also stores it on the row.' });
+    } else if (hasStoredEffect(study) && !hasStoredInterval(study)) {
+      // 116.md §46 (r2) — the row class that used to receive the derivation message by
+      // mistake: a stored effect size runMeta cannot weight. Worded to match
+      // analysisEligibility's 'missingCI' reason, so the Analysis tab and this panel
+      // describe the same row the same way. study-validator already warns when BOTH
+      // bounds are blank; a PARTIALLY filled interval was silent, which is how the
+      // false §41 line became the only guidance for that row.
+      const ciWarned = warnings.some((w) => /confidence interval/i.test(w.msg));
+      if (!ciWarned) {
+        info.push({ field: 'lo', msg: 'Effect size has no usable 95% confidence interval — enter both bounds or it cannot be weighted in the meta-analysis.' });
+      }
     } else {
       info.push({ field: 'es', msg: 'No effect size yet — this article will not enter the meta-analysis until one is derived.' });
     }

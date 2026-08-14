@@ -20,6 +20,10 @@ import { api } from "../../api-client/apiClient.js";
 import { useEntitlements } from "../../entitlements/useEntitlements.js";
 import { runMeta } from "../../../research-engine/statistics/monolithStats.js";
 import { poolPrimaryOutcome } from "../../../research-engine/statistics/summaryPool.js";
+// 116.md §41/§46 (r2) — THE row-eligibility rule, shared with runMeta / the outcome
+// enumerators / the progress rail, so this card's counts can never contradict the
+// `pooled: k=…` line printed a few lines below them from the view-aware pool.
+import { rowHasEffect, rowIsPoolable } from "../../../research-engine/statistics/poolableRow.js";
 import { useResearchProvenanceEnabled } from "../../../features/provenance/useResearchProvenanceEnabled.js";
 import { C, btnS, inp, tagS } from "../ui/styles.js";
 import { SwitchToggle, SectionHeader, InfoBox, ProgressBar } from "../ui/primitives.jsx";
@@ -313,11 +317,14 @@ function OverviewTab({project,setTab,onJournalZip,onRValidate}){
   });
 
   const studies=project.studies||[];
-  const withES=studies.filter(s=>s.es!=="").length;
+  const withES=studies.filter(s=>rowHasEffect(s)).length;
   // prompt44 item 2 — a study is POOLABLE (and thus usable by the R validation script)
   // only with a complete effect size AND 95% CI; gate the .R download on this, not on
   // withES (which counts a bare es), so the button never offers an empty script.
-  const poolable=studies.filter(s=>s.es!==""&&s.lo!==""&&s.hi!=="").length;
+  // 116.md §46 (r2) — through `rowIsPoolable`, because the script generator itself
+  // (Workspace.jsx → jsOutcomePairs / jsFilterStudies) is view-aware: the stored-es
+  // count disabled the button for a project whose script would generate completely.
+  const poolable=studies.filter(s=>rowIsPoolable(s)).length;
   const status=stepStatus(project, !!scr.data?.screeningComplete); // prompt29 Part 9
   const wfTabs=TABS.filter(t=>t.phase); // workflow steps only
   const doneCount=wfTabs.filter(t=>status[t.id]==="done").length;

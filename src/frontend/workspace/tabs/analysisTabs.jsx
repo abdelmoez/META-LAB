@@ -105,6 +105,27 @@ export function enumerateOutcomePairs(studies){
   return pairs;
 }
 
+/**
+ * 116.md §50 (r2) — EVERY outcome group present in the extraction, including the ones
+ * `enumerateOutcomePairs` cannot enumerate because not one of their rows carries (or
+ * derives) an effect size. Such an outcome used to vanish from Analysis completely
+ * whenever ANOTHER outcome was analysable: no pair, no dropdown entry, no row in the
+ * Summary of Findings, and `pairEligibility` was never called for it — the silent
+ * disappearance §50 exists to end. Deliberately NOT folded into `enumerateOutcomePairs`:
+ * journalSubmission, buildOutcomeSummaryRows and Forest/Sensitivity/Subgroup all depend
+ * on that function's "poolable pairs only" contract. Pure + exported for SSR pinning.
+ */
+export function enumerateAllOutcomeGroups(studies){
+  const list=Array.isArray(studies)?studies:[];
+  const seen=new Set(), groups=[];
+  list.filter(s=>s&&!isExcludedFromAnalysis(s)).forEach(s=>{
+    const oc=(s.outcome||"").trim(), tp=(s.timepoint||"").trim();
+    const key=`${oc}|||${tp}`;
+    if(!seen.has(key)){ seen.add(key); groups.push({outcome:oc,timepoint:tp,key,label:(oc||"(unnamed)")+(tp?` @ ${tp}`:"")}); }
+  });
+  return groups;
+}
+
 export function studiesForPair(studies,pair){
   if(!pair) return [];
   // 116.md §41/§46 — same predicate as enumerateOutcomePairs, and the returned rows are
@@ -190,6 +211,21 @@ export function dominantEsType(rows){
 const NO_PROP_CHECK=Object.freeze({applicable:false,blocking:false,warning:false,infoOnly:false,issues:[],warnings:[],unclassifiedFields:[],propCount:0});
 
 /**
+ * 116.md §49 (r2) — an override ONLY ever gates a BLOCKING check, so "stale" splits in
+ * two. When something still blocks, the record is genuinely OUT OF DATE: it describes a
+ * different estimate set and the reviewer must re-record it (the form is right there).
+ * When nothing blocks any more, it is OBSOLETE: there is nothing left to override, the
+ * pooled result does not depend on it, and no re-record form renders at all — so the
+ * "the estimates have changed … record a new override" copy pointed at a control that
+ * does not exist. §116's tier change (category+unclassified: block → warn) drops every
+ * pre-116 proportion project straight into this state on upgrade. ONE formula, used by
+ * the gate and by the panel, so all four tabs word it identically.
+ */
+export function proportionOverrideMoot(check,override,stale){
+  return !!override&&!!stale&&!(check&&check.blocking);
+}
+
+/**
  * 107.md §11/§12 — THE pooling gate, in one place.
  *
  * AnalysisTab owned this derivation privately, so ForestTab and SensitivityTab pooled,
@@ -207,7 +243,8 @@ export function proportionGate(project,pair,rows,domEsType){
   const override=isPropPair?pairProportionOverride(project,pair):null;
   const stale=proportionOverrideStale(override,check);
   const honored=!!override&&!stale;
-  return {isPropPair,check,override,stale,honored,
+  const moot=proportionOverrideMoot(check,override,stale);
+  return {isPropPair,check,override,stale,honored,moot,
     // Unresolved blocking incompatibility gates the pooled result exactly like a
     // checkPoolability blocker does — 107.md §12 "Do not silently proceed."
     blocked:isPropPair&&check.blocking&&!honored,esType:dom};
@@ -832,10 +869,14 @@ export function ProportionFilterChips({filters}){
 /** Where a reviewer resolves a block they cannot resolve on the tab they are looking at. */
 export const PROP_RESOLVE_HINT="Resolve this on the Meta-Analysis tab — filter to one category, stratify on the Subgroup tab, correct the extraction metadata, exclude the estimates, or record an explicit override there.";
 
+/** 116.md §49 (r2) — where an obsolete override record is removed, for the compact
+ *  mounts that render the banner but are passed no `onClearOverride`. */
+export const PROP_OVERRIDE_CLEAR_HINT="Remove the obsolete override record on the Meta-Analysis tab.";
+
 /** `compact` is the read-only variant ForestTab/SensitivityTab render: the warning and the
  *  honoured/stale banners, but no filter chips (their outcome bar already shows them), no
  *  per-category filter buttons and no override form — those live on the Meta-Analysis tab. */
-export function ProportionCompatibilityPanel({check,filters,override,stale,onSetFilter,onClearFilter,onRecordOverride,onClearOverride,compact}){
+export function ProportionCompatibilityPanel({check,filters,override,stale,moot:mootProp,onSetFilter,onClearFilter,onRecordOverride,onClearOverride,compact}){
   const[note,setNote]=useState("");
   /* 109.md §§30-32 — the two Ops override-policy knobs. Both resolve to the shipped
      defaults on the first render and under renderToStaticMarkup, so the panel is
@@ -858,6 +899,9 @@ export function ProportionCompatibilityPanel({check,filters,override,stale,onSet
      issue on one field and a warning on another at the same time. While the blocking
      issue hides the result, the warning card must not claim the pool proceeded. */
   const poolBlocked=!!c.blocking&&!honored;
+  /* 116.md §49 (r2) — the gate passes this in; recomputed from the SAME pure formula
+     when a caller does not, so the panel and `proportionGate` can never disagree. */
+  const moot=mootProp===undefined?proportionOverrideMoot(c,override,stale):!!mootProp;
   if(!c.applicable&&!filterEntries.length&&!override) return null;
 
   return(<div style={{marginBottom:16,display:"flex",flexDirection:"column",gap:8}}>
@@ -880,17 +924,34 @@ export function ProportionCompatibilityPanel({check,filters,override,stale,onSet
       </div>
     )}
 
-    {/* ── STALE OVERRIDE — never silently honoured, never silently deleted ── */}
+    {/* ── STALE OVERRIDE — never silently honoured, never silently deleted ──
+        116.md §49 (r2) — split on whether the check STILL BLOCKS. A moot record must
+        not claim "the estimates have changed" (in the upgrade case only the tier policy
+        changed) nor point at an override form that does not render when !c.blocking. */}
     {override&&stale&&(
       <div style={{background:"var(--t-yel-bg)",border:`1px solid ${themeAlpha(C.yel,'66')}`,borderLeft:`4px solid ${C.yel}`,borderRadius:8,padding:"11px 16px"}}>
-        <div style={{fontSize:12,color:C.txt,lineHeight:1.6}}>
-          <strong style={{color:C.yel}}>⚠ Recorded override is out of date. </strong>
-          A compatibility override was recorded {overrideDateText(override.at)||"earlier"} for a different set of estimates
-          {describeOverrideCategories(override)?` (${describeOverrideCategories(override)})`:""}. The estimates have changed since,
-          so it is <strong>not</strong> being applied — review the warning below and record a new override if you still intend to pool.
-        </div>
+        {moot?(
+          <div style={{fontSize:12,color:C.txt,lineHeight:1.6}}>
+            <strong style={{color:C.yel}}>⚠ Recorded override no longer applies. </strong>
+            A compatibility override was recorded {overrideDateText(override.at)||"earlier"}
+            {describeOverrideCategories(override)?` (${describeOverrideCategories(override)})`:""}. This outcome no longer has a
+            blocking incompatibility, so there is nothing to override — the result below does <strong>not</strong> depend on this record.
+          </div>
+        ):(
+          <div style={{fontSize:12,color:C.txt,lineHeight:1.6}}>
+            <strong style={{color:C.yel}}>⚠ Recorded override is out of date. </strong>
+            A compatibility override was recorded {overrideDateText(override.at)||"earlier"} for a different set of estimates
+            {describeOverrideCategories(override)?` (${describeOverrideCategories(override)})`:""}. The estimates have changed since,
+            so it is <strong>not</strong> being applied — review the warning below and record a new override if you still intend to pool.
+          </div>
+        )}
         {onClearOverride&&(
-          <button onClick={onClearOverride} style={{...btnS("ghost"),fontSize:11,marginTop:8}}>Clear the stale override</button>
+          <button onClick={onClearOverride} style={{...btnS("ghost"),fontSize:11,marginTop:8}}>{moot?"Remove the obsolete override record":"Clear the stale override"}</button>
+        )}
+        {/* The compact mounts (Forest/Sensitivity) carry no clear affordance, so a moot
+            record would otherwise leave the reader a banner and zero actions. */}
+        {!onClearOverride&&moot&&(
+          <div style={{marginTop:6,fontSize:11,color:C.muted,lineHeight:1.6}}>{PROP_OVERRIDE_CLEAR_HINT}</div>
         )}
       </div>
     )}
@@ -1138,7 +1199,7 @@ export function AnalysisTab({project,updateProject,onApplyPrecisionToAll,current
   // Derived by the SHARED gate so Forest/Sensitivity/the summary table cannot disagree.
   const gate=useMemo(()=>proportionGate(project,activeOutcome,filteredStudies,esType),
     [project,activeOutcome,filteredStudies,esType]);
-  const{isPropPair,check:propCheck,override:propOverride,stale:propStale,honored:propHonored,blocked:propBlocked}=gate;
+  const{isPropPair,check:propCheck,override:propOverride,stale:propStale,moot:propMoot,honored:propHonored,blocked:propBlocked}=gate;
 
   // 116.md §50 — the itemized eligibility verdict for the CURRENT scope: the selected
   // pair's rows (no effect-size predicate — the problem rows must be visible to it), or
@@ -1148,6 +1209,19 @@ export function AnalysisTab({project,updateProject,onApplyPrecisionToAll,current
     if(outcomePairs.length===0) return pairEligibility(studies);
     return null;
   },[studies,activeOutcome,outcomePairs.length]);
+
+  // 116.md §50 (r2) — outcomes with ZERO usable rows never reach `outcomePairs`, so the
+  // selector, the Summary of Findings table and the verdict above all skipped them: as
+  // soon as one other outcome was analysable they left no trace on this tab at all.
+  // Name each one with its own itemized reasons. When NOTHING enumerates, the
+  // whole-project verdict above already covers every row, so this stays empty.
+  const unanalyzableGroups=useMemo(()=>{
+    if(!outcomePairs.length) return [];
+    const keys=new Set(outcomePairs.map(p=>p.key));
+    return enumerateAllOutcomeGroups(studies)
+      .filter(g=>!keys.has(g.key))
+      .map(g=>({...g,eligibility:pairEligibility(allRowsForPair(studies,g))}));
+  },[studies,outcomePairs]);
 
   const outcomeKey=activeOutcome?activeOutcome.key:"";
   const setProportionFilter=(field,value)=>{
@@ -1241,6 +1315,18 @@ export function AnalysisTab({project,updateProject,onApplyPrecisionToAll,current
         );
       })()}
     </div>
+
+    {/* 116.md §50 (r2) — OUTCOMES THAT CANNOT BE ANALYSED AT ALL. Not selectable (they
+        have no poolable row to select), so they are reported here by name with the same
+        itemized reasons the selected outcome would get. Nothing renders when every
+        outcome enumerates, so an ordinary project's markup is unchanged. */}
+    {unanalyzableGroups.length>0&&(
+      <div data-testid="unanalyzable-outcomes" style={{marginBottom:16,display:"flex",flexDirection:"column",gap:8,alignItems:"flex-start"}}>
+        {unanalyzableGroups.map(g=>(
+          <AnalysisEligibilityNotice key={g.key} title={`WHY “${g.label}” CANNOT BE ANALYSED`} reasons={g.eligibility.reasons}/>
+        ))}
+      </div>
+    )}
 
     {/* SUMMARY OF FINDINGS (all outcomes — only shown when >1 outcome) */}
     {outcomePairs.length>1&&(()=>{
@@ -1344,7 +1430,7 @@ export function AnalysisTab({project,updateProject,onApplyPrecisionToAll,current
     {/* 107.md §11/§12 — PROPORTION COMPATIBILITY (PROP outcomes only) */}
     {isPropPair&&(
       <ProportionCompatibilityPanel
-        check={propCheck} filters={proportionFilters} override={propOverride} stale={propStale}
+        check={propCheck} filters={proportionFilters} override={propOverride} stale={propStale} moot={propMoot}
         onSetFilter={updateProject?setProportionFilter:undefined}
         onClearFilter={updateProject?(f)=>setProportionFilter(f,null):undefined}
         onRecordOverride={updateProject?recordProportionOverride:undefined}
@@ -2005,7 +2091,7 @@ export function ForestTab({project,updateProject,onApplyPrecisionToAll}){
 
     {/* 107.md §11/§12 — THE gate, read-only: the resolutions live on the Meta-Analysis tab. */}
     {(outcomePairs.length===1||effectiveKey)&&gate.isPropPair&&(
-      <ProportionCompatibilityPanel compact check={gate.check} override={gate.override} stale={gate.stale}/>
+      <ProportionCompatibilityPanel compact check={gate.check} override={gate.override} stale={gate.stale} moot={gate.moot}/>
     )}
     {(outcomePairs.length===1||effectiveKey)&&gate.blocked&&(
       <div style={{background:C.card,border:`1px solid ${C.brd}`,borderRadius:8,padding:32,textAlign:"center",color:C.muted}}>
@@ -2219,7 +2305,7 @@ export function SensitivityTab({project,updateProject,onApplyPrecisionToAll}){
   if(gate.blocked) return (<div>
     <SectionHeader icon="activity" title="Sensitivity & Publication Bias" desc="Robustness checks: leave-one-out, funnel plot, Egger's test."/>
     {outcomeSelector}
-    <ProportionCompatibilityPanel compact check={gate.check} override={gate.override} stale={gate.stale}/>
+    <ProportionCompatibilityPanel compact check={gate.check} override={gate.override} stale={gate.stale} moot={gate.moot}/>
     <div style={{background:C.card,border:`1px solid ${C.brd}`,borderRadius:8,padding:32,textAlign:"center",color:C.muted}}>
       <div style={{fontSize:32,marginBottom:10}}>🛑</div>
       <div style={{fontSize:14,marginBottom:4,color:C.txt}}>Robustness checks hidden until you confirm</div>
@@ -2238,7 +2324,7 @@ export function SensitivityTab({project,updateProject,onApplyPrecisionToAll}){
     <SectionHeader icon="activity" title="Sensitivity & Publication Bias" desc="Robustness checks: leave-one-out, funnel plot, Egger's test." badge={`k = ${result.k}`}/>
     {outcomeSelector}
     {gate.isPropPair&&(
-      <ProportionCompatibilityPanel compact check={gate.check} override={gate.override} stale={gate.stale}/>
+      <ProportionCompatibilityPanel compact check={gate.check} override={gate.override} stale={gate.stale} moot={gate.moot}/>
     )}
     {result.k<10&&(
       <div style={{background:"var(--t-yel-bg)",border:`1px solid ${themeAlpha(C.yel,'44')}`,borderLeft:`3px solid ${C.yel}`,borderRadius:6,padding:"10px 14px",marginBottom:14,fontSize:12,color:C.muted,lineHeight:1.6}}>

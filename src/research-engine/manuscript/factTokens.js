@@ -40,6 +40,8 @@ import { computePrismaCounts } from './prismaCounts.js';
 import { resolveAnalysis, describeSynthesisModel } from './analysisDescribe.js';
 import { deriveSearchMethodology } from '../search/searchMethodology.js';
 import { caseSeriesCounts, countPublications } from '../extraction/caseSeries.js';
+// 116.md §41/§46 (r2) — same row-eligibility rule the pools use (see poolableRow).
+import { rowHasEffect } from '../statistics/poolableRow.js';
 
 /** `[[fact:search.date]]` — keys are dot-separated identifiers only. */
 export const FACT_TOKEN_RE = /\[\[fact:([a-zA-Z][a-zA-Z0-9]*(?:\.[a-zA-Z][a-zA-Z0-9]*)*)\]\]/g;
@@ -486,10 +488,11 @@ export function buildFactContext(project, opts = {}) {
       // the row/observation count, which is the correct denominator for a pooled
       // estimate — the two facts are deliberately different numbers.
       // Number('') is 0, so filter on a NON-EMPTY numeric es (an unextracted row used
-      // to count as contributing).
-      withEffect: countPublications(studies.filter(
-        (s) => s && s.es !== '' && s.es != null && Number.isFinite(Number(s.es)),
-      )),
+      // to count as contributing). 116.md §46 (r2) — through `rowHasEffect`, so a raw
+      // proportion row counts here exactly as it counts in `analysis.k`; the stored-es
+      // scan resolved `studies.inAnalysis` to a MISSING placeholder in a sentence whose
+      // neighbouring `analysis.k` token printed 3.
+      withEffect: countPublications(studies.filter((s) => rowHasEffect(s))),
       cases: caseCounts.cases,
       caseSeriesArticles: caseCounts.caseSeriesArticles,
       rows: caseCounts.rows,

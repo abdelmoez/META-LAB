@@ -19,6 +19,8 @@ import { fmtES, fmtNum, fmtP } from '../format/precision.js';
 import { resolveAnalysis } from './analysisDescribe.js';
 import { deriveSearchMethodology } from '../search/searchMethodology.js';
 import { caseDisplayName, caseSeriesCounts } from '../extraction/caseSeries.js';
+// 116.md §41/§46 (r2) — same row-eligibility rule the pools use (see poolableRow).
+import { rowHasEffect } from '../statistics/poolableRow.js';
 
 const clean = (s) => String(s == null ? '' : s).trim();
 const num = (x) => (x === '' || x == null || isNaN(+x) ? null : +x);
@@ -310,7 +312,9 @@ export function buildRobTable(project, opts = {}) {
 
   const warnings = [];
   const assessed = rows.length;
-  const totalIncluded = studies.filter((s) => s && (s.es !== '' && s.es != null && !isNaN(+s.es))).length;
+  // 116.md §46 (r2) — view-aware: with the stored-es scan this silently reached 0 for a
+  // raw-proportion review, suppressing the RoB-coverage warning for the pooled rows.
+  const totalIncluded = studies.filter((s) => rowHasEffect(s)).length;
   if (assessed === 0) warnings.push('No risk-of-bias assessments recorded yet.');
   else if (totalIncluded && assessed < totalIncluded) warnings.push(`${totalIncluded - assessed} of ${totalIncluded} included studies have no risk-of-bias assessment.`);
 

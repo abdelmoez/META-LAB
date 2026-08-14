@@ -50,6 +50,8 @@ import { computeSectionMeta } from './sources.js';
 import { formatFactDate, joinList, factToken } from './factTokens.js';
 import { deriveSearchMethodology } from '../search/searchMethodology.js';
 import { caseSeriesCounts } from '../extraction/caseSeries.js';
+// 116.md §41/§46 (r2) — same row-eligibility rule the pools use (see poolableRow).
+import { rowHasEffect } from '../statistics/poolableRow.js';
 
 const clean = (s) => String(s == null ? '' : s).trim();
 const PH = (label) => `[${label}]`;
@@ -680,7 +682,9 @@ export function generateLimitations(project, opts = {}) {
   // otherwise reviews assessed entirely in the RoB workspace were told their studies
   // had "no risk-of-bias assessment" — a false, contradiction-inviting limitation.
   const robAssessed = opts.robAssessments && typeof opts.robAssessments === 'object' ? opts.robAssessments : {};
-  const robMissing = studies.filter((s) => (s.es !== '' && s.es != null && !isNaN(+s.es))
+  // 116.md §46 (r2) — "included" here means "contributes to the synthesis", so it must
+  // be the pool's own predicate, not a stored-es scan.
+  const robMissing = studies.filter((s) => rowHasEffect(s)
     && (!s.rob || !Object.keys(s.rob).length)
     && !robAssessed[s.id]).length;
   if (robMissing) flags.push(`${robMissing} included stud${robMissing === 1 ? 'y has' : 'ies have'} no risk-of-bias assessment, limiting credibility judgements`);

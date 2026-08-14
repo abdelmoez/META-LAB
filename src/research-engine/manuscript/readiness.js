@@ -13,6 +13,8 @@ import { SECTION_IDS } from './model.js';
 import { describeSynthesisModel, resolveAnalysis } from './analysisDescribe.js';
 import { checkConsistency } from './consistency.js';
 import { countPublications, caseSeriesCounts } from '../extraction/caseSeries.js';
+// 116.md §41/§46 (r2) — one row-eligibility rule shared with the pools (see poolableRow).
+import { rowHasEffect } from '../statistics/poolableRow.js';
 // 107.md §12/§13 — a proportion filter or a compatibility override CHANGES which
 // estimates were pooled, so the reproducibility config has to carry it or the bundle
 // no longer describes the analysis it came from. Absent → the keys are omitted and the
@@ -43,7 +45,9 @@ export function computeReadiness(project, draft, opts = {}) {
   const refs = (draft && draft.references && draft.references.length) ? draft.references : referencesFromProject(project);
   const primary = opts.primary || primaryAnalysis(project, opts);
   const studies = Array.isArray(project && project.studies) ? project.studies : [];
-  const includedNumeric = studies.filter((s) => s && s.es !== '' && s.es != null && !isNaN(+s.es)).length;
+  // 116.md §46 (r2) — view-aware, or the 'reproducibility' item stayed incomplete for a
+  // review whose 'analysis' item on the same list reports k=N.
+  const includedNumeric = studies.filter((s) => rowHasEffect(s)).length;
 
   const prismaComplete = ['identified', 'screened', 'included'].every((k) => typeof pc.counts[k] === 'number');
 
@@ -86,7 +90,8 @@ export function smartInsights(project, draft, opts = {}) {
   if (!clean(search.date)) push('search-date', 'warning', 'Search date is not entered — required for PRISMA / PRISMA-S reporting.');
 
   // Included studies missing extraction fields
-  const incl = studies.filter((s) => s && (s.es !== '' && s.es != null && !isNaN(+s.es)));
+  // 116.md §46 (r2) — the design/outcome insights must see the rows actually pooled.
+  const incl = studies.filter((s) => rowHasEffect(s));
   if (incl.length) {
     const noDesign = incl.filter((s) => !clean(s.design)).length;
     const noOutcome = incl.filter((s) => !clean(s.outcome)).length;

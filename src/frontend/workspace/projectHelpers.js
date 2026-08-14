@@ -15,6 +15,11 @@ import { C } from "./ui/styles.js";
 import { ES_TYPES, ROB2, PRISMA_CL } from "../../research-engine/project-model/monolithConstants.js";
 import { runMeta, eggersTest, validateStudy, findDuplicates, checkPoolability } from "../../research-engine/statistics/monolithStats.js";
 import { poolPrimaryOutcome } from "../../research-engine/statistics/summaryPool.js";
+// 116.md §41/§46 (r2) — THE row-eligibility rule, shared with runMeta's own row
+// selection, the outcome enumerators and the progress rail. Every "N studies have an
+// effect size" count on this page used to inline `s.es!==""`, which stopped agreeing
+// with what Analysis pools the moment §41 made raw proportion rows derivable.
+import { rowHasEffect } from "../../research-engine/statistics/poolableRow.js";
 import { fmtNum, fmtES, fmtPct } from "../../research-engine/format/precision.js";
 import { timeframeComplete } from "../../features/protocol/index.js";
 
@@ -121,7 +126,8 @@ export function interpretResult(result,esType,studies,prec){
   if(result.I2>=75) flags.push("Heterogeneity is considerable; the pooled point estimate may not represent any single setting well.");
   else if(result.I2>=50) flags.push("Substantial heterogeneity means the true effect likely varies across studies — interpret the summary cautiously.");
   if(crossesNull) flags.push("The confidence interval crosses the no-effect line, so the result is statistically inconclusive.");
-  const robMissing=studies.filter(s=>s.es!==""&&Object.keys(s.rob||{}).length===0).length;
+  // 116.md §46 (r2) — count the rows that actually entered this pool.
+  const robMissing=studies.filter(s=>rowHasEffect(s)&&Object.keys(s.rob||{}).length===0).length;
   if(robMissing>0) flags.push(`${robMissing} included stud${robMissing===1?"y has":"ies have"} no risk-of-bias assessment — judge credibility before trusting this estimate.`);
 
   return {pe,lo,hi,ciText,direction,magnitude,hetText,crossesNull,sigByCI,flags,isRatio,isProp,nullV,scaleName};
@@ -137,7 +143,12 @@ export const GRADE_OPTIONS=[
 /* Evidence-linked GRADE suggestions derived from the actual analysis.
    Returns { domainId: {suggest, reason} } so the user can one-click apply or override. */
 export function gradeSuggestions(project){
-  const allStudies=(project.studies||[]).filter(s=>s.es!==""&&!isNaN(+s.es));
+  // 116.md §46 (r2) — do NOT pre-strip rows before poolPrimaryOutcome: it already
+  // applies `analyzableStudies` plus the view-aware enumerators, so a stored-es filter
+  // here selected a DIFFERENT primary outcome (or none at all) than the EVIDENCE BASE
+  // card on the very same panel, which pools `project.studies` unfiltered. The filter
+  // survives only as the fallback tally for the RoB domain when nothing pools.
+  const allStudies=(project.studies||[]).filter(s=>rowHasEffect(s));
   const robMethod=project.robMethod||"RoB2";
   // 86.md P1.6/P1.5 — pool the PRIMARY outcome with the persisted τ² estimator, not
   // all studies of every outcome/measure mixed into one meaningless estimate.
@@ -338,7 +349,10 @@ export function stepStatus(project, screeningComplete, opts={}){ // eslint-disab
   if(!project) return {};
   const p=project, pico=p.pico||{}, search=p.search||{}, prisma=p.prisma||{};
   const dbCount=Object.values(search.dbs||{}).filter(Boolean).length;
-  const withES=p.studies.filter(s=>s.es!=="").length;
+  // 116.md §46 (r2) — view-aware, or `extraction` could never reach 'done' for a raw
+  // proportion review while `analysis`/`forest`/`sensitivity` below (which read the
+  // view-aware runMeta) all report 'done'.
+  const withES=p.studies.filter(s=>rowHasEffect(s)).length;
   const robDone=p.studies.filter(s=>Object.keys(s.rob||{}).length>0).length;
   const reportDone=Object.values(p.reportChecked||{}).filter(Boolean).length;
   const meta=runMeta(p.studies,"random");
@@ -408,7 +422,10 @@ export function auditProject(p){
   const items=[];
   const pico=p.pico||{}, search=p.search||{}, prisma=p.prisma||{};
   const dbCount=Object.values(search.dbs||{}).filter(Boolean).length;
-  const withES=p.studies.filter(s=>s.es!=="").length;
+  // 116.md §46 (r2) — same predicate `meta` (runMeta) selects rows with, so the audit
+  // stops reporting "N of M studies have no effect size entered" in the same list whose
+  // ANALYZE section prints k/I² from a pool containing those very rows.
+  const withES=p.studies.filter(s=>rowHasEffect(s)).length;
   const robDone=p.studies.filter(s=>Object.keys(s.rob||{}).length>0).length;
   const meta=runMeta(p.studies,"random");
   const egg=eggersTest(p.studies);
@@ -445,13 +462,17 @@ export function auditProject(p){
   // EXTRACT
   if(p.studies.length===0) add("high","Extract","No studies extracted yet.");
   else{
-    if(withES<p.studies.length) add("high","Extract",`${p.studies.length-withES} of ${p.studies.length} studies have no effect size entered.`);
+    // 116.md §46 (r2) — wording matches analysisEligibility's 'noEffect' reason: a raw
+    // proportion row HAS data, it just has no stored effect size.
+    if(withES<p.studies.length) add("high","Extract",`${p.studies.length-withES} of ${p.studies.length} studies have no effect size or raw data entered.`);
     if(robDone<p.studies.length) add("high","Extract",`Risk of bias not assessed for ${p.studies.length-robDone} of ${p.studies.length} studies.`);
     const errStudies=p.studies.filter(s=>validateStudy(s).some(i=>i.sev==="error")).length;
     if(errStudies>0) add("high","Extract",`${errStudies} stud${errStudies===1?"y has":"ies have"} data-validation errors (e.g. CI/ES mismatch, group sizes ≠ total). Run the Data Quality Check.`);
     const dupCount=Object.keys(findDuplicates(p.studies)).length;
     if(dupCount>0) add("med","Extract",`${dupCount} possible duplicate record${dupCount===1?"":"s"} detected — confirm each is a distinct study.`);
-    const noType=p.studies.filter(s=>s.es!==""&&!s.esType).length;
+    // 116.md §46 (r2) — same predicate; a derived row always carries esType 'PROP', so
+    // this count is unchanged, but the rule now reads from ONE place.
+    const noType=p.studies.filter(s=>rowHasEffect(s)&&!s.esType).length;
     if(noType>0) add("med","Extract",`${noType} stud${noType===1?"y has":"ies have"} an effect size but no effect-measure type set — needed to confirm a common scale.`);
     const needReview=p.studies.filter(s=>s.needsReview).length;
     if(needReview>0) add("low","Extract",`${needReview} stud${needReview===1?"y is":"ies are"} flagged for second-reviewer confirmation.`);

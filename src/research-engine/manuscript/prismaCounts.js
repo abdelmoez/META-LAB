@@ -25,6 +25,13 @@
  */
 
 import { countPublications } from '../extraction/caseSeries.js';
+// 116.md §41/§46 (r2) — "does this row carry an effect estimate?" has exactly ONE
+// answer, and the pools already use it: `journalSubmission.getOutcomePairs` /
+// `filterStudiesForOutcome` derive es/lo/hi for raw proportion rows, so the manuscript's
+// synthesis counts k=N while these boxes, scanning only STORED es, reported the
+// quantitative-synthesis count as "[not recorded]" in the same document. Dependency-free
+// on purpose (no statistics engine in the manuscript count path).
+import { rowHasEffect } from '../statistics/poolableRow.js';
 
 function toNum(v) {
   if (v === '' || v == null) return null;
@@ -157,8 +164,9 @@ export function computePrismaCounts(project, opts = {}) {
     // last-resort fallback used to count extraction ROWS, so a case series of eight
     // patients (or a trial with three outcome rows) reported eight/three included
     // studies. Collapse rows onto their publication first; the numeric-`es` filter is
-    // preserved so a study with no usable estimate still does not inflate the box.
-    const withEs = studies.filter((s) => s && s.es !== '' && s.es != null && !isNaN(+s.es));
+    // preserved so a study with no usable estimate still does not inflate the box —
+    // 116.md §46 (r2): "usable" now means what the pool means (stored OR derived).
+    const withEs = studies.filter((s) => rowHasEffect(s));
     const n = countPublications(withEs);
     if (n) { included = n; provenance.included = 'computed'; }
     else { provenance.included = 'missing'; }
@@ -174,7 +182,9 @@ export function computePrismaCounts(project, opts = {}) {
   if (includedQuant == null) {
     // 106.md — same publication-scoping as `included` above: "studies in the
     // quantitative synthesis" is a study count, never a case count.
-    const numeric = countPublications(studies.filter((s) => s && s.es !== '' && s.es != null && !isNaN(+s.es)));
+    // 116.md §46 (r2) — the ONLY computed source for this box, so a raw-proportion
+    // review used to print "[not recorded]" beside its own k=N synthesis.
+    const numeric = countPublications(studies.filter((s) => rowHasEffect(s)));
     if (numeric) { includedQuant = numeric; provenance.includedQuant = 'computed'; }
   }
 

@@ -1,6 +1,9 @@
 import { describe, it, expect } from 'vitest';
 import { evaluateCompletion, completionBlockReason, SEVERITY } from '../../../../src/research-engine/extraction/engine/completionGate.js';
 import { mkStudy } from '../../../../src/research-engine/project-model/defaults.js';
+import { poolableStudyView } from '../../../../src/research-engine/statistics/monolithStats.js';
+import { deriveEffectSizeFromRaw } from '../../../../src/research-engine/extraction/deriveEffectSize.js';
+import { rowIneligibilityReason } from '../../../../src/research-engine/statistics/analysisEligibility.js';
 
 describe('completionGate.evaluateCompletion', () => {
   it('allows completion of a clean analysis-ready study', () => {
@@ -36,6 +39,70 @@ describe('completionGate.evaluateCompletion', () => {
   });
   it('has the three severity tiers', () => {
     expect(SEVERITY).toEqual({ INFO: 'info', WARN: 'warn', BLOCK: 'block' });
+  });
+});
+
+/* ══════════ 116.md §41/§46 (r2) — the §41 line means DERIVED, not "has an effect" ══════════
+   The derivation message was gated on `hasUsableEffect`, which is true for ANY row with a
+   stored numeric es. Every clause of the sentence was then false for such a row: nothing
+   is derived (`_derivedEs` is false — poolableStudyView returns the row untouched),
+   events/total is not even a concept for an SMD/OR row, `deriveEffectSizeFromRaw` returns
+   null so "marking complete also stores it" cannot happen, and runMeta drops the row for
+   want of a CI while the Analysis tab reports it as 'missingCI' — the extraction-says-
+   analyzable / analysis-says-no contradiction §46 exists to remove, in reverse. */
+const DERIVED_MSG = 'Effect size is derived automatically from events/total for analysis — marking complete also stores it on the row.';
+const NO_CI_MSG = 'Effect size has no usable 95% confidence interval — enter both bounds or it cannot be weighted in the meta-analysis.';
+
+describe('116.md §41/§46 (r2) — the derivation info line is gated on ACTUAL derivation', () => {
+  const infoMsgs = (s) => evaluateCompletion(s).info.map((i) => i.msg);
+
+  it('a raw-only PROP row — the one row the analysis really derives — still gets it', () => {
+    const s = { ...mkStudy(), outcome: 'X', author: 'A', year: '2020', esType: 'PROP', events: '18', total: '100' };
+    expect(poolableStudyView(s)._derivedEs).toBe(true);
+    expect(infoMsgs(s)).toContain(DERIVED_MSG);
+    // and the claim "marking complete also stores it" is true for exactly this row
+    expect(deriveEffectSizeFromRaw(s)).not.toBeNull();
+  });
+
+  it('an OR row with a stored es and no CI does NOT claim an events/total derivation', () => {
+    const s = { ...mkStudy(), outcome: 'X', author: 'A', year: '2020', esType: 'OR', es: '0.50', lo: '', hi: '' };
+    expect(poolableStudyView(s)._derivedEs).toBeUndefined();
+    expect(deriveEffectSizeFromRaw(s)).toBeNull();      // nothing would be stored
+    expect(infoMsgs(s)).not.toContain(DERIVED_MSG);
+  });
+
+  it('a PROP row whose stored es wins over its raw data does NOT claim a derivation', () => {
+    const s = { ...mkStudy(), outcome: 'X', author: 'A', year: '2020', esType: 'PROP', es: '-1.5', lo: '', hi: '', events: '18', total: '100' };
+    expect(poolableStudyView(s)._derivedEs).toBeUndefined();
+    expect(infoMsgs(s)).not.toContain(DERIVED_MSG);
+  });
+
+  it('an SMD row with es only does NOT claim a derivation (no raw path exists for it)', () => {
+    const s = { ...mkStudy(), outcome: 'X', author: 'A', year: '2020', esType: 'SMD', es: '0.5', lo: '', hi: '' };
+    expect(infoMsgs(s)).not.toContain(DERIVED_MSG);
+  });
+
+  it('a PARTIALLY filled CI — silent before — now gets the honest missing-CI line', () => {
+    // study-validator only warns when BOTH bounds are blank, so this row's ONLY guidance
+    // used to be the false derivation message.
+    const s = { ...mkStudy(), outcome: 'X', author: 'A', year: '2020', esType: 'SMD', es: '0.5', lo: '-0.2', hi: '' };
+    const r = evaluateCompletion(s);
+    expect(r.warnings.some((w) => /confidence interval/i.test(w.msg))).toBe(false);
+    expect(r.info.map((i) => i.msg)).toContain(NO_CI_MSG);
+    expect(r.info.map((i) => i.msg)).not.toContain(DERIVED_MSG);
+  });
+
+  it('does not duplicate the validator when BOTH bounds are blank', () => {
+    const s = { ...mkStudy(), outcome: 'X', author: 'A', year: '2020', esType: 'OR', es: '0.5', lo: '', hi: '' };
+    const r = evaluateCompletion(s);
+    expect(r.warnings.some((w) => /confidence interval/i.test(w.msg))).toBe(true);
+    expect(r.info.map((i) => i.msg)).not.toContain(NO_CI_MSG);
+  });
+
+  it('the wording agrees with the Analysis tab for the same row (missingCI, not noEffect)', () => {
+    const s = { ...mkStudy(), outcome: 'X', author: 'A', year: '2020', esType: 'OR', es: '0.5', lo: '-0.2', hi: '' };
+    expect(rowIneligibilityReason(s)).toBe('missingCI');
+    expect(evaluateCompletion(s).info.map((i) => i.msg)).toContain(NO_CI_MSG);
   });
 });
 
