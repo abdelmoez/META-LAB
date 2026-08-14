@@ -18,6 +18,8 @@
  *   id                     stable record id
  *   origin                 'search' | 'file' | 'api' | 'mining' | 'manual'
  *   sourceDb               free-text database/source name
+ *   sourceDbKey            canonical key behind sourceDb (116.md §14 r2) — the PRISMA
+ *                          bucket is decided from this, not from the display text
  *   identificationSource   optional explicit override of the PRISMA bucket
  *   isDuplicate            removed as a duplicate of another record
  *   dedupStage             'search' | 'import' | 'screening'  (WHERE it was caught)
@@ -102,8 +104,14 @@ function reasonBreakdown(records, valueFn) {
  *   previous  { studies, reports } — 103.md §7: an UPDATED review reports the
  *             studies already included by the previous version separately, so a
  *             rerun never re-counts them as newly screened.
+ *   unrecordedDuplicates  number | { db, other } — 116.md §13 (r2): import-time
+ *             duplicates discarded before becoming records, ATTRIBUTED PER ARM.
+ *             A bare number is read as the database arm (back-compat).
  * @returns {{
  *   boxes: { [boxId]: { n, ids } },
+ *   otherArm: {...},                            // §13 (r2) other-arm removals +
+ *                                               // screening — real work PRISMA 2020
+ *                                               // draws no box for
  *   sources: { db: [...], other: [...] },      // per-source identification rows
  *   removedBreakdown: {...},                    // §12 duplicate/other breakdown
  *   exclusionReasons: [...],                    // §8 full-text reason aggregation
@@ -133,7 +141,23 @@ export function derivePrismaFlow(records, opts = {}) {
   // have no ids, so they can never be inspected record-by-record (§12) and are
   // reported separately in the breakdown as such — honest about what is known
   // rather than inventing placeholder records.
-  const phantom = Math.max(0, Number(opts.unrecordedDuplicates) || 0);
+  //
+  // 116.md §13 (r2) — the credit is now PER ARM. Before 116 every batch import was
+  // db-arm by construction, so crediting the whole phantom count to the database
+  // column was self-consistent. §13 moved unattributed file imports to the
+  // other-methods arm, and an unconditional db credit then FABRICATED a database
+  // search: a project whose only import was a hand-uploaded RIS rendered "Records
+  // identified from databases/registers (n = 40)" with no database behind it.
+  // The loader now attributes each batch's discards to the arm its records landed
+  // in and passes { db, other }; a bare number stays db-arm for back-compat.
+  const phantomIn = opts.unrecordedDuplicates;
+  const phantomDb = Math.max(0, Number(
+    phantomIn && typeof phantomIn === 'object' ? phantomIn.db : phantomIn,
+  ) || 0);
+  const phantomOther = Math.max(0, Number(
+    phantomIn && typeof phantomIn === 'object' ? phantomIn.other : 0,
+  ) || 0);
+  const phantom = phantomDb + phantomOther;
 
   // Decorate once — arm and disposition are each computed a single time per
   // record, so a project with 100k records costs one pass, not one per box (§19).
@@ -163,19 +187,46 @@ export function derivePrismaFlow(records, opts = {}) {
     (key) => key,
   );
 
-  /* ── removed before screening (database arm only, per PRISMA 2020) ───────── */
+  /* ── removed before screening (the BOX is database arm only, per PRISMA 2020) ─
+   *
+   * 116.md §13 (r2) — the BOX stays db-scoped because PRISMA 2020 draws no
+   * "records removed before screening" box in the other-methods column. What
+   * changed is that the other arm's removals are no longer DROPPED: they are
+   * computed here, published as `flow.otherArm`, and folded into the
+   * project-level scalars. Before this repair, a project whose records all came
+   * from an unattributed file import reported `duplicatesRemoved: 0` while
+   * `dispositions.removed_duplicate.n` was 180 — the two halves of the same
+   * object contradicting each other, with reconciliation still green.
+   */
   const removed = db.filter((r) => isRemovedBeforeScreening(r._disp));
   const removedDuplicate = removed.filter((r) => r._disp === 'removed_duplicate');
   const removedAutomation = removed.filter((r) => r._disp === 'removed_automation');
   const removedOther = removed.filter((r) => r._disp === 'removed_other');
 
-  /* ── screening (database arm only) ───────────────────────────────────────── */
+  const removedOtherArm = other.filter((r) => isRemovedBeforeScreening(r._disp));
+  const removedOtherArmDuplicate = removedOtherArm.filter((r) => r._disp === 'removed_duplicate');
+  const removedOtherArmAutomation = removedOtherArm.filter((r) => r._disp === 'removed_automation');
+  const removedOtherArmOther = removedOtherArm.filter((r) => r._disp === 'removed_other');
+
+  /* ── screening ────────────────────────────────────────────────────────────
+   *
+   * The drawn `screened` / `excluded_screening` boxes are DATABASE ARM ONLY —
+   * PRISMA 2020 gives the other-methods column no "records screened" box, and
+   * drawing one is the commonest flow-diagram error.
+   *
+   * 116.md §13 (r2) — but PecanRev screens BOTH arms in one pool, so title/abstract
+   * decisions on other-arm records are real work that the project genuinely did.
+   * The sentence "N records were screened" in a Methods section is a statement
+   * about the PROJECT, not about one diagram column, so the project-level scalars
+   * below count both arms while `boxes.*` stay column-scoped for the drawing.
+   */
   const screened = db.filter((r) => !isRemovedBeforeScreening(r._disp));
   const excludedScreening = screened.filter((r) => r._disp === 'excluded_screening');
-  // Awaiting a title/abstract decision, DATABASE ARM ONLY. Other-methods records
-  // are never screened as a pool, so counting them here would make the screening
-  // identity unbalanced (they have no "records screened" box to come out of).
   const awaitingScreeningDb = screened.filter((r) => r._disp === 'awaiting_screening');
+
+  const screenedOther = other.filter((r) => !isRemovedBeforeScreening(r._disp));
+  const excludedScreeningOther = screenedOther.filter((r) => r._disp === 'excluded_screening');
+  const awaitingScreeningOther = screenedOther.filter((r) => r._disp === 'awaiting_screening');
 
   /* ── retrieval + eligibility (BOTH arms) ─────────────────────────────────── */
   const soughtOf = (set) => set.filter((r) => r.soughtRetrieval && !isRemovedBeforeScreening(r._disp));
@@ -205,9 +256,14 @@ export function derivePrismaFlow(records, opts = {}) {
     // The phantom (never-inserted) import duplicates raise the COUNT of records
     // identified and of records removed, but contribute no ids — they are counted,
     // not inspectable, and both boxes move together so the flow still balances.
-    identified_db: { n: identifiedDb.length + phantom, ids: identifiedDb.map((r) => r.id) },
-    identified_other: bucket(identifiedOther),
-    removed_before_screening: { n: removed.length + phantom, ids: removed.map((r) => r.id) },
+    identified_db: { n: identifiedDb.length + phantomDb, ids: identifiedDb.map((r) => r.id) },
+    // 116.md §13 (r2) — identification is PRE-removal by definition in both arms, so
+    // the other column counts its own never-inserted import duplicates too. Keeping
+    // them out would break `identified − removed = screened` at project level; the
+    // removals themselves have no box here (PRISMA 2020 draws none) and are reported
+    // through `flow.otherArm` + `removedBreakdown.otherArm` instead.
+    identified_other: { n: identifiedOther.length + phantomOther, ids: identifiedOther.map((r) => r.id) },
+    removed_before_screening: { n: removed.length + phantomDb, ids: removed.map((r) => r.id) },
     screened: bucket(screened),
     excluded_screening: bucket(excludedScreening),
     sought_db: bucket(soughtDb),
@@ -231,19 +287,44 @@ export function derivePrismaFlow(records, opts = {}) {
   const dispositionBuckets = {};
   for (const k of Object.keys(dispositions)) dispositionBuckets[k] = bucket(dispositions[k]);
 
-  /* ── §12 breakdowns ──────────────────────────────────────────────────────── */
+  /* ── §12 breakdowns ────────────────────────────────────────────────────────
+   *
+   * These three sub-lines are DRAWN INSIDE the removal box (svg.js), and
+   * reconcile.js asserts they partition it exactly, so they must stay db-scoped —
+   * a sub-count larger than the box it sits in is a reporting error in the figure.
+   * The other arm's removals get their own labelled structure below (116.md §13 r2).
+   */
   const removedBreakdown = {
-    duplicate: { n: removedDuplicate.length + phantom, ids: removedDuplicate.map((r) => r.id) },
+    duplicate: { n: removedDuplicate.length + phantomDb, ids: removedDuplicate.map((r) => r.id) },
     // Duplicates discarded at import, before any record existed. Counted, never
     // inspectable — there is nothing to inspect.
-    unrecorded: phantom,
+    unrecorded: phantomDb,
     automation: bucket(removedAutomation),
     other: bucket(removedOther),
+    // 116.md §13 (r2) — the other-methods arm's removals, reported rather than
+    // dropped. `unrecordedOther` is the share of never-inserted import duplicates
+    // whose batch belongs to the other arm.
+    otherArm: {
+      total: { n: removedOtherArm.length + phantomOther, ids: removedOtherArm.map((r) => r.id) },
+      duplicate: { n: removedOtherArmDuplicate.length + phantomOther, ids: removedOtherArmDuplicate.map((r) => r.id) },
+      automation: bucket(removedOtherArmAutomation),
+      other: bucket(removedOtherArmOther),
+      byStage: (phantomOther
+        ? [{ key: 'import_discarded', label: 'Discarded at import (not stored as records)', n: phantomOther, ids: [] }]
+        : []
+      ).concat(breakdown(removedOtherArmDuplicate, (r) => clean(r.dedupStage) || 'unknown', (k) => ({
+        search: 'Removed during automated search',
+        import: 'Removed during import',
+        screening: 'Removed in the Screening Engine',
+        unknown: 'Stage not recorded',
+      }[k] || k))),
+    },
+    unrecordedOther: phantomOther,
     // WHERE each duplicate was caught — the "Automated Search 510 / Screening 180 /
     // Manual 52" breakdown §12 asks for. These are slices of ONE set, so they can
     // never sum to more than the duplicates actually removed.
-    byStage: (phantom
-      ? [{ key: 'import_discarded', label: 'Discarded at import (not stored as records)', n: phantom, ids: [] }]
+    byStage: (phantomDb
+      ? [{ key: 'import_discarded', label: 'Discarded at import (not stored as records)', n: phantomDb, ids: [] }]
       : []
     ).concat(breakdown(removedDuplicate, (r) => clean(r.dedupStage) || 'unknown', (k) => ({
       search: 'Removed during automated search',
@@ -276,19 +357,46 @@ export function derivePrismaFlow(records, opts = {}) {
     (r) => r.notRetrievedReason,
   );
 
-  /* ── flat scalars, for consumers that only want numbers ──────────────────── */
+  /* ── flat scalars, for consumers that only want numbers ────────────────────
+   *
+   * 116.md §13 (r2) — TWO TIERS, and the distinction is load-bearing:
+   *
+   *   PROJECT-level (`screened`, `excludedScreen`, `duplicatesRemoved`,
+   *   `awaitingScreening`, `removedBeforeScreening`, `removedAutomation`,
+   *   `removedOther`) count BOTH arms. These are what the manuscript states
+   *   ("80 records were screened, 50 were excluded"), what prismaCounts.adaptFlow
+   *   hands to draft.js/tables.js, and what a reader understands as a fact about
+   *   the review. Scoping them to one diagram column made the paper report
+   *   "0 records were screened" for a project that screened 80.
+   *
+   *   COLUMN-level (`*Db` variants) mirror `boxes.*` exactly, and are what
+   *   reconcile.js uses for the database-arm flow identities.
+   */
+  const duplicatesRemovedAll = removedDuplicate.length + removedOtherArmDuplicate.length + phantom;
   const counts = {
     identified: identifiedDb.length + identifiedOther.length + phantom,
-    identifiedDb: identifiedDb.length + phantom,
-    identifiedOther: identifiedOther.length,
-    duplicatesRemoved: removedDuplicate.length + phantom,
-    removedAutomation: removedAutomation.length,
-    removedOther: removedOther.length,
-    removedBeforeScreening: removed.length + phantom,
+    identifiedDb: identifiedDb.length + phantomDb,
+    identifiedOther: identifiedOther.length + phantomOther,
+    duplicatesRemoved: duplicatesRemovedAll,
+    duplicatesRemovedDb: removedDuplicate.length + phantomDb,
+    duplicatesRemovedOther: removedOtherArmDuplicate.length + phantomOther,
+    removedAutomation: removedAutomation.length + removedOtherArmAutomation.length,
+    removedOther: removedOther.length + removedOtherArmOther.length,
+    removedBeforeScreening: removed.length + removedOtherArm.length + phantom,
+    removedBeforeScreeningDb: removed.length + phantomDb,
+    removedBeforeScreeningOther: removedOtherArm.length + phantomOther,
     unrecordedDuplicates: phantom,
-    awaitingScreening: awaitingScreeningDb.length,
-    screened: screened.length,
-    excludedScreen: excludedScreening.length,
+    unrecordedDuplicatesDb: phantomDb,
+    unrecordedDuplicatesOther: phantomOther,
+    awaitingScreening: awaitingScreeningDb.length + awaitingScreeningOther.length,
+    awaitingScreeningDb: awaitingScreeningDb.length,
+    awaitingScreeningOther: awaitingScreeningOther.length,
+    screened: screened.length + screenedOther.length,
+    screenedDb: screened.length,
+    screenedOther: screenedOther.length,
+    excludedScreen: excludedScreening.length + excludedScreeningOther.length,
+    excludedScreenDb: excludedScreening.length,
+    excludedScreenOther: excludedScreeningOther.length,
     sought: soughtDb.length + soughtOther.length,
     notRetrieved: notRetrievedDb.length + notRetrievedOther.length,
     reportsAssessed: assessedDb.length + assessedOther.length,
@@ -314,6 +422,30 @@ export function derivePrismaFlow(records, opts = {}) {
 
   return {
     boxes,
+    /**
+     * 116.md §13 (r2) — the other-methods arm's PRE-RETRIEVAL accounting.
+     *
+     * PRISMA 2020 gives the other-methods column exactly one identification box
+     * and then jumps to "Reports sought for retrieval": no removal box, no
+     * screening box. PecanRev nevertheless deduplicates and title/abstract-screens
+     * those records, so the work exists and must be REPORTED even though it cannot
+     * be DRAWN. This is where it lives — a first-class part of the flow object, so
+     * the inspector, the project statistics and reconcile.js all read one number.
+     *
+     * `screened` here means "entered the title/abstract pool" (identified minus
+     * removed-before-screening), mirroring the db arm's `boxes.screened`.
+     */
+    otherArm: {
+      identified: { n: identifiedOther.length + phantomOther, ids: identifiedOther.map((r) => r.id) },
+      removed: { n: removedOtherArm.length + phantomOther, ids: removedOtherArm.map((r) => r.id) },
+      removedDuplicate: { n: removedOtherArmDuplicate.length + phantomOther, ids: removedOtherArmDuplicate.map((r) => r.id) },
+      removedAutomation: bucket(removedOtherArmAutomation),
+      removedOther: bucket(removedOtherArmOther),
+      screened: bucket(screenedOther),
+      excludedScreening: bucket(excludedScreeningOther),
+      awaitingScreening: bucket(awaitingScreeningOther),
+      unrecordedDuplicates: phantomOther,
+    },
     sources: { db: sourceRows(identifiedDb, 'db'), other: sourceRows(identifiedOther, 'other') },
     removedBreakdown,
     exclusionReasons,

@@ -26,6 +26,8 @@ import { kickImportWorker } from '../services/screeningImportWorker.js';
 // racing the delete transaction (see server/screening/resetLock.js).
 import { isResetLocked } from '../screening/resetLock.js';
 import { getProjectAccess, ensureLeaderMember, writeAudit, QUORUM } from '../screening/access.js';
+// 116.md §10 (r2) — the record-editing bar, shared with the GET that advertises it.
+import { canEditRecordMetadata, canFinalizeRecords } from '../screening/recordAccess.js';
 // 109.md §22 — keyword mutations were completely unaudited; the pure row builder
 // lives beside the other screening helpers so its shape is unit-testable.
 import { keywordAuditRows, normalizeKeywordVia, KEYWORD_AUDIT_VIA } from '../screening/keywordAudit.js';
@@ -1024,14 +1026,25 @@ const RECORD_PATCH_FIELDS = Object.freeze({
   rejectedReason: { cap: 500, requiresFinalize: true },
 });
 
+/**
+ * 116.md §10 (r2) — own-key membership, not an index lookup.
+ * `RECORD_PATCH_FIELDS[k]` resolves inherited Object.prototype members, so a body of
+ * `{"toString":"x"}` satisfied the "no editable field" guard and returned an
+ * idempotent 200 instead of the intended 400 — telling a caller the edit succeeded
+ * when the server never considered the field.
+ */
+const RECORD_PATCH_KEYS = new Set(Object.keys(RECORD_PATCH_FIELDS));
+
 export async function updateRecordMetadata(req, res) {
   try {
     const access = await getProjectAccess(req.params.pid, req.user);
     if (!access) return res.status(404).json({ error: 'Project not found' });
     const p = access.project;
-    const canEdit = access.isOwner || access.isLeader
-      || !!(access.active && access.member && access.member.role !== 'viewer' && access.perms.canImportRecords);
-    if (!canEdit) return res.status(403).json({ error: 'You do not have permission to edit records in this project' });
+    // 116.md §10 (r2) — one shared definition with the GET that advertises it, and
+    // one that actually honours membership deactivation (see recordAccess.js).
+    if (!canEditRecordMetadata(access)) {
+      return res.status(403).json({ error: 'You do not have permission to edit records in this project' });
+    }
 
     const rec = await prisma.screenRecord.findFirst({
       where: { id: req.params.rid, projectId: p.id },
@@ -1039,9 +1052,38 @@ export async function updateRecordMetadata(req, res) {
     if (!rec) return res.status(404).json({ error: 'Record not found' });
 
     const blind = p.blindMode && !access.isLeader;
-    const canFinalize = !!(access.isLeader || access.canResolveConflicts);
+    const canFinalize = canFinalizeRecords(access);
 
     const body = req.body || {};
+
+    /* 116.md §10 (r2) — OPTIONAL COMPARE-AND-SET.
+     *
+     * The PRISMA inspector's undo executor re-validates `op.expect` against its own
+     * locally-patched row, so it is equal by construction and can never detect a
+     * collaborator's newer edit — the 108.md contract ("a collaborator's newer change
+     * makes the entry's precondition fail → refusal with an explanatory note, never
+     * an overwrite") was unenforceable from the client alone. The guarantee has to
+     * live here, where the stored pre-image is: a caller may send `expect` and the
+     * write is refused with 409 when what it expected is not what is stored. Absent
+     * `expect`, behaviour is unchanged (last-write-wins), so no existing caller
+     * breaks. Same shape as the PdfAnnotation CAS, minus a schema change. */
+    const expect = (body.expect && typeof body.expect === 'object' && !Array.isArray(body.expect))
+      ? body.expect : null;
+    if (expect) {
+      for (const field of Object.keys(expect)) {
+        if (!RECORD_PATCH_KEYS.has(field)) continue;
+        const stored = String(rec[field] == null ? '' : rec[field]);
+        const wanted = String(expect[field] == null ? '' : expect[field]);
+        if (stored !== wanted) {
+          return res.status(409).json({
+            error: 'RECORD_CONFLICT',
+            message: 'Another member changed this record — reload to see their edit.',
+            field,
+            record: shapeUpdatedRecord(rec, blind),
+          });
+        }
+      }
+    }
     const data = {};
     const changed = {};
     for (const [field, spec] of Object.entries(RECORD_PATCH_FIELDS)) {
@@ -1068,7 +1110,7 @@ export async function updateRecordMetadata(req, res) {
       changed[field] = { from: before.slice(0, 200), to: v.slice(0, 200) };
     }
     // A body with no editable field at all is a caller error, not a silent no-op.
-    if (!Object.keys(body).some((k) => RECORD_PATCH_FIELDS[k])) {
+    if (!Object.keys(body).some((k) => RECORD_PATCH_KEYS.has(k))) {
       return res.status(400).json({ error: 'No editable field in request' });
     }
     if (!Object.keys(data).length) {

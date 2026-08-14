@@ -31,6 +31,7 @@
  */
 
 import { classifySource } from '../screening/sourceClassify.js';
+import { dbKind } from '../search/searchProvenance.js';
 
 /* ════════════ the two identification arms (PRISMA 2020) ════════════ */
 
@@ -92,7 +93,18 @@ export function identificationSource(rec) {
 
   // 'search' | 'file' | 'api' — a database/register search, so let the source name
   // decide which of the two it was.
-  const kind = classifySource(r.sourceDb);
+  //
+  // 116.md §14 (r2) — classify the CANONICAL KEY, not the display text. Running the
+  // display label through the free-text classifier misfiled three of the pickable
+  // databases: "Crossref", "CORE" and "The Lens" match no DATABASE_PATTERN, so they
+  // fell through to the other-methods arm, and CENTRAL's label ("…Cochrane Central
+  // REGISTER of Controlled Trials…") matched /register\b/ and became a trial
+  // register — the exact misfile searchProvenance's own DB_KINDS comment says it
+  // exists to prevent. `sourceDbKey` is carried by the projection (record's own
+  // name canonicalized, else the batch's declared key); a hand-built projection
+  // without it keeps the original free-text behaviour.
+  const key = String(r.sourceDbKey || '').trim();
+  const kind = key ? dbKind(key, r.sourceDb) : classifySource(r.sourceDb);
   if (kind === 'register') return 'register';
   if (kind === 'database') return 'database';
 

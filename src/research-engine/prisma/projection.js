@@ -15,7 +15,7 @@
  * Pure — no DOM/React/network/Prisma. The server fetches; this maps.
  */
 
-import { dbLabel } from '../search/searchProvenance.js';
+import { dbLabel, canonicalDbKey, isFormatToken } from '../search/searchProvenance.js';
 
 const clean = (s) => String(s == null ? '' : s).trim();
 const arr = (v) => (Array.isArray(v) ? v : []);
@@ -108,14 +108,39 @@ export function buildRecordProjections(input = {}) {
     // ScreenImportBatch.sourceDatabase, stored as a canonical key → display label).
     // Declared batch attribution keeps an Embase RIS export in the database arm
     // even though the file itself never named a database.
+    //
+    // 116.md §14 (r2) — TWO repairs to that rule:
+    //  1. A record whose `sourceDb` is only a FILE-FORMAT TOKEN ('ris', 'ciw', …)
+    //     carries no attribution at all. Legacy rows are full of them (the old
+    //     importer's `|| r.source` fallback), and because they are non-blank they
+    //     used to SHADOW the researcher's explicit batch declaration — so on every
+    //     pre-4.21 project the Methods said "we searched Embase" while PRISMA filed
+    //     the same records under hand-searching. Read-side self-healing only; the
+    //     stored row is never rewritten (global invariant 3).
+    //  2. The canonical KEY travels alongside the display label. model.js classifies
+    //     the key, because classifying the label sends Crossref/CORE/The Lens to the
+    //     other-methods arm and CENTRAL to the register bucket.
     const batch = batchById[clean(r.importBatchId || '') || clean(s.batchId || '')] || {};
-    const sourceDb = clean(r.sourceDb)
-      || (clean(batch.sourceDatabase) ? dbLabel(batch.sourceDatabase) : '');
+    const ownRaw = clean(r.sourceDb);
+    const own = isFormatToken(ownRaw) ? '' : ownRaw;
+    const declared = clean(batch.sourceDatabase);
+    const sourceDbKey = own ? canonicalDbKey(own) : (declared ? canonicalDbKey(declared) : '');
+    // A RECOGNISED key renders with its catalogue label, so the same database never
+    // appears twice in the source breakdown under two spellings (the import path
+    // writes the raw canonical key — 'crossref' — into ScreenRecord.sourceDb).
+    // Unrecognised text is kept VERBATIM: never invent a name for something the
+    // catalogue does not know.
+    const sourceDb = own
+      ? dbLabel(sourceDbKey, own)
+      : (declared ? dbLabel(declared) : '');
 
     return {
       id,
       origin,
       sourceDb,
+      // 116.md §14 (r2) — the canonical database key behind `sourceDb`, so the PRISMA
+      // bucket is decided by identity rather than by how the name happens to read.
+      sourceDbKey,
       // 116.md §13/§14 — the per-record correction override + preserved free-text
       // detail ("reference list of Smith 2020"). model.identificationSource() gives
       // the explicit override absolute precedence.

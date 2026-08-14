@@ -64,63 +64,155 @@ function wrap(text, maxChars) {
  * fix — nothing else in the layout needs restructuring.
  */
 
-/** Average character width as a fraction of font size (Georgia ≈ 0.52 em). The
- *  text-extent regression test uses the SAME estimate, so overflow cannot ship
- *  again without a red test. */
-export const CHAR_W_EM = 0.52;
+/**
+ * 116.md §18 (r2) — REAL ADVANCE WIDTHS, not an average.
+ *
+ * Wrapping used to budget by CHARACTER COUNT against a single 0.52 em average.
+ * Georgia's real advances (measured from georgia.ttf, unitsPerEm 2048) are 0.50 em
+ * for lowercase but 0.68 em for capitals, 0.98 for W and 0.93 for M — 31%–88% above
+ * the estimate. So a 41-character all-caps exclusion reason ("WRONG POPULATION NON
+ * ADULT COHORT ONLY", the kind that arrives in imported/legacy screening data) sat
+ * under the character cap, was emitted unwrapped, and rendered 263px wide in a 250px
+ * box — escaping into the column gap, which is precisely the defect §18 set out to
+ * fix. Raising the average would not do: ordinary mixed-case text measures 0.45–0.50
+ * em/char and would start over-wrapping, growing every box for nothing.
+ *
+ * The table is the ASCII printable range plus the punctuation this diagram emits.
+ * Anything unmeasured falls back to a value ABOVE the capital average, so an unknown
+ * glyph can only ever cause an early break, never an overflow.
+ */
+const ADVANCE_EM = Object.freeze({
+  ' ': 0.2412, '!': 0.3311, '"': 0.4116, '#': 0.6431, $: 0.6099, '%': 0.8174, '&': 0.7104,
+  "'": 0.2153, '(': 0.375, ')': 0.375, '*': 0.4722, '+': 0.6431, ',': 0.2695, '-': 0.374,
+  '.': 0.2695, '/': 0.4688, ':': 0.3125, ';': 0.3125, '<': 0.6431, '=': 0.6431, '>': 0.6431,
+  '?': 0.4785, '@': 0.9287, '[': 0.375, '\\': 0.4688, ']': 0.375, '^': 0.6431, _: 0.6431,
+  '`': 0.5, '{': 0.4302, '|': 0.375, '}': 0.4302, '~': 0.6431,
+  0: 0.6138, 1: 0.4297, 2: 0.5586, 3: 0.5518, 4: 0.5649, 5: 0.5283, 6: 0.5659, 7: 0.5024,
+  8: 0.5962, 9: 0.5659,
+  A: 0.6709, B: 0.6538, C: 0.6421, D: 0.749, E: 0.6533, F: 0.5991, G: 0.7251, H: 0.8149,
+  I: 0.3896, J: 0.5176, K: 0.6943, L: 0.6035, M: 0.9272, N: 0.7671, O: 0.7441, P: 0.6099,
+  Q: 0.7441, R: 0.7017, S: 0.561, T: 0.6187, U: 0.7563, V: 0.6665, W: 0.9756, X: 0.7104,
+  Y: 0.6152, Z: 0.6016,
+  a: 0.5039, b: 0.5601, c: 0.4541, d: 0.5742, e: 0.4834, f: 0.3252, g: 0.5093, h: 0.582,
+  i: 0.293, j: 0.292, k: 0.5356, l: 0.2861, m: 0.8809, n: 0.5908, o: 0.5391, p: 0.5713,
+  q: 0.5596, r: 0.4097, s: 0.4321, t: 0.3452, u: 0.5752, v: 0.4966, w: 0.7373, x: 0.5049,
+  y: 0.4922, z: 0.4438,
+  '–': 0.6431, '—': 0.8569, '‘': 0.2266, '’': 0.2266, '“': 0.4102, '”': 0.4102,
+  '…': 0.8071, '·': 0.2793, '−': 0.6431, '≤': 0.6431, '≥': 0.6431, '≠': 0.6431,
+});
+/** Above Georgia's capital average (0.681), so an unmeasured glyph breaks early. */
+const FALLBACK_ADVANCE_EM = 0.75;
+
 const BOX_FONT_PX = 10.5;
 const BOX_PAD_X = 10;           // left text inset; mirrored on the right
 /** A single logical line may occupy at most this many physical lines; anything
  *  longer is ellipsized — the diagram is the summary, the inspector the detail. */
 const MAX_PHYSICAL_LINES = 3;
 
+/** Rendered width of a string at the box font size, in px. Pure. */
+export function boxTextWidth(s) {
+  let em = 0;
+  for (const ch of String(s == null ? '' : s)) em += (ADVANCE_EM[ch] ?? FALLBACK_ADVANCE_EM);
+  return em * BOX_FONT_PX;
+}
+
+/** Longest prefix of `s` that fits `maxPx`. Never returns '' for a non-empty input. */
+function truncateToWidth(s, maxPx) {
+  const chars = Array.from(String(s == null ? '' : s));
+  let px = 0;
+  let out = '';
+  for (const ch of chars) {
+    const next = px + (ADVANCE_EM[ch] ?? FALLBACK_ADVANCE_EM) * BOX_FONT_PX;
+    if (next > maxPx) break;
+    px = next;
+    out += ch;
+  }
+  return out || chars.slice(0, 1).join('');
+}
+
 /** Hard-break a single overlong token (a DOI, a pasted sentence with no spaces). */
-function breakToken(token, maxChars) {
+function breakToken(token, maxPx) {
   const out = [];
   let rest = String(token);
-  while (rest.length > maxChars) {
-    out.push(rest.slice(0, maxChars));
-    rest = rest.slice(maxChars);
+  while (rest && boxTextWidth(rest) > maxPx) {
+    const head = truncateToWidth(rest, maxPx);
+    if (!head || head.length === rest.length) break;
+    out.push(head);
+    rest = rest.slice(head.length);
   }
   if (rest) out.push(rest);
   return out;
 }
 
 /**
+ * A logical line, normalized. `suffix` is a PROTECTED tail — see wrapBoxLines.
+ */
+function asLogical(raw) {
+  if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
+    return { text: String(raw.text == null ? '' : raw.text), suffix: String(raw.suffix == null ? '' : raw.suffix) };
+  }
+  return { text: String(raw == null ? '' : raw), suffix: '' };
+}
+
+/**
  * wrapBoxLines(lines, w) → physical lines fitting a box of width `w`.
+ *
  * Indented sub-lines ("   Duplicate records removed …") keep a hanging indent on
  * their continuation lines, so wrapped sub-items still read as sub-items.
+ *
+ * A line may be given as `{ text, suffix }`. 116.md §18 (r2): `suffix` is the
+ * `(n = N)` COUNT, and it is unclippable. Previously the count simply sat at the end
+ * of the logical line, so the 3-physical-line cap ellipsized exactly the part that
+ * carries the number: a box reading "Reports excluded (n = 15)" listed sub-counts of
+ * 5 and 4 with the third reason's "(n = 6)" gone — a PRISMA 2020 figure whose reason
+ * counts do not reconcile with the box total, exported to the manuscript unchanged.
+ * The label is truncated instead, and the count is re-appended to the last kept line.
+ *
  * Pure.
  */
 export function wrapBoxLines(lines, w) {
-  const maxChars = Math.max(8, Math.floor((w - BOX_PAD_X * 2) / (BOX_FONT_PX * CHAR_W_EM)));
+  const budget = Math.max(24, w - BOX_PAD_X * 2);
   const out = [];
   for (const raw of lines) {
-    const s = String(raw == null ? '' : raw);
-    if (s.length <= maxChars) { out.push(s); continue; }
+    const { text: s, suffix } = asLogical(raw);
+    if (boxTextWidth(s + suffix) <= budget) { out.push(s + suffix); continue; }
+
     const indent = (s.match(/^\s*/) || [''])[0];
     const contIndent = indent + '  ';
-    const contMax = Math.max(4, maxChars - contIndent.length);
+    const firstBudget = budget - boxTextWidth(indent);
+    const contBudget = Math.max(12, budget - boxTextWidth(contIndent));
     const words = s.trim().split(/\s+/).flatMap((t) => (
-      t.length > contMax ? breakToken(t, contMax) : [t]
+      boxTextWidth(t) > contBudget ? breakToken(t, contBudget) : [t]
     ));
+
     const physical = [];
     let line = '';
-    let budget = maxChars - indent.length;
+    let budgetNow = firstBudget;
     for (const word of words) {
       if (!line) line = word;
-      else if (line.length + 1 + word.length <= budget) line += ' ' + word;
+      else if (boxTextWidth(`${line} ${word}`) <= budgetNow) line += ` ${word}`;
       else {
         physical.push((physical.length ? contIndent : indent) + line);
         line = word;
-        budget = contMax;
+        budgetNow = contBudget;
       }
     }
     if (line) physical.push((physical.length ? contIndent : indent) + line);
+    if (!physical.length) physical.push(indent);
+
+    // The protected count rides the last line when it fits, else its own line.
+    if (suffix) {
+      const last = physical[physical.length - 1];
+      if (boxTextWidth(last + suffix) <= budget) physical[physical.length - 1] = last + suffix;
+      else physical.push(contIndent + suffix.trim());
+    }
+
     if (physical.length > MAX_PHYSICAL_LINES) {
       const kept = physical.slice(0, MAX_PHYSICAL_LINES);
-      kept[MAX_PHYSICAL_LINES - 1] = kept[MAX_PHYSICAL_LINES - 1]
-        .slice(0, Math.max(1, maxChars - 1)) + '…';
+      let base = kept[MAX_PHYSICAL_LINES - 1];
+      if (suffix && base.endsWith(suffix)) base = base.slice(0, -suffix.length);
+      const room = budget - boxTextWidth(`…${suffix}`);
+      kept[MAX_PHYSICAL_LINES - 1] = `${truncateToWidth(base, room)}…${suffix}`;
       out.push(...kept);
     } else {
       out.push(...physical);
@@ -295,10 +387,13 @@ export function buildPrismaFlowSVG(flow, opts = {}) {
   };
 
   /* ── identification row ────────────────────────────────────────────────── */
+  // 116.md §18 (r2) — the per-source `(n = N)` is a PROTECTED suffix: a long database
+  // label may be clipped, its count never is.
+  const countLine = (label, count) => ({ text: `   ${label}`, suffix: ` (n = ${count})` });
   const dbSources = (o.perSource && f.sources && f.sources.db) ? f.sources.db.slice(0, 6) : [];
   const idDbLines = [`Records identified from*: (n = ${n('identified_db')})`]
     .concat(dbSources.length
-      ? dbSources.map((s) => `   ${s.label} (n = ${s.n})`)
+      ? dbSources.map((s) => countLine(s.label, s.n))
       : ['   Databases / registers']);
 
   const removedLines = [
@@ -318,7 +413,7 @@ export function buildPrismaFlowSVG(flow, opts = {}) {
     const otherSources = (o.perSource && f.sources && f.sources.other) ? f.sources.other.slice(0, 6) : [];
     const idOtherLines = [`Records identified from: (n = ${n('identified_other')})`]
       .concat(otherSources.length
-        ? otherSources.map((s) => `   ${s.label} (n = ${s.n})`)
+        ? otherSources.map((s) => countLine(s.label, s.n))
         : ['   Websites, organisations, citation searching']);
     const idOther = drawBox('identified_other', otherX, y, COL_W, idOtherLines, { bold: true });
     svg += idOther.svg;
@@ -363,7 +458,9 @@ export function buildPrismaFlowSVG(flow, opts = {}) {
   const exLines = (label, count, arm) => {
     const rs = reasonsFor(arm);
     return [`${label} (n = ${count}):`].concat(
-      rs.length ? rs.map((r) => `   ${r.label} (n = ${r.n})`) : ['   Reasons not recorded'],
+      // 116.md §18 (r2) — the reason count must survive the 3-line cap, or the
+      // figure's sub-counts stop summing to the box total.
+      rs.length ? rs.map((r) => countLine(r.label, r.n)) : ['   Reasons not recorded'],
     );
   };
 

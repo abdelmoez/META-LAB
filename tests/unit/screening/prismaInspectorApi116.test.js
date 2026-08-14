@@ -118,6 +118,28 @@ const BLIND_REVIEWER = {
   canResolveConflicts: false,
   perms: { canImportRecords: false },
 };
+/**
+ * 116.md §9 (r2) — a blinded reviewer who DOES hold the editing capability. The
+ * original blind fixture was permission-less, so every blind assertion was also
+ * satisfied by the 403 path; this one reaches the record list and the PATCH.
+ */
+const BLIND_EDITOR = {
+  ...BLIND_REVIEWER,
+  perms: { canImportRecords: true },
+};
+/**
+ * 116.md §10 (r2) — the state the product creates when an owner deactivates a
+ * leader-role collaborator (MembersTab's Active/Inactive toggle). getProjectAccess
+ * nulls out only 'pending', so the row keeps role and isLeader while `active` is
+ * false — and the leader branch of the old permission expression ignored `active`.
+ */
+const INACTIVE_LEADER = {
+  project: { id: 'sp1', blindMode: false, linkedMetaLabProjectId: null },
+  member: { role: 'leader', status: 'inactive' },
+  isOwner: false, isLeader: true, active: false,
+  canResolveConflicts: true,
+  perms: { canImportRecords: true },
+};
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -155,9 +177,12 @@ describe('getPrismaBoxRecords — the record list (116.md §9/§11)', () => {
     expect(a4.authors).toBe('Author a4');
     expect(a4.disposition).toBe('excluded_full_text');
     expect(a4.exclusionReason).toBe('Wrong population'); // §16 display formatting
-    // Phantom import-time duplicates: counted, flagged, never fake rows.
-    expect(res.body.total).toBe(res.body.records.length + 2);
-    expect(res.body.uninspectable).toBe(2);
+    // 116.md §13 (r2) — batch b1's 2 import-time duplicates declare no database and
+    // left no surviving records, so they belong to the OTHER arm; the database
+    // column no longer reports records nothing backs (see the identified_other case
+    // below, where they surface as `uninspectable`).
+    expect(res.body.total).toBe(res.body.records.length);
+    expect(res.body.uninspectable).toBe(0);
     expect(res.body.canEdit).toBe(true);
     expect(res.body.canFinalize).toBe(true);
     // Facets ship on the first page.
@@ -170,6 +195,11 @@ describe('getPrismaBoxRecords — the record list (116.md §9/§11)', () => {
     await getPrismaBoxRecords(mkReq({ boxId: 'identified_other' }), res);
     expect(res.body.records.map((r) => r.id)).toEqual(['a3']);
     expect(res.body.records[0].importBatch.filename).toBe('upload.ris');
+    // 116.md §13 (r2) — b1's discarded import duplicates are counted HERE (its
+    // batch is unattributed, so its records would have been other-arm too), and
+    // reported as counted-but-not-listable rather than as fake rows.
+    expect(res.body.total).toBe(3);
+    expect(res.body.uninspectable).toBe(2);
   });
 
   it('paginates with cursor/limit and repeats no rows', async () => {
@@ -216,6 +246,95 @@ describe('getPrismaBoxRecords — the record list (116.md §9/§11)', () => {
     }
     expect(res.body.canEdit).toBe(false);     // viewer-grade perms
     expect(res.body.canFinalize).toBe(false);
+  });
+
+  /* ════════ 116.md §9 (r2) — blind mode also hides what colleagues WROTE ════════ */
+
+  it('a blinded non-leader receives NO colleague-written reason on the wire', async () => {
+    getProjectAccess.mockResolvedValue(BLIND_EDITOR);
+    const res = mkRes();
+    await getPrismaBoxRecords(mkReq({ boxId: 'excluded_screening' }), res);
+    // a1 IS in the box — the leak was real reachable data, not an empty result.
+    expect(res.body.records.map((r) => r.id)).toEqual(['a1']);
+    // The whole payload is inspected: reviewer A's "off topic" must appear nowhere.
+    const wire = JSON.stringify(res.body);
+    expect(wire).not.toMatch(/off topic/i);
+    for (const r of res.body.records) {
+      expect(r.exclusionReason).toBe('');
+      expect(r.rejectedReason).toBe('');
+    }
+  });
+
+  it('…and no directory of the distinct reasons either', async () => {
+    getProjectAccess.mockResolvedValue(BLIND_EDITOR);
+    const res = mkRes();
+    await getPrismaBoxRecords(mkReq({ boxId: 'excluded_screening' }), res);
+    expect(res.body.facets.reason).toBeUndefined();
+    // The non-identifying facets still work — blinding is targeted, not a blackout.
+    expect(res.body.facets.status.length).toBeGreaterThan(0);
+  });
+
+  it('a `reason` filter cannot be used to probe for the hidden text', async () => {
+    getProjectAccess.mockResolvedValue(BLIND_EDITOR);
+    const guess = mkRes();
+    await getPrismaBoxRecords(mkReq({ boxId: 'excluded_screening', query: { reason: 'off topic' } }), guess);
+    const miss = mkRes();
+    await getPrismaBoxRecords(mkReq({ boxId: 'excluded_screening', query: { reason: 'zzz not a reason' } }), miss);
+    // A right guess must not be distinguishable from a wrong one.
+    expect(guess.body.records.map((r) => r.id)).toEqual(miss.body.records.map((r) => r.id));
+  });
+
+  it('the LEADER still sees the reasons — blinding is leader-exempt', async () => {
+    const res = mkRes();
+    await getPrismaBoxRecords(mkReq({ boxId: 'excluded_screening' }), res);
+    expect(res.body.records[0].exclusionReason).toBe('Off topic');
+    expect(res.body.facets.reason.length).toBeGreaterThan(0);
+  });
+
+  it('a rejected record\'s reason is hidden from a blinded reviewer too', async () => {
+    getProjectAccess.mockResolvedValue(BLIND_EDITOR);
+    const res = mkRes();
+    await getPrismaBoxRecords(mkReq({ boxId: 'excluded_full_text_db' }), res);
+    expect(res.body.records.map((r) => r.id)).toEqual(['a4']);
+    expect(JSON.stringify(res.body)).not.toMatch(/wrong population/i);
+  });
+});
+
+/* ════════ 116.md §11 (r2) — one project scan per request ════════ */
+
+describe('getPrismaBoxRecords — query cost', () => {
+  it('reads the project\'s records ONCE, not twice', async () => {
+    const res = mkRes();
+    await getPrismaBoxRecords(mkReq({}), res);
+    expect(res.statusCode).toBe(200);
+    // Was 2: the flow loader's scan plus a second, near-identical one in the handler.
+    expect(prismaMock.screenRecord.findMany).toHaveBeenCalledTimes(1);
+    // …and the import batches once, not twice.
+    expect(prismaMock.screenImportBatch.findMany).toHaveBeenCalledTimes(1);
+  });
+
+  it('that single scan already carries the display columns and the page order', async () => {
+    const res = mkRes();
+    await getPrismaBoxRecords(mkReq({}), res);
+    const args = prismaMock.screenRecord.findMany.mock.calls[0][0];
+    expect(args.select).toEqual(expect.objectContaining({
+      id: true, title: true, authors: true, journal: true, createdAt: true,
+      // and the projection's own columns, so nothing needs a second read
+      identificationSource: true, importBatchId: true, finalStatus: true,
+    }));
+    expect(args.orderBy).toEqual([{ createdAt: 'asc' }, { id: 'asc' }]);
+    // The rows really did come from it — the response is still correct.
+    expect(res.body.records[0].title).toBe('Paper a1');
+  });
+
+  it('a later page costs no more scans than the first', async () => {
+    const first = mkRes();
+    await getPrismaBoxRecords(mkReq({ query: { limit: '2' } }), first);
+    vi.clearAllMocks();
+    getProjectAccess.mockResolvedValue(LEADER);
+    const second = mkRes();
+    await getPrismaBoxRecords(mkReq({ query: { limit: '2', cursor: first.body.nextCursor } }), second);
+    expect(prismaMock.screenRecord.findMany).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -325,5 +444,98 @@ describe('updateRecordMetadata — validation + persistence', () => {
     expect(same.statusCode).toBe(200);
     expect(same.body.changed).toEqual({});
     expect(prismaMock.screenRecord.update).not.toHaveBeenCalled();
+  });
+
+  it('an Object.prototype key does not masquerade as an editable field (§10 r2)', async () => {
+    // `RECORD_PATCH_FIELDS[k]` resolved inherited members, so these bodies skipped
+    // the 400 and fell through to the idempotent branch — a 200 telling the caller
+    // the edit had succeeded when the server never considered the field.
+    for (const key of ['toString', 'constructor', 'valueOf', 'hasOwnProperty']) {
+      const res = mkRes();
+      await updateRecordMetadata(mkReq({ body: { [key]: 'x' } }), res);
+      expect(res.statusCode, `body {${key}: 'x'} must be a 400`).toBe(400);
+      expect(res.body.error).toMatch(/no editable field/i);
+    }
+    expect(prismaMock.screenRecord.update).not.toHaveBeenCalled();
+  });
+});
+
+/* ════════ 116.md §10 (r2) — deactivated membership ════════ */
+
+describe('updateRecordMetadata — a deactivated leader has no write access', () => {
+  it('403s on plain metadata, exactly like importRecords already did', async () => {
+    getProjectAccess.mockResolvedValue(INACTIVE_LEADER);
+    const res = mkRes();
+    await updateRecordMetadata(mkReq({ body: { title: 'Rewritten by an offboarded leader' } }), res);
+    expect(res.statusCode).toBe(403);
+    expect(prismaMock.screenRecord.update).not.toHaveBeenCalled();
+  });
+
+  it('403s on identificationSource — the field that moves PRISMA arms', async () => {
+    getProjectAccess.mockResolvedValue(INACTIVE_LEADER);
+    const res = mkRes();
+    await updateRecordMetadata(mkReq({ body: { identificationSource: 'manual' } }), res);
+    expect(res.statusCode).toBe(403);
+    expect(prismaMock.screenRecord.update).not.toHaveBeenCalled();
+  });
+
+  it('403s on rejectedReason — the published exclusion-reason text', async () => {
+    getProjectAccess.mockResolvedValue(INACTIVE_LEADER);
+    const res = mkRes();
+    await updateRecordMetadata(mkReq({ rid: 'a4', body: { rejectedReason: 'Rewritten' } }), res);
+    expect(res.statusCode).toBe(403);
+    expect(prismaMock.screenRecord.update).not.toHaveBeenCalled();
+  });
+
+  it('the GET advertises the same answer the PATCH enforces', async () => {
+    getProjectAccess.mockResolvedValue(INACTIVE_LEADER);
+    const res = mkRes();
+    await getPrismaBoxRecords(mkReq({}), res);
+    expect(res.body.canEdit).toBe(false);
+    expect(res.body.canFinalize).toBe(false);
+  });
+
+  it('an ACTIVE leader is unaffected', async () => {
+    getProjectAccess.mockResolvedValue({ ...INACTIVE_LEADER, member: { role: 'leader', status: 'active' }, active: true });
+    const res = mkRes();
+    await updateRecordMetadata(mkReq({ body: { title: 'Still allowed' } }), res);
+    expect(res.statusCode).toBe(200);
+  });
+});
+
+/* ════════ 116.md §10 (r2) — compare-and-set ════════ */
+
+describe('updateRecordMetadata — optional compare-and-set (the undo precondition)', () => {
+  it('409s when the stored pre-image is not what the caller expected', async () => {
+    const res = mkRes();
+    // The undo of "typo → aaa", sent after a collaborator stored "bbb".
+    await updateRecordMetadata(mkReq({
+      body: { doi: '10.1000/typo', expect: { doi: '10.1000/aaa' } },
+    }), res);
+    expect(res.statusCode).toBe(409);
+    expect(res.body.error).toBe('RECORD_CONFLICT');
+    expect(res.body.record.doi).toBe('10.1/a1');   // the caller is shown the truth
+    expect(prismaMock.screenRecord.update).not.toHaveBeenCalled();
+  });
+
+  it('applies the write when the pre-image matches', async () => {
+    const res = mkRes();
+    await updateRecordMetadata(mkReq({
+      body: { title: 'Corrected', expect: { title: 'Paper a1' } },
+    }), res);
+    expect(res.statusCode).toBe(200);
+    expect(prismaMock.screenRecord.update).toHaveBeenCalled();
+  });
+
+  it('`expect` is never itself treated as an editable field', async () => {
+    const res = mkRes();
+    await updateRecordMetadata(mkReq({ body: { expect: { title: 'Paper a1' } } }), res);
+    expect(res.statusCode).toBe(400); // no editable field in the body
+  });
+
+  it('a caller that sends no `expect` keeps the old last-write-wins behaviour', async () => {
+    const res = mkRes();
+    await updateRecordMetadata(mkReq({ body: { title: 'Blind overwrite' } }), res);
+    expect(res.statusCode).toBe(200);
   });
 });

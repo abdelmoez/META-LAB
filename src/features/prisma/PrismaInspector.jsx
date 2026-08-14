@@ -14,8 +14,14 @@
  * intentional, confirmed buttons.
  *
  * Undo: each metadata edit registers with the project HistoryContext under the
- * 'prisma.recordEdit' executor (108.md contract — re-validate against the CURRENT
- * row, refuse when stale; the executor is the tail of the same PATCH path).
+ * 'prisma.recordEdit' executor (108.md contract — refuse when stale rather than
+ * clobber; the executor is the tail of the same PATCH path). 116.md §10 (r2): the
+ * staleness check is the SERVER's compare-and-set, because a client cannot honestly
+ * make it — this panel writes its own patch into `rows` optimistically, so
+ * re-validating the entry against `rows` compared the client's guess with itself and
+ * always passed. `expect` now travels with the PATCH and a collaborator's newer edit
+ * comes back as 409 → an honest refusal with a note. The `record.updated` poke keeps
+ * the loaded rows live, so the refusal is rare rather than routine.
  */
 import { useEffect, useMemo, useRef, useState, useCallback } from 'react';
 import { C, btnS, inp } from '../../frontend/workspace/ui/styles.js';
@@ -24,6 +30,7 @@ import { useProjectHistory } from '../../frontend/history/HistoryContext.jsx';
 import {
   BOX_EXPLANATIONS, facetsForBox, FACET_LABELS,
   identificationSourceOptions, validateRecordPatch, buildBoxRecordsQuery,
+  acceptBoxResponse, affectsBoxMembership, canRevertFinal,
 } from './inspectorModel.js';
 
 const PAGE_LIMIT = 50;
@@ -39,16 +46,28 @@ const api = (screenProjectId, path, opts = {}) => fetch(
 );
 
 /* ── the §12 aggregate breakdown (kept from the 103 inspector) ─────────────── */
-function boxBreakdown(flow, boxId) {
+export function boxBreakdown(flow, boxId) {
   if (!flow) return [];
-  return boxId === 'removed_before_screening'
-    ? (flow.removedBreakdown && flow.removedBreakdown.byStage) || []
-    : boxId === 'excluded_full_text_db' ? (flow.exclusionReasonsByArm && flow.exclusionReasonsByArm.db) || []
-      : boxId === 'excluded_full_text_other' ? (flow.exclusionReasonsByArm && flow.exclusionReasonsByArm.other) || []
-        : boxId === 'not_retrieved_db' || boxId === 'not_retrieved_other' ? flow.notRetrievedReasons || []
-          : boxId === 'identified_db' ? (flow.sources && flow.sources.db) || []
-            : boxId === 'identified_other' ? (flow.sources && flow.sources.other) || []
-              : [];
+  if (boxId === 'removed_before_screening') return (flow.removedBreakdown && flow.removedBreakdown.byStage) || [];
+  if (boxId === 'excluded_full_text_db') return (flow.exclusionReasonsByArm && flow.exclusionReasonsByArm.db) || [];
+  if (boxId === 'excluded_full_text_other') return (flow.exclusionReasonsByArm && flow.exclusionReasonsByArm.other) || [];
+  if (boxId === 'not_retrieved_db' || boxId === 'not_retrieved_other') return flow.notRetrievedReasons || [];
+  if (boxId === 'identified_db') return (flow.sources && flow.sources.db) || [];
+  if (boxId === 'identified_other') {
+    // 116.md §13 (r2) — PRISMA 2020 gives this column no removal box and no
+    // screening box, so the removals and title/abstract decisions its records went
+    // through cannot be DRAWN. They are real work, they are in the project totals,
+    // and this is where a researcher who clicks the number can see them.
+    const oa = flow.otherArm || null;
+    const rows = ((flow.sources && flow.sources.other) || []).slice();
+    if (!oa) return rows;
+    const add = (key, label, n) => { if (n > 0) rows.push({ key, label, n }); };
+    add('other_removed', 'Removed before screening (no box in this column)', (oa.removed || {}).n || 0);
+    add('other_excluded', 'Excluded at title/abstract (no box in this column)', (oa.excludedScreening || {}).n || 0);
+    add('other_awaiting', 'Awaiting title/abstract screening', (oa.awaitingScreening || {}).n || 0);
+    return rows;
+  }
+  return [];
 }
 
 /* ── one record row: metadata line + editor + domain actions ───────────────── */
@@ -57,6 +76,12 @@ function RecordRow({ row, ctx, onSave, onFinalize, onRevert }) {
   const [draft, setDraft] = useState(null);
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState(null);
+  // 116.md §10 (r2) — the finalize/revert buttons render only when NOT editing, and
+  // `err` is rendered inside the editor block, so a failed domain action previously
+  // had literally nowhere to appear: the click did nothing, said nothing, and the
+  // reviewer reasonably concluded it had not registered. This is that missing slot.
+  const [actionErr, setActionErr] = useState(null);
+  const [busy, setBusy] = useState(false);
   const [rejectReason, setRejectReason] = useState('');
   const [rejecting, setRejecting] = useState(false);
 
@@ -64,6 +89,17 @@ function RecordRow({ row, ctx, onSave, onFinalize, onRevert }) {
   const isRejected = row.finalStatus === 'rejected';
   const isFinalized = row.finalStatus === 'accepted' || row.finalStatus === 'rejected';
   const canDecide = canFinalize && row.currentStage === 'full_text' && !isFinalized;
+  // Only an ACCEPTED record can be reverted — the server says so, and rendering the
+  // button on a rejected one guaranteed a 400 (116.md §10 r2).
+  const showRevert = canRevertFinal(row, canFinalize);
+
+  const runAction = async (fn) => {
+    setBusy(true);
+    setActionErr(null);
+    const message = await fn();
+    setBusy(false);
+    if (message) setActionErr(message);
+  };
 
   const startEdit = () => {
     setDraft({
@@ -89,10 +125,13 @@ function RecordRow({ row, ctx, onSave, onFinalize, onRevert }) {
     if (!check.ok) { setErr(Object.values(check.errors)[0]); return; }
     setSaving(true);
     setErr(null);
-    const ok = await onSave(row, check.clean);
+    // 116.md §10 (r2) — the server's own message ("year must be a 4-digit year",
+    // "Another member changed this record…") reaches the user instead of a generic
+    // permissions line that is usually wrong about the cause.
+    const problem = await onSave(row, check.clean);
     setSaving(false);
-    if (ok) setEditing(false);
-    else setErr('Could not save — check your permissions and try again.');
+    if (!problem) setEditing(false);
+    else setErr(problem);
   };
 
   const metaLine = [
@@ -190,16 +229,16 @@ function RecordRow({ row, ctx, onSave, onFinalize, onRevert }) {
       )}
 
       {/* §10 — decision-state changes are DOMAIN ACTIONS, never inline edits. */}
-      {(canDecide || (isFinalized && canFinalize)) && !editing && (
+      {(canDecide || showRevert) && !editing && (
         <div style={{ marginTop: 5, display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
           {canDecide && !rejecting && (
             <>
-              <button type="button" data-testid="stitch-prisma-finalize-accept"
-                onClick={() => onFinalize(row, 'accept', '')}
+              <button type="button" data-testid="stitch-prisma-finalize-accept" disabled={busy}
+                onClick={() => runAction(() => onFinalize(row, 'accept', ''))}
                 style={{ ...btnS('ghost'), padding: '2px 8px', fontSize: 10.5, color: C.grn }}>
                 Finalize: include
               </button>
-              <button type="button" data-testid="stitch-prisma-finalize-reject"
+              <button type="button" data-testid="stitch-prisma-finalize-reject" disabled={busy}
                 onClick={() => setRejecting(true)}
                 style={{ ...btnS('ghost'), padding: '2px 8px', fontSize: 10.5, color: C.red }}>
                 Finalize: exclude…
@@ -212,8 +251,8 @@ function RecordRow({ row, ctx, onSave, onFinalize, onRevert }) {
                 placeholder="Exclusion reason"
                 data-testid="stitch-prisma-reject-reason"
                 style={{ ...inp, fontSize: 11, width: 220 }} />
-              <button type="button"
-                onClick={() => { onFinalize(row, 'reject', rejectReason); setRejecting(false); }}
+              <button type="button" disabled={busy}
+                onClick={() => { setRejecting(false); runAction(() => onFinalize(row, 'reject', rejectReason)); }}
                 style={{ ...btnS('primary'), padding: '2px 10px', fontSize: 10.5 }}>
                 Confirm exclusion
               </button>
@@ -223,14 +262,20 @@ function RecordRow({ row, ctx, onSave, onFinalize, onRevert }) {
               </button>
             </>
           )}
-          {isFinalized && canFinalize && (
-            <button type="button" data-testid="stitch-prisma-revert-final"
-              onClick={() => onRevert(row)}
+          {showRevert && (
+            <button type="button" data-testid="stitch-prisma-revert-final" disabled={busy}
+              onClick={() => runAction(() => onRevert(row))}
               style={{ ...btnS('ghost'), padding: '2px 8px', fontSize: 10.5 }}>
               Revert final decision…
             </button>
           )}
         </div>
+      )}
+      {/* Outside the editor block on purpose — this is where a failed finalize /
+          revert can actually be seen (116.md §10 r2). */}
+      {actionErr && !editing && (
+        <div data-testid="stitch-prisma-action-error"
+          style={{ marginTop: 4, color: '#8a1c1c', fontSize: 11 }}>{actionErr}</div>
       )}
     </div>
   );
@@ -245,7 +290,7 @@ function RecordRow({ row, ctx, onSave, onFinalize, onRevert }) {
  * @param {function} onClose
  * @param {function} onChanged      called after any mutation → caller refetches the flow
  */
-export function PrismaInspector({ boxId, flow, screenProjectId, onClose, onChanged }) {
+export function PrismaInspector({ boxId, flow, screenProjectId, onClose, onChanged, syncKey }) {
   const meta = boxMeta(boxId);
   const box = flow && flow.boxes && flow.boxes[boxId];
 
@@ -263,43 +308,105 @@ export function PrismaInspector({ boxId, flow, screenProjectId, onClose, onChang
   const historyRef = useRef(history); historyRef.current = history;
   const registerExecutor = history.registerExecutor;
 
-  const patchRecord = useCallback(async (recordId, patch) => {
-    if (!screenProjectId) return null;
+  /**
+   * PATCH one record → { record } on success, or { error, conflict } on failure.
+   *
+   * 116.md §10 (r2) — two changes, both load-bearing:
+   *  - `expect` is sent, so the SERVER compares the pre-image it actually holds and
+   *    answers 409 when a collaborator got there first. A client-side precondition
+   *    can never be sound here: `saveEdit` writes its own patch into `rows` before
+   *    recording the undo entry, so `row[k] === expect[k]` by construction and the
+   *    check the 108.md contract relies on was vacuous.
+   *  - the server's message is returned rather than discarded, so validation text
+   *    reaches the user instead of a generic "check your permissions".
+   */
+  const patchRecord = useCallback(async (recordId, patch, expect) => {
+    if (!screenProjectId) return { error: 'No screening project is linked.' };
     try {
+      const body = expect && Object.keys(expect).length ? { ...patch, expect } : patch;
       const res = await api(screenProjectId, `/records/${encodeURIComponent(recordId)}`, {
-        method: 'PATCH', body: patch,
+        method: 'PATCH', body,
       });
-      if (!res.ok) return null;
-      return await res.json();
-    } catch { return null; }
+      let data = null;
+      try { data = await res.json(); } catch { data = null; }
+      if (res.ok) return { record: (data && data.record) || null };
+      if (res.status === 409) {
+        return {
+          conflict: true,
+          record: (data && data.record) || null,
+          error: (data && data.message)
+            || 'Another member changed this record — reload to see their edit.',
+        };
+      }
+      return { error: (data && (data.error || data.message)) || 'Could not save — check your permissions and try again.' };
+    } catch {
+      return { error: 'Could not reach the server — your edit was not saved.' };
+    }
   }, [screenProjectId]);
 
   const applyLocal = useCallback((recordId, patch) => {
     setRows((rs) => rs.map((r) => (r.id === recordId ? { ...r, ...patch } : r)));
   }, []);
 
-  /* ── undo/redo (108.md executor contract; scope 'prisma' is relational) ──── */
-  useEffect(() => registerExecutor('prisma.recordEdit', async (op) => {
-    const row = rowsRef.current.find((r) => r.id === op.recordId);
-    // Re-validate against the CURRENT row, never the one at record time; a row no
-    // longer loaded (page changed, box closed → executor unmounted anyway) or a
-    // row someone else edited since → refuse rather than clobber.
-    if (!row) return { ok: false, reason: 'refused' };
-    for (const [k, v] of Object.entries(op.expect || {})) {
-      if (String(row[k] == null ? '' : row[k]) !== String(v == null ? '' : v)) {
-        return { ok: false, reason: 'refused' };
-      }
-    }
-    const res = await patchRecord(op.recordId, op.patch);
-    if (!res) return { ok: false, reason: 'failed' };
-    applyLocal(op.recordId, op.patch);
-    if (onChangedRef.current) onChangedRef.current();
-    return true;
-  }), [registerExecutor, patchRecord, applyLocal]);
+  /** Merge the SERVER's normalized record back into the row, not the client's guess. */
+  const applyServer = useCallback((recordId, record) => {
+    if (!record) return;
+    setRows((rs) => rs.map((r) => (r.id === recordId ? { ...r, ...record } : r)));
+  }, []);
 
-  /* ── record list loading ─────────────────────────────────────────────────── */
+  /* ── undo/redo (108.md executor contract; scope 'prisma' is relational) ──── */
+  const reloadRef = useRef(null);
+  useEffect(() => registerExecutor('prisma.recordEdit', async (op) => {
+    // 116.md §10 (r2) — the precondition is the SERVER's. `op.expect` travels with
+    // the request and the write is refused when the stored pre-image differs, so "a
+    // collaborator changed it since" is detected where the truth lives rather than
+    // against this client's own optimistic copy (which equalled `expect` by
+    // construction and therefore always passed).
+    //
+    // Note this no longer requires the row to still be on screen: an edit to
+    // `identificationSource` moves the record out of the listed box, and refusing to
+    // undo the very edit that did so would be a worse contract than the one the
+    // compare-and-set now guarantees.
+    const res = await patchRecord(op.recordId, op.patch, op.expect);
+    if (res.conflict) {
+      applyServer(op.recordId, res.record);
+      return {
+        ok: false,
+        reason: 'refused',
+        detail: 'A collaborator changed this record — its current values are shown; undo was not applied.',
+      };
+    }
+    if (res.error) return { ok: false, reason: 'failed', detail: res.error };
+    if (affectsBoxMembership(op.patch) && reloadRef.current) {
+      reloadRef.current();
+    } else {
+      // Reconcile with what the server actually stored (normalized DOI, capped
+      // text…), so the next undo/redo validates against reality.
+      if (res.record) applyServer(op.recordId, res.record);
+      else applyLocal(op.recordId, op.patch);
+      if (onChangedRef.current) onChangedRef.current();
+    }
+    return true;
+  }), [registerExecutor, patchRecord, applyLocal, applyServer]);
+
+  /* ── record list loading ───────────────────────────────────────────────────
+   *
+   * 116.md §11 (r2) — REQUEST GENERATION GUARD. `load` is fired by three different
+   * paths (box change, facet/search change, Load more) and used to write its result
+   * unconditionally, so whichever response resolved LAST won. Switching from a large
+   * box to a small one therefore painted the large box's records, cursor, facets and
+   * permissions under the small box's header — and the header is rendered from the
+   * `boxId`/`flow` props, so it stayed correct while the list beneath it did not.
+   * The panel's whole contract ("this count IS this set") failed silently, and
+   * "Load more" then appended the wrong box's next page.
+   *
+   * One counter covers all three paths: a response is discarded unless it belongs to
+   * the newest request. The payload's own `boxId` is checked too, belt and braces.
+   */
+  const reqRef = useRef(0);
   const load = useCallback(async (filters, cursor) => {
     if (!screenProjectId || !boxId) return;
+    const seq = ++reqRef.current;
     setLoading(true);
     setError(null);
     try {
@@ -307,6 +414,7 @@ export function PrismaInspector({ boxId, flow, screenProjectId, onClose, onChang
       const res = await api(screenProjectId, `/prisma/box/${encodeURIComponent(boxId)}/records${qs}`);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const d = await res.json();
+      if (!acceptBoxResponse({ seq, currentSeq: reqRef.current, payloadBoxId: d.boxId, boxId })) return;
       setRows((prev) => (cursor ? prev.concat(d.records || []) : (d.records || [])));
       setPage((p) => ({
         total: d.total ?? 0,
@@ -319,9 +427,10 @@ export function PrismaInspector({ boxId, flow, screenProjectId, onClose, onChang
         isLeader: !!d.isLeader,
       }));
     } catch (e) {
+      if (seq !== reqRef.current) return;
       setError((e && e.message) || 'Could not load the records behind this box.');
     } finally {
-      setLoading(false);
+      if (seq === reqRef.current) setLoading(false);
     }
   }, [screenProjectId, boxId]);
 
@@ -345,14 +454,35 @@ export function PrismaInspector({ boxId, flow, screenProjectId, onClose, onChang
     load(applied, '');
     if (onChangedRef.current) onChangedRef.current();
   }, [load, applied]);
+  reloadRef.current = reload;
+
+  /* 116.md §10 (r2) — a collaborator's `record.updated` poke (ids only, no content)
+   * refreshes this panel through the authorized endpoint. Without it `rowsRef` never
+   * saw anyone else's edit, which is half of why the undo precondition was vacuous;
+   * the server's own comment ("open PRISMA tabs refetch the flow") described
+   * behaviour nothing implemented. The parent owns the subscription and bumps
+   * `syncKey`, so one listener serves the diagram and the open box together. */
+  const appliedRef = useRef(applied); appliedRef.current = applied;
+  const loadRef = useRef(load); loadRef.current = load;
+  useEffect(() => {
+    if (!syncKey) return;
+    setRows([]);
+    loadRef.current(appliedRef.current, '');
+  }, [syncKey]);
 
   /* ── mutations ───────────────────────────────────────────────────────────── */
+  /** @returns {string} '' on success, else the message to show the user. */
   const saveEdit = useCallback(async (row, patch) => {
-    const res = await patchRecord(row.id, patch);
-    if (!res) return false;
     const before = {};
     for (const k of Object.keys(patch)) before[k] = row[k] == null ? '' : row[k];
-    applyLocal(row.id, patch);
+    // The forward save carries its own pre-image, so two people editing the same
+    // field at once produce a refusal rather than a silent overwrite.
+    const res = await patchRecord(row.id, patch, before);
+    if (res.conflict) {
+      applyServer(row.id, res.record);
+      return res.error;
+    }
+    if (res.error) return res.error;
     // One semantic history entry per save (never a snapshot) — the inverse goes
     // through the SAME PATCH endpoint (108.md: executors are the tail of the
     // forward write path).
@@ -363,30 +493,45 @@ export function PrismaInspector({ boxId, flow, screenProjectId, onClose, onChang
       undoOp: { recordId: row.id, patch: before, expect: patch },
       redoOp: { recordId: row.id, patch, expect: before },
     });
-    if (onChangedRef.current) onChangedRef.current();
-    return true;
-  }, [patchRecord, applyLocal]);
+    // 116.md §10 (r2) — an edit to `identificationSource`/`sourceDb` can move the
+    // record OUT of this box, which renumbers every later candidate and makes the
+    // held offset cursor skip a record on the next "Load more". Re-load in that
+    // case, exactly as finalize/revert already do; keep the in-place fast path for
+    // bibliographic fields, which cannot change membership.
+    if (affectsBoxMembership(patch)) {
+      reload();
+    } else {
+      if (res.record) applyServer(row.id, res.record); else applyLocal(row.id, patch);
+      if (onChangedRef.current) onChangedRef.current();
+    }
+    return '';
+  }, [patchRecord, applyLocal, applyServer, reload]);
+
+  /** Domain actions return '' on success, else the server's own message (§10 r2). */
+  const domainAction = useCallback(async (row, path, body) => {
+    try {
+      const res = await api(screenProjectId, `/records/${encodeURIComponent(row.id)}${path}`, {
+        method: 'POST', body,
+      });
+      if (res.ok) { reload(); return ''; }
+      let data = null;
+      try { data = await res.json(); } catch { data = null; }
+      return (data && (data.error || data.message)) || `The server refused this action (HTTP ${res.status}).`;
+    } catch {
+      return 'Could not reach the server — nothing was changed.';
+    }
+  }, [screenProjectId, reload]);
 
   const finalize = useCallback(async (row, decision, reason) => {
     if (decision === 'accept'
-      && !window.confirm('Finalize this report as INCLUDED? It will be handed to Data Extraction.')) return;
-    try {
-      const res = await api(screenProjectId, `/records/${encodeURIComponent(row.id)}/finalize`, {
-        method: 'POST', body: { decision, reason: reason || '' },
-      });
-      if (res.ok) reload();
-    } catch { /* the reload above never runs — the row keeps its true state */ }
-  }, [screenProjectId, reload]);
+      && !window.confirm('Finalize this report as INCLUDED? It will be handed to Data Extraction.')) return '';
+    return domainAction(row, '/finalize', { decision, reason: reason || '' });
+  }, [domainAction]);
 
   const revert = useCallback(async (row) => {
-    if (!window.confirm('Revert this final decision? The record returns to full-text review; an accepted study is withdrawn from Data Extraction.')) return;
-    try {
-      const res = await api(screenProjectId, `/records/${encodeURIComponent(row.id)}/final-review/revert`, {
-        method: 'POST', body: {},
-      });
-      if (res.ok) reload();
-    } catch { /* keep true state */ }
-  }, [screenProjectId, reload]);
+    if (!window.confirm('Revert this final decision? The record returns to full-text review; an accepted study is withdrawn from Data Extraction.')) return '';
+    return domainAction(row, '/final-review/revert', {});
+  }, [domainAction]);
 
   if (!box) return null;
 

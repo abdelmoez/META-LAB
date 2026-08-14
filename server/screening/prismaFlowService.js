@@ -28,8 +28,9 @@
 import { prisma } from '../db/client.js';
 import {
   buildRecordProjections, resolveDecisions, resolveRetrieval,
-  derivePrismaFlow, reconcilePrismaFlow,
+  derivePrismaFlow, reconcilePrismaFlow, armOf,
 } from '../../src/research-engine/prisma/index.js';
+import { canonicalDbKey, dbLabel } from '../../src/research-engine/search/searchProvenance.js';
 
 /** Is a model available on the current Prisma client? */
 function has(model) {
@@ -40,30 +41,106 @@ const safe = async (fn, fallback) => {
   try { return await fn(); } catch { return fallback; }
 };
 
+/** The columns the PRISMA projection itself reads. Callers may ask for more. */
+const BASE_RECORD_SELECT = Object.freeze({
+  id: true, sourceDb: true, isDuplicate: true, isPrimary: true,
+  duplicateGroupId: true, currentStage: true, finalStatus: true,
+  promotedAt: true, rejectedReason: true, handoffStudyId: true,
+  // 116.md §13/§14 — the batch link (legacy records with no ScreenRecordSource row
+  // fall back to it for origin 'file' + effective batch attribution) and the
+  // per-record identification correction.
+  importBatchId: true, identificationSource: true, sourceDetail: true,
+});
+
+/** ScreenImportBatch.source → the ScreenRecordSource.origin an import of that kind writes. */
+const ORIGIN_BY_BATCH_SOURCE = Object.freeze({
+  'pecan-search': 'search',
+  api: 'api',
+  file: 'file',
+});
+
 /**
- * loadPrismaFlow(screenProjectId, opts) → { flow, reconciliation, projections } or null.
+ * 116.md §13 (r2) — WHICH ARM a batch's never-inserted import duplicates belong to.
+ *
+ * `ScreenImportBatch.duplicateCount` records records that were parsed out of the file
+ * and then discarded before insertion, so no ScreenRecord exists to classify. Before
+ * this repair the whole sum was credited to the database column unconditionally,
+ * which was self-consistent only while every file import was db-arm by construction.
+ * §13 moved unattributed file imports to the other-methods arm, so an ordinary
+ * hand-uploaded RIS with internal duplicates started FABRICATING a database search:
+ * "Records identified from databases/registers (n = 40)" with no database, no record
+ * and no source behind it — a false search claim in a publishable figure.
+ *
+ * Precedence, cheapest-and-strongest first:
+ *   1. the batch's own (non-retracted) database declaration — the researcher said so;
+ *   2. otherwise the arm its SURVIVING records actually resolved to (majority);
+ *   3. otherwise the batch kind alone — a Pecan/API run really queried a database,
+ *      a bare file upload did not.
+ */
+function armOfBatchDiscards(batch, survivors) {
+  const declared = String((batch && batch.declaredDatabase) || '').trim();
+  if (declared) {
+    const key = canonicalDbKey(declared);
+    return armOf({ origin: 'file', sourceDb: dbLabel(declared), sourceDbKey: key });
+  }
+  if (survivors && survivors.length) {
+    let db = 0;
+    for (const p of survivors) if (armOf(p) === 'db') db += 1;
+    return db * 2 >= survivors.length ? 'db' : 'other';
+  }
+  const origin = ORIGIN_BY_BATCH_SOURCE[String((batch && batch.source) || 'file')] || 'file';
+  return armOf({ origin, sourceDb: '' });
+}
+
+/**
+ * The import batches, with a graceful degrade for a Prisma client generated before
+ * the 104.md/116.md columns existed. Two attempts, never a silent [] — see the call
+ * site's note on why safe() is the wrong tool here.
+ */
+async function loadImportBatches(pid) {
+  try {
+    return await prisma.screenImportBatch.findMany({
+      where: { projectId: pid },
+      select: {
+        id: true, duplicateCount: true, sourceDatabase: true, contributesToReview: true,
+        source: true, filename: true, format: true, createdAt: true,
+      },
+    });
+  } catch {
+    try {
+      return await prisma.screenImportBatch.findMany({
+        where: { projectId: pid },
+        select: { id: true, duplicateCount: true, sourceDatabase: true },
+      });
+    } catch { return []; }
+  }
+}
+
+/**
+ * loadPrismaFlow(screenProjectId, opts) → { flow, reconciliation, projections,
+ * records, batches } or null.
  *
  * @param {string} pid  ScreenProject id
  * @param {object} [opts]
  *   previous   { studies, reports } for an UPDATED review (103.md §7)
  *   quantStudyIds  study ids contributing to the meta-analysis
+ *   recordSelect   extra ScreenRecord columns to fetch alongside the projection's
+ *                  own (116.md §11 r2 — so the inspector reuses THIS scan instead
+ *                  of issuing a second unbounded findMany over the same rows)
+ *   recordOrderBy  Prisma orderBy for that scan, when the caller needs a stable page order
  */
 export async function loadPrismaFlow(pid, opts = {}) {
   if (!pid || !has('screenRecord')) return null;
 
+  const extraSelect = (opts.recordSelect && typeof opts.recordSelect === 'object') ? opts.recordSelect : null;
+  const recordQuery = {
+    where: { projectId: pid },
+    select: extraSelect ? { ...BASE_RECORD_SELECT, ...extraSelect } : { ...BASE_RECORD_SELECT },
+    ...(opts.recordOrderBy ? { orderBy: opts.recordOrderBy } : {}),
+  };
+
   const [records, decisions, conflicts, sources, candidates, requests, attachments, batches] = await Promise.all([
-    safe(() => prisma.screenRecord.findMany({
-      where: { projectId: pid },
-      select: {
-        id: true, sourceDb: true, isDuplicate: true, isPrimary: true,
-        duplicateGroupId: true, currentStage: true, finalStatus: true,
-        promotedAt: true, rejectedReason: true, handoffStudyId: true,
-        // 116.md §13/§14 — the batch link (legacy records with no
-        // ScreenRecordSource row fall back to it for origin 'file' + effective
-        // batch attribution) and the per-record identification correction.
-        importBatchId: true, identificationSource: true, sourceDetail: true,
-      },
-    }), []),
+    safe(() => prisma.screenRecord.findMany(recordQuery), []),
     // 116.md §15 — the field is `exclusionReason`. Selecting the nonexistent
     // `reason` here is the exact bug that silently zeroed every exclusion count.
     safe(() => prisma.screenDecision.findMany({
@@ -99,12 +176,18 @@ export async function loadPrismaFlow(pid, opts = {}) {
     // (screeningImportService skips them), so the only trace is the batch's own
     // duplicateCount. Without this, "records identified" would silently exclude
     // records that really were retrieved. 116.md §14 — the batch's declared
-    // sourceDatabase now rides along so the projection can thread it into each
-    // record's effective attribution.
-    safe(() => prisma.screenImportBatch.findMany({
-      where: { projectId: pid },
-      select: { id: true, duplicateCount: true, sourceDatabase: true },
-    }), []),
+    // sourceDatabase rides along so the projection can thread it into each record's
+    // effective attribution.
+    //
+    // 116.md §14 (r2) — `contributesToReview` rides along too. It is the 104.md
+    // retraction flag ("Excluded from the reported search methodology"), and PRISMA
+    // was the ONLY consumer of ScreenImportBatch.sourceDatabase that ignored it —
+    // so a test upload marked as not contributing was dropped from the Methods text
+    // while its records were still drawn under "Embase" in the diagram. The extended
+    // select is tried FIRST and falls back to the legacy column set on an
+    // un-migrated client, deliberately NOT through safe(): letting a missing column
+    // fall all the way to [] would silently zero `unrecordedDuplicates`.
+    loadImportBatches(pid),
   ]);
 
   if (!records.length) return null;
@@ -133,9 +216,19 @@ export async function loadPrismaFlow(pid, opts = {}) {
   }
 
   // 116.md §14 — batch attribution map for the projection's effective-database rule.
+  //
+  // 116.md §14 (r2) — a batch whose `contributesToReview` is FALSE has been retracted
+  // from the reported search methodology (104.md), so its declaration must stop
+  // attributing records here too; those records fall to the D6(c) other-methods path,
+  // which is exactly what the Methods text then claims. `undefined` (legacy row or
+  // un-migrated client) means "contributes", matching searchProvenanceService's own
+  // `contributesToReview !== false` test.
   const batchById = {};
   for (const b of batches || []) {
-    if (b && b.id) batchById[b.id] = { sourceDatabase: b.sourceDatabase || '' };
+    if (!b || !b.id) continue;
+    batchById[b.id] = {
+      sourceDatabase: b.contributesToReview === false ? '' : (b.sourceDatabase || ''),
+    };
   }
 
   // 116.md §15 — synthesize each RESOLVED conflict as a `resolved: true` decision
@@ -173,15 +266,36 @@ export async function loadPrismaFlow(pid, opts = {}) {
     quantStudyIds: opts.quantStudyIds || [],
   });
 
-  const unrecordedDuplicates = (batches || [])
-    .reduce((a, b) => a + (Number(b.duplicateCount) || 0), 0);
+  // 116.md §13 (r2) — the never-inserted import duplicates, ATTRIBUTED PER ARM.
+  // Every batch still contributes its full duplicateCount (record accounting is
+  // independent of whether the batch is reported in the Methods); what changed is
+  // which column gets the credit.
+  const survivorsByBatch = new Map();
+  for (const p of projections) {
+    const key = p.importBatchId || p.batchId;
+    if (!key) continue;
+    if (!survivorsByBatch.has(key)) survivorsByBatch.set(key, []);
+    survivorsByBatch.get(key).push(p);
+  }
+  const unrecordedDuplicates = { db: 0, other: 0 };
+  for (const b of batches || []) {
+    const n = Number(b && b.duplicateCount) || 0;
+    if (n <= 0) continue;
+    const arm = armOfBatchDiscards(
+      { declaredDatabase: (batchById[b.id] || {}).sourceDatabase || '', source: b.source },
+      survivorsByBatch.get(b.id) || [],
+    );
+    unrecordedDuplicates[arm === 'db' ? 'db' : 'other'] += n;
+  }
 
   const flow = derivePrismaFlow(projections, {
     previous: opts.previous || null,
     unrecordedDuplicates,
   });
   const reconciliation = reconcilePrismaFlow(flow);
-  return { flow: { ...flow, reconciliation }, reconciliation, projections };
+  // `records` and `batches` are returned so a caller that needs display columns
+  // (the §9 box inspector) reuses THIS scan rather than re-reading the project.
+  return { flow: { ...flow, reconciliation }, reconciliation, projections, records, batches };
 }
 
 /**
@@ -202,10 +316,26 @@ export function slimPrismaFlow(flow) {
   const dispositions = {};
   for (const [k, b] of Object.entries(flow.dispositions || {})) dispositions[k] = noIdsBucket(b);
   const rb = flow.removedBreakdown || {};
+  const oa = flow.otherArm || null;
   return {
     ...flow,
     boxes,
     dispositions,
+    // 116.md §13 (r2) — the other-methods arm's removal/screening accounting rides
+    // the wire as counts only, exactly like the boxes.
+    otherArm: oa
+      ? {
+        identified: noIdsBucket(oa.identified),
+        removed: noIdsBucket(oa.removed),
+        removedDuplicate: noIdsBucket(oa.removedDuplicate),
+        removedAutomation: noIdsBucket(oa.removedAutomation),
+        removedOther: noIdsBucket(oa.removedOther),
+        screened: noIdsBucket(oa.screened),
+        excludedScreening: noIdsBucket(oa.excludedScreening),
+        awaitingScreening: noIdsBucket(oa.awaitingScreening),
+        unrecordedDuplicates: oa.unrecordedDuplicates,
+      }
+      : oa,
     sources: {
       db: (flow.sources && flow.sources.db ? flow.sources.db : []).map(noIdsRow),
       other: (flow.sources && flow.sources.other ? flow.sources.other : []).map(noIdsRow),
@@ -215,6 +345,15 @@ export function slimPrismaFlow(flow) {
       duplicate: noIdsBucket(rb.duplicate),
       automation: noIdsBucket(rb.automation),
       other: noIdsBucket(rb.other),
+      otherArm: rb.otherArm
+        ? {
+          total: noIdsBucket(rb.otherArm.total),
+          duplicate: noIdsBucket(rb.otherArm.duplicate),
+          automation: noIdsBucket(rb.otherArm.automation),
+          other: noIdsBucket(rb.otherArm.other),
+          byStage: (rb.otherArm.byStage || []).map(noIdsRow),
+        }
+        : rb.otherArm,
       byStage: (rb.byStage || []).map(noIdsRow),
       byMethod: (rb.byMethod || []).map(noIdsRow),
       byReason: (rb.byReason || []).map(noIdsRow),

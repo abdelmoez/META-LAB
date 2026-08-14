@@ -5,6 +5,8 @@
  */
 import { prisma } from '../db/client.js';
 import { getProjectAccess, ensureLeaderMember } from '../screening/access.js';
+// 116.md §10 (r2) — the record-editing bar, shared with the PATCH that enforces it.
+import { canEditRecordMetadata, canFinalizeRecords } from '../screening/recordAccess.js';
 import { mlAccessFromMember } from '../screening/metalabAccess.js';
 import { getEffectiveQuorum } from '../screening/settings.js';
 // 103.md §10 — the canonical, record-derived PRISMA flow. 116.md §11 — served
@@ -418,7 +420,22 @@ export async function getPrismaBoxRecords(req, res) {
     const fReason = String(req.query.reason || '').trim().toLowerCase();
     const fRetrieval = String(req.query.retrieval || '').trim();
 
-    const result = await loadPrismaFlow(p.id);
+    /* 116.md §11 (r2) — ONE project scan, not two.
+     *
+     * This handler used to await loadPrismaFlow (whose first query is an unbounded
+     * `screenRecord.findMany` over the project) and then read the SAME rows again
+     * with a near-superset select and a project-wide `orderBy [createdAt, id]` that
+     * no index covers — plus a second full ScreenImportBatch read. Every "Load
+     * more", every facet change and every post-edit reload paid for both. The flow
+     * loader now takes the display columns and the page order, so its single scan
+     * serves both purposes and the duplicates are gone. */
+    const result = await loadPrismaFlow(p.id, {
+      recordSelect: {
+        title: true, authors: true, year: true, journal: true,
+        doi: true, pmid: true, createdAt: true,
+      },
+      recordOrderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+    });
     const box = result && result.flow && result.flow.boxes && result.flow.boxes[boxId];
     if (!result || !box) {
       return res.json({
@@ -438,28 +455,32 @@ export async function getPrismaBoxRecords(req, res) {
 
     const projById = new Map(result.projections.map((pr) => [pr.id, pr]));
 
-    // One indexed query, display columns only (same class of cost as the flow
-    // load itself), then in-memory membership + filters — the listRecords
-    // in-memory path precedent.
-    const rows = await prisma.screenRecord.findMany({
-      where: { projectId: p.id },
-      select: {
-        id: true, title: true, authors: true, year: true, journal: true,
-        doi: true, pmid: true, sourceDb: true, importBatchId: true,
-        isDuplicate: true, isPrimary: true, duplicateGroupId: true,
-        currentStage: true, finalStatus: true, rejectedReason: true,
-        identificationSource: true, sourceDetail: true, createdAt: true,
-      },
-      orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
-    });
-
-    const batches = await prisma.screenImportBatch.findMany({
-      where: { projectId: p.id },
-      select: { id: true, filename: true, format: true, sourceDatabase: true, createdAt: true },
-    });
-    const batchById = new Map(batches.map((b) => [b.id, b]));
+    // The rows and batches the flow loader already read, in the page order it was
+    // asked for. No second scan (116.md §11 r2).
+    const rows = result.records || [];
+    const batchById = new Map((result.batches || []).map((b) => [b.id, b]));
 
     const blind = p.blindMode && !access.isLeader;
+
+    /* 116.md §9 (r2) — BLIND MODE IS ALSO ABOUT WHAT COLLEAGUES WROTE.
+     *
+     * This handler blinded authors/journal and stopped there, while shipping
+     * `exclusionReason` (which comes from a colleague's ScreenDecision, via
+     * resolveDecisions → projection), `rejectedReason` and the complete distinct
+     * reason facet to every active member. A blinded reviewer could open "Records
+     * excluded**" and read "Not an RCT — wrong design" against a record they had not
+     * yet screened: both the verdict and its argument, which is exactly the
+     * independence blind mode exists to protect.
+     *
+     * The convention this now follows is the sibling surface's, stated and tested in
+     * the same commit series (shapeConflictDecision): a blinded non-leader receives
+     * NO free-text decision detail. Leaders stay exempt — they resolve conflicts and
+     * are outside the blind by design.
+     *
+     * `notRetrievedReason` is NOT blinded: resolveRetrieval emits a fixed vocabulary
+     * ("No open-access copy available", "Retrieval failed"), never human prose, and
+     * it describes the retrieval attempt rather than anyone's judgement. */
+    const blindReasons = blind;
 
     const sourceFacet = new Map();
     const statusFacet = new Map();
@@ -481,7 +502,11 @@ export async function getPrismaBoxRecords(req, res) {
 
       countFacet(sourceFacet, sourceKey, effectiveSource || 'Unspecified source');
       countFacet(statusFacet, disp, DISPOSITION_LABELS[disp] || disp);
-      if (reasonGroupKey(reasonValue)) countFacet(reasonFacet, reasonKey, displayReason(reasonValue));
+      // 116.md §9 (r2) — the reason facet enumerates DISTINCT colleague-written
+      // strings with counts, which is the same leak as the per-record field below
+      // and worse (it is a directory of them). Under blind mode it is not built at
+      // all, so there is nothing to filter on and nothing to ship.
+      if (!blindReasons && reasonGroupKey(reasonValue)) countFacet(reasonFacet, reasonKey, displayReason(reasonValue));
       if (retrieval) {
         countFacet(retrievalFacet, retrieval, retrieval === 'retrieved' ? 'Retrieved'
           : retrieval === 'not_retrieved' ? 'Not retrieved' : 'Retrieval pending');
@@ -493,7 +518,10 @@ export async function getPrismaBoxRecords(req, res) {
       }
       if (fSource && sourceKey !== fSource) continue;
       if (fStatus && disp !== fStatus) continue;
-      if (fReason && reasonKey !== fReason) continue;
+      // No reason facet is offered under blind mode, so a `reason` param can only be
+      // hand-crafted — and answering it would confirm which records carry which
+      // colleague-written reason, i.e. leak the facet one probe at a time.
+      if (fReason && !blindReasons && reasonKey !== fReason) continue;
       if (fRetrieval && retrieval !== fRetrieval) continue;
 
       candidates.push({ r, proj, disp, effectiveSource, retrieval });
@@ -504,12 +532,12 @@ export async function getPrismaBoxRecords(req, res) {
       ? String(offset + pageItems.length)
       : null;
 
-    // §10 — who may edit metadata here: the same bar as editing/importing records
-    // in Screening (owner/leader, or an active non-viewer member with the
-    // import-records permission). Decision actions follow finalizeRecord's bar.
-    const canEdit = access.isOwner || access.isLeader
-      || !!(access.active && access.member && access.member.role !== 'viewer' && access.perms.canImportRecords);
-    const canFinalize = !!(access.isLeader || access.canResolveConflicts);
+    // §10 — who may edit metadata here: the same bar as editing/importing records in
+    // Screening. 116.md §10 (r2) — resolved by the SHARED helper the PATCH enforces,
+    // so the flag this endpoint advertises and the bar the write applies cannot
+    // drift, and neither ignores a deactivated membership.
+    const canEdit = canEditRecordMetadata(access);
+    const canFinalize = canFinalizeRecords(access);
 
     const records = pageItems.map(({ r, proj, disp, effectiveSource, retrieval }) => {
       const batch = r.importBatchId ? batchById.get(r.importBatchId) : null;
@@ -539,10 +567,12 @@ export async function getPrismaBoxRecords(req, res) {
         duplicateGroupId: r.duplicateGroupId || null,
         currentStage: r.currentStage,
         finalStatus: r.finalStatus,
-        rejectedReason: r.rejectedReason || '',
+        // Free-text decision detail: suppressed AT THE WIRE for a blinded
+        // non-leader (116.md §9 r2), not merely hidden in the UI.
+        rejectedReason: blindReasons ? '' : (r.rejectedReason || ''),
         disposition: disp,
         dispositionLabel: DISPOSITION_LABELS[disp] || disp,
-        exclusionReason: proj.exclusionReason ? displayReason(proj.exclusionReason) : '',
+        exclusionReason: (!blindReasons && proj.exclusionReason) ? displayReason(proj.exclusionReason) : '',
         notRetrievedReason: proj.notRetrievedReason ? displayReason(proj.notRetrievedReason) : '',
         retrieval,
         studyId: proj.studyId || '',
@@ -565,7 +595,9 @@ export async function getPrismaBoxRecords(req, res) {
         ? {
           source: facetRows(sourceFacet),
           status: facetRows(statusFacet),
-          reason: facetRows(reasonFacet),
+          // Omitted entirely under blind mode (116.md §9 r2) — an empty array would
+          // still be a statement; absence is the honest wire shape.
+          ...(blindReasons ? {} : { reason: facetRows(reasonFacet) }),
           retrieval: facetRows(retrievalFacet),
         }
         : undefined,

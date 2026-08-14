@@ -17,7 +17,7 @@ import { IDENTIFICATION_SOURCES, IDENTIFICATION_SOURCE_IDS } from '../../researc
  */
 export const BOX_EXPLANATIONS = Object.freeze({
   identified_db: 'Every record retrieved from a bibliographic database or trial register, before deduplication. Import-time duplicates are counted but were discarded before becoming records.',
-  identified_other: 'Every record identified through other methods — citation searching, hand-searching, manual uploads without a database attribution, websites, organisations.',
+  identified_other: 'Every record identified through other methods — citation searching, hand-searching, manual uploads without a database attribution, websites, organisations. PRISMA 2020 gives this column no removal or screening box, so any duplicates removed and title/abstract decisions on these records are listed in the breakdown below and counted in the project totals rather than drawn in the figure.',
   removed_before_screening: 'Records taken out of the pool before title/abstract screening: duplicates, automation-tool removals, and documented manual removals.',
   screened: 'Records that entered title/abstract screening (identified minus removed-before-screening).',
   excluded_screening: 'Records excluded at title/abstract screening by the project’s resolved decisions (consensus or unanimity — an unresolved disagreement stays “awaiting”).',
@@ -122,6 +122,73 @@ export function validateRecordPatch(patch) {
 }
 
 /**
+ * 116.md §11 (r2) — may this in-flight response be painted?
+ *
+ * The record list is fetched by three paths (box change, facet/search change, "Load
+ * more") through one unguarded function, so whichever request resolved LAST won.
+ * Clicking a 40k-record box and then a 12-record one painted the big box's rows,
+ * cursor, facets and permissions under the small box's header — the header is
+ * rendered from props and stays correct, so the two halves of the panel disagreed
+ * and every row action then targeted records the reviewer was not looking at.
+ *
+ * A response is accepted only when it is the newest request AND its payload names
+ * the box currently open (the server echoes `boxId`).
+ * Pure.
+ */
+export function acceptBoxResponse({ seq, currentSeq, payloadBoxId, boxId }) {
+  if (seq !== currentSeq) return false;
+  if (payloadBoxId && payloadBoxId !== boxId) return false;
+  return true;
+}
+
+/**
+ * 116.md §10 (r2) — the fields whose value decides which BOX a record is in.
+ *
+ * `identificationSource` and `sourceDb` are the inputs to model.armOf(), so editing
+ * either can move a record between the database and other-methods columns — i.e. out
+ * of the box currently being listed. The page cursor is a plain offset into a list
+ * the server re-derives per request, so a departure ahead of the cursor shifts every
+ * later record down one index and "Load more" silently skips one. Purely
+ * bibliographic edits (title/authors/year/journal/doi/pmid/sourceDetail/
+ * rejectedReason) cannot change membership and keep the cheap in-place update.
+ */
+const MEMBERSHIP_FIELDS = Object.freeze(['identificationSource', 'sourceDb']);
+
+/** Does this accepted patch require re-loading the box rather than patching in place? Pure. */
+export function affectsBoxMembership(patch) {
+  if (!patch || typeof patch !== 'object') return false;
+  return MEMBERSHIP_FIELDS.some((f) => Object.prototype.hasOwnProperty.call(patch, f));
+}
+
+/**
+ * 116.md §10 (r2) — should this `record.updated` poke refresh THIS panel?
+ *
+ * The SSE stream is per-user across every project, and the server excludes the actor,
+ * so an arriving poke means a COLLABORATOR changed records in some project. Pokes
+ * carry ids only (global invariant 8), so the client refetches through the
+ * authorized endpoint rather than trusting the event.
+ * Pure.
+ */
+export function shouldReloadForRecordPoke(ev, screenProjectId) {
+  if (!ev || !screenProjectId) return false;
+  if (ev.projectId && ev.projectId !== screenProjectId) return false;
+  return true;
+}
+
+/**
+ * 116.md §10 (r2) — may this row's final decision be reverted?
+ *
+ * revertFinalReview returns 400 "Only an accepted record can be reverted from Data
+ * Extraction" for anything else, so rendering the button on every finalized record
+ * (rejected ones included) made a guaranteed failure one click away — and the
+ * inspector had no error surface to report it. SecondReviewTab gates on exactly this.
+ * Pure.
+ */
+export function canRevertFinal(row, canFinalize) {
+  return !!(canFinalize && row && row.finalStatus === 'accepted');
+}
+
+/**
  * buildBoxRecordsQuery({ q, source, status, reason, retrieval, cursor, limit })
  * → the query string for GET /prisma/box/:boxId/records. Empty params omitted.
  * Pure.
@@ -140,5 +207,6 @@ export function buildBoxRecordsQuery(params = {}) {
 export default {
   BOX_EXPLANATIONS, facetsForBox, FACET_LABELS, showsDuplicateGroup,
   identificationSourceOptions, EDITABLE_FIELDS, validateRecordPatch,
-  buildBoxRecordsQuery,
+  buildBoxRecordsQuery, acceptBoxResponse, affectsBoxMembership,
+  shouldReloadForRecordPoke, canRevertFinal,
 };

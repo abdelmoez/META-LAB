@@ -268,12 +268,53 @@ describe('the two identification arms feed the single included box', () => {
 /* ═══════════════ 116.md §18/§19 — no text escapes its box ═══════════════ */
 
 describe('text extents: no text run may exceed its box width', () => {
-  // The regression that motivated §18: "Records marked as ineligible by
-  // automation tools (n = 0)" is ~59 chars ≈ 300+px at 10.5px Georgia, drawn in a
-  // 250px box. drawBox now wraps every line; this suite measures every <text>
-  // inside every <g data-box> with the SAME character-width estimate wrapBoxLines
-  // uses, so an overflow cannot ship without a red test.
-  const CHAR_W = 10.5 * 0.52; // px per character (svg.js CHAR_W_EM at the box font)
+  /* ── 116.md §18 (r2) — THIS GUARD USED TO BE A TAUTOLOGY ────────────────────
+   *
+   * It measured text as `content.length * (10.5 * 0.52)` — the SAME scalar average
+   * wrapBoxLines budgeted with — and compared against `box.x + box.w`, while drawBox
+   * draws at `box.x + 10`. So it asserted `len <= (w - 10) / 5.46` against a wrapper
+   * that already guaranteed `len <= floor((w - 20) / 5.46)`: satisfied by
+   * construction, for every possible input, with ~2 characters of permanent slack.
+   * A 200,000-case fuzz over wrapBoxLines never produced a line that could fail it.
+   * Meanwhile a genuinely overflowing all-caps line (Georgia capitals are 0.68 em,
+   * W is 0.98 — up to 88% above the estimate) measured as comfortably INSIDE the box.
+   *
+   * So the guard now measures with REAL Georgia advances, from an independent
+   * fixture (below), and asserts against the right-hand inset the wrapper claims to
+   * reserve. The last test in this block proves the guard can go red.
+   */
+
+  /**
+   * Georgia advance widths in em, read from the font itself (georgia.ttf,
+   * unitsPerEm 2048, hmtx via cmap format 4). CHECKED IN DELIBERATELY: this fixture
+   * must not import or re-derive svg.js's table, or the guard becomes circular
+   * again. If the production wrapper's own widths drift from the font, these numbers
+   * stay put and the assertions go red.
+   */
+  const GEORGIA_EM = {
+    ' ': 0.2412, '!': 0.3311, '"': 0.4116, '#': 0.6431, $: 0.6099, '%': 0.8174, '&': 0.7104,
+    "'": 0.2153, '(': 0.375, ')': 0.375, '*': 0.4722, '+': 0.6431, ',': 0.2695, '-': 0.374,
+    '.': 0.2695, '/': 0.4688, ':': 0.3125, ';': 0.3125, '<': 0.6431, '=': 0.6431, '>': 0.6431,
+    '?': 0.4785, '@': 0.9287, '[': 0.375, '\\': 0.4688, ']': 0.375, '^': 0.6431, _: 0.6431,
+    '`': 0.5, '{': 0.4302, '|': 0.375, '}': 0.4302, '~': 0.6431,
+    0: 0.6138, 1: 0.4297, 2: 0.5586, 3: 0.5518, 4: 0.5649, 5: 0.5283, 6: 0.5659, 7: 0.5024,
+    8: 0.5962, 9: 0.5659,
+    A: 0.6709, B: 0.6538, C: 0.6421, D: 0.749, E: 0.6533, F: 0.5991, G: 0.7251, H: 0.8149,
+    I: 0.3896, J: 0.5176, K: 0.6943, L: 0.6035, M: 0.9272, N: 0.7671, O: 0.7441, P: 0.6099,
+    Q: 0.7441, R: 0.7017, S: 0.561, T: 0.6187, U: 0.7563, V: 0.6665, W: 0.9756, X: 0.7104,
+    Y: 0.6152, Z: 0.6016,
+    a: 0.5039, b: 0.5601, c: 0.4541, d: 0.5742, e: 0.4834, f: 0.3252, g: 0.5093, h: 0.582,
+    i: 0.293, j: 0.292, k: 0.5356, l: 0.2861, m: 0.8809, n: 0.5908, o: 0.5391, p: 0.5713,
+    q: 0.5596, r: 0.4097, s: 0.4321, t: 0.3452, u: 0.5752, v: 0.4966, w: 0.7373, x: 0.5049,
+    y: 0.4922, z: 0.4438,
+    '–': 0.6431, '—': 0.8569, '‘': 0.2266, '’': 0.2266, '“': 0.4102, '”': 0.4102,
+    '…': 0.8071, '·': 0.2793, '−': 0.6431, '≤': 0.6431, '≥': 0.6431, '≠': 0.6431,
+  };
+  const FONT_PX = 10.5;
+  const PAD_X = 10; // drawBox's left inset, which it also reserves on the right
+  /** Rendered px width using real metrics; an unknown glyph is charged 0.75 em. */
+  const measure = (s) => Array.from(String(s))
+    .reduce((a, ch) => a + (GEORGIA_EM[ch] ?? 0.75), 0) * FONT_PX;
 
   const decode = (s) => s
     .replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"');
@@ -294,17 +335,26 @@ describe('text extents: no text run may exceed its box width', () => {
   }
 
   const LONG_REASON = 'Population did not meet the pre-specified inclusion criteria for age, comorbidity burden and prior treatment exposure as defined in the registered protocol (secondary screening of supplementary appendix material)';
+  // 116.md §18 (r2) — the two shapes the 0.52-average estimate was blind to.
+  const CAPS_REASON = 'WRONG POPULATION NON ADULT COHORT ONLY';
+  const WM_REASON = 'WOMEN WITH MMSE MEASUREMENT WINDOW MISMATCH';
+  const ftExcluded = (reason, n) => many(n, {
+    screeningDecision: 'include', soughtRetrieval: true, retrieved: true,
+    fullTextDecision: 'exclude', exclusionReason: reason,
+  });
   const cases = {
     'both columns, deep reasons': buildPrismaFlowSVG(DEEP, { perSource: true }),
     'empty review (the fixed automation line)': buildPrismaFlowSVG(derivePrismaFlow([])),
     'updated-review template': buildPrismaFlowSVG(DEEP, { updated: true, perSource: true }),
     'long automation line + 200-char reason + long source label (§21 Scenario E)': buildPrismaFlowSVG(derivePrismaFlow([
       ...many(6, { sourceDb: 'the Cochrane Central Register of Controlled Trials (CENTRAL)' }),
-      ...many(4, {
-        screeningDecision: 'include', soughtRetrieval: true, retrieved: true,
-        fullTextDecision: 'exclude', exclusionReason: LONG_REASON,
-      }),
+      ...ftExcluded(LONG_REASON, 4),
       ...many(2, { screeningDecision: 'include', soughtRetrieval: true, retrieved: true, fullTextDecision: 'include', included: true }),
+    ]), { perSource: true }),
+    'CAPS-heavy reasons and a CAPS-heavy database label (§18 r2)': buildPrismaFlowSVG(derivePrismaFlow([
+      ...many(6, { sourceDb: 'EMBASE CLASSIC+EMBASE (OVID)' }),
+      ...ftExcluded(CAPS_REASON, 3),
+      ...ftExcluded(WM_REASON, 2),
     ]), { perSource: true }),
   };
 
@@ -316,30 +366,76 @@ describe('text extents: no text run may exceed its box width', () => {
       for (const t of texts) {
         const box = byId[t.boxId];
         expect(box, `text in unknown box ${t.boxId}`).toBeTruthy();
-        const right = t.x + t.content.length * CHAR_W;
-        expect(right, `"${t.content}" escapes ${t.boxId} (${right.toFixed(0)} > ${(box.x + box.w).toFixed(0)})`)
-          .toBeLessThanOrEqual(box.x + box.w);
+        const right = t.x + measure(t.content);
+        // The wrapper reserves BOX_PAD_X on the right as well as the left, so the
+        // real bound is the inset edge — not the box edge with 10px of free slack.
+        const limit = box.x + box.w - PAD_X;
+        expect(right, `"${t.content}" escapes ${t.boxId} (${right.toFixed(1)} > ${limit.toFixed(1)})`)
+          .toBeLessThanOrEqual(limit + 0.01);
         expect(t.x).toBeGreaterThanOrEqual(box.x);
       }
     });
   }
 
+  it('THE GUARD CAN GO RED: the all-caps reason really would have overflowed', () => {
+    // Proof the assertion above is not satisfiable by construction. The reviewer's
+    // reproducing string, unwrapped, measured with real metrics, blows the budget…
+    const unwrapped = `   ${CAPS_REASON}`;
+    expect(measure(unwrapped)).toBeGreaterThan(250 - 2 * PAD_X);
+    // …while the OLD character-count estimate declared the very same string safe.
+    // That gap is the tautology this suite used to encode.
+    expect(unwrapped.length * (10.5 * 0.52)).toBeLessThan(250 - PAD_X);
+    // And the shipped diagram wraps it, so it never reaches the box edge.
+    const built = cases['CAPS-heavy reasons and a CAPS-heavy database label (§18 r2)'];
+    const runs = boxTexts(built.svg).filter((t) => t.boxId === 'excluded_full_text_db');
+    expect(runs.some((t) => /WRONG POPULATION/.test(t.content))).toBe(true);
+    expect(runs.some((t) => t.content.includes(CAPS_REASON))).toBe(false);
+  });
+
   it('the automation-tools sub-line WRAPS instead of overflowing (the §18 bug)', () => {
     const built = cases['empty review (the fixed automation line)'];
     const texts = boxTexts(built.svg).filter((t) => t.boxId === 'removed_before_screening');
-    // The official sub-line is now split across ≥2 runs…
+    // The official sub-line is split across ≥2 runs and never emitted whole…
     expect(texts.some((t) => /Records marked as ineligible/.test(t.content))).toBe(true);
-    expect(texts.some((t) => /automation tools/.test(t.content))).toBe(true);
+    expect(texts.some((t) => /tools \(n = \d+\)/.test(t.content))).toBe(true);
     expect(texts.some((t) => /Records marked as ineligible by automation tools \(n = \d+\)/.test(t.content))).toBe(false);
     // …and the box grew to hold them (was 4 lines ⇒ 72px before wrapping).
     const box = built.boxes.find((b) => b.id === 'removed_before_screening');
     expect(box.h).toBeGreaterThan(72);
   });
 
-  it('a very long reason is capped with an ellipsis — the inspector is the detail layer', () => {
+  it('a very long reason is clipped in the LABEL, never in the count (116.md §18 r2)', () => {
     const built = cases['long automation line + 200-char reason + long source label (§21 Scenario E)'];
     const texts = boxTexts(built.svg).filter((t) => t.boxId === 'excluded_full_text_db');
-    expect(texts.some((t) => t.content.endsWith('…'))).toBe(true);
+    // The prose is still summarised with an ellipsis — the inspector is the detail
+    // layer — but the ellipsis now sits INSIDE the line, before the protected count.
+    const clipped = texts.find((t) => t.content.includes('…'));
+    expect(clipped).toBeTruthy();
+    expect(clipped.content.endsWith('…')).toBe(false);
+    expect(clipped.content).toMatch(/…\s*\(n = \d+\)$/);
+  });
+
+  it('every reason sub-count survives the 3-line cap and sums to the box total', () => {
+    // The §12 defect: with the count at the end of the logical line, the cap
+    // ellipsized exactly the "(n = 6)" — leaving a PRISMA figure whose visible
+    // sub-counts (5 + 4) did not reconcile with its own box total (15).
+    const LONG = 'Wrong study population: paediatric cohort only, and the authors did not respond to a request for adult subgroup data';
+    const MID = 'Population outside the pre-specified age window with no subgroup data available on request';
+    const SHORT = 'Wrong study design: narrative review with no primary outcome reported';
+    const flow = derivePrismaFlow([
+      ...ftExcluded(LONG, 6), ...ftExcluded(MID, 5), ...ftExcluded(SHORT, 4),
+    ]);
+    const built = buildPrismaFlowSVG(flow, { perSource: true });
+    const runs = boxTexts(built.svg).filter((t) => t.boxId === 'excluded_full_text_db');
+    // Sub-lines are the indented runs; the box header carries no leading space.
+    const subCounts = runs
+      .filter((t) => /^\s/.test(t.content))
+      .map((t) => t.content.match(/\(n = (\d+)\)\s*$/))
+      .filter(Boolean)
+      .map((m) => Number(m[1]));
+    expect(subCounts).toHaveLength(3);
+    expect(subCounts.reduce((a, b) => a + b, 0)).toBe(flow.boxes.excluded_full_text_db.n);
+    expect(flow.boxes.excluded_full_text_db.n).toBe(15);
   });
 });
 

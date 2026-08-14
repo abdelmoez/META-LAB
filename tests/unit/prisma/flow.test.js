@@ -98,8 +98,16 @@ describe('Scenario E — citation searching', () => {
     const f = derivePrismaFlow(records);
     expect(f.counts.identifiedDb).toBe(50);
     expect(f.counts.identifiedOther).toBe(10);
-    // PRISMA 2020 gives the other-methods column no "records screened" box.
-    expect(f.counts.screened).toBe(50);
+    // PRISMA 2020 gives the other-methods column no "records screened" BOX, so the
+    // drawn box stays database-arm only…
+    expect(f.boxes.screened.n).toBe(50);
+    expect(f.counts.screenedDb).toBe(50);
+    // …but 116.md §13 (r2) re-pins the PROJECT-level scalar deliberately: PecanRev
+    // screens both arms in one pool, and "N records were screened" in a Methods
+    // section is a statement about the review, not about one diagram column.
+    // Scoping it to the column is what made the manuscript report "0 records were
+    // screened" for a project whose records all came from an unattributed import.
+    expect(f.counts.screened).toBe(60);
     expect(identificationSource({ origin: 'mining', sourceDb: 'PubMed' })).toBe('citation');
     expect(armOf({ origin: 'mining' })).toBe('other');
   });

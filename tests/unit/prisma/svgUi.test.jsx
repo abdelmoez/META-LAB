@@ -73,9 +73,12 @@ describe('§17/§21 — the diagram is PRISMA 2020, not the old single column', 
   });
 
   it('renders counts straight from the flow — no export-time arithmetic (§16)', () => {
-    expect(built.svg).toContain(`Records screened (n = ${FLOW.counts.screened})`);
+    // 116.md §13 (r2) — the DIAGRAM draws boxes, and boxes are column-scoped. The
+    // project-level `counts.screened` now spans both arms (it is what the Methods
+    // sentence states), so the figure must read `boxes.screened`, never `counts`.
+    expect(built.svg).toContain(`Records screened (n = ${FLOW.boxes.screened.n})`);
     expect(built.svg).toContain(`Reports not retrieved (n = ${FLOW.boxes.not_retrieved_db.n})`);
-    expect(built.svg).toContain(`Studies included in review (n = ${FLOW.counts.included})`);
+    expect(built.svg).toContain(`Studies included in review (n = ${FLOW.boxes.included_studies.n})`);
   });
 
   it('keeps each column exclusion reasons to its own arm', () => {
@@ -124,7 +127,9 @@ describe('§12 — counts are inspectable', () => {
       <PrismaInspector boxId="excluded_screening" flow={FLOW} screenProjectId="sp1" />,
     );
     expect(html).toContain('Records excluded');
-    expect(html).toContain(`n = ${FLOW.counts.excludedScreen}`);
+    // The panel header is the BOX's count (116.md §13 r2 — `counts.excludedScreen`
+    // is now the project total across both arms).
+    expect(html).toContain(`n = ${FLOW.boxes.excluded_screening.n}`);
     expect(html).toContain('resolved decisions'); // the explanation, not raw internals
     expect(html).toContain('stitch-prisma-search');
     expect(html).toContain('Loading records');

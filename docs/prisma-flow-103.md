@@ -77,6 +77,43 @@ misreport the search, which is worse than an unnamed database.
 > batch `sourceDatabase`) keeps the database arm. Executed searches (`origin: search|api`)
 > stay in the database arm even unnamed. A per-record override
 > (`ScreenRecord.identificationSource`) allows explicit correction either way.
+>
+> **Follow-up, 116.md §13/§14 (r2) — what moving the arm implies for the numbers.**
+> Reclassifying unattributed file imports made the other-methods arm the DEFAULT
+> destination for ordinary RIS/BibTeX/CSV uploads, i.e. exactly the ingestion path
+> where the Screening Engine deduplicates and where title/abstract screening happens.
+> The first implementation scoped every removal/screening set to the database arm, so
+> that work disappeared from the boxes *and* from `counts.screened` /
+> `counts.excludedScreen` / `counts.duplicatesRemoved` while reconciliation still
+> reported OK. Four rules now hold:
+>
+> 1. **Boxes stay column-scoped; scalars are project-wide.** `boxes.*` are the drawing
+>    (PRISMA 2020 gives the other column no removal or screening box, and inventing one
+>    is the commonest flow-diagram error). `counts.screened`, `counts.excludedScreen`,
+>    `counts.duplicatesRemoved`, `counts.awaitingScreening` and
+>    `counts.removedBeforeScreening` count BOTH arms, because "N records were screened"
+>    is a statement about the review, not about one column. `counts.*Db` mirror the boxes.
+> 2. **`flow.otherArm` reports what cannot be drawn** — the other arm's removals,
+>    duplicates, title/abstract exclusions and awaiting set, with ids. The inspector
+>    lists them under "Records identified from:", and `reconcile` emits an
+>    info-severity advisory naming them so the figure's silence is explicit.
+> 3. **Import-time discards are attributed per arm.** `ScreenImportBatch.duplicateCount`
+>    used to be credited wholly to the database column; for an unattributed batch that
+>    fabricated a database search. The loader now attributes each batch by its
+>    (non-retracted) declaration, else its surviving records' arm, else its kind
+>    (`pecan-search`/`api` ⇒ database, `file` ⇒ other), and passes `{ db, other }`.
+> 4. **Reconciliation covers the dispositions, not only the boxes.** Box-to-box
+>    identities all balanced while an entire arm's work was missing (0 − 0 = 0). Every
+>    disposition must now be accounted for by a reported set, at count level and at id
+>    level, at `error` severity — so a record that belongs to no box makes
+>    `reconciliation.ok` false instead of publishing a flow that leaves records nowhere.
+>
+> Two attribution repairs land with them: the PRISMA bucket is decided from the
+> canonical database KEY via `dbKind()` (classifying the display label sent
+> Crossref/CORE/The Lens to the other-methods arm and CENTRAL to the register bucket),
+> and a `sourceDb` that is only a legacy file-format token (`ris`, `ciw`…) is read as
+> "no attribution" so it stops shadowing an explicit batch declaration. Both are
+> read-side only — no stored row is rewritten.
 
 ---
 

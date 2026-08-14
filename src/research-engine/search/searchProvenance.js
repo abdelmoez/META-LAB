@@ -130,6 +130,42 @@ const CANONICAL_ALIASES = Object.freeze({
   'the lens': 'lens',
 });
 
+/**
+ * 116.md §14 (r2) — FILE FORMAT TOKENS that legacy imports wrote into
+ * `ScreenRecord.sourceDb`.
+ *
+ * Before 116 the importer's fallback chain was `r.sourceDb || r.source || …`, and
+ * every parser always filled `r.source` with the file FORMAT ("ris", "bibtex",
+ * "ciw"…). So on every pre-4.21 project the per-record source is parser junk, not a
+ * database name — and because it is non-blank it SHADOWED the researcher's explicit
+ * batch declaration, which is the opposite of searchProvenanceService's stated
+ * precedence ("an explicitly declared database is a stronger claim than
+ * parser-stamped per-record text, so it wins").
+ *
+ * Readers therefore self-heal: a value that is only a format token is treated as
+ * absent. Nothing is written back — the global invariant is "never write-normalize
+ * old rows at load". The list mirrors server/scripts/backfill-search-provenance.js,
+ * which repairs the rows for real; keeping one definition means the reader and the
+ * repair script can never disagree about what counts as junk.
+ */
+const FORMAT_TOKENS = Object.freeze(new Set([
+  'ris', 'csv', 'tsv', 'nbib', 'bibtex', 'bib', 'enw', 'endnote', 'txt', 'xml',
+  'ciw', 'json', 'medline', 'pubmed-xml', 'file', 'auto', 'unknown', 'undefined', 'null',
+]));
+
+/**
+ * MEDLINE is a genuine database AND a file format, so it is ambiguous. Ambiguity is
+ * not grounds for discarding an attribution — keep it and let a human decide.
+ * ('wos' stays OUT of FORMAT_TOKENS entirely: it is a real Web of Science alias.)
+ */
+const AMBIGUOUS_TOKENS = Object.freeze(new Set(['medline']));
+
+/** Is this `sourceDb` value only a file-format token (parser junk)? Pure. */
+export function isFormatToken(value) {
+  const s = String(value == null ? '' : value).trim().toLowerCase();
+  return !!s && FORMAT_TOKENS.has(s) && !AMBIGUOUS_TOKENS.has(s);
+}
+
 /** Fold a provider id or free-text source name onto a canonical database key. Pure. */
 export function canonicalDbKey(name) {
   const s = String(name == null ? '' : name).trim().toLowerCase();
@@ -462,6 +498,7 @@ export default {
   canonicalDbKey,
   dbLabel,
   dbKind,
+  isFormatToken,
   isoOf,
   deriveSearchProvenance,
   reportableDatabases,

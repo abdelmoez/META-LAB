@@ -90,8 +90,8 @@ const DATA = {
   fullTextRequest: [],
   screenPdfAttachment: [],
   screenImportBatch: [
-    { id: 'b1', duplicateCount: 3, sourceDatabase: '' },
-    { id: 'b2', duplicateCount: 0, sourceDatabase: 'embase' },
+    { id: 'b1', duplicateCount: 3, sourceDatabase: '', contributesToReview: true, source: 'file', filename: 'upload.ris', format: 'RIS', createdAt: new Date('2026-01-01') },
+    { id: 'b2', duplicateCount: 0, sourceDatabase: 'embase', contributesToReview: true, source: 'file', filename: 'embase.ris', format: 'RIS', createdAt: new Date('2026-01-01') },
   ],
 };
 
@@ -164,11 +164,105 @@ describe('loadPrismaFlow — dispositions from decisions, final review and confl
     expect(flow.boxes.identified_db.ids).toContain('r5');
     expect(flow.sources.db.map((s) => s.label)).toContain('Embase');
 
-    // Phantom import-time duplicates (batch.duplicateCount) still counted.
+    // Phantom import-time duplicates (batch.duplicateCount) still counted…
     expect(flow.counts.unrecordedDuplicates).toBe(3);
-    expect(flow.boxes.removed_before_screening.n).toBe(3);
+    // …but 116.md §13 (r2) RE-PINS WHERE. Batch b1 declares no database, has the
+    // default `file` kind and left no surviving records, so its 3 discarded
+    // duplicates are NOT a database search: crediting them to identified_db /
+    // removed_before_screening (what this test used to assert) fabricated a
+    // 3-record database column for a project that never searched one.
+    expect(flow.counts.unrecordedDuplicatesDb).toBe(0);
+    expect(flow.counts.unrecordedDuplicatesOther).toBe(3);
+    expect(flow.boxes.removed_before_screening.n).toBe(0);
+    expect(flow.boxes.identified_other.n).toBe(3);
+    // The project-level duplicate total is unchanged — nothing was lost, only
+    // re-attributed.
+    expect(flow.counts.duplicatesRemoved).toBe(3);
 
     expect(reconciliation.ok).toBe(true);
+  });
+});
+
+/* ════════ 116.md §13/§14 (r2) — the adversarial-review repairs ════════ */
+
+describe('loadPrismaFlow — a retracted batch stops attributing its records (§14 r2)', () => {
+  it('contributesToReview:false withdraws the declared database from PRISMA too', async () => {
+    // 104.md: unticking "contributes to the review" means "Excluded from the
+    // reported search methodology" — searchProvenanceService drops the batch, so the
+    // Methods text stops naming Embase. PRISMA was the only consumer of
+    // ScreenImportBatch.sourceDatabase that ignored the flag, so the DIAGRAM kept
+    // drawing those records under "Embase": the exact §15 diagram-vs-manuscript
+    // contradiction the record-derived engine exists to make impossible.
+    const b2 = DATA.screenImportBatch.find((b) => b.id === 'b2');
+    b2.contributesToReview = false;
+    try {
+      const { flow } = await loadPrismaFlow('p1');
+      expect(flow.sources.db.map((s) => s.label)).not.toContain('Embase');
+      // r5's only attribution was that declaration, so it falls to the D6(c)
+      // other-methods path — which is what the Methods text now claims.
+      expect(flow.boxes.identified_other.ids).toContain('r5');
+      expect(flow.boxes.identified_db.ids).not.toContain('r5');
+    } finally {
+      b2.contributesToReview = true;
+    }
+  });
+
+  it('an un-migrated client (no such column) still counts every batch', async () => {
+    // The extended select must degrade to the legacy one rather than being swallowed
+    // into [] — that would silently zero unrecordedDuplicates.
+    const original = prismaMock.screenImportBatch.findMany;
+    prismaMock.screenImportBatch.findMany = vi.fn(async (args) => {
+      if (Object.prototype.hasOwnProperty.call(args?.select || {}, 'contributesToReview')) {
+        throw new Error('Unknown field `contributesToReview` for select statement on model `ScreenImportBatch`');
+      }
+      return DATA.screenImportBatch.map(({ id, duplicateCount, sourceDatabase }) => ({ id, duplicateCount, sourceDatabase }));
+    });
+    try {
+      const { flow } = await loadPrismaFlow('p1');
+      expect(flow.counts.unrecordedDuplicates).toBe(3);
+      expect(flow.sources.db.map((s) => s.label)).toContain('Embase');
+    } finally {
+      prismaMock.screenImportBatch.findMany = original;
+    }
+  });
+});
+
+describe('loadPrismaFlow — batch discards follow their batch\'s arm (§13 r2)', () => {
+  it('a declared-database batch keeps its discards in the database column', async () => {
+    const b1 = DATA.screenImportBatch.find((b) => b.id === 'b1');
+    b1.sourceDatabase = 'scopus';
+    try {
+      const { flow } = await loadPrismaFlow('p1');
+      expect(flow.counts.unrecordedDuplicatesDb).toBe(3);
+      expect(flow.boxes.removed_before_screening.n).toBe(3);
+    } finally {
+      b1.sourceDatabase = '';
+    }
+  });
+
+  it('a Pecan/API batch keeps its discards in the database column even undeclared', async () => {
+    // An EXECUTED search really did query a database; only a bare file upload did not.
+    const b1 = DATA.screenImportBatch.find((b) => b.id === 'b1');
+    b1.source = 'pecan-search';
+    try {
+      const { flow } = await loadPrismaFlow('p1');
+      expect(flow.counts.unrecordedDuplicatesDb).toBe(3);
+    } finally {
+      b1.source = 'file';
+    }
+  });
+
+  it('the loader returns its scan so the inspector need not repeat it (§11 r2)', async () => {
+    const result = await loadPrismaFlow('p1', {
+      recordSelect: { title: true },
+      recordOrderBy: [{ id: 'asc' }],
+    });
+    expect(result.records).toHaveLength(DATA.screenRecord.length);
+    expect(result.batches).toHaveLength(DATA.screenImportBatch.length);
+    const call = prismaMock.screenRecord.findMany.mock.calls.at(-1)[0];
+    expect(call.select.title).toBe(true);
+    expect(call.select.identificationSource).toBe(true); // base columns preserved
+    expect(call.orderBy).toEqual([{ id: 'asc' }]);
   });
 });
 

@@ -17,10 +17,12 @@
  * the hit-target overlay is positioned in FRACTIONAL coordinates, so browser zoom
  * and responsive scaling can never desync a click target from its drawn box.
  */
-import { useMemo, useState } from 'react';
+import { useCallback, useMemo, useRef, useState } from 'react';
 import { C } from '../../frontend/workspace/ui/styles.js';
 import { buildPrismaFlowSVG, boxMeta } from '../../research-engine/prisma/index.js';
+import { useRealtime } from '../../frontend/hooks/useRealtime.js';
 import { PrismaInspector } from './PrismaInspector.jsx';
+import { shouldReloadForRecordPoke } from './inspectorModel.js';
 
 // Re-exported for existing importers/tests — the interactive inspector now lives
 // in its own module (116.md §9-§12).
@@ -78,6 +80,30 @@ export function PrismaFlowDiagram({
   title = '', interactive = true, perSource = true, updated = false,
 }) {
   const [openBox, setOpenBox] = useState(null);
+
+  /* 116.md §10 (r2) — the `record.updated` poke had NO subscriber anywhere in the
+   * client: it was the only emitted event type with zero listeners, so the server
+   * did two queries and an SSE write per metadata edit for nobody, while a
+   * collaborator's diagram, counts and open inspector kept pre-edit numbers
+   * indefinitely. That matters here specifically because an `identificationSource`
+   * edit moves a record between the database and other-methods arms.
+   *
+   * The poke carries ids only (global invariant 8), so this refetches through the
+   * authorized endpoints: `onChanged` re-derives the flow, and the bumped `syncKey`
+   * re-loads the open box's page. Debounced so a burst of edits collapses into one. */
+  const [syncKey, setSyncKey] = useState(0);
+  const pokeTimer = useRef(null);
+  const onChangedRef = useRef(onChanged); onChangedRef.current = onChanged;
+  const onRecordPoke = useCallback((ev) => {
+    if (!shouldReloadForRecordPoke(ev, screenProjectId)) return;
+    if (pokeTimer.current) clearTimeout(pokeTimer.current);
+    pokeTimer.current = setTimeout(() => {
+      pokeTimer.current = null;
+      setSyncKey((k) => k + 1);
+      if (onChangedRef.current) onChangedRef.current();
+    }, 1200);
+  }, [screenProjectId]);
+  useRealtime({ 'record.updated': onRecordPoke });
 
   const built = useMemo(
     () => (flow ? buildPrismaFlowSVG(flow, { title, perSource, updated }) : null),
@@ -157,6 +183,7 @@ export function PrismaFlowDiagram({
           screenProjectId={screenProjectId}
           onClose={() => setOpenBox(null)}
           onChanged={onChanged}
+          syncKey={syncKey}
         />
       )}
     </div>
