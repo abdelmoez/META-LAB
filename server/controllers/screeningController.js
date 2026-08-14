@@ -13,8 +13,8 @@ import { recordDuplicateLabels, getDuplicateEvaluation } from '../services/scree
 // 92.md — duplicate detection is a durable background job now (the old sync sweep froze
 // the whole server); the endpoints below only enqueue/inspect/cancel ScreenDuplicateJob rows.
 import { enqueueDuplicateJob, cancelDuplicateJob as cancelDuplicateJobRow } from '../services/screeningDuplicateWorker.js';
-import { syncConflicts } from '../services/screeningConflictService.js';
-import { ELIGIBILITY_ENGINE_REVIEWER_ID } from '../services/screeningEligibilityService.js';
+import { syncConflicts, CONFLICT_STAGE } from '../services/screeningConflictService.js';
+import { ELIGIBILITY_ENGINE_REVIEWER_ID, ELIGIBILITY_ENGINE_REVIEWER_NAME } from '../services/screeningEligibilityService.js';
 import { touchProjectActivity } from '../store.js';
 import {
   parseImportContent, dedupeAndInsertRecords, hasUsableIdentity,
@@ -2266,6 +2266,55 @@ export async function listDecisions(req, res) {
 
 // ── Conflicts ────────────────────────────────────────────────────────
 
+/**
+ * 116.md §70 (D14) — shape ONE reviewer's title/abstract decision for the Conflicts
+ * tab, applying the LEADER-EXEMPT WIRE-LEVEL blinding convention used by
+ * listRecords' shapeRecord and listSecondReview (81.md): under blind mode a
+ * non-leader resolver receives NO colleague identity (`reviewerId` omitted, name
+ * anonymised positionally) and NO free-text decision detail (exclusion reason,
+ * note, quality rating) — the bare decision still ships because the whole point of
+ * the tab is showing THAT the reviewers disagreed. Leaders are exempt and see
+ * everything. Blinding happens here, on the wire, never only in the UI.
+ *
+ * The eligibility engine (86.md P1.20) can hold one of the disagreeing decisions;
+ * it is not a human colleague, so its non-identifying label survives blind mode and
+ * `isEngine` lets the UI say a vote was machine-made rather than imply a reviewer.
+ */
+/**
+ * 116.md §70 — `ScreenConflict.reviewerDecisions` is a persisted {reviewerId:
+ * decision} JSON map (the legacy shape the resolve UX predates). Its KEYS are user
+ * ids, so shipping it verbatim handed a blinded non-leader the very colleague
+ * identities the rest of this handler strips. Re-key it to positional placeholders
+ * under blind mode: same shape, same decisions, no identity.
+ */
+function blindReviewerDecisionsJson(json) {
+  try {
+    const m = JSON.parse(json || '{}');
+    if (!m || typeof m !== 'object' || Array.isArray(m)) return '{}';
+    return JSON.stringify(Object.fromEntries(
+      Object.values(m).map((decision, i) => [`reviewer-${i + 1}`, decision]),
+    ));
+  } catch { return '{}'; }
+}
+
+function shapeConflictDecision(d, i, { blind, me }) {
+  const isEngine = d.reviewerId === ELIGIBILITY_ENGINE_REVIEWER_ID;
+  return {
+    reviewerId: blind ? undefined : d.reviewerId,
+    reviewerName: blind
+      ? (isEngine ? ELIGIBILITY_ENGINE_REVIEWER_NAME : `Reviewer ${i + 1}`)
+      : (d.reviewerName || (isEngine ? ELIGIBILITY_ENGINE_REVIEWER_NAME : 'Reviewer')),
+    isEngine,
+    isMe: d.reviewerId === me,
+    decision: d.decision,
+    stage: d.stage,
+    exclusionReason: blind ? '' : (d.exclusionReason || ''),
+    notes: blind ? '' : (d.notes || ''),
+    rating: blind ? null : (d.rating ?? null),
+    decidedAt: d.updatedAt || d.createdAt || null,
+  };
+}
+
 export async function listConflicts(req, res) {
   try {
     const access = await getProjectAccess(req.params.pid, req.user);
@@ -2275,12 +2324,72 @@ export async function listConflicts(req, res) {
     if (!access.canResolveConflicts) {
       return res.status(403).json({ error: 'Only the project leader can view conflicts' });
     }
+    const p = access.project;
+    // 81.md convention, reused verbatim: blinding is LEADER-EXEMPT. A member who was
+    // granted canResolveConflicts without being the leader is still blinded.
+    const blind = p.blindMode && !access.isLeader;
+    const me = req.user.id;
+
     const conflicts = await prisma.screenConflict.findMany({
-      where: { projectId: access.project.id },
-      include: { record: { select: { id: true, title: true, authors: true, year: true, abstract: true, currentStage: true } } },
+      where: { projectId: p.id },
+      // 116.md §§67-68 (D14) — the Conflict tab renders the SAME article surface the
+      // Title & Abstract workbench does (RecordArticleCard), so it needs the same
+      // record metadata listRecords ships: journal/doi/pmid/keywords/sourceDb/
+      // isDuplicate alongside the abstract that was already on the wire but unused.
+      include: {
+        record: {
+          select: {
+            id: true, title: true, authors: true, year: true, journal: true,
+            doi: true, pmid: true, abstract: true, keywords: true, sourceDb: true,
+            isDuplicate: true, currentStage: true, finalStatus: true,
+          },
+        },
+      },
       orderBy: { createdAt: 'desc' },
     });
-    res.json({ conflicts });
+
+    // 116.md §70 — per-reviewer decision context (reason / note / rating / name).
+    // ScreenConflict.reviewerDecisions only ever carried {reviewerId: decision}; the
+    // detail lives on ScreenDecision. One extra query for the whole page (conflicts
+    // are unpaginated and few by construction), joined in memory.
+    const recordIds = conflicts.map(c => c.recordId);
+    const rows = recordIds.length
+      ? await prisma.screenDecision.findMany({
+        where: {
+          projectId: p.id,
+          recordId: { in: recordIds },
+          stage: CONFLICT_STAGE,
+          decision: { not: 'undecided' },
+        },
+        select: {
+          id: true, recordId: true, reviewerId: true, reviewerName: true, stage: true,
+          decision: true, exclusionReason: true, notes: true, rating: true,
+          createdAt: true, updatedAt: true,
+        },
+        // 100.md §§13/15 — a stable order, so the positional "Reviewer N" labels
+        // blind mode hands out mean the same reviewer on every request.
+        orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+      })
+      : [];
+    const byRecord = new Map();
+    for (const d of rows) {
+      const list = byRecord.get(d.recordId) || [];
+      list.push(d);
+      byRecord.set(d.recordId, list);
+    }
+
+    res.json({
+      conflicts: conflicts.map(c => ({
+        ...c,
+        reviewerDecisions: blind ? blindReviewerDecisionsJson(c.reviewerDecisions) : c.reviewerDecisions,
+        record: c.record
+          ? { ...c.record, authors: blind ? '' : c.record.authors, journal: blind ? '' : c.record.journal }
+          : c.record,
+        decisions: (byRecord.get(c.recordId) || []).map((d, i) => shapeConflictDecision(d, i, { blind, me })),
+      })),
+      blindMode: p.blindMode,
+      isLeader: access.isLeader,
+    });
   } catch (err) {
     console.error('[screening] listConflicts:', err.message);
     res.status(500).json({ error: 'Internal server error' });

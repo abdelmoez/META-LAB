@@ -1,9 +1,26 @@
 /**
  * ConflictsTab.jsx — resolve reviewer disagreements (records where reviewers chose differently).
+ *
+ * 116.md §§67-70 (D14) — a conflict is resolved by RE-READING the article, so this
+ * tab carries the SAME article context the Title & Abstract workbench does instead
+ * of a thinner mini-card:
+ *   §67  the shared <RecordArticleCard> (title · authors/journal/year · DOI/PMID ·
+ *        source + duplicate badges · abstract · keywords) — one component, no fork;
+ *   §68  the COMPLETE abstract with the same PICO keyword highlighting and
+ *        structured-heading rendering, never truncated (the per-card fold is
+ *        all-or-nothing and starts open);
+ *   §69  the same record-keyed <PdfViewer> — the SAME ScreenPdfAttachment the T&A
+ *        and Final Review screens use (no second storage, no second upload path),
+ *        so the PDF (and whatever it later grows) is reachable from here too;
+ *   §70  named reviewer decisions with their exclusion reason / note / quality
+ *        rating where present — blind-aware, straight from listConflicts' wire
+ *        shape — while the leader's resolve form keeps its exact semantics.
  */
 import { useState, useEffect, useCallback } from 'react';
 import { C, FONT, MONO, alpha } from '../ui/theme.js';
 import { Loading, ErrorBanner, Button, Badge, DecisionChip, Card, EmptyState } from '../ui/components.jsx';
+import RecordArticleCard from '../components/RecordArticleCard.jsx';
+import PdfViewer from '../components/PdfViewer.jsx';
 import { screeningApi } from '../api-client/screeningApi.js';
 import { useRealtime } from '../../hooks/useRealtime.js';
 
@@ -14,6 +31,139 @@ function parseDecisions(json) {
   } catch { return []; }
 }
 
+/** Project inclusion/exclusion keyword lists (same parse SecondReviewTab uses). */
+function parseKeywords(raw) {
+  try {
+    const v = JSON.parse(raw || '[]');
+    return Array.isArray(v) ? v.filter(Boolean) : [];
+  } catch { return []; }
+}
+
+/**
+ * 116.md §70 — the reviewer rows to render. The server now joins the real
+ * ScreenDecision rows (names + reasons + notes + ratings, already blinded on the
+ * wire for a blinded non-leader). `reviewerDecisions` (the {reviewerId: decision}
+ * JSON on the conflict row) stays the fallback so an older/stubbed payload still
+ * renders the chips it always did.
+ */
+export function conflictReviewerRows(conflict, blindMode) {
+  const rows = Array.isArray(conflict?.decisions) ? conflict.decisions : [];
+  if (rows.length) return rows;
+  return parseDecisions(conflict?.reviewerDecisions).map((d, i) => ({
+    reviewerId: blindMode ? undefined : d.reviewerId,
+    reviewerName: blindMode ? `Reviewer ${i + 1}` : 'Reviewer',
+    decision: d.decision,
+  }));
+}
+
+/** One reviewer's vote plus the context they recorded with it (§70). */
+function ReviewerDecisionRow({ row, index }) {
+  const name = row.reviewerName || `Reviewer ${index + 1}`;
+  const hasDetail = !!(row.exclusionReason || row.notes || row.rating);
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 4, minWidth: 200, flex: '1 1 240px',
+      background: C.surf, border: `1px solid ${C.brd}`, borderRadius: 8, padding: '9px 12px' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+        <DecisionChip decision={row.decision} />
+        <span style={{ fontSize: 11.5, color: C.txt2, minWidth: 0, overflowWrap: 'anywhere' }}>{name}</span>
+        {row.isMe && <span style={{ fontSize: 10, color: C.muted, fontFamily: MONO }}>YOU</span>}
+        {row.isEngine && <Badge color={C.teal}>AUTOMATED</Badge>}
+      </div>
+      {row.exclusionReason && (
+        <div style={{ fontSize: 11.5, color: C.txt2, minWidth: 0, overflowWrap: 'anywhere' }}>
+          <span style={{ color: C.muted }}>Exclusion reason: </span>{row.exclusionReason}
+        </div>
+      )}
+      {row.notes && (
+        <div style={{ fontSize: 11.5, color: C.txt2, minWidth: 0, overflowWrap: 'anywhere' }}>
+          <span style={{ color: C.muted }}>Notes: </span>{row.notes}
+        </div>
+      )}
+      {!!row.rating && (
+        <div style={{ fontSize: 11.5, color: C.txt2 }}>
+          <span style={{ color: C.muted }}>Quality rating: </span>{'★'.repeat(row.rating)}{'☆'.repeat(Math.max(0, 5 - row.rating))} {row.rating}/5
+        </div>
+      )}
+      {!hasDetail && (
+        <div style={{ fontSize: 11, color: C.muted, fontStyle: 'italic' }}>No reason or note recorded.</div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * One unresolved conflict: full article context (§§67-69) above the reviewer
+ * decisions and the leader's resolve form (§70). Exported so the layout can be
+ * SSR-pinned without standing up the tab's fetch/realtime machinery.
+ */
+export function ConflictCard({
+  pid, conflict, blindMode, inclusion = [], exclusion = [], access, canResolve,
+  expanded = true, onToggleAbstract, form = {}, onFormChange, onResolve, busy = false,
+}) {
+  const decs = conflictReviewerRows(conflict, blindMode);
+  const set = (patch) => onFormChange?.({ ...form, ...patch });
+  return (
+    <Card style={{ padding: '18px 20px' }}>
+      {/* §§67-68 — the SAME article surface the Title & Abstract workbench
+          renders, with the complete abstract and its PICO highlighting. */}
+      <RecordArticleCard
+        record={conflict.record} blindMode={blindMode}
+        inclusion={inclusion} exclusion={exclusion}
+        showInclusion showExclusion
+        collapsible expanded={expanded}
+        onToggle={onToggleAbstract}
+      />
+
+      {/* §69 — the record-keyed PDF: same ScreenPdfAttachment entity, same viewer,
+          same permission bar as Title & Abstract / Final Review. */}
+      {expanded && conflict.record?.id && (
+        <div style={{ margin: '4px 0 16px' }}>
+          <PdfViewer pid={pid} recordId={conflict.record.id} canManage={access.canScreen || access.isLeader} />
+        </div>
+      )}
+
+      {/* §70 — reviewer decisions WITH the context each reviewer recorded. */}
+      <div style={{ fontSize: 10, fontFamily: MONO, fontWeight: 600, letterSpacing: '0.1em', textTransform: 'uppercase', color: C.muted, marginBottom: 8 }}>
+        Reviewer decisions
+      </div>
+      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 14 }}>
+        {decs.length === 0
+          ? <div style={{ fontSize: 12, color: C.muted }}>No reviewer decisions on record.</div>
+          : decs.map((d, i) => <ReviewerDecisionRow key={d.reviewerId ?? i} row={d} index={i} />)}
+      </div>
+
+      {canResolve ? (
+        <div style={{ borderTop: `1px solid ${C.brd}`, paddingTop: 12 }}>
+          <div style={{ fontSize: 11, color: C.muted, marginBottom: 8, fontFamily: MONO, textTransform: 'uppercase', letterSpacing: '0.1em' }}>Final decision</div>
+          <div style={{ display: 'flex', gap: 8, marginBottom: 10 }}>
+            {['include', 'exclude', 'maybe'].map(d => (
+              <button key={d} onClick={() => set({ finalDecision: d })}
+                style={{ flex: 1, cursor: 'pointer', fontFamily: FONT, fontSize: 12, fontWeight: 600, padding: '7px 0', borderRadius: 6,
+                  textTransform: 'capitalize', background: form.finalDecision === d ? C.acc2 : C.card, color: form.finalDecision === d ? C.accText : C.txt2,
+                  border: `1px solid ${form.finalDecision === d ? C.acc2 : C.brd2}` }}>{d}</button>
+            ))}
+          </div>
+          <input value={form.notes || ''} onChange={e => set({ notes: e.target.value })}
+            placeholder="Resolution note (optional)"
+            style={{ width: '100%', background: C.bg, border: `1px solid ${C.brd2}`, borderRadius: 6, padding: '7px 10px', color: C.txt, fontSize: 12, fontFamily: FONT, outline: 'none', marginBottom: 10 }} />
+          {/* Honest about where the note lands: resolving as exclude stores it as
+              the record's exclusion reason (resolveConflict → rejectedReason). */}
+          {form.finalDecision === 'exclude' && (
+            <div style={{ fontSize: 11, color: C.muted, marginBottom: 10 }}>
+              Saved as this record's exclusion reason.
+            </div>
+          )}
+          <Button onClick={onResolve} disabled={!form.finalDecision || busy}>
+            {busy ? 'Resolving…' : 'Resolve Conflict'}
+          </Button>
+        </div>
+      ) : (
+        <div style={{ fontSize: 12, color: C.muted, fontStyle: 'italic' }}>Awaiting leader resolution.</div>
+      )}
+    </Card>
+  );
+}
+
 export default function ConflictsTab({ pid, project, access, refreshProject }) {
   const [conflicts, setConflicts] = useState([]);
   const [loading, setLoading]   = useState(true);
@@ -22,8 +172,17 @@ export default function ConflictsTab({ pid, project, access, refreshProject }) {
   const [forms, setForms]       = useState({});  // cid -> { finalDecision, notes }
   const [busy, setBusy]         = useState(null);
   const [flash, setFlash]       = useState('');
+  // 116.md §68 — article context starts EXPANDED (parity with T&A); this holds the
+  // conflict ids the leader has folded away while working through a long list.
+  const [folded, setFolded]     = useState({});
+  // The server is the authority on blinding (it strips authors/journal and reviewer
+  // identity on the wire); the project prop is only the pre-fetch default.
+  const [wireBlind, setWireBlind] = useState(null);
+  const blindMode = wireBlind ?? !!project?.blindMode;
 
   const canResolve = access.isLeader || access.canResolveConflicts;
+  const inclusion = parseKeywords(project?.inclusionKeywords);
+  const exclusion = parseKeywords(project?.exclusionKeywords);
 
   useEffect(() => { if (!flash) return; const t = setTimeout(() => setFlash(''), 4200); return () => clearTimeout(t); }, [flash]);
 
@@ -32,6 +191,7 @@ export default function ConflictsTab({ pid, project, access, refreshProject }) {
     try {
       const data = await screeningApi.listConflicts(pid);
       setConflicts(data.conflicts || []);
+      if (data.blindMode !== undefined) setWireBlind(!!data.blindMode);
     } catch (e) { setError(e.message || 'Failed to load conflicts'); }
     finally { setLoading(false); }
   }, [pid]);
@@ -41,9 +201,17 @@ export default function ConflictsTab({ pid, project, access, refreshProject }) {
   // resolved elsewhere, so a conflict appears the moment it is created and
   // disappears the moment it is resolved, without a manual reload. Server-side
   // syncConflicts is the single source of truth; this only re-reads it.
+  //
+  // 116.md §67 (D14) — this used to also subscribe to `conflict.changed`, an event
+  // NO server code has ever emitted. Rather than invent a second poke that would
+  // fire in lockstep with `decision.saved` (double refetch on the common path),
+  // subscribe to the pokes that are actually emitted on every path that can change
+  // a conflict row: `decision.saved` (saveDecision → syncConflicts, resolveConflict,
+  // eligibility auto-apply) and `eligibility.updated` (the auto-apply undo, which
+  // deletes the engine's decision and can therefore clear a conflict).
   useRealtime({
-    'decision.saved':    (ev) => { if (!ev || ev.projectId === pid || ev.projectId === undefined) load(); },
-    'conflict.changed':  (ev) => { if (!ev || ev.projectId === pid || ev.projectId === undefined) load(); },
+    'decision.saved':      (ev) => { if (!ev || ev.projectId === pid || ev.projectId === undefined) load(); },
+    'eligibility.updated': (ev) => { if (!ev || ev.projectId === pid || ev.projectId === undefined) load(); },
   });
 
   async function resolve(cid) {
@@ -93,44 +261,19 @@ export default function ConflictsTab({ pid, project, access, refreshProject }) {
 
       <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
         {unresolved.map(c => {
-          const decs = parseDecisions(c.reviewerDecisions);
-          const f = forms[c.id] || {};
+          const expanded = !folded[c.id];
           return (
-            <Card key={c.id}>
-              <div style={{ fontSize: 14, fontWeight: 600, color: C.txt, marginBottom: 4, minWidth: 0, overflowWrap: 'anywhere' }}>{c.record?.title || 'Untitled record'}</div>
-              <div style={{ fontSize: 12, color: C.txt2, marginBottom: 12, minWidth: 0, overflowWrap: 'anywhere' }}>
-                {!project.blindMode && c.record?.authors} {c.record?.year && `· ${c.record.year}`}
-              </div>
-              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 14 }}>
-                {decs.map((d, i) => (
-                  <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                    <span style={{ fontSize: 11, color: C.muted }}>{project.blindMode ? `Reviewer ${i + 1}` : 'Reviewer'}</span>
-                    <DecisionChip decision={d.decision} />
-                  </div>
-                ))}
-              </div>
-              {canResolve ? (
-                <div style={{ borderTop: `1px solid ${C.brd}`, paddingTop: 12 }}>
-                  <div style={{ fontSize: 11, color: C.muted, marginBottom: 8, fontFamily: MONO, textTransform: 'uppercase', letterSpacing: '0.1em' }}>Final decision</div>
-                  <div style={{ display: 'flex', gap: 8, marginBottom: 10 }}>
-                    {['include', 'exclude', 'maybe'].map(d => (
-                      <button key={d} onClick={() => setForms(s => ({ ...s, [c.id]: { ...f, finalDecision: d } }))}
-                        style={{ flex: 1, cursor: 'pointer', fontFamily: FONT, fontSize: 12, fontWeight: 600, padding: '7px 0', borderRadius: 6,
-                          textTransform: 'capitalize', background: f.finalDecision === d ? C.acc2 : C.card, color: f.finalDecision === d ? C.accText : C.txt2,
-                          border: `1px solid ${f.finalDecision === d ? C.acc2 : C.brd2}` }}>{d}</button>
-                    ))}
-                  </div>
-                  <input value={f.notes || ''} onChange={e => setForms(s => ({ ...s, [c.id]: { ...f, notes: e.target.value } }))}
-                    placeholder="Resolution note (optional)"
-                    style={{ width: '100%', background: C.bg, border: `1px solid ${C.brd2}`, borderRadius: 6, padding: '7px 10px', color: C.txt, fontSize: 12, fontFamily: FONT, outline: 'none', marginBottom: 10 }} />
-                  <Button onClick={() => resolve(c.id)} disabled={!f.finalDecision || busy === c.id}>
-                    {busy === c.id ? 'Resolving…' : 'Resolve Conflict'}
-                  </Button>
-                </div>
-              ) : (
-                <div style={{ fontSize: 12, color: C.muted, fontStyle: 'italic' }}>Awaiting leader resolution.</div>
-              )}
-            </Card>
+            <ConflictCard
+              key={c.id} pid={pid} conflict={c} blindMode={blindMode}
+              inclusion={inclusion} exclusion={exclusion}
+              access={access} canResolve={canResolve}
+              expanded={expanded}
+              onToggleAbstract={() => setFolded(s => ({ ...s, [c.id]: expanded }))}
+              form={forms[c.id] || {}}
+              onFormChange={(next) => setForms(s => ({ ...s, [c.id]: next }))}
+              onResolve={() => resolve(c.id)}
+              busy={busy === c.id}
+            />
           );
         })}
       </div>

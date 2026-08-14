@@ -13,14 +13,13 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { C, FONT, MONO, alpha, DECISION_COLORS, DECISION_GLYPH } from '../ui/theme.js';
 import { Loading, ErrorBanner, Button, Badge, DecisionChip, Card, SectionLabel, EmptyState, Toggle, Modal } from '../ui/components.jsx';
-import { renderAbstract } from '../ui/highlightRender.jsx';
 import { DEFAULT_INCLUDE_KEYWORDS, DEFAULT_EXCLUDE_KEYWORDS } from '../../../research-engine/screening/defaultKeywords.js';
 // 107.md §2 — active vs suggested keyword state + the shared single-term reducer.
 import { resolveKeywordState } from '../../../research-engine/screening/criteriaKeywords.js';
 import { KEYWORD_ORIGIN, dismissConflictOps } from '../../../research-engine/screening/keywordModel.js';
 import { normalizeKeywordKey } from '../../../research-engine/screening/keywordNormalize.js';
-// 107.md §4 — structured-abstract heading segmentation (memoized per record).
-import { segmentAbstract } from '../../../research-engine/screening/abstractSegments.js';
+// 107.md §4 — structured-abstract heading segmentation (memoized per record) and
+// 107.md §3 highlighting now live inside the extracted RecordArticleCard (116.md §67).
 // 107.md §3 — Cmd/Ctrl+I / Cmd/Ctrl+E over an abstract selection.
 import { useAbstractSelectionShortcuts } from '../hooks/useAbstractSelectionShortcuts.js';
 // 108.md §§4/§8/§17/§20 — the project-wide history + its shared feedback surface.
@@ -41,6 +40,9 @@ import {
   keywordExpectState, keywordPrecondition,
 } from '../lib/screeningHistory.js';
 import PdfViewer from '../components/PdfViewer.jsx';
+// 116.md §67 (D14) — the shared article header + full-abstract surface, extracted
+// verbatim from this file's MiddleColumn so the Conflicts tab reuses it.
+import RecordArticleCard from '../components/RecordArticleCard.jsx';
 // 96.md 5D — collapsible article-level "Import provenance" (lazy; 404 soft-fail).
 import ImportProvenance from '../components/ImportProvenance.jsx';
 import { screeningApi } from '../api-client/screeningApi.js';
@@ -2084,9 +2086,6 @@ export function MiddleColumn({
 }) {
   const k = shortcutPrefs?.keys ?? DEFAULT_SCREENING_SHORTCUTS.keys;
   const shortcutsOn = shortcutPrefs?.enabled !== false;
-  // 107.md §4 — segment once per record; highlighting still recomputes per render.
-  // Declared before the early returns so hook order stays stable.
-  const abstractSegs = useMemo(() => segmentAbstract(record?.abstract || ''), [record?.abstract]);
   if (loading && !record) {
     return <div className="sift-mid" style={{ flex: 1, overflowY: 'auto', padding: 28 }}><Loading label="Loading workbench…" /></div>;
   }
@@ -2105,57 +2104,16 @@ export function MiddleColumn({
       <div style={{ flex: 1, overflowY: 'auto', minHeight: 0 }}>
       <div style={{ padding: '24px 28px', maxWidth: 860, margin: '0 auto', animation: 'sift-fade 0.25s ease' }}>
 
-        {/* ── Header ─────────────────────────────────────────────────────── */}
-        <h2 style={{ fontSize: 17, fontWeight: 700, color: C.txt, lineHeight: 1.42, margin: '0 0 10px', letterSpacing: '-0.01em', minWidth: 0, overflowWrap: 'anywhere' }}>
-          {record.title || <span style={{ color: C.muted, fontStyle: 'italic' }}>Untitled record</span>}
-        </h2>
-
-        {!blindMode && (record.authors || record.journal || record.year) && (
-          <div style={{ fontSize: 12.5, color: C.txt2, marginBottom: 10, lineHeight: 1.5, minWidth: 0, overflowWrap: 'anywhere' }}>
-            {record.authors && <span>{record.authors}</span>}
-            {record.journal && <span style={{ fontStyle: 'italic', color: C.muted }}>{record.authors ? ' · ' : ''}{record.journal}</span>}
-            {record.year && <span style={{ color: C.muted }}>{(record.authors || record.journal) ? ' · ' : ''}{record.year}</span>}
-          </div>
-        )}
-
-        <div style={{ display: 'flex', alignItems: 'center', gap: 14, flexWrap: 'wrap', marginBottom: 20 }}>
-          {record.doi && (
-            <a href={`https://doi.org/${record.doi}`} target="_blank" rel="noopener noreferrer"
-              style={{ fontSize: 11, color: C.acc, fontFamily: MONO, textDecoration: 'none', minWidth: 0, overflowWrap: 'anywhere', wordBreak: 'break-all' }}>DOI: {record.doi}</a>
-          )}
-          {record.pmid && (
-            <a href={`https://pubmed.ncbi.nlm.nih.gov/${record.pmid}`} target="_blank" rel="noopener noreferrer"
-              style={{ fontSize: 11, color: C.acc, fontFamily: MONO, textDecoration: 'none' }}>PMID: {record.pmid}</a>
-          )}
-          {record.sourceDb && <Badge color={C.txt2}>{record.sourceDb}</Badge>}
-          {record.isDuplicate && <Badge color={C.gold}>Duplicate</Badge>}
-        </div>
-
-        {/* ── Abstract (with PICO highlighting) ──────────────────────────── */}
-        <Card style={{ marginBottom: 18, padding: '18px 20px' }}>
-          <SectionLabel>Abstract</SectionLabel>
-          {record.abstract ? (
-            /* 107.md §3 — the ref proves a selection belongs to THIS abstract before
-               Cmd/Ctrl+I / Cmd/Ctrl+E may add it as a keyword.
-               107.md §4 — structured headings render <strong>; keyword <mark>s are
-               produced per text segment, so the two can never overlap. */
-            <p ref={abstractRef} data-testid="screening-abstract"
-              style={{ fontSize: 14, color: C.txt, lineHeight: 1.75, margin: 0, minWidth: 0, overflowWrap: 'anywhere' }}>
-              {renderAbstract(record.abstract, { inclusion, exclusion, showInclusion, showExclusion, segments: abstractSegs })}
-            </p>
-          ) : (
-            <p style={{ fontSize: 13.5, color: C.muted, fontStyle: 'italic', margin: 0 }}>No abstract available for this record.</p>
-          )}
-
-          {record.keywords && (
-            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 14, paddingTop: 14, borderTop: `1px solid ${C.brd}` }}>
-              <span style={{ fontSize: 9.5, color: C.muted, fontFamily: MONO, alignSelf: 'center', letterSpacing: '0.08em' }}>KEYWORDS</span>
-              {record.keywords.split(/[;,]/).map((kw, i) => kw.trim() && (
-                <span key={i} style={{ fontSize: 10.5, background: alpha(C.brd, '70'), border: `1px solid ${C.brd}`, color: C.txt2, borderRadius: 10, padding: '2px 9px' }}>{kw.trim()}</span>
-              ))}
-            </div>
-          )}
-        </Card>
+        {/* ── Header + full abstract — 116.md §67 (D14): extracted verbatim into
+               the shared RecordArticleCard so the Conflicts tab reuses the SAME
+               article surface instead of forking an inferior copy. Output here is
+               byte-identical to the pre-extraction inline JSX (SSR-pinned). ──── */}
+        <RecordArticleCard
+          record={record} blindMode={blindMode}
+          inclusion={inclusion} exclusion={exclusion}
+          showInclusion={showInclusion} showExclusion={showExclusion}
+          abstractRef={abstractRef}
+        />
 
         {/* ── PDF attachment + in-browser preview ────────────────────────── */}
         <div style={{ margin: '4px 0 16px' }}>
