@@ -2293,6 +2293,15 @@ export function DecisionBar({ decision, canScreen, onDecisionClick, onUndo, shor
       <button
         onClick={onUndo}
         disabled={!canScreen || !decision}
+        /* 116.md §100 (validation) — this clears THIS record's decision, while the
+           shell's project-history control (data-testid="stitch-history-undo") is also
+           announced as "Undo" and also lives inside the main region. Two controls with
+           the same accessible name in one region is ambiguous for a screen reader, so
+           this one names what it acts on. Added when the e2e strict-mode collision
+           surfaced it; the ambiguity dates from 108.md, which introduced the shell
+           control long after this button. The visible label is unchanged. */
+        aria-label="Undo decision"
+        data-testid="screening-decision-undo"
         style={{
           background: 'transparent', border: `1px solid ${C.brd}`, color: C.muted,
           fontSize: 13, fontWeight: 600, fontFamily: FONT, padding: '8px 18px',

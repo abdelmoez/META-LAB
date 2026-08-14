@@ -127,7 +127,10 @@ export class ScreeningPage {
   get includeButton(): Locator { return this.main.getByRole('button', { name: /Include/i }); }
   get excludeButton(): Locator { return this.main.getByRole('button', { name: /Exclude/i }); }
   get maybeButton(): Locator { return this.main.getByRole('button', { name: /Maybe/i }); }
-  get undoButton(): Locator { return this.main.getByRole('button', { name: /Undo/i }); }
+  /* 116.md §100 (validation) — the shell's project-history control is ALSO named
+     "Undo" and also sits inside the main region (108.md), so a name-only locator
+     matches two elements. Target the decision control itself. */
+  get undoButton(): Locator { return this.main.getByTestId('screening-decision-undo'); }
   get notesTextarea(): Locator { return this.main.getByPlaceholder('Optional screening notes…'); }
 
   /* ── Keywords (107.md §2, 108.md §§18-21) ──────────────────────────────────────
