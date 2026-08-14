@@ -15,6 +15,10 @@
  * No Date.now/Math.random. Safe for server, client and tests.
  */
 
+// 116.md §38 — the project-field key namespace (`xf_*`), imported rather than re-typed
+// as a literal regex so the sync hash can never drift from the registry that mints them.
+import { isProjectFieldKey } from '../fieldRegistry.js';
+
 /** Fields whose change should invalidate a prior sync (the analysis inputs). */
 export const SYNC_INPUT_FIELDS = Object.freeze([
   'esType', 'outcome', 'timepoint', 'adjusted',
@@ -86,6 +90,25 @@ export function computeSyncHash(study = {}) {
   for (const k of caseKeys) {
     const v = study[k];
     parts.push(`${k}=${v == null ? '' : String(v).trim()}`);
+  }
+  // 116.md §34/§38 — the PROJECT EXTRACTION FIELD values (`xf_*`) are analysis inputs
+  // in exactly the same sense: a review that extracts "Mean age" or "Follow-up" and
+  // then corrects one must not keep reading "In analysis" with the old number.
+  //
+  // They are emitted STRICTLY VALUE-CONDITIONALLY — appended only when the key carries a
+  // non-empty value — for the reason SYNC_OPTIONAL_FIELDS above spells out: a fixed (or
+  // merely key-present) member emits `xf_x=` for a row that has none, which would move
+  // the digest of every pre-116 row and flip every previously-synced article to the amber
+  // "Updated since sync" badge, with no migration able to repair the hashes already
+  // persisted in `extractionMeta.syncHash` (the 107.md r2 incident). A project using no
+  // custom fields therefore hashes BYTE-IDENTICALLY to pre-116, and so does a row whose
+  // value was entered and then cleared again. Collected dynamically + SORTED so key
+  // order in the blob can never churn the hash.
+  const projectFieldKeys = Object.keys(study).filter(isProjectFieldKey).sort();
+  for (const k of projectFieldKeys) {
+    const v = study[k];
+    const t = v == null ? '' : String(v).trim();
+    if (t !== '') parts.push(`${k}=${t}`);
   }
   return djb2(parts.join('|'));
 }

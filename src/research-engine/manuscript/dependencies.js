@@ -90,6 +90,22 @@ function caseValuesOf(study) {
   return out;
 }
 
+/** 116.md §34/§40 — PROJECT EXTRACTION FIELD values (`xf_*`), the same treatment for the
+ *  same reason: the characteristics narrative can use them, so an edit must mark the
+ *  section outdated. The namespace rule is `fieldRegistry.isProjectFieldKey`; it is
+ *  restated inline (like caseValuesOf above) to keep this module free of engine imports,
+ *  and a unit test pins the two against each other. EMPTY values are omitted, so a
+ *  project with no configured fields fingerprints byte-identically to pre-116. */
+function projectFieldValuesOf(study) {
+  const out = {};
+  if (!study || typeof study !== 'object') return out;
+  for (const k of Object.keys(study).filter((x) => /^xf_.+/.test(x)).sort()) {
+    const v = clean(study[k]);
+    if (v !== '') out[k] = v;
+  }
+  return out;
+}
+
 /**
  * Fingerprint every dependency key from the live project + generation opts.
  * @param {object} project Project.data blob
@@ -129,6 +145,11 @@ export function computeDependencyState(project, opts = {}) {
     nCtrl: s.nCtrl, meanCtrl: s.meanCtrl, sdCtrl: s.sdCtrl,
     reportedFormat: s.reportedFormat,
     caseValues: caseValuesOf(s),
+    // 116.md §40 — PROJECT EXTRACTION FIELD values (`xf_*`). The characteristics table
+    // can display them, so an edit to "Mean age" must mark the section out of date
+    // exactly like an edit to a case variable. Derived from the row (sorted, non-empty
+    // only), so a project with no configured fields fingerprints byte-identically.
+    projectFields: projectFieldValuesOf(s),
   }));
   const conversionsSlice = studies.map((s) => ({
     id: s.id,

@@ -62,8 +62,16 @@ import { useProjectHistory } from '../../../frontend/history/HistoryContext.jsx'
 import {
   buildExtractionEntry, canMergeExtractionEdit, mergeExtractionOps, EXTRACTION_SURFACE,
 } from '../../../research-engine/interaction/extractionHistory.js';
+// 116.md §34-§40 — the project-level extraction field library. Definitions live in the
+// blob (project.extractionFields); values live FLAT on the row under the field's storage
+// key, so they ride the very same write path, provenance map and undo entries as every
+// other value here — nothing below needed a new mechanism.
+import {
+  storageKeyOf, fieldDisplayLabel, isProjectFieldKey,
+} from '../../../research-engine/extraction/fieldRegistry.js';
 import ConverterPanel from './ConverterPanel.jsx';
 import CaseFieldsPanel from './CaseFieldsPanel.jsx';
+import ProjectFieldsPanel from './ProjectFieldsPanel.jsx';
 
 const RATIO_MEASURES = ['OR', 'RR', 'HR', 'IRR'];
 const ES_TYPES = [['', '—'], ['OR', 'Odds ratio'], ['RR', 'Risk ratio'], ['HR', 'Hazard ratio'], ['IRR', 'Incidence-rate ratio'], ['SMD', 'Std. mean diff'], ['MD', 'Mean difference'], ['PROP', 'Proportion'], ['COR', 'Correlation'], ['DIAG', 'Diagnostic 2×2']];
@@ -147,6 +155,8 @@ export default function ArticleWorkspace({
   onComplete, onReopen, completing = false,
   // 106.md — patient-level variable definitions (project-wide) + their editor.
   caseVariables = [], onSetCaseVariables,
+  // 116.md §34-§40 — project-level extraction field definitions + their editor.
+  extractionFields = [], onSetExtractionFields,
 }) {
   // 109.md §29 — display precision for derived proportions. Defaults on the first
   // render (and under renderToStaticMarkup), so nothing changes at the shipped value.
@@ -297,11 +307,14 @@ export default function ArticleWorkspace({
   // 106.md — one label resolver for both built-in fields and the review's case
   // variables, so every status line, jump-to-source announcement and pick-target label
   // says "Age (years)" rather than the raw storage key `cv_age`.
+  // 116.md §38 — the project fields join the SAME resolver (their labels are editable, so
+  // they must never be read off a storage key either).
   const labelFor = useMemo(() => {
     const m = {};
     for (const v of (caseVariables || [])) m[caseVarKey(v.id)] = v.unit ? `${v.label} (${v.unit})` : v.label;
+    for (const f of (extractionFields || [])) { const k = storageKeyOf(f); if (k) m[k] = fieldDisplayLabel(f); }
     return (f) => m[f] || FIELD_LABELS[f] || f;
-  }, [caseVariables]);
+  }, [caseVariables, extractionFields]);
 
   /**
    * recordFieldEdit — 108.md §5/§12/§13. Turn one write into one history entry.
@@ -719,7 +732,9 @@ export default function ArticleWorkspace({
     let provEntry = null;
     for (const f of keys) {
       const v = fields[f];
-      if (!ALL_VALUE_KEYS.includes(f) && !isCaseVarKey(f)) continue;   // 106.md — case variables too
+      // 106.md case variables and 116.md project fields (`xf_*`) are value keys too, so a
+      // manual edit of one re-attributes its provenance exactly like a number's.
+      if (!ALL_VALUE_KEYS.includes(f) && !isCaseVarKey(f) && !isProjectFieldKey(f)) continue;
       const prior = readProvenance(study, f);
       const changed = String(study[f] || '') !== String(v);
       if (prior && (prior.page || prior.bbox || prior.method) && changed) {
@@ -1025,6 +1040,20 @@ export default function ArticleWorkspace({
                 placeholder="e.g. SD imputed from SE; median/IQR converted via Wan 2014; adjusted for age & sex…" style={{ ...inp, height: 48, resize: 'vertical', fontSize: 12 }} />
             </div>
           </FormSection>
+
+          {/* 116.md §35/§40 — the PROJECT extraction field library. Configured once for the
+              review, rendered on EVERY article, values written through the same
+              setField → writeStudy → applyExtractionWrite path as every other value (so
+              autosave, provenance and 108.md undo need no new plumbing). The section is
+              always mounted so the `＋ Add field` menu is reachable from any article; with
+              nothing configured it is one line of explanatory text. */}
+          <ProjectFieldsPanel
+            fields={extractionFields} study={study} studies={studies}
+            readOnly={readOnly} canEdit={editable} canConfigure={canEdit && !readOnly}
+            onSetValue={setField} onSetFields={onSetExtractionFields}
+            hasSource={(f) => hasSourceEvidence(study, f)} onJump={jumpToSource}
+            picking={method === 'click' && !readOnly} activeField={activeField}
+            onFocusField={(f) => { if (method === 'click') setActiveField(f); }} />
 
           {/* 106.md — patient-level data for THIS case (age, sex, presentation, …). Only
               shown for a case row: an ordinary study has no individual patient. */}

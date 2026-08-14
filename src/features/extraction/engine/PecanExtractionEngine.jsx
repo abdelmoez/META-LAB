@@ -33,6 +33,12 @@ import {
   applyExtractionWrite, findStudyRow, matchesExpected, isExtractionRowLocked,
   EXTRACTION_HISTORY_KIND, EXTRACTION_LOCKED_REFUSAL,
 } from '../../../research-engine/interaction/extractionHistory.js';
+// 116.md §34-§40 — project-level extraction field definitions (blob) + the derived
+// export columns. The registry is the ONE place a field is defined; this file only
+// threads it into the workspace and the case export.
+import {
+  projectExtractionFields, normalizeExtractionFields, projectFieldColumns,
+} from '../../../research-engine/extraction/fieldRegistry.js';
 import ArticleList from './ArticleList.jsx';
 import ArticleWorkspace from './ArticleWorkspace.jsx';
 import OutcomeNavigator from './OutcomeNavigator.jsx';
@@ -62,6 +68,12 @@ export default function PecanExtractionEngine({ project, updateProject, activeId
   const caseVariables = useMemo(
     () => normalizeCaseVariables(project.caseVariables),
     [project.caseVariables],
+  );
+  // 116.md §34 — the review's project-level extraction field definitions. Self-healing
+  // reader: an absent/legacy `extractionFields` resolves to [] and NOTHING is written.
+  const extractionFields = useMemo(
+    () => projectExtractionFields(project),
+    [project.extractionFields], // eslint-disable-line react-hooks/exhaustive-deps
   );
   const parked = project.extractionParked || [];
 
@@ -340,6 +352,17 @@ export default function PecanExtractionEngine({ project, updateProject, activeId
     ...p, caseVariables: normalizeCaseVariables(next),
   })), [updateProject, activeId]);
 
+  /* 116.md §39 — the ONE project-field configuration writer. Pure normalization inside
+     the updater (no ids/timestamps minted there — every registry op takes an injectable
+     idFn and the caller already resolved it), and an EMPTIED configuration deletes the
+     key so a project that adds and removes a field serialises byte-identically. */
+  const setExtractionFields = useCallback((next) => updateProject(activeId, (p) => {
+    const list = normalizeExtractionFields(next);
+    const out = { ...p };
+    if (list.length) out.extractionFields = list; else delete out.extractionFields;
+    return out;
+  }), [updateProject, activeId]);
+
   const onEnableCaseSeries = useCallback((studyId) => {
     // The updater is a React setState function: StrictMode invokes it TWICE in dev and
     // only the last result is kept. Calling Math.random() inside it would therefore mint
@@ -416,7 +439,8 @@ export default function PecanExtractionEngine({ project, updateProject, activeId
   // article identifiers (publication, DOI, PubMed ID, study row id) so a case-level
   // file can always be traced back to its parent publication.
   const exportCases = useCallback(() => {
-    const { columns, rows } = buildCaseExportRows(studies, caseVariables);
+    // 116.md §40 — the review's configured project fields ride the case-level file too.
+    const { columns, rows } = buildCaseExportRows(studies, caseVariables, { extractionFields: projectFieldColumns(project) });
     if (!rows.length) { setBanner('No individual cases to export yet — turn on Case Series Mode for an article first.'); return; }
     const esc = (v) => {
       const t = String(v == null ? '' : v).replace(/"/g, '""');
@@ -430,7 +454,7 @@ export default function PecanExtractionEngine({ project, updateProject, activeId
     // UTF-8 BOM so Excel opens it in the right encoding (same contract as the classic tab).
     downloadBlob(new Blob(['﻿' + csv], { type: 'text/csv;charset=utf-8;' }), name);
     setBanner(`Exported ${rows.length} case${rows.length === 1 ? '' : 's'} to ${name}.`);
-  }, [studies, caseVariables, project.name]);
+  }, [studies, caseVariables, project]);
 
   const orderedIds = useMemo(() => articles.map((a) => a.id), [articles]);
   const openIdx = orderedIds.indexOf(openId);
@@ -477,6 +501,7 @@ export default function PecanExtractionEngine({ project, updateProject, activeId
             projectId={activeId} study={openStudy} article={openArticleSummary} studies={studies}
             outcomes={outcomes} protocol={protocol} readOnly={readOnly} canEdit={canEdit} saveStatus={saveStatus}
             caseVariables={caseVariables} onSetCaseVariables={setCaseVariables}
+            extractionFields={extractionFields} onSetExtractionFields={setExtractionFields}
             onBack={() => setOpenId('')} onPrev={goPrev} onNext={goNext} hasPrev={openIdx > 0} hasNext={openIdx >= 0 && openIdx < orderedIds.length - 1}
             onPatchStudy={patchStudy} onAttachProvenance={attachProvenance} onWriteStudy={writeStudy}
             onAddDrafts={addDrafts} onAddParked={addParked} drafts={drafts} parked={parked}

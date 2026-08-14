@@ -16,6 +16,9 @@ import { denominatorPopulationLabel, actionStatusLabel, exportedDenominatorCusto
 // summaryPool (Overview/GRADE/report) and the journal ZIP, and must recognise the same
 // raw-data PROP rows the Analysis tab now pools (lockstep with enumerateOutcomePairs).
 import { hasUsableEffect, withPoolableViews } from '../statistics/monolithStats.js';
+// 116.md §34/§40 — the project's configured extraction fields, so the submission table
+// carries them without anyone hand-editing the column list above.
+import { projectFieldColumns } from '../extraction/fieldRegistry.js';
 
 /** Filesystem-safe slug for ZIP entry names. */
 export function safeName(s, fallback = 'item') {
@@ -108,8 +111,16 @@ function conversionSummary(s) {
   return list.map((c) => c && (c.methodLabel || c.method || c.type)).filter(Boolean).join('; ');
 }
 
-export function buildStudyTableCSV(studies, robByStudyId = {}) {
+/**
+ * buildStudyTableCSV(studies, robByStudyId, project)
+ * 116.md §34/§40 — `project` is OPTIONAL and adds the review's configured extraction
+ * field columns after the fixed ones, DERIVED from the field registry (never a second
+ * hand-maintained list). Omitting it — or a project with no configured fields — emits a
+ * byte-identical table to pre-116.
+ */
+export function buildStudyTableCSV(studies, robByStudyId = {}, project = null) {
   const list = Array.isArray(studies) ? studies : [];
+  const projCols = project ? projectFieldColumns(project) : [];
   const cols = [
     ['title', 'Title'], ['authors', 'Authors'], ['year', 'Year'], ['journal', 'Journal'],
     ['country', 'Country'], ['design', 'Study design'], ['population', 'Population'],
@@ -156,8 +167,11 @@ export function buildStudyTableCSV(studies, robByStudyId = {}) {
     conversionMethod: conversionSummary(s),
     rob: rob[s.id] || '',
   });
-  const header = cols.map(c => c[1]).join(',');
-  const rows = list.map(s => { const r = rowOf(s); return cols.map(c => csvEsc(r[c[0]])).join(','); });
+  const header = [...cols.map(c => c[1]), ...projCols.map(c => csvEsc(c.label))].join(',');
+  const rows = list.map((s) => {
+    const r = rowOf(s);
+    return [...cols.map(c => csvEsc(r[c[0]])), ...projCols.map(c => csvEsc(s[c.key]))].join(',');
+  });
   return '﻿' + [header, ...rows].join('\n');
 }
 

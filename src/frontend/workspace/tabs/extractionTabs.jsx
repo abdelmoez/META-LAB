@@ -37,6 +37,11 @@ import { C, btnS, inp, lbl, th, tagS } from "../ui/styles.js";
 import { SectionHeader, InfoBox, HelpTip } from "../ui/primitives.jsx";
 import { mkStudy } from "../projectHelpers.js";
 import { isCaseRow, caseInfoOf, caseDisplayName, caseVarKey, normalizeCaseVariables } from "../../../research-engine/extraction/caseSeries.js";
+// 116.md §34-§40 — the project-level extraction field library: definitions in the blob,
+// values FLAT on the row under the field's storage key (so this surface's existing
+// `ch` write path, autosave and undo carry them unchanged).
+import { projectExtractionFields, normalizeExtractionFields, projectFieldColumns } from "../../../research-engine/extraction/fieldRegistry.js";
+import ProjectFieldsPanel from "../../../features/extraction/engine/ProjectFieldsPanel.jsx";
 // 108.md §5/§8 — project-wide Undo/Redo for the CLASSIC extraction surface. The engine
 // (PecanExtractionEngine) registers its own executor; only one of the two is mounted at
 // a time, so the `extraction.field` kind always resolves to the surface in view.
@@ -409,7 +414,7 @@ function AddStudyModal({onClose,onAdd}){
 }
 
 /* ════════════ TAB: EXTRACTION ════════════ */
-function StudyCard({s,idx,updStudy,delStudy,dup,onClone}){
+function StudyCard({s,idx,updStudy,delStudy,dup,onClone,extractionFields=[],onSetExtractionFields,studies=[],readOnly=false}){
   const[open,setOpen]=useState(false);
   const[showMeta,setShowMeta]=useState(false);
   const[showConv,setShowConv]=useState(false);
@@ -586,6 +591,17 @@ function StudyCard({s,idx,updStudy,delStudy,dup,onClone}){
         <ESCalcInline s={s} ch={ch} chFields={chFields}/>
       </div>
 
+      {/* 116.md §35/§40 — the PROJECT extraction field library. Configured once for the
+          review (Add field → catalog / custom), rendered on EVERY study card, values
+          written through the SAME `ch` → updStudy → applyRowPatch path as every other
+          field here, so autosave and 108.md undo need no new plumbing. */}
+      <div style={{marginTop:12}}>
+        <ProjectFieldsPanel
+          fields={extractionFields} study={s} studies={studies}
+          readOnly={readOnly} canEdit={!readOnly} canConfigure={!readOnly}
+          onSetValue={(k,v)=>ch(k,v)} onSetFields={onSetExtractionFields}/>
+      </div>
+
       {/* Reliability flags */}
       <div style={{marginTop:12}}>
         <label style={lbl}>Reliability Flags <HelpTip text="Tag anything a co-reviewer should know. 'Do not pool unless confirmed' blocks the value from analysis until resolved."/></label>
@@ -716,8 +732,18 @@ export function buildExtractionCSV(studies=[],project={}){
     if(c==="caseLabel") return info?caseDisplayName(s):"";
     return s[c]==null?"":s[c];
   };
-  const header=[...cols,...caseHeaders.map(esc)].join(",");   // labels are user text — escape them
-  const rows=list.map(s=>[...cols.map(c=>esc(cell(s,c))),...caseCols.map(c=>esc(caseCell(s,c)))].join(","));
+  // 116.md §34/§40 — the PROJECT EXTRACTION FIELD columns, DERIVED from the registry
+  // rather than hand-appended here. A review that enables "Mean age" gets the column in
+  // the extraction dump automatically, and a review that configured none exports
+  // byte-identically to pre-116 (projectFieldColumns returns []). Archived/hidden fields
+  // are excluded, exactly as they are on the form.
+  const projCols=projectFieldColumns(project||{});
+  const header=[...cols,...caseHeaders.map(esc),...projCols.map(c=>esc(c.label))].join(",");   // labels are user text — escape them
+  const rows=list.map(s=>[
+    ...cols.map(c=>esc(cell(s,c))),
+    ...caseCols.map(c=>esc(caseCell(s,c))),
+    ...projCols.map(c=>esc(s[c.key])),
+  ].join(","));
   return [header,...rows].join("\n");
 }
 
@@ -734,6 +760,16 @@ function ClassicExtractionTab({project,updateProject,activeId,setTab}){
   const[extractionAssistOn,setExtractionAssistOn]=useState(false);
   const[showStructured,setShowStructured]=useState(false);   // advanced dual-review workspace (flag-gated)
   useEffect(()=>{let dead=false;extractionAssistFlagEnabled().then(on=>{if(!dead)setExtractionAssistOn(on);});return()=>{dead=true;};},[]);
+  // 116.md §34/§39 — the project's extraction field definitions (self-healing read: an
+  // absent/legacy key resolves to [] and nothing is written at load) + the ONE writer.
+  // An emptied configuration DELETES the key so the blob stays byte-identical.
+  const extractionFields=useMemo(()=>projectExtractionFields(project),[project.extractionFields]); // eslint-disable-line react-hooks/exhaustive-deps
+  const setExtractionFields=(next)=>updateProject(activeId,p=>{
+    const list=normalizeExtractionFields(next);
+    const out={...p};
+    if(list.length) out.extractionFields=list; else delete out.extractionFields;
+    return out;
+  });
   const addStudy=()=>updateProject(activeId,p=>({...p,studies:[...p.studies,mkStudy()]}));
   const addStudyObj=(st)=>updateProject(activeId,p=>({...p,studies:[...p.studies,st]}));
   /* ── 108.md §5/§12 — history recording rides the ONE classic write choke point ──
@@ -1341,7 +1377,8 @@ ${paperText.slice(0,15000)}`;
               </div>
             )}
             <div style={{flex:1}}>
-              <StudyCard s={s} idx={studies.indexOf(s)} updStudy={updStudy} delStudy={delStudy} dup={dup[s.id]} onClone={cloneForOutcome}/>
+              <StudyCard s={s} idx={studies.indexOf(s)} updStudy={updStudy} delStudy={delStudy} dup={dup[s.id]} onClone={cloneForOutcome}
+                extractionFields={extractionFields} onSetExtractionFields={setExtractionFields} studies={studies} readOnly={readOnly}/>
             </div>
           </div>
         ))}

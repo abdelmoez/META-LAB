@@ -11,6 +11,10 @@
  */
 
 import { fnv1a } from './diff.js';
+// 116.md §34/§40 — the project extraction field library. `STUDY_VALUE_FIELDS` is a
+// hand-maintained allow-list and a new field must never be silently dropped from the
+// ledger, so the `xf_*` values are collected DYNAMICALLY from the row instead.
+import { projectFieldValuesOf } from '../extraction/fieldRegistry.js';
 
 const obj = (v) => (v && typeof v === 'object' && !Array.isArray(v) ? v : {});
 const arr = (v) => (Array.isArray(v) ? v : []);
@@ -28,11 +32,17 @@ export const STUDY_VALUE_FIELDS = [
   'denominatorPopulation', 'denominatorCustom', 'actionStatus',
 ];
 
-/** Extract the value-bearing slice of one study row (for EXTRACTED_VALUE_CHANGED). */
+/** Extract the value-bearing slice of one study row (for EXTRACTED_VALUE_CHANGED).
+ *  116.md §40 — plus every PROJECT EXTRACTION FIELD value the row carries (`xf_*`),
+ *  derived from the row rather than from a literal, so enabling "Mean age" for a review
+ *  makes its edits auditable without anyone remembering to extend the list above. Keys
+ *  are only present when non-empty, so a project with no configured fields fingerprints
+ *  byte-identically to pre-116. */
 export function studyValues(study) {
   const s = obj(study);
   const out = {};
   for (const f of STUDY_VALUE_FIELDS) if (s[f] !== undefined) out[f] = s[f];
+  Object.assign(out, projectFieldValuesOf(s));
   return out;
 }
 

@@ -862,7 +862,8 @@ export default function MetaLab({ initialProjectId = null, initialTab = null, on
       }
     }catch(_){ /* RoB unavailable / not owner / flag off — leave the column blank */ }
     try{
-      entries.push({name:"study-table.csv",text:jsStudyTableCSV(studies,robByStudy)});
+      // 116.md §40 — the project's configured extraction fields ride the submission table.
+      entries.push({name:"study-table.csv",text:jsStudyTableCSV(studies,robByStudy,project)});
       files.push({name:"study-table.csv",note:"Included-studies characteristics table"});
       if(!studies.length) warnings.push("No studies in the project — the study table is empty.");
     }catch(_){ warnings.push("Study table could not be generated."); }

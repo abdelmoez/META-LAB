@@ -63,6 +63,14 @@ import {
 import {
   denominatorPopulationLabel, actionStatusLabel, exportedDenominatorCustom,
 } from "../../../research-engine/extraction/proportionMeta.js";
+// 116.md §52/§53 — the Individual Study Contributions "Columns" menu is driven by the
+// SAME registry the extraction field library uses. There is no second catalog here: the
+// options are the project's configured extraction fields plus the catalog entries that
+// alias a built-in row key (listContributionFields is the ONE seam).
+import {
+  listContributionFields, contributionFieldsByCategory, resolveContributionColumns,
+  contributionCellText, MISSING_VALUE_TEXT, NOT_EXTRACTED_LABEL,
+} from "../../../research-engine/extraction/fieldRegistry.js";
 
 /* ════════════ SHARED: OUTCOME-PAIR SCOPING ════════════
    The (outcome|||timepoint) enumeration + its row filter, hoisted out of AnalysisTab
@@ -141,6 +149,21 @@ export function pairFigureLabels(project,pair){
   return (pair&&m&&m[pair.key])||EMPTY_FIGURE_LABELS;
 }
 const EMPTY_FIGURE_LABELS=Object.freeze({});
+const EMPTY_COLUMNS=Object.freeze([]);
+/** 116.md §54 — the OPTIONAL contributions columns chosen for one outcome pair
+ *  (analysisSettings.contributionColumns[pairKey] = ['country','xf_ab12cd34']). Scope is
+ *  PER PAIR deliberately: two outcomes of one review routinely need different context
+ *  (a proportion pair wants Denominator population; a continuous pair wants Mean age).
+ *  Absent ⇒ `[]` ⇒ the default table, unchanged. Ids are STORAGE KEYS, never labels. */
+export function outcomeContributionColumns(project,outcomeKey){
+  const m=project&&project.analysisSettings&&project.analysisSettings.contributionColumns;
+  const v=outcomeKey&&m&&m[outcomeKey];
+  return Array.isArray(v)?v:EMPTY_COLUMNS;
+}
+/** The same read, addressed by an outcome PAIR (the shape every tab already holds). */
+export function pairContributionColumns(project,pair){
+  return outcomeContributionColumns(project,pair&&pair.key);
+}
 /** 116.md §124 — the persisted synthesis model. ABSENT ⇒ 'random' (byte-compat: a
  *  project that never touched the toggle keeps a blob without the key). */
 export function projectModel(project){
@@ -302,6 +325,25 @@ export function writeFigureLabels(project,outcomeKey,patch){
 }
 
 /**
+ * 116.md §54/§55 — write (or clear) the optional contributions columns of one outcome
+ * pair. Same discipline as writeFigureLabels: pure, no ids/timestamps minted inside, and
+ * an emptied selection/entry/container is DELETED, so "Restore defaults" leaves a
+ * project that never customised the table byte-identical to a pre-116 blob.
+ */
+export function writeContributionColumns(project,outcomeKey,list){
+  const as={...((project&&project.analysisSettings)||{})};
+  const cc={...(as.contributionColumns||{})};
+  const next=(Array.isArray(list)?list:[]).map(v=>String(v==null?"":v).trim()).filter(Boolean);
+  const seen=new Set(); const clean=[];
+  for(const id of next){ if(!seen.has(id)){ seen.add(id); clean.push(id); } }
+  if(clean.length) cc[outcomeKey]=clean; else delete cc[outcomeKey];
+  if(Object.keys(cc).length) as.contributionColumns=cc; else delete as.contributionColumns;
+  const out={...project};
+  if(Object.keys(as).length) out.analysisSettings=as; else delete out.analysisSettings;
+  return out;
+}
+
+/**
  * 116.md §124 — persist the synthesis model so AnalysisTab, ForestTab, the
  * exports and the manuscript stop disagreeing. 'random' is stored as ABSENCE:
  * every reader already defaults to random, so a project that never picks 'fixed'
@@ -348,6 +390,8 @@ export const ANALYSIS_CONFIG_TARGETS=Object.freeze({
   // 116.md §26/§124 — two more undoable configuration writes on the same rails.
   FIGURE_LABELS:"figureLabels",
   MODEL:"model",
+  // 116.md §54/§55 — the per-pair optional contributions columns, same rails again.
+  CONTRIB_COLUMNS:"contributionColumns",
 });
 
 /** Write (or delete) analysisSettings.tau2Method, dropping an emptied container. */
@@ -385,6 +429,11 @@ export function readAnalysisConfig(project,op){
     return v==null||v===""?null:v;
   }
   if(t===ANALYSIS_CONFIG_TARGETS.MODEL) return as.model==="fixed"?"fixed":null;
+  // 116.md §54 — the whole ordered id list for one pair ('' / missing ⇒ null = defaults).
+  if(t===ANALYSIS_CONFIG_TARGETS.CONTRIB_COLUMNS){
+    const v=(as.contributionColumns||{})[op.outcomeKey];
+    return Array.isArray(v)&&v.length?v:null;
+  }
   return null;
 }
 
@@ -403,6 +452,7 @@ export function applyAnalysisConfig(project,op){
   if(t===ANALYSIS_CONFIG_TARGETS.PROP_OVERRIDE) return writeProportionOverride(project,op.outcomeKey,op.record||null);
   if(t===ANALYSIS_CONFIG_TARGETS.FIGURE_LABELS) return writeFigureLabels(project,op.outcomeKey,{[op.field]:op.value});
   if(t===ANALYSIS_CONFIG_TARGETS.MODEL) return writeAnalysisModel(project,op.value);
+  if(t===ANALYSIS_CONFIG_TARGETS.CONTRIB_COLUMNS) return writeContributionColumns(project,op.outcomeKey,op.value||[]);
   return project;
 }
 
@@ -433,6 +483,7 @@ export function analysisConfigLabel(op){
   if(t===ANALYSIS_CONFIG_TARGETS.PROP_OVERRIDE) return "Compatibility override change";
   if(t===ANALYSIS_CONFIG_TARGETS.FIGURE_LABELS) return FIGURE_LABEL_FIELDS[op.field]?`${FIGURE_LABEL_FIELDS[op.field]} change`:"Figure label change";
   if(t===ANALYSIS_CONFIG_TARGETS.MODEL) return "Synthesis model change";
+  if(t===ANALYSIS_CONFIG_TARGETS.CONTRIB_COLUMNS) return "Contributions columns change";
   return "Analysis setting change";
 }
 
@@ -524,7 +575,16 @@ export function useAnalysisConfigOps(project,updateProject,opts={}){
     const v=value==null||String(value).trim()===""?null:String(value).trim();
     return setConfigValue({target:ANALYSIS_CONFIG_TARGETS.FIGURE_LABELS,outcomeKey,field},v);
   },[setConfigValue]);
-  return {history,projectRef,recordConfig,setConfigValue,setAnalysisPrecision,setAnalysisModel,setFigureLabel,renameProjectOutcome};
+  /* 116.md §54/§55 — show / hide / reorder / restore-defaults for one pair's optional
+     contributions columns. ONE op per user action: the whole ordered list is the value,
+     so a reorder is a single undo step rather than N add/remove pairs. An empty list is
+     stored as ABSENCE (= the default table), which is what "Restore defaults" writes. */
+  const setContributionColumns=useCallback((outcomeKey,list)=>{
+    if(!outcomeKey) return false;
+    const next=(Array.isArray(list)?list:[]).map(v=>String(v==null?"":v).trim()).filter(Boolean);
+    return setConfigValue({target:ANALYSIS_CONFIG_TARGETS.CONTRIB_COLUMNS,outcomeKey},next.length?next:null);
+  },[setConfigValue]);
+  return {history,projectRef,recordConfig,setConfigValue,setAnalysisPrecision,setAnalysisModel,setFigureLabel,setContributionColumns,renameProjectOutcome};
 }
 
 /** 116.md §29/§30 — the decimal-precision control. ONE component, rendered on every
@@ -572,6 +632,155 @@ export function InlineLabelEdit({label,value,placeholder,onCommit,width=190,hint
       </button>
     )}
     {!editing&&value&&<button onClick={()=>onCommit&&onCommit("")} title="Reset to the automatic label" style={{...btnS("ghost"),fontSize:10,padding:"2px 6px"}}>reset</button>}
+  </div>);
+}
+
+/* ── 116.md §52-§56 — the configurable Individual Study Contributions table ─────
+   §54 is emphatic that the DEFAULT table stays exactly as it is; everything below is
+   opt-in. The optional columns come from ONE seam — `listContributionFields(project)`
+   in the extraction field registry — so the menu can never drift from what Extraction
+   actually records, and there is no second hard-coded catalog anywhere in this file. */
+
+/** The default columns, in order. Exported so a test can pin that §54 is honoured. */
+export const CONTRIBUTION_DEFAULT_COLUMNS=Object.freeze(
+  ["Study","n","Effect Size","95% CI Lo","95% CI Hi","Weight %","z","p"]);
+export const CONTRIBUTIONS_TITLE="INDIVIDUAL STUDY CONTRIBUTIONS";
+export const CONTRIBUTIONS_COLUMNS_LABEL="Columns";
+/** §Part XIX — a selected column whose field was archived/removed is reported, not crashed on. */
+export function unavailableColumnsNote(n){
+  return `${n} selected column${n===1?"":"s"} ${n===1?"is":"are"} no longer in this project's extraction schema and ${n===1?"is":"are"} not shown. Un-archive the field to bring ${n===1?"it":"them"} back.`;
+}
+
+/**
+ * ContributionColumnsControl — the §52 `Columns` / `Add variable` menu.
+ * Show / hide (checkbox per field, grouped by the §36 categories), reorder (▲▼ on the
+ * chosen list) and restore defaults (§55). Deliberately NOT an Excel clone: no widths,
+ * no sorting, no formulas — the purpose is analytical context.
+ * `onChange(nextIdList)` is the ONE write; it rides the persisted-config + undo rails.
+ */
+export function ContributionColumnsControl({project,selected,onChange,open:openProp=false}){
+  const[open,setOpen]=useState(!!openProp);
+  const groups=useMemo(()=>contributionFieldsByCategory(project),[project]);
+  const byId=useMemo(()=>new Map(listContributionFields(project).map(f=>[f.id,f])),[project]);
+  const chosen=Array.isArray(selected)?selected:[];
+  if(typeof onChange!=="function") return null;
+  const toggle=(id)=>onChange(chosen.includes(id)?chosen.filter(x=>x!==id):[...chosen,id]);
+  const move=(id,dir)=>{
+    const i=chosen.indexOf(id); if(i<0) return;
+    const j=i+(dir<0?-1:1); if(j<0||j>=chosen.length) return;
+    const next=chosen.slice(); [next[i],next[j]]=[next[j],next[i]]; onChange(next);
+  };
+  return(<div data-testid="contrib-columns" style={{position:"relative"}}>
+    <button data-testid="contrib-columns-toggle" onClick={()=>setOpen(o=>!o)}
+      title="Add project extraction fields as extra columns in this table"
+      style={{...btnS(open?"primary":"ghost"),fontSize:11,padding:"3px 10px"}}>
+      ⊞ {CONTRIBUTIONS_COLUMNS_LABEL}{chosen.length?` (${chosen.length})`:""}
+    </button>
+    {open&&(<div data-testid="contrib-columns-menu" style={{marginTop:8,border:`1px solid ${themeAlpha(C.acc,'55')}`,background:C.bg,borderRadius:8,padding:12,maxHeight:340,overflowY:"auto"}}>
+      <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:8,flexWrap:"wrap"}}>
+        <strong style={{fontSize:11.5,color:C.txt}}>Extra columns for this outcome</strong>
+        <span style={{fontSize:11,color:C.muted}}>from the project's extraction fields</span>
+        <div style={{flex:1}}/>
+        <button data-testid="contrib-columns-reset" onClick={()=>onChange([])} disabled={!chosen.length}
+          style={{...btnS("ghost"),fontSize:11}}>Restore defaults</button>
+      </div>
+      {chosen.length>0&&(<div style={{marginBottom:10}}>
+        <div style={{fontSize:10,fontWeight:700,letterSpacing:0.3,color:C.dim,marginBottom:5}}>SHOWN, IN ORDER</div>
+        {chosen.map((id,i)=>{
+          const f=byId.get(id);
+          return(<div key={id} style={{display:"flex",alignItems:"center",gap:6,fontSize:11.5,color:f?C.txt:C.dim,marginBottom:3}}>
+            <span style={{flex:1}}>{f?f.label:`${id} (unavailable)`}</span>
+            <button onClick={()=>move(id,-1)} disabled={i===0} title="Move left" style={{...btnS("ghost"),fontSize:10,padding:"1px 6px"}}>▲</button>
+            <button onClick={()=>move(id,1)} disabled={i===chosen.length-1} title="Move right" style={{...btnS("ghost"),fontSize:10,padding:"1px 6px"}}>▼</button>
+            <button onClick={()=>toggle(id)} title="Remove this column" style={{...btnS("ghost"),fontSize:10,padding:"1px 6px",color:C.red}}>✕</button>
+          </div>);
+        })}
+      </div>)}
+      {groups.length===0&&<div style={{fontSize:11.5,color:C.muted}}>This project has no extra extraction fields yet — add them in Data Extraction.</div>}
+      {groups.map(g=>(
+        <div key={g.id} style={{marginBottom:8}}>
+          <div style={{fontSize:10,fontWeight:700,letterSpacing:0.3,color:C.dim,textTransform:"uppercase",marginBottom:4}}>{g.label}</div>
+          <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
+            {g.fields.map(f=>{
+              const on=chosen.includes(f.id);
+              return(<button key={f.id} data-testid={`contrib-col-${f.id}`} onClick={()=>toggle(f.id)}
+                style={{...btnS("ghost"),fontSize:11,padding:"3px 9px",borderColor:on?themeAlpha(C.grn,'66'):C.brd,color:on?C.grn:C.txt2}}>
+                {on?"✓ ":"＋ "}{f.label}
+              </button>);
+            })}
+          </div>
+        </div>
+      ))}
+    </div>)}
+  </div>);
+}
+
+/**
+ * IndividualContributions — the §52-§56 table. The eight default columns are rendered
+ * exactly as before; optional columns are inserted directly after `Study` so the
+ * numeric block stays contiguous, and every missing value prints the intentional §56
+ * state (`—`, titled "Not extracted") — never `undefined`, `null` or an empty cell.
+ * Pure presentation + exported so SSR can pin it without a click.
+ */
+export function IndividualContributions({result,project,outcomeKey,prec,method,onSetColumns}){
+  const selected=useMemo(()=>outcomeContributionColumns(project,outcomeKey),[project,outcomeKey]);
+  const{columns,unavailable}=useMemo(()=>resolveContributionColumns(project,selected),[project,selected]);
+  if(!result) return null;
+  const canEdit=typeof onSetColumns==="function"&&!!outcomeKey;
+  return(<div style={{background:C.card,border:`1px solid ${C.brd}`,borderRadius:8,padding:16,overflowX:"auto"}}>
+    <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:14,flexWrap:"wrap"}}>
+      <div style={{fontSize:10,fontWeight:700,color:C.muted,letterSpacing:1}}>{CONTRIBUTIONS_TITLE}</div>
+      <div style={{flex:1}}/>
+      {canEdit&&<ContributionColumnsControl project={project} selected={selected} onChange={(next)=>onSetColumns(next)}/>}
+    </div>
+    {unavailable.length>0&&(
+      <div data-testid="contrib-unavailable" style={{fontSize:11,color:C.yel,marginBottom:10,lineHeight:1.5}}>
+        ⚠ {unavailableColumnsNote(unavailable.length)}
+      </div>
+    )}
+    <table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}>
+      <thead><tr>
+        <th style={{...th,textAlign:"left"}}>Study</th>
+        {columns.map(f=><th key={f.id} data-testid={`contrib-th-${f.id}`} style={{...th,textAlign:"left"}}>{f.label}</th>)}
+        {CONTRIBUTION_DEFAULT_COLUMNS.slice(1).map(h=><th key={h} style={{...th,textAlign:"right"}}>{h}</th>)}
+      </tr></thead>
+      <tbody>{result.studies.map(s=>{
+        const z2=s._es/s._se,pv=2*(1-normalCDF(Math.abs(z2)));
+        return(<tr key={s.id} style={{borderBottom:`1px solid ${C.brd}`}}>
+          <td style={{padding:"6px 10px",fontWeight:500}}>{s.author||"Study"}{s.year?` ${s.year}`:""}</td>
+          {columns.map(f=>{
+            const text=contributionCellText(f,s);
+            const missing=text===MISSING_VALUE_TEXT;
+            return(<td key={f.id} title={missing?NOT_EXTRACTED_LABEL:undefined}
+              style={{padding:"6px 10px",color:missing?C.dim:C.txt2}}>{text}</td>);
+          })}
+          <td style={{padding:"6px 10px",textAlign:"right",color:C.muted}}>{s.n||MISSING_VALUE_TEXT}</td>
+          <td style={{padding:"6px 10px",textAlign:"right",fontFamily:"'IBM Plex Mono',monospace",fontWeight:700}}>{fmtES(s._es,prec)}</td>
+          <td style={{padding:"6px 10px",textAlign:"right",fontFamily:"'IBM Plex Mono',monospace",color:C.muted}}>{fmtES(s._lo,prec)}</td>
+          <td style={{padding:"6px 10px",textAlign:"right",fontFamily:"'IBM Plex Mono',monospace",color:C.muted}}>{fmtES(s._hi,prec)}</td>
+          <td style={{padding:"6px 10px",textAlign:"right",fontFamily:"'IBM Plex Mono',monospace"}}>
+            <div style={{display:"flex",alignItems:"center",justifyContent:"flex-end",gap:6}}>
+              <div style={{width:40,height:4,background:C.brd,borderRadius:2,overflow:"hidden"}}>
+                <div style={{width:`${s._pct||0}%`,height:"100%",background:C.acc,borderRadius:2}}/>
+              </div>{fmtWeight(s._pct||0,prec)}%
+            </div>
+          </td>
+          <td style={{padding:"6px 10px",textAlign:"right",fontFamily:"'IBM Plex Mono',monospace",color:C.muted}}>{fmtNum(z2,prec)}</td>
+          <td style={{padding:"6px 10px",textAlign:"right",color:pv<0.05?C.grn:C.muted}}>{fmtP(pv,prec)}</td>
+        </tr>);
+      })}
+      <tr style={{borderTop:`2px solid ${themeAlpha(C.grn,'55')}`}}>
+        <td style={{padding:"8px 10px",color:C.grn,fontWeight:700}}>Pooled ({method==="random"?"RE":"FE"})</td>
+        {columns.map(f=><td key={f.id} style={{padding:"8px 10px",color:C.grn}}>{MISSING_VALUE_TEXT}</td>)}
+        <td style={{padding:"8px 10px",textAlign:"right",color:C.grn}}>{MISSING_VALUE_TEXT}</td>
+        <td style={{padding:"8px 10px",textAlign:"right",fontFamily:"'IBM Plex Mono',monospace",fontWeight:800,color:C.grn}}>{fmtES(result.pES,prec)}</td>
+        <td style={{padding:"8px 10px",textAlign:"right",fontFamily:"'IBM Plex Mono',monospace",color:C.grn}}>{fmtES(result.lo95,prec)}</td>
+        <td style={{padding:"8px 10px",textAlign:"right",fontFamily:"'IBM Plex Mono',monospace",color:C.grn}}>{fmtES(result.hi95,prec)}</td>
+        <td style={{padding:"8px 10px",textAlign:"right",color:C.grn}}>100%</td>
+        <td style={{padding:"8px 10px",textAlign:"right",fontFamily:"'IBM Plex Mono',monospace",color:C.grn}}>{fmtNum(result.z,prec)}</td>
+        <td style={{padding:"8px 10px",textAlign:"right",color:result.pval<0.05?C.grn:C.red,fontWeight:700}}>{fmtP(result.pval,prec)}</td>
+      </tr></tbody>
+    </table>
   </div>);
 }
 
@@ -866,7 +1075,7 @@ export function AnalysisTab({project,updateProject,onApplyPrecisionToAll,current
     // the control showing the post-action estimator.
     if(op.target===ANALYSIS_CONFIG_TARGETS.TAU2&&typeof op.localTau2==="string") setLocalTau2(op.localTau2);
   }});
-  const{projectRef,recordConfig,setAnalysisPrecision,setAnalysisModel}=cfg;
+  const{projectRef,recordConfig,setAnalysisPrecision,setAnalysisModel,setContributionColumns}=cfg;
   const setMethod=(m)=>{ setAnalysisModel(m); };
 
   const setTau2Method=(v)=>{
@@ -1315,44 +1524,12 @@ export function AnalysisTab({project,updateProject,onApplyPrecisionToAll,current
         </div>)}
       </div>
 
-      {/* INDIVIDUAL STUDY CONTRIBUTIONS */}
-      <div style={{background:C.card,border:`1px solid ${C.brd}`,borderRadius:8,padding:16,overflowX:"auto"}}>
-        <div style={{fontSize:10,fontWeight:700,color:C.muted,letterSpacing:1,marginBottom:14}}>INDIVIDUAL STUDY CONTRIBUTIONS</div>
-        <table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}>
-          <thead><tr>{["Study","n","Effect Size","95% CI Lo","95% CI Hi","Weight %","z","p"].map((h,i)=>(
-            <th key={h} style={{...th,textAlign:i===0?"left":"right"}}>{h}</th>
-          ))}</tr></thead>
-          <tbody>{result.studies.map(s=>{
-            const z2=s._es/s._se,pv=2*(1-normalCDF(Math.abs(z2)));
-            return(<tr key={s.id} style={{borderBottom:`1px solid ${C.brd}`}}>
-              <td style={{padding:"6px 10px",fontWeight:500}}>{s.author||"Study"}{s.year?` ${s.year}`:""}</td>
-              <td style={{padding:"6px 10px",textAlign:"right",color:C.muted}}>{s.n||"—"}</td>
-              <td style={{padding:"6px 10px",textAlign:"right",fontFamily:"'IBM Plex Mono',monospace",fontWeight:700}}>{fmtES(s._es,prec)}</td>
-              <td style={{padding:"6px 10px",textAlign:"right",fontFamily:"'IBM Plex Mono',monospace",color:C.muted}}>{fmtES(s._lo,prec)}</td>
-              <td style={{padding:"6px 10px",textAlign:"right",fontFamily:"'IBM Plex Mono',monospace",color:C.muted}}>{fmtES(s._hi,prec)}</td>
-              <td style={{padding:"6px 10px",textAlign:"right",fontFamily:"'IBM Plex Mono',monospace"}}>
-                <div style={{display:"flex",alignItems:"center",justifyContent:"flex-end",gap:6}}>
-                  <div style={{width:40,height:4,background:C.brd,borderRadius:2,overflow:"hidden"}}>
-                    <div style={{width:`${s._pct||0}%`,height:"100%",background:C.acc,borderRadius:2}}/>
-                  </div>{fmtWeight(s._pct||0,prec)}%
-                </div>
-              </td>
-              <td style={{padding:"6px 10px",textAlign:"right",fontFamily:"'IBM Plex Mono',monospace",color:C.muted}}>{fmtNum(z2,prec)}</td>
-              <td style={{padding:"6px 10px",textAlign:"right",color:pv<0.05?C.grn:C.muted}}>{fmtP(pv,prec)}</td>
-            </tr>);
-          })}
-          <tr style={{borderTop:`2px solid ${themeAlpha(C.grn,'55')}`}}>
-            <td style={{padding:"8px 10px",color:C.grn,fontWeight:700}}>Pooled ({method==="random"?"RE":"FE"})</td>
-            <td style={{padding:"8px 10px",textAlign:"right",color:C.grn}}>—</td>
-            <td style={{padding:"8px 10px",textAlign:"right",fontFamily:"'IBM Plex Mono',monospace",fontWeight:800,color:C.grn}}>{fmtES(result.pES,prec)}</td>
-            <td style={{padding:"8px 10px",textAlign:"right",fontFamily:"'IBM Plex Mono',monospace",color:C.grn}}>{fmtES(result.lo95,prec)}</td>
-            <td style={{padding:"8px 10px",textAlign:"right",fontFamily:"'IBM Plex Mono',monospace",color:C.grn}}>{fmtES(result.hi95,prec)}</td>
-            <td style={{padding:"8px 10px",textAlign:"right",color:C.grn}}>100%</td>
-            <td style={{padding:"8px 10px",textAlign:"right",fontFamily:"'IBM Plex Mono',monospace",color:C.grn}}>{fmtNum(result.z,prec)}</td>
-            <td style={{padding:"8px 10px",textAlign:"right",color:result.pval<0.05?C.grn:C.red,fontWeight:700}}>{fmtP(result.pval,prec)}</td>
-          </tr></tbody>
-        </table>
-      </div>
+      {/* INDIVIDUAL STUDY CONTRIBUTIONS — 116.md §52-§56. The eight default columns are
+          unchanged (§54); the `Columns` control adds project extraction fields from the
+          SAME registry Extraction uses, persisted per outcome pair. */}
+      <IndividualContributions result={result} project={project} outcomeKey={outcomeKey}
+        prec={prec} method={method}
+        onSetColumns={updateProject?(next)=>setContributionColumns(outcomeKey,next):undefined}/>
 
       {/* DATA BEHIND THIS ANALYSIS */}
       <DataBehindAnalysis result={result} studies={filteredStudies} esType={esType} prec={prec}/>

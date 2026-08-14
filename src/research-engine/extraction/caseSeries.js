@@ -841,6 +841,11 @@ export function caseObservations(studies = [], opts = {}) {
  */
 export function buildCaseExportRows(studies = [], caseVariables = [], opts = {}) {
   const vars = normalizeCaseVariables(caseVariables);
+  // 116.md §34/§40 — the review's PROJECT EXTRACTION FIELDS travel with the case-level
+  // export too. Passed in as `opts.extractionFields` (projectFieldColumns output) rather
+  // than read from a project here, so this module stays dependency-light; omitted ⇒ [] ⇒
+  // byte-identical to pre-116.
+  const projCols = Array.isArray(opts.extractionFields) ? opts.extractionFields.filter((c) => c && c.key) : [];
   const columns = [
     { key: 'publication', label: 'Publication' },
     { key: 'author', label: 'Author' },
@@ -865,6 +870,7 @@ export function buildCaseExportRows(studies = [], caseVariables = [], opts = {})
     { key: 'es', label: 'Effect size' },
     { key: 'lo', label: 'CI lower' },
     { key: 'hi', label: 'CI upper' },
+    ...projCols.map((c) => ({ key: c.key, label: c.label })),
     { key: 'notes', label: 'Notes' },
   ];
   const rows = caseObservations(studies, opts).map((obs) => {
@@ -887,6 +893,8 @@ export function buildCaseExportRows(studies = [], caseVariables = [], opts = {})
       notes: s(st.notes),
     };
     for (const v of vars) { const k = caseVarKey(v.id); row[k] = s(st[k]); }
+    // 116.md §40 — project field values, keyed by their storage key (never by label).
+    for (const c of projCols) { if (row[c.key] === undefined) row[c.key] = s(st[c.key]); }
     return row;
   });
   return { columns, rows };

@@ -133,7 +133,8 @@ export async function buildReproPackage(project, draft, opts = {}) {
   entries.push({ name: 'prisma/prisma_s_checklist.csv', text: prismaSChecklistCsv(project) });
 
   // Datasets
-  entries.push({ name: 'data/included_studies.csv', text: buildStudyTableCSV(project.studies || []) });
+  // 116.md §40 — pass the project so its configured extraction fields ride along.
+  entries.push({ name: 'data/included_studies.csv', text: buildStudyTableCSV(project.studies || [], {}, project) });
   entries.push({ name: 'data/extraction_data.csv', text: tableCsv(studyTbl) });
   entries.push({ name: 'data/analysis_dataset.csv', text: analysisDatasetCsv(project) });
   entries.push({ name: 'data/risk_of_bias.csv', text: tableCsv(robTbl) });
