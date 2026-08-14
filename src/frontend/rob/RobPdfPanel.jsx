@@ -16,12 +16,47 @@
  * Data Extraction) have no screening record to attach to, so a clean empty state
  * is shown instead — no duplicate, study-keyed attachment table is created.
  */
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { C, FONT, MONO, alpha } from '../theme/tokens.js';
 import Icon from '../components/icons.jsx';
 import PdfViewer from '../screening/components/PdfViewer.jsx';
 import AppPdfViewer from '../components/AppPdfViewer.jsx';
+// 116.md §71-104 — the screening-linked branch inherits annotations from the shared
+// <PdfViewer>; this file only has to wire the STUDY-DOCUMENT branch (a manually-added
+// study with no screening record), which renders a bare AppPdfViewer.
+import { usePdfAnnotations } from '../components/usePdfAnnotations.js';
+import { ANNOTATION_SCOPE } from '../components/pdfAnnotationApi.js';
 
-export default function RobPdfPanel({ loading, error, screenProjectId, recordId, studyDocUrl, canManage, onRetry, previewHeight }) {
+export default function RobPdfPanel({
+  loading, error, screenProjectId, recordId, studyDocUrl, canManage, onRetry, previewHeight,
+  // 116.md §73 — OPTIONAL. Without a hash the study-document viewer degrades silently
+  // to no annotations (§74): the PDF renders, there is just no highlight affordance.
+  studyDocHash = '', metaLabProjectId = null, studyId = null,
+}) {
+  const annTarget = useMemo(
+    () => ((studyDocHash && metaLabProjectId) ? { scope: ANNOTATION_SCOPE.METALAB, metaLabProjectId } : null),
+    [studyDocHash, metaLabProjectId],
+  );
+  const ann = usePdfAnnotations({
+    target: annTarget, docHash: studyDocHash, studyId, enabled: !!studyDocUrl,
+  });
+  const [annSelected, setAnnSelected] = useState(null);
+  useEffect(() => { setAnnSelected(null); }, [studyDocUrl]);
+  const onAnnSelect = useCallback((a) => setAnnSelected(a ? (a.id || null) : null), []);
+  const annotationProps = useMemo(() => (ann.enabled ? {
+    enabled: true,
+    byPage: ann.byPage,
+    capabilities: ann.capabilities,
+    userId: ann.userId,
+    selectedId: annSelected,
+    onSelect: onAnnSelect,
+    onCreate: ann.createHighlight,
+    onRecolor: ann.setColor,
+    onComment: ann.setComment,
+    onDelete: ann.deleteAnnotation,
+  } : null), [ann.enabled, ann.byPage, ann.capabilities, ann.userId, ann.createHighlight,
+    ann.setColor, ann.setComment, ann.deleteAnnotation, annSelected, onAnnSelect]);
+
   // The "Study PDF" label + the back affordance live in RobWorkspace's tab bar /
   // top-level header (prompt32), so this panel is header-less — a pure renderer.
   // prompt36 Task 2 — when a real PDF is shown, the embedded viewer runs in `flush`
@@ -35,7 +70,7 @@ export default function RobPdfPanel({ loading, error, screenProjectId, recordId,
       ) : studyDocUrl ? (
         // 77.md §5 — a manually-added study with a persisted study document (no screening
         // record) still shows its PDF here, read-only, via the shared viewer.
-        <AppPdfViewer key={studyDocUrl} url={studyDocUrl} flush />
+        <AppPdfViewer key={studyDocUrl} url={studyDocUrl} flush annotation={annotationProps} />
       ) : (
         <div style={{ padding: 14, flex: 1, minHeight: 0 }}>
           {loading ? (

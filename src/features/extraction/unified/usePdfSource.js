@@ -53,11 +53,33 @@ function isPdfBytes(buf) {
  * switching outcomes of the same paper neither clears nor re-resolves the PDF, so the
  * viewer keeps its page/zoom/scroll. Callers that omit it keep per-row behaviour.
  */
+/**
+ * studyDocHash(projectId, docSid, storedName, study) — 116.md §73.
+ *
+ * The blob pointer already carries `fileHash` when the row on screen is the carrier,
+ * which is the common case and costs nothing. Only a SIBLING carrier (an outcome of
+ * the same paper holding the file) needs the one small metadata request. A failure
+ * returns '' — no annotations on this document, never a guessed identity (§74).
+ */
+async function studyDocHash(projectId, docSid, storedName, study) {
+  const own = study && study.document;
+  if (own && own.storedName === storedName && own.fileHash) return own.fileHash;
+  try {
+    const res = await studyDocApi.get(projectId, docSid);
+    const doc = res && res.document;
+    return (doc && doc.storedName === storedName && doc.fileHash) ? doc.fileHash : '';
+  } catch { return ''; }
+}
+
 export function usePdfSource(study, projectId, { onDocumentPersisted, publication = null } = {}) {
   // `fileKey` identifies the exact FILE shown (attachment id / stored blob name; null
   // for a session-local upload). Stored with click-to-pick provenance so a jump can
   // detect "these coordinates were captured on a different file" (83.md §3/§5).
-  const [resolved, setResolved] = useState({ url: null, source: null, screenProjectId: null, recordId: null, fileKey: null });
+  // 116.md §73 — `docHash` is the sha256 of the bytes being displayed: the identity
+  // the annotation subsystem addresses a document by. '' means "unknown" (a
+  // session-local blob, a legacy attachment whose bytes could not be hashed), and the
+  // viewer then shows NO annotation affordance at all rather than guessing (§74).
+  const [resolved, setResolved] = useState({ url: null, source: null, screenProjectId: null, recordId: null, fileKey: null, docHash: '', docStudyId: null });
   const [resolving, setResolving] = useState(false);
   const [retrieving, setRetrieving] = useState(false);
   const [uploading, setUploading] = useState(false);
@@ -120,7 +142,7 @@ export function usePdfSource(study, projectId, { onDocumentPersisted, publicatio
     prevPubKeyRef.current = pubKey;
     if (!samePaper) {
       revokeLocal();
-      setResolved({ url: null, source: null, screenProjectId: null, recordId: null, fileKey: null });
+      setResolved({ url: null, source: null, screenProjectId: null, recordId: null, fileKey: null, docHash: '', docStudyId: null });
     }
     setError('');
     if (!studyId) return undefined;
@@ -151,21 +173,26 @@ export function usePdfSource(study, projectId, { onDocumentPersisted, publicatio
           const att = (listing && listing.attachments && listing.attachments[0]) || null;
           if (superseded()) return;
           if (att) {
-            setResolved({ url: screeningApi.pdfDownloadUrl(sp, rid, att.id), source: 'screening', screenProjectId: sp, recordId: rid, fileKey: `att:${att.id}` });
+            // 116.md §73 — listPdf now carries the content hash (lazily backfilled).
+            setResolved({ url: screeningApi.pdfDownloadUrl(sp, rid, att.id), source: 'screening', screenProjectId: sp, recordId: rid, fileKey: `att:${att.id}`, docHash: att.fileHash || '', docStudyId: null });
           } else if (docStored && docSid) {
-            setResolved({ url: studyDocApi.downloadUrl(projectId, docSid), source: 'study-doc', screenProjectId: sp, recordId: rid, fileKey: `doc:${docStored}` });
+            const h = await studyDocHash(projectId, docSid, docStored, study);
+            if (superseded()) return;
+            setResolved({ url: studyDocApi.downloadUrl(projectId, docSid), source: 'study-doc', screenProjectId: sp, recordId: rid, fileKey: `doc:${docStored}`, docHash: h, docStudyId: docSid });
           } else {
-            setResolved({ url: null, source: null, screenProjectId: sp, recordId: rid, fileKey: null });
+            setResolved({ url: null, source: null, screenProjectId: sp, recordId: rid, fileKey: null, docHash: '', docStudyId: null });
             if (listFailed) setError('Could not check for this study’s saved PDF just now — refresh before uploading so you don’t replace an existing file.');
           }
         } else if (docStored && docSid) {
           // Manual study with a persisted document — resolve it straight from the blob pointer.
-          setResolved({ url: studyDocApi.downloadUrl(projectId, docSid), source: 'study-doc', screenProjectId: null, recordId: null, fileKey: `doc:${docStored}` });
+          const h = await studyDocHash(projectId, docSid, docStored, study);
+          if (superseded()) return;
+          setResolved({ url: studyDocApi.downloadUrl(projectId, docSid), source: 'study-doc', screenProjectId: null, recordId: null, fileKey: `doc:${docStored}`, docHash: h, docStudyId: docSid });
         } else if (samePaper) {
           // Re-resolve of the same paper found nothing (e.g. the linkage was removed) —
           // clear the kept-on-screen URL now that we know it no longer applies.
           revokeLocal();
-          setResolved({ url: null, source: null, screenProjectId: null, recordId: null, fileKey: null });
+          setResolved({ url: null, source: null, screenProjectId: null, recordId: null, fileKey: null, docHash: '', docStudyId: null });
         }
       } catch (e) {
         if (!superseded()) setError(e.message || 'Could not resolve a PDF for this study.');
@@ -187,7 +214,9 @@ export function usePdfSource(study, projectId, { onDocumentPersisted, publicatio
     revokeLocal();
     const u = URL.createObjectURL(file);
     localUrlRef.current = u;
-    setResolved((prev) => ({ url: u, source: 'local', screenProjectId: prev.screenProjectId, recordId: prev.recordId, fileKey: null }));
+    // A session-local blob has no server-side identity, so no docHash — §74: the
+    // viewer shows the PDF and simply offers no annotations.
+    setResolved((prev) => ({ url: u, source: 'local', screenProjectId: prev.screenProjectId, recordId: prev.recordId, fileKey: null, docHash: '', docStudyId: null }));
     setResolving(false);
   }, [revokeLocal]);
 
@@ -370,6 +399,8 @@ export function usePdfSource(study, projectId, { onDocumentPersisted, publicatio
   return useMemo(() => ({
     url: resolved.url, source: resolved.source, fileKey: resolved.fileKey || null,
     screenProjectId: resolved.screenProjectId, recordId: resolved.recordId,
+    // 116.md §73 — the annotation address of whatever is on screen. '' ⇒ inert.
+    docHash: resolved.docHash || '', docStudyId: resolved.docStudyId || null,
     resolving, retrieving, uploading, error, canRetrieveOa, retrieveOa, canPersistUpload,
     setLocalFile, clearLocal, extractPages,
   }), [resolved, resolving, retrieving, uploading, error, canRetrieveOa, retrieveOa, canPersistUpload, setLocalFile, clearLocal, extractPages]);

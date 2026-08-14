@@ -9,7 +9,7 @@
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { randomUUID } from 'crypto';
+import { createHash, randomUUID } from 'crypto';
 import { findDoiInText } from '../../src/research-engine/screening/pdfMatching.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -19,6 +19,35 @@ export const MAX_PDF_BYTES = 25 * 1024 * 1024;
 /** True only for a real PDF (magic bytes), independent of any declared mime. */
 export function isPdfBuffer(buf) {
   return !!buf && buf.length >= 5 && buf.slice(0, 5).toString('latin1') === '%PDF-';
+}
+
+/**
+ * 116.md §73 — sha256 of the PDF bytes. THE stable document identity for
+ * annotations (and the ETag for §95 caching). Mirrors studyDocStorage.sha256 so
+ * the same bytes get the same id in BOTH stores; a file screening-attached and
+ * later uploaded as a study document therefore shares its annotations by content.
+ */
+export function sha256(buffer) {
+  return createHash('sha256').update(buffer).digest('hex');
+}
+
+/** Absolute path of a stored screening PDF. */
+export function pdfPath(projectId, storedName) {
+  return path.join(STORAGE_ROOT, projectId, storedName);
+}
+
+/**
+ * 116.md §73 — hash of an EXISTING stored PDF, read from disk. Used to backfill
+ * `ScreenPdfAttachment.fileHash` lazily for legacy rows: only the OA retrieval path
+ * ever wrote it (68.md P9), so every manually-uploaded PDF predating 116 has null.
+ * Reading ≤25 MB once per attachment (then persisted) is cheap; a missing/unreadable
+ * file returns null and the caller degrades to "no annotations on this document"
+ * rather than inventing an identity.
+ */
+export function hashStoredPdf(projectId, storedName) {
+  try {
+    return sha256(fs.readFileSync(pdfPath(projectId, storedName)));
+  } catch { return null; }
 }
 
 /** Write a PDF buffer under the project dir; returns { storedName, fileSize }. */

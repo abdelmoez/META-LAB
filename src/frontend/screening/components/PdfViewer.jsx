@@ -11,10 +11,18 @@
  *
  * Used by ScreeningTab (middle column) and SecondReviewTab.
  */
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { C, FONT, MONO, alpha } from '../ui/theme.js';
 import { screeningApi } from '../api-client/screeningApi.js';
 import AppPdfViewer from '../../components/AppPdfViewer.jsx';
+// 116.md §71-104 — collaborative annotations. Wired here (not at the three call
+// sites) because every screening surface reaches the PDF through THIS wrapper:
+// Title & Abstract, Second Review, the Conflicts tab (§69) and the RoB study panel.
+// Every prop below is optional, so no call site changes and nothing is required.
+import { usePdfAnnotations } from '../../components/usePdfAnnotations.js';
+import { ANNOTATION_SCOPE } from '../../components/pdfAnnotationApi.js';
+import { AnnotationListPanel } from '../../components/PdfAnnotationLayer.jsx';
+import { rectsBounds } from '../../components/pdfAnnotationModel.js';
 
 function fmtSize(bytes) {
   if (!bytes) return '';
@@ -37,7 +45,13 @@ export function pdfFitWidthSrc(url) {
 // nesting a second bordered card. In flush mode the viewer drops its own
 // border/radius/background and fills its parent's height, and the preview iframe
 // grows to fill the remaining space (re-fitting width when panels are resized).
-export default function PdfViewer({ pid, recordId, canManage, defaultOpen = false, previewHeight = 520, flush = false }) {
+export default function PdfViewer({
+  pid, recordId, canManage, defaultOpen = false, previewHeight = 520, flush = false,
+  // 116.md §71-104 — OPTIONAL. `annotations={false}` opts a surface out entirely; the
+  // ids are optional hints only (the server answers with the caller's own id), so no
+  // existing call site has to change and none of them did.
+  annotations = true, userId = '', userName = '',
+}) {
   const [attachment, setAttachment] = useState(null);
   const [loading, setLoading]   = useState(true);
   const [uploading, setUploading] = useState(false);
@@ -131,6 +145,59 @@ export default function PdfViewer({ pid, recordId, canManage, defaultOpen = fals
   // never remount on resize). The "Open in new tab" link stays plain.
   const previewUrl = attachment ? screeningApi.pdfDownloadUrl(pid, recordId, attachment.id) : null;
 
+  /* ── 116.md §71-104 — collaborative annotations ───────────────────────────── */
+  // §73/§74 — the DOCUMENT is identified by its content hash, which `listPdf` now
+  // returns (backfilled lazily for pre-116 uploads). A legacy attachment whose bytes
+  // could not be hashed has `fileHash: null`, and the hook then reports `enabled:false`
+  // — the documented degrade: the PDF still renders, there is simply no annotation UI
+  // and no error, because inventing an identity is what §74 forbids.
+  const docHash = (attachment && attachment.fileHash) || '';
+  const annTarget = useMemo(
+    () => (pid ? { scope: ANNOTATION_SCOPE.SCREENING, screenProjectId: pid } : null),
+    [pid],
+  );
+  const ann = usePdfAnnotations({
+    target: annTarget, docHash, recordId, userId, userName,
+    enabled: !!annotations && !!attachment && open,
+  });
+  const [annSelected, setAnnSelected] = useState(null);
+  const [annReveal, setAnnReveal] = useState(null);
+  const [clearing, setClearing] = useState(false);
+  // The selection resets with the document (a different record / a replaced file).
+  useEffect(() => { setAnnSelected(null); setAnnReveal(null); }, [docHash]);
+
+  const onAnnSelect = useCallback((a) => setAnnSelected(a ? (a.id || null) : null), []);
+  // §99 — jumping to a highlight REUSES the existing jump-to-source machinery: the
+  // union of its rectangles is already a PDF user-space region, which is exactly what
+  // `reveal` takes. One scroll implementation, two callers.
+  const onAnnJump = useCallback((a) => {
+    if (!a) return;
+    setAnnSelected(a.id || null);
+    setAnnReveal({ page: a.page, region: rectsBounds(a.rects), nonce: Date.now(), label: 'highlight' });
+  }, []);
+  const onClearAnnotations = useCallback(async (mode) => {
+    setClearing(true);
+    try { await ann.clearAnnotations(mode); } catch { /* the hook surfaces the message */ }
+    finally { setClearing(false); setAnnSelected(null); }
+  }, [ann]);
+
+  // ONE memoised prop cluster: its identity only changes when something the overlays
+  // actually render changes (§94 — a stable object means the memoised page layers keep
+  // bailing out while the reviewer scrolls, zooms or types elsewhere).
+  const annotationProps = useMemo(() => (ann.enabled ? {
+    enabled: true,
+    byPage: ann.byPage,
+    capabilities: ann.capabilities,
+    userId: ann.userId,
+    selectedId: annSelected,
+    onSelect: onAnnSelect,
+    onCreate: ann.createHighlight,
+    onRecolor: ann.setColor,
+    onComment: ann.setComment,
+    onDelete: ann.deleteAnnotation,
+  } : null), [ann.enabled, ann.byPage, ann.capabilities, ann.userId, ann.createHighlight,
+    ann.setColor, ann.setComment, ann.deleteAnnotation, annSelected, onAnnSelect]);
+
   return (
     <div style={flush
       ? { display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0, background: 'transparent' }
@@ -216,16 +283,42 @@ export default function PdfViewer({ pid, recordId, canManage, defaultOpen = fals
           fills the remaining height so the PDF area sits flush with the host's
           inner rounded border; otherwise it uses the fixed previewHeight. */}
       {attachment && open && (
-        <div style={flush
-          ? { borderTop: `1px solid ${C.brd}`, background: C.surf, flex: 1, minHeight: 0, display: 'flex' }
-          : { borderTop: `1px solid ${C.brd}`, background: C.surf }}>
-          <AppPdfViewer
-            url={previewUrl}
-            externalUrl={previewUrl}
-            flush={flush}
-            previewHeight={previewHeight}
-          />
-        </div>
+        <>
+          <div style={flush
+            ? { borderTop: `1px solid ${C.brd}`, background: C.surf, flex: 1, minHeight: 0, display: 'flex' }
+            : { borderTop: `1px solid ${C.brd}`, background: C.surf }}>
+            <AppPdfViewer
+              url={previewUrl}
+              externalUrl={previewUrl}
+              flush={flush}
+              previewHeight={previewHeight}
+              annotation={annotationProps}
+              reveal={annReveal}
+              onRevealDismiss={() => setAnnReveal(null)}
+            />
+          </div>
+          {ann.error && (
+            <div role="status" style={{ padding: '6px 14px', fontSize: 11.5, color: C.red, display: 'flex', alignItems: 'center', gap: 8 }}>
+              <span>{ann.error}</span>
+              <button type="button" onClick={ann.dismissError} aria-label="Dismiss the highlight message"
+                style={{ background: 'none', border: 'none', color: C.muted, cursor: 'pointer', fontSize: 12 }}>✕</button>
+            </div>
+          )}
+          {/* §98/§99 + §85 — the document-order list, mine/all filter, jump-to, and the
+              two role-aware clear actions. Collapsed by default, so it costs nothing. */}
+          {ann.enabled && (
+            <AnnotationListPanel
+              annotations={ann.annotations}
+              userId={ann.userId}
+              selectedId={annSelected}
+              onJump={onAnnJump}
+              canClearMine={ann.capabilities.canCreate}
+              canClearAll={ann.capabilities.canModerate}
+              onClear={onClearAnnotations}
+              busy={clearing}
+            />
+          )}
+        </>
       )}
     </div>
   );

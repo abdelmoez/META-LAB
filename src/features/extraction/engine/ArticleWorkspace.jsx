@@ -26,6 +26,12 @@ import { isExactRegion } from '../../../frontend/components/pdfRevealBox.js';
 import { C, btnS, inp, lbl, tagS } from '../../../frontend/workspace/ui/styles.js';
 import { alpha as themeAlpha } from '../../../frontend/theme/tokens.js';
 import { usePdfSource } from '../unified/usePdfSource.js';
+// 116.md §71-104 — collaborative annotations on the extraction PDF. Two scopes are
+// possible here: a screening-linked paper annotates in the SCREENING scope (the same
+// rows the T&A / Conflicts / RoB viewers show — one document, one annotation set),
+// and a study-document paper annotates in the META·LAB scope.
+import { usePdfAnnotations } from '../../../frontend/components/usePdfAnnotations.js';
+import { ANNOTATION_SCOPE } from '../../../frontend/components/pdfAnnotationApi.js';
 import DraftReviewList from '../unified/DraftReviewList.jsx';
 import { snapToken } from '../../../research-engine/extraction/cellGrammar.js';
 import { findNumberTokens } from '../../../research-engine/extraction/numberTokens.js';
@@ -187,6 +193,44 @@ export default function ArticleWorkspace({
   useEffect(() => { if (activeFileId && !activeExtra) setActiveFileId(''); }, [activeFileId, activeExtra]); // file removed → main
   const effUrl = activeExtra ? studyDocApi.extraDownloadUrl(projectId, activeExtra.docStudyId, activeExtra.id) : pdf.url;
   const effFileKey = activeExtra ? `doc:${activeExtra.storedName}` : pdf.fileKey;
+
+  /* ── 116.md §71-104 — annotations on the MAIN article ─────────────────────── */
+  // Extra publication files (supplements, protocols) are addressed by storedName in
+  // the blob and carry no content hash on the wire, so they resolve to '' and simply
+  // get no annotation UI — the §74 degrade, not a guessed identity. Documented
+  // limitation; the main article is where highlighting actually happens.
+  const annDocHash = activeExtra ? '' : (pdf.docHash || '');
+  const annTarget = useMemo(() => {
+    if (!annDocHash) return null;
+    if (pdf.source === 'screening' && pdf.screenProjectId) {
+      return { scope: ANNOTATION_SCOPE.SCREENING, screenProjectId: pdf.screenProjectId };
+    }
+    if (projectId) return { scope: ANNOTATION_SCOPE.METALAB, metaLabProjectId: projectId };
+    return null;
+  }, [annDocHash, pdf.source, pdf.screenProjectId, projectId]);
+  const ann = usePdfAnnotations({
+    target: annTarget,
+    docHash: annDocHash,
+    recordId: pdf.recordId || null,
+    studyId: pdf.docStudyId || (study && study.id) || null,
+    enabled: !!effUrl,
+  });
+  const [annSelected, setAnnSelected] = useState(null);
+  useEffect(() => { setAnnSelected(null); }, [effUrl]);
+  const onAnnSelect = useCallback((a) => setAnnSelected(a ? (a.id || null) : null), []);
+  const annotationProps = useMemo(() => (ann.enabled ? {
+    enabled: true,
+    byPage: ann.byPage,
+    capabilities: ann.capabilities,
+    userId: ann.userId,
+    selectedId: annSelected,
+    onSelect: onAnnSelect,
+    onCreate: ann.createHighlight,
+    onRecolor: ann.setColor,
+    onComment: ann.setComment,
+    onDelete: ann.deleteAnnotation,
+  } : null), [ann.enabled, ann.byPage, ann.capabilities, ann.userId, ann.createHighlight,
+    ann.setColor, ann.setComment, ann.deleteAnnotation, annSelected, onAnnSelect]);
   const [fileBusy, setFileBusy] = useState(false);
   const addExtraFile = useCallback(async (file, label) => {
     if (!file || !study) return;
@@ -774,7 +818,7 @@ export default function ArticleWorkspace({
             </div>
           )}
           {effUrl ? (
-            <AppPdfViewer key={effUrl} url={effUrl} flush onDocLoaded={(d) => { docRef.current = d; }} interaction={interaction} reveal={reveal} onRevealDismiss={dismissReveal} />
+            <AppPdfViewer key={effUrl} url={effUrl} flush onDocLoaded={(d) => { docRef.current = d; }} interaction={interaction} reveal={reveal} onRevealDismiss={dismissReveal} annotation={annotationProps} />
           ) : (
             <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 10, padding: 24, textAlign: 'center', color: C.muted }}>
               <div style={{ fontSize: 30 }}>📄</div>

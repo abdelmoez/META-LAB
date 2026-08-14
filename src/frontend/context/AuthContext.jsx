@@ -2,6 +2,7 @@ import { createContext, useContext, useState, useEffect, useCallback } from 'rea
 import { getMe, getPendingOnboarding } from '../auth/authClient.js';
 import { api } from '../api-client/apiClient.js';
 import { adoptServerTheme } from '../theme/tokens.js';
+import { clearPdfBytesCache } from '../components/pdfBytesCache.js';
 
 const AuthContext = createContext(null);
 
@@ -48,6 +49,10 @@ export function AuthProvider({ children }) {
   // Clears session cookie + local state
   const logout = useCallback(async () => {
     try { await api.auth.logout(); } catch { /* ignore */ }
+    // 116.md §95 — the session PDF byte cache is memory-only and dies with the tab, but
+    // signing out must not leave one user's document bytes reachable to the next person
+    // at this browser if the SPA is not reloaded. Explicit beats implicit here.
+    try { clearPdfBytesCache(); } catch { /* best-effort */ }
     setUser(null);
     setPendingOnboarding([]);
   }, []);

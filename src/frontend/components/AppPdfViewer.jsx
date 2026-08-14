@@ -36,6 +36,17 @@ import { revealBoxFor, revealScrollTop, isExactRegion } from './pdfRevealBox.js'
 // 79.md §4 + 98.md §16 — click-to-pick caret resolution (caret APIs cross-validated
 // against the click point, geometric fallback). Extracted for unit tests.
 import { caretOffsetInSpan } from './pdfCaret.js';
+// 116.md §71-104 — the collaborative annotation layer. Rendered ONLY when the host
+// passes an `annotation` prop cluster (inert by default, exactly like `interaction` /
+// `pageOverlay` / `reveal`), so every existing caller is behaviourally unchanged.
+import PdfAnnotationPageLayer, { NO_ANNOTATIONS } from './PdfAnnotationLayer.jsx';
+import { usePdfAnnotationUndoShortcut } from './pdfAnnotationShortcut.js';
+// 116.md §95 — the session-only byte cache. Screening → Conflict → Extraction for the
+// same paper mounts three viewers on the same URL; without this each mount re-downloads
+// the whole file (every consumer mounts with key={url}). Server side, the same §95 fix
+// puts a strong ETag over the content hash on both binary routes, so even a cold client
+// revalidates with an empty 304 instead of re-transferring megabytes.
+import { getPdfBytes, invalidatePdfBytes } from './pdfBytesCache.js';
 
 if (typeof window !== 'undefined' && typeof Worker !== 'undefined') {
   try { pdfjsLib.GlobalWorkerOptions.workerPort = new PdfWorker(); } catch { /* falls back to fake worker */ }
@@ -154,6 +165,17 @@ export default function AppPdfViewer({
   // pulse + scroll. Inert (null) for every existing caller.
   reveal = null,
   onRevealDismiss = null,
+  // ── Collaborative annotations (116.md §71-104) ──────────────────────────────
+  // null (the default) ⇒ NOTHING changes: no selection listener is attached, no
+  // overlay is mounted, no extra state exists, and the shortcut bindings below
+  // permanently decline. Shape (all supplied by `usePdfAnnotations` + the host):
+  //   { enabled, byPage: Map<page, annotation[]>, capabilities:{canCreate,canModerate},
+  //     userId, selectedId, onSelect(annotation|null),
+  //     onCreate({page,rects,selectedText,color}), onRecolor(a,key),
+  //     onComment(a,text), onDelete(a) }
+  // `byPage` is a page-indexed Map (§93) whose per-page arrays keep their identity
+  // while that page is unchanged (§94), so one new highlight re-renders one overlay.
+  annotation = null,
 }) {
   const [doc, setDoc]         = useState(null);
   const [numPages, setNum]    = useState(0);
@@ -201,9 +223,33 @@ export default function AppPdfViewer({
   const dpr = useMemo(() => (typeof window !== 'undefined' ? Math.min(window.devicePixelRatio || 1, 2) : 1), []);
   useEffect(() => { ensureTextLayerStyle(); }, []);
 
+  /* ── 116.md §71-104 — annotations (inert unless a host opts in) ───────────── */
+  const shellRef = useRef(null);
+  const annOn = !!(annotation && annotation.enabled);
+  // §75 — a capture tool OWNS the text layer while it is armed: click-to-pick
+  // preventDefaults every click on a run, and the region tool covers the page with a
+  // crosshair surface. Offering "Highlight" on top of either would be exactly the
+  // "interfering excessively" §75 forbids, so the CREATE affordance stands down while
+  // one is armed. Existing highlights keep rendering (read-only), which is the honest
+  // behaviour: they are the document's annotations, not a mode.
+  const captureArmed = !!(interaction && (interaction.mode === 'click' || interaction.mode === 'region'));
+  const annCanCreate = !!(annOn && annotation.capabilities && annotation.capabilities.canCreate && !captureArmed);
+  // §86/D9 — the contextual Ctrl+Z binding. Registered unconditionally (hooks may not
+  // be conditional) but it declines in `when()` whenever `active` is false, so a viewer
+  // with no annotations never claims a key.
+  usePdfAnnotationUndoShortcut({ active: annOn, paneRef: shellRef });
+  // Existing highlights stay VISIBLE while a capture tool is armed, but become pure
+  // decoration (no clicks, no focus stops) so they can never swallow a click-to-pick.
+  const annotationCanSelect = annOn && !captureArmed;
+
   /* ── Load the document whenever the url changes (Retry bumps reloadKey) ───── */
   const [reloadKey, setReloadKey] = useState(0);
-  const reload = useCallback(() => setReloadKey((k) => k + 1), []);
+  // 116.md §95 — Retry means "fetch it again", so the cached bytes for this URL are
+  // dropped first. This is also the correctness half of the cache: a study-document
+  // URL is STABLE across a replace (only the bytes change), so the entry must be
+  // invalidated rather than served — a cached copy of the old file would be exactly
+  // the "coordinates from a different document" §74 forbids.
+  const reload = useCallback(() => { invalidatePdfBytes(url); setReloadKey((k) => k + 1); }, [url]);
 
   useEffect(() => {
     if (!url) { setLoading(false); return undefined; }
@@ -216,23 +262,35 @@ export default function AppPdfViewer({
     (async () => {
       let buf;
       try {
-        const res = await fetch(url, { credentials: withCredentials ? 'include' : 'same-origin', headers: { Accept: 'application/pdf' } });
+        // 116.md §95 — one shared, session-only entry per URL. Two components mounting
+        // the same URL in the same frame share ONE request; a remount within the session
+        // is served from memory. Every message below is byte-identical to the pre-116
+        // wording, and a failed fetch is never cached (the entry is dropped, so Retry
+        // really retries). Nothing is written to disk/localStorage/IndexedDB (§95).
+        buf = await getPdfBytes(url, async () => {
+          const res = await fetch(url, { credentials: withCredentials ? 'include' : 'same-origin', headers: { Accept: 'application/pdf' } });
+          if (!res.ok) {
+            throw Object.assign(new Error(`http ${res.status}`), {
+              __pdfMsg: res.status === 401 || res.status === 403
+                ? 'You are not signed in, or you do not have access to this PDF.'
+                : `The PDF could not be fetched (HTTP ${res.status}).`,
+            });
+          }
+          const bytes = await res.arrayBuffer();
+          const ct = (res.headers.get('content-type') || '').toLowerCase();
+          if (!ct.includes('application/pdf') && !isPdfBytes(bytes)) {
+            throw Object.assign(new Error('not a pdf'), {
+              __pdfMsg: 'The server did not return a PDF (your session may have expired). Try "Open in new tab".',
+            });
+          }
+          return bytes;
+        });
         if (cancelled) return;
-        if (!res.ok) {
-          setError(res.status === 401 || res.status === 403
-            ? 'You are not signed in, or you do not have access to this PDF.'
-            : `The PDF could not be fetched (HTTP ${res.status}).`);
-          setLoading(false); return;
+      } catch (e) {
+        if (!cancelled) {
+          setError((e && e.__pdfMsg) || 'Could not reach the PDF (network error). Check your connection and retry.');
+          setLoading(false);
         }
-        buf = await res.arrayBuffer();
-        if (cancelled) return;
-        const ct = (res.headers.get('content-type') || '').toLowerCase();
-        if (!ct.includes('application/pdf') && !isPdfBytes(buf)) {
-          setError('The server did not return a PDF (your session may have expired). Try "Open in new tab".');
-          setLoading(false); return;
-        }
-      } catch {
-        if (!cancelled) { setError('Could not reach the PDF (network error). Check your connection and retry.'); setLoading(false); }
         return;
       }
       // Copy the bytes per attempt so a first attempt that transfers/detaches the
@@ -608,7 +666,17 @@ export default function AppPdfViewer({
   const canZoomIn  = !loading && !error && effScale < SCALE_MAX - 1e-3;
 
   return (
-    <div style={shellStyle} role="group" aria-label="PDF viewer" onKeyDown={onKeyDown} tabIndex={0}>
+    <div
+      ref={shellRef}
+      style={shellStyle}
+      role="group"
+      aria-label="PDF viewer"
+      onKeyDown={onKeyDown}
+      tabIndex={0}
+      // 116.md §86 — marks this shell as the annotation pane for the contextual
+      // Ctrl+Z binding (and gives e2e/a11y a stable hook). Absent when inert.
+      data-pdf-annotations={annOn ? '1' : undefined}
+    >
       {/* Toolbar — prompt45: a FIXED bar separate from the scrolling/zoomable document
           area. flexShrink:0 keeps it out of the scroll area; zIndex + shadow make it sit
           above the content; it never resizes on zoom because the viewer is now full-width
@@ -724,6 +792,15 @@ export default function AppPdfViewer({
                       interaction={interaction}
                       overlay={pageOverlay ? pageOverlay(p) : null}
                       highlight={reveal && reveal.page === p ? reveal : null}
+                      // §93 — only MOUNTED pages get an overlay, so a 300-page PDF
+                      // renders a handful of annotation layers (the ±900 px window
+                      // above already decides which pages exist at all); §94 — the
+                      // per-page slice keeps its identity, so the memoised layer
+                      // bails out for every page but the one that changed.
+                      annotation={annOn ? annotation : null}
+                      annotationItems={annOn ? (annotation.byPage && annotation.byPage.get(p)) || NO_ANNOTATIONS : NO_ANNOTATIONS}
+                      annotationCanCreate={annCanCreate}
+                      annotationCanSelect={annotationCanSelect}
                     />
                   ) : (
                     <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', color: C.dim, fontFamily: MONO, fontSize: 11 }}>
@@ -745,7 +822,12 @@ export default function AppPdfViewer({
    the Safari/WebKit behavior is unit-testable (tests/unit/extraction/pdfCaret.test.js). */
 
 /* ── A single continuous page: canvas + real text layer + match highlighting ─── */
-function PdfPageView({ doc, pageNumber, scale, rotation, dpr, term, searchOptions, currentLocal, onDims, interaction = null, overlay = null, highlight = null }) {
+function PdfPageView({
+  doc, pageNumber, scale, rotation, dpr, term, searchOptions, currentLocal, onDims,
+  interaction = null, overlay = null, highlight = null,
+  // 116.md §71-104 — all null/empty for every pre-116 caller.
+  annotation = null, annotationItems = null, annotationCanCreate = false, annotationCanSelect = false,
+}) {
   const canvasRef = useRef(null);
   const textRef   = useRef(null);
   const renderRef = useRef(null);
@@ -988,6 +1070,32 @@ function PdfPageView({ doc, pageNumber, scale, rotation, dpr, term, searchOption
         style={clickable ? { pointerEvents: 'auto', cursor: 'copy' } : undefined}
       />
       {overlay ? <div style={{ position: 'absolute', inset: 0, pointerEvents: 'none', zIndex: 3 }}>{overlay}</div> : null}
+      {annotation ? (
+        // 116.md §75/§76/§93 — the annotation layer for THIS page. It reads the same
+        // `pageDims` + `scale` the canvas and the reveal box use, so a highlight, a
+        // jump-to-source box and an extraction provenance bbox are all projected by
+        // one piece of math (pdfRevealBox.revealBoxFor). Selection capture attaches a
+        // single bubble-phase `mouseup` listener to the text layer below — no
+        // preventDefault, so plain selection, copy, scroll and zoom are untouched.
+        <PdfAnnotationPageLayer
+          page={pageNumber}
+          items={annotationItems}
+          pageDims={pageDims}
+          scale={scale}
+          rotation={rotation}
+          textLayerRef={textRef}
+          userId={annotation.userId || ''}
+          canCreate={annotationCanCreate}
+          canModerate={!!(annotation.capabilities && annotation.capabilities.canModerate)}
+          interactive={annotationCanSelect}
+          selectedId={annotation.selectedId || null}
+          onSelect={annotation.onSelect}
+          onCreate={annotation.onCreate}
+          onRecolor={annotation.onRecolor}
+          onComment={annotation.onComment}
+          onDelete={annotation.onDelete}
+        />
+      ) : null}
       {srcBox && srcBox.kind === 'exact' ? (
         <div key={highlight.nonce} className="mlpdf-src-hl" role="img"
           aria-label={highlight.label ? `Selected source location for ${highlight.label}` : 'Selected source location'}

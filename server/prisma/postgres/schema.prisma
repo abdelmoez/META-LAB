@@ -3060,3 +3060,57 @@ model SeoPageView {
   @@index([day, path, referrerClass])
   @@index([path, day])
 }
+
+// ── 116.md §71-104 (Part VII) — COLLABORATIVE PDF ANNOTATIONS.
+//
+// Identity (§73/§74): an annotation keys on the DOCUMENT CONTENT — `docHash`, the
+// sha256 of the PDF bytes — never on a file name, a browser URL, an array index or
+// an attachment row id. Screening `uploadPdf` deletes-and-recreates the attachment
+// row on every replace, so the attachment id is the *version's* id; the content hash
+// is the only identity that survives a same-bytes re-upload. A genuinely REPLACED
+// file has a different hash, so its old annotations stay stored but are never
+// rendered over the new bytes (§74 "do not silently apply coordinates from a
+// different document"); putting the same bytes back restores them.
+//
+// Scope: exactly ONE of screenProjectId / metaLabProjectId is set. The two PDF byte
+// stores are disjoint (ScreenPdfAttachment rows under a ScreenProject vs blob
+// `study.document` pointers under a META·LAB Project), and each has its own access
+// resolver — getProjectAccess for the first, resolveExtractionAccess for the second.
+// Bare scope keys, no FK: audit-survival, matching ScreenDecision.projectId.
+//
+// Anchoring (§76): `rects` is JSON `[{x0,y0,x1,y1}]` in PDF USER SPACE at scale 1,
+// y-up, in the UNROTATED page frame — byte-for-byte the contract extraction
+// provenance bboxes and pdfRevealBox.js already use. That space is a property of the
+// document, so zoom, DPR, container width, sidebars and rotation cannot move a
+// highlight; only the CSS projection changes.
+//
+// This is a BRAND-NEW table, so @unique/@@index are allowed (house rule: uniques by
+// construction on new tables only). `clientId` is the §89/§91 idempotency key —
+// a retried POST returns the existing row instead of duplicating a highlight.
+// `revision` is the §90 CAS clock; `deletedAt` the §90/§103 soft-delete tombstone.
+// After editing, re-run `node server/scripts/sync-postgres-schema.mjs`.
+model PdfAnnotation {
+  id               String    @id @default(cuid())
+  docHash          String // sha256 of the PDF bytes — the §73 stable document identity
+  screenProjectId  String? // ScreenProject scope (screening-record PDFs)
+  metaLabProjectId String? // META·LAB Project scope (extraction study documents)
+  recordId         String? // §72/§78 context ref — the screening record it was opened from
+  studyId          String? // §72/§78 context ref — the extraction study row
+  page             Int
+  rects            String    @default("[]") // JSON [{x0,y0,x1,y1}] PDF user space @1, y-up
+  selectedText     String    @default("") // bounded excerpt (§78)
+  color            String    @default("yellow") // one of the fixed §77 palette keys
+  comment          String    @default("") // bounded (§79)
+  authorId         String
+  authorName       String    @default("") // denormalised (§82; ScreenDecision.reviewerName precedent)
+  clientId         String    @unique // §89/§91 client-generated mutation id
+  revision         Int       @default(1) // §90 optimistic-concurrency clock
+  deletedAt        DateTime?
+  deletedById      String?
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  @@index([screenProjectId, docHash, updatedAt])
+  @@index([metaLabProjectId, docHash, updatedAt])
+  @@index([docHash, page])
+}

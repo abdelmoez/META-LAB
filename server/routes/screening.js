@@ -16,6 +16,8 @@ import * as RV from '../controllers/screeningReviewController.js';
 import * as CH from '../controllers/screeningChatController.js';
 import * as OV from '../controllers/screeningOverviewController.js';
 import * as PDF from '../controllers/screeningPdfController.js';
+// 116.md §71-104 (Part VII) — collaborative PDF annotations (screening + META·LAB scopes).
+import * as AN from '../controllers/pdfAnnotationController.js';
 import * as OA from '../controllers/screeningOaController.js';
 import * as IB from '../controllers/screeningImportBatchController.js';
 import * as RS from '../controllers/screeningResetController.js';
@@ -148,6 +150,17 @@ r.post('/projects/:pid/records/:rid/pdf',                PDF.pdfUploadMiddleware
 r.get('/projects/:pid/records/:rid/pdf/:aid/download',   PDF.downloadPdf);
 r.delete('/projects/:pid/records/:rid/pdf/:aid',         PDF.deletePdf);
 
+// 116.md §71-104 — collaborative PDF annotations on screening-record PDFs.
+// Addressed by CONTENT HASH (?docHash=), never by attachment id: `uploadPdf`
+// deletes-and-recreates the row on replace, so the id names a version, not a
+// document (§73/§74). Deliberately SEPARATE from the binary routes above — §88
+// forbids coupling annotation sync to PDF transfer.
+r.get('/projects/:pid/pdf-annotations',           AN.listScreeningAnnotations);
+r.post('/projects/:pid/pdf-annotations',          AN.createScreeningAnnotation);
+r.post('/projects/:pid/pdf-annotations/clear',    AN.clearScreeningAnnotations);
+r.patch('/projects/:pid/pdf-annotations/:aid',    AN.updateScreeningAnnotation);
+r.delete('/projects/:pid/pdf-annotations/:aid',   AN.deleteScreeningAnnotation);
+
 // Import / Export
 r.post('/projects/:pid/import',              S.importRecords);   // synchronous (small files)
 r.post('/projects/:pid/import/preview',      S.previewImport);   // 65.md SCR-10 — real-parser preview (read-only)
@@ -255,5 +268,14 @@ r.get('/metalab/:mlpid/study-record/:studyId', S.getMetaLabStudyRecord);
 // create) the internal screening module for a META·LAB project. Powers the
 // single "Screening" stage; no user-facing linking required.
 r.get('/metalab/:mlpid/workspace',       S.getWorkspace);
+
+// 116.md §71-104 — the same annotation subsystem for META·LAB STUDY DOCUMENTS
+// (extraction studies with no screening record, 77.md §5). Access resolves through
+// resolveExtractionAccess, the resolver that already guards those bytes.
+r.get('/metalab/:mlpid/pdf-annotations',         AN.listMetaLabAnnotations);
+r.post('/metalab/:mlpid/pdf-annotations',        AN.createMetaLabAnnotation);
+r.post('/metalab/:mlpid/pdf-annotations/clear',  AN.clearMetaLabAnnotations);
+r.patch('/metalab/:mlpid/pdf-annotations/:aid',  AN.updateMetaLabAnnotation);
+r.delete('/metalab/:mlpid/pdf-annotations/:aid', AN.deleteMetaLabAnnotation);
 
 export default r;

@@ -53,6 +53,33 @@ function parseData(project) {
   catch { return {}; }
 }
 
+/**
+ * 116.md §95 — validated caching for study-document streams.
+ *
+ * Unlike screening attachments, a study-document URL is STABLE per study, so a
+ * replace changes the bytes behind the same URL. A strong ETag over the stored
+ * `fileHash` is exactly the right primitive: a revisit revalidates (empty 304)
+ * when the bytes are unchanged, and re-downloads the moment they are not — which
+ * also protects the §74 annotation contract (a different hash is a different
+ * document). `private` + `must-revalidate` keeps every hit authenticated, so this
+ * is never the "insecure persistent caching" §95 warns about.
+ *
+ * @returns {boolean} true when a 304 was already sent and the caller must stop.
+ */
+function applyDocEtag(req, res, doc) {
+  const hash = doc && doc.fileHash;
+  if (!hash) return false;
+  const etag = `"${hash}"`;
+  res.setHeader('ETag', etag);
+  const inm = String(req.headers['if-none-match'] || '');
+  if (inm && inm.split(',').some((t) => t.trim() === etag || t.trim() === `W/${etag}`)) {
+    setInlinePdfFramingHeaders(res);
+    res.status(304).end();
+    return true;
+  }
+  return false;
+}
+
 function shapeDoc(d) {
   if (!d || !d.storedName) return null;
   return {
@@ -206,6 +233,7 @@ export async function downloadStudyDoc(req, res) {
     res.setHeader('Content-Disposition', `inline; filename="${safeName}"`);
     res.setHeader('Accept-Ranges', 'bytes');
     res.setHeader('Cache-Control', 'private, max-age=0, must-revalidate');
+    if (applyDocEtag(req, res, doc)) return undefined;   // 116.md §95 — validated 304
     setInlinePdfFramingHeaders(res);
 
     const onErr = () => { if (!res.headersSent) res.status(500); try { res.end(); } catch { /* noop */ } };
@@ -375,6 +403,7 @@ export async function downloadExtraStudyDoc(req, res) {
     res.setHeader('Content-Type', 'application/pdf');
     res.setHeader('Content-Disposition', `inline; filename="${safeName}"`);
     res.setHeader('Cache-Control', 'private, max-age=0, must-revalidate');
+    if (applyDocEtag(req, res, doc)) return undefined;   // 116.md §95 — validated 304
     setInlinePdfFramingHeaders(res);
     res.setHeader('Content-Length', stat.size);
     const stream = fs.createReadStream(filePath);

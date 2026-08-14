@@ -30,6 +30,16 @@ export const HISTORY_SCOPES = Object.freeze([
   'overview', 'control', 'pico', 'prospero', 'search', 'living', 'citation',
   'screening', 'prisma', 'extraction', 'rob', 'analysis', 'forest', 'sensitivity',
   'subgroup', 'nma', 'grade', 'manuscript', 'report', 'methods', 'history',
+  // 116.md §86 — the ONE scope that is not a workflow stage. The PDF viewer is
+  // mounted INSIDE other stages (screening, RoB, extraction), and 116.md §86 is
+  // explicit that "annotation undo must not unexpectedly undo an unrelated
+  // Screening decision". Giving annotations their own scope makes that structural
+  // rather than a matter of luck: the global Ctrl+Z chord reads the STAGE's scope
+  // and can never reach these entries, while the viewer registers a TIER.COMPONENT
+  // binding (which beats TIER.GLOBAL) that targets this scope only while the PDF
+  // pane holds focus. `historyScopeForStage` never returns it — no URL stage maps
+  // here, by design.
+  'pdf',
 ]);
 
 const SCOPE_SET = new Set(HISTORY_SCOPES);
@@ -42,6 +52,14 @@ export const SCOPE_SCREENING = 'screening';
 
 /** The Search Builder's scope; its undo delegates to searchBuilder/undoStack.js. */
 export const SCOPE_SEARCH = 'search';
+
+/**
+ * 116.md §86 — the PDF annotation scope. Surface-scoped, not stage-scoped: the same
+ * viewer appears on Title & Abstract, Full-text review, Conflicts, RoB and
+ * Extraction, and its undo stack must follow the DOCUMENT, not the page it happens
+ * to be embedded in.
+ */
+export const SCOPE_PDF = 'pdf';
 
 /**
  * historyScopeForStage(stage) → scope key
@@ -88,6 +106,11 @@ export function legacyTabScope(tab) {
  *     relational undo state;
  *   - `search` — its own SearchDocument row + revision envelope, and its stack has
  *     its own clear-on-remote-adoption rule inside SearchBuilderTab;
+ *   - `pdf` — 116.md §88/§111: annotations are RELATIONAL PdfAnnotation rows with
+ *     their own per-row `revision` CAS and their own endpoints. A blob 409 says
+ *     nothing about them, and clearing the scope would destroy valid undo state
+ *     for highlights that persisted perfectly well (the same reasoning that keeps
+ *     `screening` and `prisma` out);
  *   - `living` / `citation` / `methods` / `history` / `overview` — no blob writes
  *     that this round records.
  */
@@ -103,6 +126,6 @@ export function isBlobScope(scope) {
 }
 
 export default {
-  HISTORY_SCOPES, DEFAULT_SCOPE, SCOPE_SCREENING, SCOPE_SEARCH,
+  HISTORY_SCOPES, DEFAULT_SCOPE, SCOPE_SCREENING, SCOPE_SEARCH, SCOPE_PDF,
   historyScopeForStage, legacyTabScope, BLOB_SCOPES, isBlobScope,
 };

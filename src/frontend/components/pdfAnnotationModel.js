@@ -1,0 +1,367 @@
+/**
+ * pdfAnnotationModel.js — 116.md §71-104 (Part VII). The PURE core of the
+ * collaborative PDF annotation layer: palette, selection geometry, anchoring math,
+ * page indexing, the client permission mirror and the optimistic-list reducer.
+ *
+ * WHY A PURE MODULE. The repo forbids jsdom in unit tests (tests-infra §B3: "no
+ * jsdom, initial render only"), so anything that decides something has to live
+ * outside the component — the same discipline that produced pdfRevealBox.js,
+ * pdfCaret.js and pdfSearch.js. Every function here takes plain data.
+ *
+ * ── THE ANCHOR (§76) ─────────────────────────────────────────────────────────
+ * A highlight is stored as a list of rectangles in PDF USER SPACE at scale 1,
+ * y-UP from the page bottom, in the UNROTATED page frame — byte-for-byte the
+ * contract `AppPdfViewer.cssToUser`, `pdfRevealBox.revealBoxFor` and extraction
+ * provenance bboxes already share. That space is a property of the DOCUMENT, so
+ * none of the things §76 lists can move a highlight:
+ *   - zoom / scale ladder  → only the projection multiplier `s` changes;
+ *   - container width, sidebar open/close, window resize → only `s` changes
+ *     (fit-width is recomputed, the stored rect is untouched);
+ *   - device pixel ratio / rendering resolution → canvas backing store only;
+ *   - rotation → the projection is always computed in the unrotated frame and the
+ *     viewer resets rotation for annotation work, exactly as it already does for
+ *     region capture and jump-to-source;
+ *   - page width in CSS px → derived, never stored.
+ * The selected TEXT is stored alongside as a human-readable witness (§78) — it is
+ * never used to re-derive a position, because a text-match anchor that is not
+ * unique would fabricate a location (the honesty rule AppPdfViewer already
+ * enforces for coordinate-less provenance).
+ */
+import { revealBoxFor } from './pdfRevealBox.js';
+
+/* ── §77 palette ──────────────────────────────────────────────────────────── */
+
+/**
+ * The fixed six-colour palette. Deliberately hard-coded rgba rather than theme
+ * tokens: these paint OVER a white PDF canvas, and AppPdfViewer already states the
+ * rule for its search highlights ("intentionally fixed … never leak a CSS var into
+ * a canvas-rasterized context"). `fill` is the author's own highlight; `fillMuted`
+ * is §81 — same hue, lower intensity, never washed out to grey.
+ */
+export const ANNOTATION_COLORS = Object.freeze([
+  { key: 'yellow', label: 'Yellow', fill: 'rgba(255,213,0,0.42)',  fillMuted: 'rgba(255,213,0,0.24)',  swatch: '#f2c200', border: 'rgba(190,150,0,0.85)' },
+  { key: 'green',  label: 'Green',  fill: 'rgba(52,199,89,0.38)',  fillMuted: 'rgba(52,199,89,0.21)',  swatch: '#2f9e4f', border: 'rgba(30,120,60,0.85)' },
+  { key: 'blue',   label: 'Blue',   fill: 'rgba(0,145,255,0.34)',  fillMuted: 'rgba(0,145,255,0.19)',  swatch: '#1273d4', border: 'rgba(10,90,180,0.85)' },
+  { key: 'pink',   label: 'Pink',   fill: 'rgba(255,90,160,0.36)', fillMuted: 'rgba(255,90,160,0.20)', swatch: '#d94b8c', border: 'rgba(180,40,105,0.85)' },
+  { key: 'orange', label: 'Orange', fill: 'rgba(255,138,0,0.38)',  fillMuted: 'rgba(255,138,0,0.21)',  swatch: '#e07b00', border: 'rgba(175,90,0,0.85)' },
+  { key: 'purple', label: 'Purple', fill: 'rgba(150,90,255,0.34)', fillMuted: 'rgba(150,90,255,0.19)', swatch: '#7c4dd6', border: 'rgba(95,45,175,0.85)' },
+]);
+
+/** Key list — pinned against the server's ANNOTATION_COLOR_KEYS by a unit test. */
+export const ANNOTATION_COLOR_KEYS = Object.freeze(ANNOTATION_COLORS.map((c) => c.key));
+export const DEFAULT_ANNOTATION_COLOR = 'yellow';
+
+/** Bounds — pinned against the server's caps by the same unit test. */
+export const MAX_SELECTED_TEXT = 2000;
+export const MAX_COMMENT = 4000;
+
+/** Palette entry for a colour key; anything unknown falls back to yellow. */
+export function colorFor(key) {
+  const k = typeof key === 'string' ? key.trim().toLowerCase() : '';
+  return ANNOTATION_COLORS.find((c) => c.key === k) || ANNOTATION_COLORS[0];
+}
+
+/* ── Selection geometry (§75/§76) ─────────────────────────────────────────── */
+
+const finite = (v) => Number.isFinite(+v);
+const MIN_RECT_PX = 1.5;          // sub-pixel client rects are selection noise
+const LINE_OVERLAP = 0.55;        // vertical overlap ratio that means "same line"
+const LINE_GAP_PX = 4;            // horizontal gap still merged inside one line
+
+/**
+ * toPageRects(clientRects, host) — viewport DOMRect-likes → page-local CSS rects.
+ * `host` is the page wrapper's bounding rect ({left, top}). Anything degenerate is
+ * dropped rather than clamped: an empty result means "there was no real selection
+ * here", which the caller must treat as "do not offer to highlight".
+ */
+export function toPageRects(clientRects, host) {
+  const hl = host && finite(host.left) ? +host.left : 0;
+  const ht = host && finite(host.top) ? +host.top : 0;
+  const out = [];
+  for (const r of (Array.isArray(clientRects) ? clientRects : [])) {
+    if (!r) continue;
+    const x0 = +r.left - hl, y0 = +r.top - ht, x1 = +r.right - hl, y1 = +r.bottom - ht;
+    if (![x0, y0, x1, y1].every(finite)) continue;
+    if (x1 - x0 < MIN_RECT_PX || y1 - y0 < MIN_RECT_PX) continue;
+    out.push({ x0, y0, x1, y1 });
+  }
+  return out;
+}
+
+/** Vertical overlap ratio of two CSS rects (0..1), relative to the shorter one. */
+function vOverlap(a, b) {
+  const top = Math.max(a.y0, b.y0);
+  const bot = Math.min(a.y1, b.y1);
+  if (bot <= top) return 0;
+  return (bot - top) / Math.max(1e-6, Math.min(a.y1 - a.y0, b.y1 - b.y0));
+}
+
+/**
+ * mergeLineRects(rects) — collapse a browser's per-glyph-run client rects into ONE
+ * rect per rendered line.
+ *
+ * Range.getClientRects() returns a rect per text node fragment, so a two-line
+ * selection over five spans yields five (often overlapping, sometimes duplicated)
+ * rects. Rendering them raw stacks alpha and produces the mottled look every
+ * home-grown highlighter has. Grouping by vertical overlap and unioning within a
+ * group is both prettier and cheaper to store (§76 "normalized rectangles").
+ */
+export function mergeLineRects(rects) {
+  const list = (Array.isArray(rects) ? rects : []).filter(Boolean)
+    .slice()
+    .sort((a, b) => (a.y0 - b.y0) || (a.x0 - b.x0));
+
+  // Pass 1 — bucket by VERTICAL overlap alone: one bucket per rendered line. Doing the
+  // horizontal decision here (the obvious one-pass version) is wrong, because a run
+  // whose reported top differs by a fraction of a pixel sorts between two runs of the
+  // same line: the middle run then bridges a gap that was already closed as a separate
+  // rect, and the line comes out in two pieces that never re-coalesce.
+  const buckets = [];
+  for (const r of list) {
+    const b = buckets.find((x) => vOverlap(x.span, r) >= LINE_OVERLAP);
+    if (b) {
+      b.span.y0 = Math.min(b.span.y0, r.y0);
+      b.span.y1 = Math.max(b.span.y1, r.y1);
+      b.items.push(r);
+    } else {
+      buckets.push({ span: { y0: r.y0, y1: r.y1 }, items: [r] });
+    }
+  }
+
+  // Pass 2 — inside a line, sweep left→right and union CONTIGUOUS runs. A genuine gap
+  // (a two-column layout, a figure between two text blocks) keeps its own rectangle, so
+  // a selection spanning columns is never painted across the white space between them.
+  const out = [];
+  for (const b of buckets) {
+    const items = b.items.slice().sort((x, y) => x.x0 - y.x0 || x.x1 - y.x1);
+    let cur = null;
+    for (const r of items) {
+      if (cur && r.x0 <= cur.x1 + LINE_GAP_PX) {
+        cur.x1 = Math.max(cur.x1, r.x1);
+        cur.y0 = Math.min(cur.y0, r.y0);
+        cur.y1 = Math.max(cur.y1, r.y1);
+      } else {
+        cur = { ...r };
+        out.push(cur);
+      }
+    }
+  }
+  return out.sort((a, b) => (a.y0 - b.y0) || (a.x0 - b.x0));
+}
+
+/**
+ * cssRectsToUser(rects, { scale, pageHeight }) — page-local CSS px → PDF user
+ * space at scale 1, y-up. The exact inverse of AppPdfViewer's `cssToUser`, which is
+ * what makes an annotation rect interchangeable with an extraction provenance bbox.
+ */
+export function cssRectsToUser(rects, { scale, pageHeight } = {}) {
+  const s = +scale;
+  const H = +pageHeight;
+  if (!(s > 0) || !finite(H)) return [];
+  const round = (v) => Math.round(v * 10000) / 10000;
+  return (Array.isArray(rects) ? rects : []).map((r) => ({
+    x0: round(r.x0 / s),
+    y0: round(H - r.y1 / s),     // CSS bottom edge → smaller user y
+    x1: round(r.x1 / s),
+    y1: round(H - r.y0 / s),     // CSS top edge    → larger user y
+  })).filter((r) => r.x1 > r.x0 && r.y1 > r.y0);
+}
+
+/**
+ * userRectsToCss(rects, pageDims, scale) — the render projection. Delegates each
+ * rect to `pdfRevealBox.revealBoxFor` so annotation overlays and the jump-to-source
+ * box can NEVER drift apart: one implementation of the mapping, two callers.
+ */
+export function userRectsToCss(rects, pageDims, scale) {
+  const out = [];
+  for (const r of (Array.isArray(rects) ? rects : [])) {
+    const box = revealBoxFor(r, pageDims, scale);
+    if (box && box.kind === 'exact') out.push(box);
+  }
+  return out;
+}
+
+/** The union of an annotation's rects (used for popover placement + jump-to). */
+export function rectsBounds(rects) {
+  const list = (Array.isArray(rects) ? rects : []).filter((r) => r && finite(r.x0));
+  if (!list.length) return null;
+  return list.reduce((acc, r) => ({
+    x0: Math.min(acc.x0, +r.x0), y0: Math.min(acc.y0, +r.y0),
+    x1: Math.max(acc.x1, +r.x1), y1: Math.max(acc.y1, +r.y1),
+  }), { x0: +list[0].x0, y0: +list[0].y0, x1: +list[0].x1, y1: +list[0].y1 });
+}
+
+/* ── Page indexing (§93/§94) ──────────────────────────────────────────────── */
+
+/**
+ * indexByPage(annotations) → Map<page, annotation[]>
+ *
+ * §93: a 300-page PDF must never render thousands of invisible overlay components.
+ * The viewer only mounts pages inside its ±900 px virtualization window, so the
+ * overlay for a page is looked up from this index and the rest of the document
+ * costs one Map entry each. Rebuilt only when the ANNOTATION LIST changes — not on
+ * scroll, not on zoom.
+ */
+export function indexByPage(annotations) {
+  const map = new Map();
+  for (const a of (Array.isArray(annotations) ? annotations : [])) {
+    if (!a || a.deleted) continue;
+    const p = Math.trunc(+a.page);
+    if (!(p >= 1)) continue;
+    const bucket = map.get(p);
+    if (bucket) bucket.push(a); else map.set(p, [a]);
+  }
+  // Stable document order inside a page: top-first, then left.
+  for (const [, bucket] of map) {
+    bucket.sort((x, y) => {
+      const bx = rectsBounds(x.rects), by = rectsBounds(y.rects);
+      if (!bx || !by) return 0;
+      return (by.y1 - bx.y1) || (bx.x0 - by.x0);
+    });
+  }
+  return map;
+}
+
+/** Document order across the whole PDF — the §98 annotation list. */
+export function sortForList(annotations) {
+  return (Array.isArray(annotations) ? annotations : [])
+    .filter((a) => a && !a.deleted)
+    .slice()
+    .sort((a, b) => {
+      if (a.page !== b.page) return a.page - b.page;
+      const ba = rectsBounds(a.rects), bb = rectsBounds(b.rects);
+      if (!ba || !bb) return 0;
+      return (bb.y1 - ba.y1) || (ba.x0 - bb.x0);
+    });
+}
+
+/* ── Permission mirror (§83) ──────────────────────────────────────────────── */
+
+/**
+ * The CLIENT mirror of server/annotations/pdfAnnotationModel.mutationDecision.
+ * Purely for rendering (which buttons exist); the server re-decides every request,
+ * so a tampered client gets a structured 403, never a write.
+ */
+export function canMutateAnnotation(annotation, { userId, canModerate } = {}) {
+  if (!annotation || annotation.deleted) return false;
+  if (userId && annotation.authorId === userId) return true;
+  return !!canModerate;
+}
+
+/** True when the viewing user authored this annotation (drives §81 muting). */
+export function isOwnAnnotation(annotation, userId) {
+  return !!(annotation && userId && annotation.authorId === userId);
+}
+
+/**
+ * §82/§100 — the accessible label. Ownership and colour must BOTH be readable
+ * without seeing the colour, so the label always names the author and the colour.
+ */
+export function annotationAriaLabel(annotation, userId) {
+  if (!annotation) return 'Highlight';
+  const own = isOwnAnnotation(annotation, userId);
+  const who = own ? 'you' : (annotation.authorName || 'another member');
+  const color = colorFor(annotation.color).label.toLowerCase();
+  const excerpt = String(annotation.selectedText || '').trim().slice(0, 80);
+  const note = annotation.comment ? ' — has a comment' : '';
+  return `${color} highlight by ${who}${excerpt ? `: ${excerpt}` : ''}${note}`;
+}
+
+/* ── Optimistic list reducer (§89/§91) ────────────────────────────────────── */
+
+/**
+ * A locally-created annotation before the server has answered. It carries the
+ * `clientId` the POST is idempotent on, so a retry (or a realtime refetch landing
+ * first) can never duplicate the highlight.
+ */
+export function pendingAnnotation({ clientId, docHash, page, rects, selectedText, color, comment, recordId, studyId, authorId, authorName, now }) {
+  return {
+    id: `local:${clientId}`,
+    clientId,
+    docHash,
+    page,
+    rects: Array.isArray(rects) ? rects : [],
+    selectedText: String(selectedText || '').slice(0, MAX_SELECTED_TEXT),
+    color: colorFor(color).key,
+    comment: String(comment || '').slice(0, MAX_COMMENT),
+    recordId: recordId || null,
+    studyId: studyId || null,
+    authorId: authorId || '',
+    authorName: authorName || '',
+    revision: 0,
+    deleted: false,
+    pending: true,
+    failed: false,
+    createdAt: now || new Date().toISOString(),
+    updatedAt: now || new Date().toISOString(),
+  };
+}
+
+/** Replace (or append) one annotation by clientId — the ack reconcile step. */
+export function upsertByClientId(list, next) {
+  if (!next) return Array.isArray(list) ? list : [];
+  const arr = Array.isArray(list) ? list : [];
+  const i = arr.findIndex((a) => a && a.clientId === next.clientId);
+  if (i < 0) return [...arr, next];
+  const copy = arr.slice();
+  copy[i] = { ...arr[i], ...next };
+  return copy;
+}
+
+/** Flag a create/update that failed to persist (§89 "do not pretend it persisted"). */
+export function markFailed(list, clientId) {
+  return (Array.isArray(list) ? list : []).map((a) => (
+    a && a.clientId === clientId ? { ...a, pending: false, failed: true } : a
+  ));
+}
+
+/** Drop a locally-created row that will never exist server-side (revert path). */
+export function dropByClientId(list, clientId) {
+  return (Array.isArray(list) ? list : []).filter((a) => !(a && a.clientId === clientId));
+}
+
+/**
+ * mergeServerList(local, server, { full })
+ *
+ * The reconcile step for BOTH the initial fetch and the `?since=` delta (§91).
+ * Rules:
+ *   - a server row always wins over the local copy of the SAME clientId (it is the
+ *     canonical revision), which is how an optimistic insert gets its real id;
+ *   - tombstones (`deleted`) remove the row;
+ *   - a still-PENDING local row with no server twin survives a delta merge (its
+ *     POST may still be in flight) but not a FULL refresh, where the server list is
+ *     authoritative for everything already acknowledged;
+ *   - duplicate events are therefore idempotent — merging the same payload twice
+ *     produces the same list (§91).
+ */
+export function mergeServerList(local, server, { full = false } = {}) {
+  const incoming = Array.isArray(server) ? server : [];
+  const byClient = new Map();
+  for (const a of (Array.isArray(local) ? local : [])) {
+    if (a && a.clientId) byClient.set(a.clientId, a);
+  }
+  for (const s of incoming) {
+    if (!s || !s.clientId) continue;
+    if (s.deleted) { byClient.delete(s.clientId); continue; }
+    const prev = byClient.get(s.clientId);
+    byClient.set(s.clientId, { ...(prev || {}), ...s, pending: false, failed: false });
+  }
+  if (full) {
+    const seen = new Set(incoming.map((s) => s && s.clientId));
+    for (const [cid, a] of [...byClient]) {
+      // Anything the server did not return and that is not an in-flight local
+      // insert no longer exists (deleted by a collaborator, or a different document).
+      if (!seen.has(cid) && !(a && (a.pending || a.failed))) byClient.delete(cid);
+    }
+  }
+  return [...byClient.values()];
+}
+
+export default {
+  ANNOTATION_COLORS, ANNOTATION_COLOR_KEYS, DEFAULT_ANNOTATION_COLOR,
+  MAX_SELECTED_TEXT, MAX_COMMENT, colorFor,
+  toPageRects, mergeLineRects, cssRectsToUser, userRectsToCss, rectsBounds,
+  indexByPage, sortForList,
+  canMutateAnnotation, isOwnAnnotation, annotationAriaLabel,
+  pendingAnnotation, upsertByClientId, markFailed, dropByClientId, mergeServerList,
+};

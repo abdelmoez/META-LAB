@@ -17,7 +17,7 @@ import { randomUUID } from 'crypto';
 import { prisma } from '../db/client.js';
 import { getProjectAccess, writeAudit } from '../screening/access.js';
 import { getMetaSiftSettings } from '../screening/settings.js';
-import { extractDoiFromPdfBuffer } from '../screening/pdfStorage.js';
+import { extractDoiFromPdfBuffer, sha256, hashStoredPdf } from '../screening/pdfStorage.js';
 import { setInlinePdfFramingHeaders } from '../screening/pdfFraming.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -55,7 +55,32 @@ function shape(a) {
   return {
     id: a.id, recordId: a.recordId, fileName: a.fileName,
     fileSize: a.fileSize, mimeType: a.mimeType, uploadedBy: a.uploadedBy, createdAt: a.createdAt,
+    // 116.md §73 — the CONTENT identity of this PDF. The viewer needs it to ask for
+    // the document's annotations (the attachment id is destroyed by every replace,
+    // so it can never be the annotation key). Null on a legacy row whose bytes could
+    // not be hashed — the client then degrades to "no annotations on this document".
+    fileHash: a.fileHash || null,
   };
+}
+
+/**
+ * 116.md §73 — make sure an attachment carries its content hash.
+ *
+ * Only the 68.md OA retrieval path ever wrote `fileHash`, so every manually
+ * uploaded PDF predating 116 has null. Backfilling lazily (one disk read, then
+ * persisted) is cheap and keeps the migration additive: nothing is rewritten at
+ * load time, and a file missing from disk simply stays null instead of inventing
+ * an identity. Never throws.
+ */
+async function ensureAttachmentHash(att) {
+  if (!att) return null;
+  if (att.fileHash) return att;
+  const h = hashStoredPdf(att.projectId, att.storedName);
+  if (!h) return att;
+  try {
+    await prisma.screenPdfAttachment.update({ where: { id: att.id }, data: { fileHash: h } });
+  } catch { /* best-effort: a lost race just re-hashes on the next request */ }
+  return { ...att, fileHash: h };
 }
 
 /** POST /projects/:pid/records/:rid/pdf — upload (replaces any existing PDF for the record). */
@@ -99,6 +124,11 @@ export async function uploadPdf(req, res) {
         storedName, fileSize: buf.length, mimeType: 'application/pdf',
         uploadedBy: req.user.id,
         source: 'manual_upload', resolvedDoi, matchedBy: 'manual',
+        // 116.md §73/D7 — compute the content hash for EVERY upload, not just the
+        // OA path. This is the stable document identity annotations key on, and the
+        // ETag the §95 caching path serves. Re-uploading identical bytes therefore
+        // restores that document's annotations (§74).
+        fileHash: sha256(buf),
       },
     });
     await writeAudit(access.project.id, req.user, 'PDF_UPLOADED', { entityType: 'record', entityId: rec.id, details: { fileName: att.fileName, fileSize: att.fileSize } });
@@ -115,7 +145,11 @@ export async function listPdf(req, res) {
     const access = await getProjectAccess(req.params.pid, req.user);
     if (!access) return res.status(404).json({ error: 'Project not found' });
     const atts = await prisma.screenPdfAttachment.findMany({ where: { projectId: access.project.id, recordId: req.params.rid } });
-    res.json({ attachments: atts.map(shape) });
+    // 116.md §73 — hand back a content hash for each attachment (backfilled lazily
+    // for pre-116 rows) so the viewer can address this document's annotations.
+    const hashed = [];
+    for (const a of atts) hashed.push(await ensureAttachmentHash(a));
+    res.json({ attachments: hashed.map(shape) });
   } catch (err) {
     console.error('[screening] listPdf:', err.message);
     res.status(500).json({ error: 'Internal server error' });
@@ -136,10 +170,11 @@ export async function downloadPdf(req, res) {
   try {
     const access = await getProjectAccess(req.params.pid, req.user);
     if (!access) return res.status(404).json({ error: 'Project not found' });
-    const att = await prisma.screenPdfAttachment.findFirst({
+    let att = await prisma.screenPdfAttachment.findFirst({
       where: { id: req.params.aid, projectId: access.project.id, recordId: req.params.rid },
     });
     if (!att) return res.status(404).json({ error: 'Attachment not found' });
+    att = await ensureAttachmentHash(att);
 
     const filePath = path.join(STORAGE_ROOT, att.projectId, att.storedName);
     let stat;
@@ -150,7 +185,22 @@ export async function downloadPdf(req, res) {
     res.setHeader('Content-Type', 'application/pdf');
     res.setHeader('Content-Disposition', `inline; filename="${safeName}"`);
     res.setHeader('Accept-Ranges', 'bytes');
+    // 116.md §95 — validated caching. The bytes behind an attachment id are
+    // immutable (a replace mints a NEW id), so a strong ETag over the content hash
+    // lets a revisit revalidate with an empty 304 instead of re-downloading a
+    // 12 MB file when the reviewer moves Screening → Conflict → Extraction.
+    // `private` keeps it out of shared caches; `must-revalidate` keeps every hit
+    // authenticated — this is never an insecure persistent cache (§95).
     res.setHeader('Cache-Control', 'private, max-age=0, must-revalidate');
+    const etag = att.fileHash ? `"${att.fileHash}"` : '';
+    if (etag) {
+      res.setHeader('ETag', etag);
+      const inm = String(req.headers['if-none-match'] || '');
+      if (inm && inm.split(',').some((t) => t.trim() === etag || t.trim() === `W/${etag}`)) {
+        setInlinePdfFramingHeaders(res);
+        return res.status(304).end();
+      }
+    }
     // Allow the same-origin SPA to embed this PDF inline (see INLINE_PDF_CSP).
     setInlinePdfFramingHeaders(res);
 

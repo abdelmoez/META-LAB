@@ -670,6 +670,40 @@ export function HistoryProvider({
   const redo = useCallback(() => run('redo'), [run]);
 
   /**
+   * 116.md §86 — SCOPE-TARGETED undo/redo.
+   *
+   * "Do not let annotation undo unexpectedly undo an unrelated Screening decision."
+   * A PDF viewer is mounted INSIDE the screening stage, so a plain Ctrl+Z there
+   * would pop whatever is on top of the `screening` stack. The annotation layer
+   * therefore records into its own `pdf` scope and registers a TIER.COMPONENT
+   * binding that calls these — beating the TIER.GLOBAL chord (lower tier wins,
+   * shortcutRouter.js) only while the PDF pane actually holds focus.
+   *
+   * `run()` already accepted `{ scope }`; only the public wrappers were missing.
+   */
+  const undoScope = useCallback((sc) => run('undo', { scope: sc }), [run]);
+  const redoScope = useCallback((sc) => run('redo', { scope: sc }), [run]);
+
+  /**
+   * scopeAvailability(scope) — availability for a scope that is NOT the active one.
+   *
+   * Read on demand from refs (never a subscription): the only caller is a shortcut
+   * `when()` predicate, which runs synchronously at keydown time and must see the
+   * live stacks. Making it reactive would re-render the viewer on every history
+   * mutation, which §92/§94 forbid.
+   */
+  const scopeAvailability = useCallback((sc) => {
+    const key = String(sc == null ? '' : sc);
+    const del = delegatesRef.current.get(key);
+    return historyAvailability(
+      histRef.current,
+      key,
+      executorSignature(executorsRef.current.keys()),
+      del ? { canUndo: del.canUndo, canRedo: del.canRedo } : undefined,
+    );
+  }, []);
+
+  /**
    * undoEntry(entryId) → the same result shape as undo() — 108 review, [major]
    * "the snackbar's Undo button undoes the top of the stack, not the noted action".
    *
@@ -744,6 +778,11 @@ export function HistoryProvider({
     undo,
     redo,
     undoEntry,
+    // 116.md §86 — contextual (scope-targeted) history for surfaces that live
+    // inside another stage's page, e.g. the PDF annotation layer.
+    undoScope,
+    redoScope,
+    scopeAvailability,
     registerExecutor,
     registerScopeDelegate,
     clearScope,
@@ -752,7 +791,7 @@ export function HistoryProvider({
   }), [
     activeScope, projectId, avail.canUndo, avail.canRedo, avail.pending,
     avail.undo, avail.redo, avail.nextUndo, avail.nextRedo, undoBlocked, redoBlocked,
-    record, coalesce, undo, redo, undoEntry,
+    record, coalesce, undo, redo, undoEntry, undoScope, redoScope, scopeAvailability,
     registerExecutor, registerScopeDelegate, clearScope, clearScopes, clearAll,
   ]);
 
@@ -777,6 +816,9 @@ const NO_HISTORY = Object.freeze({
   undo: async () => ({ ok: false, reason: HISTORY_FAIL.NO_ENTRY, entry: null }),
   redo: async () => ({ ok: false, reason: HISTORY_FAIL.NO_ENTRY, entry: null }),
   undoEntry: async () => ({ ok: false, reason: HISTORY_FAIL.SUPERSEDED, entry: null }),
+  undoScope: async () => ({ ok: false, reason: HISTORY_FAIL.NO_ENTRY, entry: null }),
+  redoScope: async () => ({ ok: false, reason: HISTORY_FAIL.NO_ENTRY, entry: null }),
+  scopeAvailability: () => ({ undo: 0, redo: 0, pending: false, canUndo: false, canRedo: false, nextUndo: null, nextRedo: null }),
   registerExecutor: () => noop,
   registerScopeDelegate: () => noop,
   clearScope: noop,

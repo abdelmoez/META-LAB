@@ -478,7 +478,9 @@ export default function RobWorkspace({ assessmentId, onClose, onChanged, onConti
   // BOTH the persistent article header (spanning both columns) and the PDF panel.
   // The standalone "Article Information" tab was removed — its details now live in
   // the header's expandable disclosure (gated by robSettings.showArticleInfoTab).
-  const [studyRecord, setStudyRecord] = useState({ loading: true, error: '', record: null, screenProjectId: null, recordId: null, studyDocUrl: null });
+  // 116.md §73 — `studyDocHash` is the content hash of a study-document PDF, carried
+  // so the RoB panel can address that document's annotations. Null ⇒ no annotations.
+  const [studyRecord, setStudyRecord] = useState({ loading: true, error: '', record: null, screenProjectId: null, recordId: null, studyDocUrl: null, studyDocHash: '' });
   const [robSettings, setRobSettings] = useState(ROB_SETTINGS_FALLBACK);
   const reduced = usePrefersReducedMotion();
   const narrow = useViewportNarrow();
@@ -604,17 +606,21 @@ export default function RobWorkspace({ assessmentId, onClose, onChanged, onConti
     try {
       const r = await screeningApi.metalabStudyRecord(view.projectId, view.studyId);
       let studyDocUrl = null;
+      let studyDocHash = '';
       if (!r.recordId || !r.screenProjectId) {
         // 77.md §5 — no screening record, but a manually-added study may carry a persisted
         // study document; surface it here so the PDF is available wherever the study is used.
         try {
           const d = await studyDocApi.get(view.projectId, view.studyId);
-          if (d && d.document && d.document.storedName) studyDocUrl = studyDocApi.downloadUrl(view.projectId, view.studyId);
+          if (d && d.document && d.document.storedName) {
+            studyDocUrl = studyDocApi.downloadUrl(view.projectId, view.studyId);
+            studyDocHash = d.document.fileHash || '';   // 116.md §73
+          }
         } catch { /* no study doc — clean empty state */ }
       }
-      setStudyRecord({ loading: false, error: '', record: r.record || null, screenProjectId: r.screenProjectId || null, recordId: r.recordId || null, studyDocUrl });
+      setStudyRecord({ loading: false, error: '', record: r.record || null, screenProjectId: r.screenProjectId || null, recordId: r.recordId || null, studyDocUrl, studyDocHash });
     } catch (e) {
-      setStudyRecord({ loading: false, error: e?.message || 'Could not load the study PDF.', record: null, screenProjectId: null, recordId: null, studyDocUrl: null });
+      setStudyRecord({ loading: false, error: e?.message || 'Could not load the study PDF.', record: null, screenProjectId: null, recordId: null, studyDocUrl: null, studyDocHash: '' });
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [studyKey]);
@@ -1107,6 +1113,7 @@ export default function RobWorkspace({ assessmentId, onClose, onChanged, onConti
       <aside style={{ display: 'flex', flexDirection: 'column', minWidth: 0, minHeight: 0, ...(narrow ? { height: pdfPreviewHeight } : null) }}>
         <RobPdfPanel loading={studyRecord.loading} error={studyRecord.error} screenProjectId={studyRecord.screenProjectId} recordId={studyRecord.recordId}
           studyDocUrl={studyRecord.studyDocUrl}
+          studyDocHash={studyRecord.studyDocHash} metaLabProjectId={view && view.projectId} studyId={view && view.studyId}
           canManage={editable} onRetry={resolveStudyRecord} previewHeight={pdfPreviewHeight} />
       </aside>
     )}

@@ -26,6 +26,10 @@
 import type { Page } from '@playwright/test';
 import { test, expect } from '../fixtures/stitch-test';
 import { ShellNav } from '../page-objects/ShellNav';
+// 116.md §71-104 — the PDF-attachment seed helper that unblocks the loaded-PDF specs
+// below. It GENERATES a valid, text-bearing PDF (no binary fixture in the repo) and
+// uploads it through the real endpoint. See e2e/helpers/pdf.ts.
+import { attachPdfToFirstRecord } from '../helpers/pdf';
 
 /** Deep-link to the Title & Abstract workbench (the only place the per-record PdfViewer mounts). */
 function workbenchPath(projectId: string): string {
@@ -36,12 +40,11 @@ function workbenchPath(projectId: string): string {
 const PDF_PANEL_LABEL = 'Full-text PDF';
 const PDF_EMPTY_HINT = 'Attach the manuscript, or auto-find a free open-access copy.';
 
-// Loaded-PDF interaction needs a real, renderable attachment — unavailable this pass.
-const PDF_FIXTURE_AVAILABLE = false;
-const PDF_FIXTURE_TODO =
-  'TODO: no PDF-attachment fixture/helper in this pass; uploading a renderable PDF and ' +
-  'asserting pdf.js worker rendering (canvas/text-layer/zoom/search) deterministically in CI ' +
-  'is too fragile to do honestly. Unskip once a PDF-attachment seed helper exists.';
+// 116.md §71-104 — UNBLOCKED. `e2e/helpers/pdf.ts` now generates a valid, multi-page,
+// text-bearing PDF and attaches it through the real upload endpoint, so pdf.js has
+// something real to render and the loaded-PDF specs below run instead of skipping.
+const PDF_FIXTURE_AVAILABLE = true;
+const PDF_FIXTURE_TODO = 'requires the generated PDF fixture (e2e/helpers/pdf.ts)';
 
 /**
  * Navigate to the screening workbench and wait for the per-record PDF panel to mount.
@@ -139,6 +142,12 @@ test.describe('Files & PDF viewer — screening record (empty / upload state)', 
  * AppPdfViewer selectors so they run as-is once unblocked.
  */
 test.describe('Files & PDF viewer — loaded PDF (requires an attached, renderable PDF)', () => {
+  // Three pages of real Helvetica text: enough for page navigation AND for the live
+  // search to find matches, without making the fixture slow to render.
+  test.beforeEach(async ({ request, screeningProject }) => {
+    await attachPdfToFirstRecord(request, screeningProject.siftId, { pages: 3 });
+  });
+
   test('opens the in-app viewer and renders the first page with working toolbar controls', async ({ page, screeningProject }) => {
     test.skip(!PDF_FIXTURE_AVAILABLE, PDF_FIXTURE_TODO);
     await gotoWorkbenchPdfPanel(page, screeningProject.project.id);
