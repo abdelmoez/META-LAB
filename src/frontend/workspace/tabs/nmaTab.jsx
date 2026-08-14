@@ -12,7 +12,7 @@
  */
 import { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { C } from '../ui/styles.js';
-import { fmtNum, fmtInt } from '../../../research-engine/format/precision.js';
+import { fmtNum, fmtInt, normalizePrecision } from '../../../research-engine/format/precision.js';
 import { validateNetwork, SUPPORTED_MEASURES } from '../../../research-engine/statistics/nma/index.js';
 import { isLogScale } from '../../../research-engine/statistics/nma/contrasts.js';
 
@@ -44,7 +44,10 @@ function fx(est, lo, hi, isLog, prec) {
 }
 
 export function NmaTab({ project, updateProject, activeId }) {
-  const prec = (project && project.analysisPrecision && project.analysisPrecision.decimals) || 3;
+  // 116.md §29/§31 — the WHOLE precision object (this used to keep only
+  // `.decimals`, silently dropping the project's trailingZeros preference on every
+  // NMA number). normalizePrecision applies the same defaults as everywhere else.
+  const prec = normalizePrecision(project && project.analysisPrecision);
   const [flagOn, setFlagOn] = useState(null); // null = loading
   const [view, setView] = useState('data');
   const [result, setResult] = useState(null);
@@ -435,7 +438,7 @@ function Ranking({ result, prec }) {
     <Card title="Treatment ranking — P-scores" right={<DownloadCsv name="nma-ranking.csv" rows={[['treatment', 'pScore', 'rank'], ...result.ranking.map((r) => [r.treatment, r.pScore == null ? '' : r.pScore.toFixed(4), r.rank ?? ''])]} />}>
       <div style={{ fontSize: 12, color: C.sub, marginBottom: 10 }}>P-score (Rücker &amp; Schwarzer) — a frequentist analogue of SUCRA; higher = ranked better. NOT a probability of being best, and NOT a clinical recommendation.</div>
       <AccessibleTable caption="Ranking" head={['Rank', 'Treatment', 'P-score']}
-        rows={result.ranking.map((r) => [r.rank ?? '—', r.treatment, r.pScore == null ? '—' : fmtNum(r.pScore, Math.max(prec, 3))])} />
+        rows={result.ranking.map((r) => [r.rank ?? '—', r.treatment, r.pScore == null ? '—' : fmtNum(r.pScore, { ...prec, decimals: Math.max(prec.decimals, 3) })])} />
     </Card>
   );
 }

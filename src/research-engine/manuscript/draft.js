@@ -36,7 +36,10 @@
 
 import { runMeta as defaultRunMeta, eggersTest } from '../statistics/meta-analysis.js';
 import { getOutcomePairs, filterStudiesForOutcome } from '../import-export/journalSubmission.js';
-import { fmtES, fmtNum } from '../format/precision.js';
+// 116.md §31 — p-values ALWAYS through fmtP/fmtPExpr: a 2-dp project printed
+// "P = 0.00" for p = 0.004 because these call sites used fmtNum. fmtP floors at
+// three places and collapses anything below the floor to a strict inequality.
+import { fmtES, fmtNum, fmtP, fmtPExpr } from '../format/precision.js';
 import { buildMethodsMarkdown } from '../docs/methodsText.js';
 import { computePrismaCounts } from './prismaCounts.js';
 import { JOURNAL_TEMPLATES } from './model.js';
@@ -199,7 +202,7 @@ function methodsCtx(project, opts) {
     tau2Method: analysisCfg.tau2Method,
     hksj: !!(result && result.hksj),
     k: result ? result.k : null,
-    heterogeneity: result ? { I2: fmtNum(result.I2, opts.prec), tau2: fmtNum(result.tau2, opts.prec), Q: fmtNum(result.Q, opts.prec), Qdf: result.k - 1, Qp: result.Qpval < 0.001 ? '<0.001' : fmtNum(result.Qpval, opts.prec) } : {},
+    heterogeneity: result ? { I2: fmtNum(result.I2, opts.prec), tau2: fmtNum(result.tau2, opts.prec), Q: fmtNum(result.Q, opts.prec), Qdf: result.k - 1, Qp: fmtP(result.Qpval, opts.prec) } : {},
     predInterval: !!(result && result.predInt),
     outcomes: pairs.map((p) => p.label),
     robTool: clean(project && project.robMethod),
@@ -337,7 +340,7 @@ function effectSentence(primary, prec) {
   const fmt = m.kind === 'prop'
     ? (x) => (x == null ? '—' : `${fmtNum(x * 100, prec)}%`)
     : (x) => (x == null ? '—' : fmtES(x, prec));
-  const p = r.pval < 0.001 ? 'P < 0.001' : `P = ${fmtNum(r.pval, prec)}`;
+  const p = fmtPExpr(r.pval, prec);
   return `Across ${r.k} studies, the pooled ${m.label} for ${primary.pair.label || 'the primary outcome'} was ${fmt(pe)} (95% CI ${fmt(lo)} to ${fmt(hi)}; ${p}; I² = ${fmtNum(r.I2, prec)}%).`;
 }
 
@@ -497,7 +500,7 @@ function secondaryNarration(a, prec) {
   const fmt = m.kind === 'prop'
     ? (x) => (x == null ? '—' : `${fmtNum(x * 100, prec)}%`)
     : (x) => (x == null ? '—' : fmtES(x, prec));
-  const p = r.pval < 0.001 ? 'P < 0.001' : `P = ${fmtNum(r.pval, prec)}`;
+  const p = fmtPExpr(r.pval, prec);
   const tau2Bit = a.model !== 'fixed' ? `; τ² = ${fmtNum(r.tau2, prec)}` : '';
   lines.push(`For ${label} (${r.k} studies), the pooled ${m.label} was ${fmt(bt(r.pES, m.kind))} (95% CI ${fmt(bt(r.lo95, m.kind))} to ${fmt(bt(r.hi95, m.kind))}; ${p}; I² = ${fmtNum(r.I2, prec)}%${tau2Bit}).`);
   if (r.predInt) {
@@ -527,7 +530,7 @@ function pubBiasNarration(a, opts, prec) {
   if (!egger && !tf) return null;
   const bits = [];
   if (egger && egger.intercept != null) {
-    const p = egger.pval != null ? (egger.pval < 0.001 ? 'P < 0.001' : `P = ${fmtNum(egger.pval, prec)}`) : '';
+    const p = egger.pval != null ? fmtPExpr(egger.pval, prec) : '';
     bits.push(`Egger's regression test for funnel-plot asymmetry gave an intercept of ${fmtES(egger.intercept, prec)}${p ? ` (${p})` : ''}`);
   }
   if (tf && tf.k0 != null) {

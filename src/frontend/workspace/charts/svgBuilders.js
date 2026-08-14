@@ -5,7 +5,12 @@
    forest plot) plus the helpers that serialize a live on-screen SVG and tag
    PNG-preset filenames. No React / JSX here. */
 import { ES_TYPES } from "../../../research-engine/project-model/monolithConstants.js";
-import { fmtNum, fmtES, fmtPct, fmtI2, fmtWeight } from "../../../research-engine/format/precision.js";
+import { fmtNum, fmtES, fmtPct, fmtI2, fmtWeight, fmtP } from "../../../research-engine/format/precision.js";
+// 116.md §22-§25 (D15) — the SHARED forest geometry. buildPubForestSVG and the
+// live React ForestPlot are now two skins over this one layout module, so the
+// preview and every export agree on ticks, the null position, truncation, the
+// out-of-scale arrows and the favours anchoring (116.md §32).
+import { computeForestLayout, esMeasureName as layoutMeasureName } from "../../../research-engine/charts/forestLayout.js";
 
 export const SVG_XML_HEADER = `<?xml version="1.0" encoding="UTF-8"?>\n`;
 
@@ -143,27 +148,31 @@ export function buildPrismaSVG(prisma,opts){
 /* Journal-clean measure name for the effect axis — the forest and funnel
    builders MUST share this (both figures land in the same exported document;
    divergent axis labels present one pooled estimate as two different things). */
-export function esMeasureName(esType){
-  return esType==="OR"?"Odds Ratio" : esType==="RR"?"Risk Ratio" : esType==="HR"?"Hazard Ratio"
-    : esType==="SMD"?"Standardised Mean Difference" : esType==="MD"?"Mean Difference"
-    : esType==="COR"?"Correlation (Fisher z)" : esType==="PROP"?"Proportion (%)" : "Effect size";
-}
+export const esMeasureName = layoutMeasureName;
 
+/**
+ * buildPubForestSVG(result, opts) — the white "Light (publication)" figure.
+ *
+ * 116.md §22-§25 / D15: this is now a SKIN over research-engine/charts/forestLayout.js.
+ * It owns Georgia, absolute hex ink and the export precision formatters; it owns no
+ * coordinates. Everything geometric — domain (always containing the measure's null),
+ * measure-aware ticks, out-of-scale arrows, column bands, favours anchoring, name
+ * truncation, canvas height — comes from the shared layout, which the live on-screen
+ * plot consumes too.
+ *
+ * opts: { esType, esLabel, title, favLow, favHigh, showCounts, showWeights, showPI,
+ *         nullLine (linear measures only), logScale, prec, noBg }
+ */
 export function buildPubForestSVG(result,opts){
   if(!result) return null;
   const o=opts||{};
   const esType=o.esType||"";
-  const showCounts=o.showCounts!==false;
-  const showWeights=o.showWeights!==false;
   const method=result.method||"random";
-  const title=(o.title||"").trim();
   const t=ES_TYPES[esType]||{};
   const isLog=!!t.log, isProp=esType==="PROP";
   const logOut=!!o.logScale;        // user opt-in to show the log scale instead of the ratio scale
-  // Pretty measure name for the axis
-  const measureFull = esMeasureName(esType);
-  const ratioAbbr = esType==="OR"?"OR":esType==="RR"?"RR":esType==="HR"?"HR":"";
   const ratioScale = isLog && !logOut;   // show actual ratio axis for OR/RR/HR
+  const ratioAbbr = esType==="OR"?"OR":esType==="RR"?"RR":esType==="HR"?"HR":"";
   // back-transform a stored (log/logit) value to display units
   const bt=x=>{ if(isLog)return Math.exp(x); if(isProp){const e=Math.exp(x);return e/(1+e);} return x; };
   const prec=o.prec;
@@ -175,117 +184,62 @@ export function buildPubForestSVG(result,opts){
     return fmtES(+x,prec);
   };
   const fmtCI=(lo,hi)=>`[${fmt(lo)}, ${fmt(hi)}]`;
-  const studies=result.studies;
-  const k=studies.length;
-  const anyExp=studies.some(s=>s.a!==""&&s.a!=null), anyCtrl=studies.some(s=>s.c!==""&&s.c!=null);
-  const colCounts=showCounts&&(anyExp||anyCtrl);
+
+  // ---- footer text (handed to the layout so it wraps + sizes the canvas) ----
+  // 116.md §31 — p-values ALWAYS through fmtP: "< 0.001" floor, never "= 0.00".
+  const pPhrase=(x)=>{const s=fmtP(x,prec);return s.startsWith("<")?`< ${s.slice(1)}`:`= ${s}`;};
+  const het=`Heterogeneity: I² = ${fmtI2(result.I2,prec)}%,  τ² = ${fmtNum(result.tau2,prec)},  Q = ${fmtNum(result.Q,prec)} (df = ${result.k-1}),  p ${pPhrase(result.Qpval)}`;
+  let line2=`Test for overall effect: p ${pPhrase(result.pval)}  ·  Filled diamond: ${method==="random"?"random effects":"common / fixed effect"}`;
+  if(result.hksj) line2+=`  ·  HKSJ 95% CI: ${fmt(result.hksj.lo)} to ${fmt(result.hksj.hi)} (t-based)`;
+
+  const L=computeForestLayout(result,{
+    variant:"pub",
+    esType,
+    showCounts:o.showCounts!==false,
+    showWeights:o.showWeights!==false,
+    showPI:o.showPI!==false,
+    title:o.title||"",
+    // 116.md §26/§32 — the reviewer's edited axis label reaches EVERY export. It
+    // used to be built, threaded and then silently dropped here.
+    esLabel:o.esLabel||"",
+    favLow:o.favLow||"",
+    favHigh:o.favHigh||"",
+    nullLine:o.nullLine,
+    logScale:logOut,
+    footerTexts:[het,line2],
+  });
+  if(!L) return null;
+  const{columns:CO,rowsGeom:RG,ticks,rows,diamonds,pi,favours,axisLabel,footerLines}=L;
+  const W=L.W,H=L.H;
+  const showWeights=L.showWeights, colCounts=L.showCounts;
+  const xName=CO.xName,xExp=CO.xExp,cExp=CO.cExp,xCtrl=CO.xCtrl,cCtrl=CO.cCtrl;
+  const xPlot=CO.xPlot,plotW=CO.plotW,xPlotEnd=CO.xPlotEnd,xEff=CO.xEff,cEff=CO.cEff;
+  const xW=CO.xW,cW=CO.cW,xW2=CO.xW2,cW2=CO.cW2;
+  const MLEFT=L.metrics.marginL, MRIGHT=L.metrics.marginR;
 
   // ---- palette ----
   const INK="#111111", GREY="#555555", LINE="#000000", FAINT="#cccccc", BOX="#333333";
   const FF="Georgia, 'Times New Roman', serif";
 
-  // ---- margins & column widths (balanced; not excessively wide) ----
-  const MTOP=20, MBOT=20, MLEFT=28, MRIGHT=28;
-  const nameW=160;
-  const cExp=colCounts?92:0, cCtrl=colCounts?92:0;
-  const plotGap=20;
-  const plotW=Math.max(280, Math.min(360, 300));   // balanced fixed-ish plot area
-  const cEff=160;                                    // "0.72 [0.55, 0.94]"
-  const cW=showWeights?62:0, cW2=showWeights?62:0;
-
-  // title wrapping (wrap to <=2 lines, shrink font if needed)
-  let titleLines=[], titleSize=15;
-  const contentW = nameW+cExp+cCtrl+plotGap+plotW+plotGap+cEff+cW+cW2;
-  if(title){
-    const approxCharW=s=>s*0.52; // rough serif char width factor
-    const maxW=contentW;
-    const fitsOne=approxCharW(titleSize)*title.length<=maxW;
-    if(fitsOne){ titleLines=[title]; }
-    else {
-      // try to wrap into 2 lines at a space near the middle
-      const words=title.split(/\s+/); let l1="",l2="";
-      for(const w of words){ if(approxCharW(titleSize)*(l1+" "+w).length<=maxW||!l1){ l1=l1?l1+" "+w:w; } else { l2=l2?l2+" "+w:w; } }
-      if(l2 && approxCharW(titleSize)*l2.length>maxW){ titleSize=13; } // still long → shrink
-      titleLines=l2?[l1,l2]:[l1];
-    }
-  }
-  const titleBlockH = titleLines.length?(titleLines.length*(titleSize+5)+10):0;
-
-  // ---- x positions ----
-  const xName=MLEFT;
-  const xExp=xName+nameW;
-  const xCtrl=xExp+cExp;
-  const xPlot=xCtrl+cCtrl+plotGap;
-  const xPlotEnd=xPlot+plotW;
-  const xEff=xPlotEnd+plotGap;
-  const xW=xEff+cEff;
-  const xW2=xW+cW;
-  const W=xW2+cW2+MRIGHT;
-
-  // ---- y layout ----
-  const headTop=MTOP+titleBlockH;
-  const headH=colCounts||showWeights?34:20;          // two-line headers need height
-  const headBottom=headTop+headH;                    // header underline
-  const ROW=25;
-  const rowsTop=headBottom+10;
-  const yStudy=i=>rowsTop+ROW*0.7+i*ROW;             // text baseline
-  const bandBottom=rowsTop+k*ROW+2;
-  const ySep=bandBottom+6;
-  const yFixed=ySep+ROW*0.9;
-  const yRandom=yFixed+ROW;
-  const showPI=!!(result.predInt&&o.showPI!==false);
-  const yPI=showPI?yRandom+ROW*0.85:yRandom;
-  const axisY=yPI+ROW*0.7;
-  const tickLabelY=axisY+15;
-  const favY=tickLabelY+16;                          // favours row (its own line → no overlap)
-  const axisLabelY=favY+18;
-  const hetY=axisLabelY+24;
-  const H=hetY+18+MBOT;
-
-  // ---- x-scale ----
-  // For ratio measures we lay out on the log axis (so CIs are symmetric) but LABEL in ratio units.
-  const nullStored = ratioScale ? 0 : (isProp?0:(o.nullLine!=null?o.nullLine:0)); // log(1)=0
-  const allVals=[...studies.flatMap(s=>[s._lo,s._hi]),result.fixed.lo,result.fixed.hi,result.random.lo,result.random.hi,nullStored];
-  let minV=Math.min(...allVals), maxV=Math.max(...allVals);
-  const span=(maxV-minV)||1; minV-=span*0.10; maxV+=span*0.10;
-  // ensure null line is inside the frame
-  minV=Math.min(minV,nullStored-0.05); maxV=Math.max(maxV,nullStored+0.05);
-  const range=(maxV-minV)||1;
-  const xS=v=>xPlot+((Math.max(minV,Math.min(maxV,v))-minV)/range)*plotW;
-
-  // ---- tick generation ----
-  let ticks=[]; // [{x, label}]
-  if(ratioScale){
-    // clinically standard ratio ticks; keep those within the (back-transformed) visible range
-    const cand=[0.05,0.1,0.2,0.25,0.5,0.75,1,1.5,2,3,5,10,20,50,100];
-    const loR=Math.exp(minV), hiR=Math.exp(maxV);
-    cand.forEach(r=>{ if(r>=loR*0.97&&r<=hiR*1.03){ const lv=Math.log(r); ticks.push({x:xS(lv),v:lv,label:(r<1?String(r):String(r))}); } });
-    if(ticks.length<3){ // fallback: ensure at least null + a couple
-      [Math.exp(minV),1,Math.exp(maxV)].forEach(r=>{const lv=Math.log(r);ticks.push({x:xS(lv),v:lv,label:r.toFixed(2)});});
-    }
-  } else if(isProp){
-    for(let pct=0;pct<=100;pct+=20){ const pr=Math.min(0.999,Math.max(0.001,pct/100)); const lv=Math.log(pr/(1-pr)); if(lv>=minV-1e-9&&lv<=maxV+1e-9) ticks.push({x:xS(lv),v:lv,label:String(pct)}); }
-    if(ticks.length<2){[minV,maxV].forEach(lv=>ticks.push({x:xS(lv),v:lv,label:((Math.exp(lv)/(1+Math.exp(lv)))*100).toFixed(0)}));}
-  } else {
-    const raw=range/5, mag=Math.pow(10,Math.floor(Math.log10(raw))), n=raw/mag;
-    const step=(n<1.5?1:n<3?2:n<7?5:10)*mag;
-    for(let v=Math.ceil(minV/step)*step; v<=maxV+1e-9; v+=step){ ticks.push({x:xS(v),v,label:(+v.toFixed(2)).toString()}); }
-  }
-
   const esc=s=>String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
   const txt=(x,y,s,size,opt)=>{const a=(opt&&opt.anchor)||"start";const fill=(opt&&opt.fill)||INK;const fw=(opt&&opt.bold)?"700":"400";const it=(opt&&opt.italic)?"italic":"normal";
     return `<text x="${x.toFixed(1)}" y="${y.toFixed(1)}" font-family="${FF}" font-size="${size}" font-style="${it}" font-weight="${fw}" fill="${fill}" text-anchor="${a}">${esc(s)}</text>`;};
   const line=(x1,y1,x2,y2,stroke,sw,dash)=>`<line x1="${x1.toFixed(1)}" y1="${y1.toFixed(1)}" x2="${x2.toFixed(1)}" y2="${y2.toFixed(1)}" stroke="${stroke}" stroke-width="${sw||1}"${dash?` stroke-dasharray="${dash}"`:""}/>`;
+  /* 116.md §22 (c) — a CI end beyond the visible domain gets the conventional
+     truncation arrow instead of a fake end cap sitting on the frame. */
+  const endCap=(p,cy,stroke,sw)=>p.clamped
+    ? `<path d="M${p.x.toFixed(1)},${cy.toFixed(1)} L${(p.x-p.clamped*7).toFixed(1)},${(cy-3.6).toFixed(1)} L${(p.x-p.clamped*7).toFixed(1)},${(cy+3.6).toFixed(1)} Z" fill="${stroke}"/>`
+    : line(p.x,cy-3,p.x,cy+3,stroke,sw);
 
   let svg="";
   // noBg → skip the full-bleed white rect so transparent PNG export works
   if(!o.noBg) svg+=`<rect x="0" y="0" width="${W}" height="${H}" fill="#ffffff"/>`;
 
   // ---- title (wrapped / shrunk, centered, never clipped) ----
-  titleLines.forEach((ln,i)=>{ svg+=txt(W/2, MTOP+titleSize+i*(titleSize+5), ln, titleSize, {anchor:"middle",bold:true}); });
+  L.title.lines.forEach((ln,i)=>{ svg+=txt(W/2, L.title.y+i*L.title.lead, ln, L.title.size, {anchor:"middle",bold:true}); });
 
   // ---- header row ----
-  const hMid=headBottom-6;
+  const headBottom=RG.headBottom, hMid=headBottom-6;
   svg+=txt(xName,hMid,"Study",11.5,{bold:true});
   if(colCounts){
     svg+=txt(xExp+cExp/2,headBottom-18,"Experimental",10,{anchor:"middle",bold:true,fill:GREY});
@@ -304,96 +258,83 @@ export function buildPubForestSVG(result,opts){
   svg+=line(MLEFT,headBottom,W-MRIGHT,headBottom,LINE,1);
 
   // ---- vertical grid + null line ----
-  ticks.forEach(tk=>{ svg+=line(tk.x,rowsTop,tk.x,bandBottom,FAINT,0.5,"2,3"); });
-  svg+=line(xS(nullStored),rowsTop,xS(nullStored),yPI+8,GREY,1);
+  ticks.forEach(tk=>{ svg+=line(tk.x,RG.rowsTop,tk.x,RG.bandBottom,FAINT,0.5,"2,3"); });
+  // 116.md §24 — PROP has no no-effect value (ES_TYPES.PROP.nullVal === null), so
+  // no null line is drawn for it; every other measure's null is inside the domain
+  // by construction and can never be clamped onto an edge.
+  if(L.nullLine.show) svg+=line(L.nullLine.x,RG.rowsTop,L.nullLine.x,RG.yPI+8,GREY,1);
 
   // ---- study rows ----
-  studies.forEach((s,i)=>{
-    const y=yStudy(i);
-    const name=(s.author||"Study")+(s.year?` ${s.year}`:"");
-    svg+=txt(xName,y,name.length>26?name.slice(0,25)+"…":name,10.5,{});
+  rows.forEach((r)=>{
+    const y=r.y;
+    svg+=txt(xName,y,r.name,10.5,{});
     if(colCounts){
-      const eN=(s.a!==""&&s.a!=null)?s.a:(s.events!==""&&s.events!=null?s.events:"");
-      const eT=(s.a!==""&&s.a!=null)?((+s.a)+(+s.b||0)||s.nExp||""):(s.total!==""&&s.total!=null?s.total:"");
-      const cN=(s.c!==""&&s.c!=null)?s.c:"";
-      const cT=(s.c!==""&&s.c!=null)?((+s.c)+(+s.d||0)||s.nCtrl||""):"";
-      svg+=txt(xExp+cExp/2, y, (eN===""?"—":`${eN} / ${eT||"?"}`), 10, {anchor:"middle"});
-      svg+=txt(xCtrl+cCtrl/2, y, (cN===""?"—":`${cN} / ${cT||"?"}`), 10, {anchor:"middle"});
+      svg+=txt(xExp+cExp/2, y, r.counts.exp, 10, {anchor:"middle"});
+      svg+=txt(xCtrl+cCtrl/2, y, r.counts.ctrl, 10, {anchor:"middle"});
     }
-    const cy=y-3.5;
-    const x1=xS(s._lo),x2=xS(s._hi),xc=xS(s._es);
-    // marker proportional to weight but capped modestly
-    const sq=Math.max(5,Math.min(13,Math.sqrt((s._wFixedPct||5))*2.2));
-    svg+=line(x1,cy,x2,cy,INK,1.1);
-    svg+=line(x1,cy-3,x1,cy+3,INK,1.1);
-    svg+=line(x2,cy-3,x2,cy+3,INK,1.1);
-    svg+=`<rect x="${(xc-sq/2).toFixed(1)}" y="${(cy-sq/2).toFixed(1)}" width="${sq.toFixed(1)}" height="${sq.toFixed(1)}" fill="${BOX}"/>`;
-    svg+=txt(xEff+cEff, y, `${fmt(s._es)} ${fmtCI(s._lo,s._hi)}`, 10, {anchor:"end"});
+    const cy=r.markerY, sq=r.size;
+    svg+=line(r.lo.x,cy,r.hi.x,cy,INK,1.1);
+    svg+=endCap(r.lo,cy,INK,1.1);
+    svg+=endCap(r.hi,cy,INK,1.1);
+    if(r.es.clamped){
+      svg+=`<path d="M${r.es.x.toFixed(1)},${cy.toFixed(1)} L${(r.es.x-r.es.clamped*sq).toFixed(1)},${(cy-sq/2).toFixed(1)} L${(r.es.x-r.es.clamped*sq).toFixed(1)},${(cy+sq/2).toFixed(1)} Z" fill="${BOX}"/>`;
+    } else {
+      svg+=`<rect x="${(r.es.x-sq/2).toFixed(1)}" y="${(cy-sq/2).toFixed(1)}" width="${sq.toFixed(1)}" height="${sq.toFixed(1)}" fill="${BOX}"/>`;
+    }
+    svg+=txt(xEff+cEff, y, `${fmt(r.study._es)} ${fmtCI(r.study._lo,r.study._hi)}`, 10, {anchor:"end"});
     if(showWeights){
-      svg+=txt(xW+cW-4, y, fmtWeight(s._wFixedPct||0,prec)+"%", 9.5, {anchor:"end",fill:GREY});
-      svg+=txt(xW2+cW2-4, y, fmtWeight(s._wRandomPct||0,prec)+"%", 9.5, {anchor:"end",fill:GREY});
+      svg+=txt(xW+cW-4, y, fmtWeight(r.weightFixedPct,prec)+"%", 9.5, {anchor:"end",fill:GREY});
+      svg+=txt(xW2+cW2-4, y, fmtWeight(r.weightRandomPct,prec)+"%", 9.5, {anchor:"end",fill:GREY});
     }
   });
 
-  svg+=line(MLEFT,ySep,W-MRIGHT,ySep,LINE,0.8);
+  svg+=line(MLEFT,RG.ySep,W-MRIGHT,RG.ySep,LINE,0.8);
 
   // ---- pooled diamonds ----
-  const diamond=(yc,obj,label,strong,whichW)=>{
-    const x1=xS(obj.lo),x2=xS(obj.hi),xc=xS(obj.es),dh=6.5;
-    let g="";
-    g+=txt(xName,yc,label,10.5,{bold:true});
-    g+=`<polygon points="${xc.toFixed(1)},${(yc-3.5-dh).toFixed(1)} ${x2.toFixed(1)},${(yc-3.5).toFixed(1)} ${xc.toFixed(1)},${(yc-3.5+dh).toFixed(1)} ${x1.toFixed(1)},${(yc-3.5).toFixed(1)}" fill="${strong?"#000000":"#ffffff"}" stroke="#000000" stroke-width="1.1"/>`;
-    g+=txt(xEff+cEff,yc,`${fmt(obj.es)} ${fmtCI(obj.lo,obj.hi)}`,10,{anchor:"end",bold:strong});
-    if(showWeights){ g+=txt((whichW==="common"?xW+cW:xW2+cW2)-4,yc,"100%",9.5,{anchor:"end",fill:GREY}); }
-    return g;
-  };
-  svg+=diamond(yFixed,result.fixed,"Common (fixed) effect",method==="fixed","common");
-  svg+=diamond(yRandom,result.random,"Random effects",method==="random","random");
+  diamonds.forEach(d=>{
+    svg+=txt(xName,d.y,d.label,10.5,{bold:true});
+    svg+=`<polygon points="${d.es.x.toFixed(1)},${(d.markerY-d.height).toFixed(1)} ${d.hi.x.toFixed(1)},${d.markerY.toFixed(1)} ${d.es.x.toFixed(1)},${(d.markerY+d.height).toFixed(1)} ${d.lo.x.toFixed(1)},${d.markerY.toFixed(1)}" fill="${d.strong?"#000000":"#ffffff"}" stroke="#000000" stroke-width="1.1"/>`;
+    svg+=txt(xEff+cEff,d.y,`${fmt(d.value.es)} ${fmtCI(d.value.lo,d.value.hi)}`,10,{anchor:"end",bold:d.strong});
+    if(showWeights){ svg+=txt((d.key==="fixed"?xW+cW:xW2+cW2)-4,d.y,"100%",9.5,{anchor:"end",fill:GREY}); }
+  });
 
   // ---- prediction interval (dashed bar, journal-standard) ----
-  if(showPI){
-    const pi=result.predInt;
-    const x1=xS(pi.lo),x2=xS(pi.hi),xc=xS(result.random.es),cy=yPI-3.5;
-    svg+=txt(xName,yPI,"Prediction interval",9.5,{italic:true,fill:GREY});
-    svg+=line(x1,cy,x2,cy,GREY,1.4,"4,2");
-    svg+=line(x1,cy-3,x1,cy+3,GREY,1.4);
-    svg+=line(x2,cy-3,x2,cy+3,GREY,1.4);
-    svg+=`<rect x="${(xc-3).toFixed(1)}" y="${(cy-3).toFixed(1)}" width="6" height="6" fill="none" stroke="${GREY}" stroke-width="1"/>`;
-    svg+=txt(xEff+cEff,yPI,`${fmt(pi.lo)} to ${fmt(pi.hi)}`,9.5,{anchor:"end",italic:true,fill:GREY});
+  if(pi){
+    svg+=txt(xName,pi.y,pi.label,9.5,{italic:true,fill:GREY});
+    svg+=line(pi.lo.x,pi.markerY,pi.hi.x,pi.markerY,GREY,1.4,"4,2");
+    svg+=endCap(pi.lo,pi.markerY,GREY,1.4);
+    svg+=endCap(pi.hi,pi.markerY,GREY,1.4);
+    svg+=`<rect x="${(pi.centre.x-3).toFixed(1)}" y="${(pi.markerY-3).toFixed(1)}" width="6" height="6" fill="none" stroke="${GREY}" stroke-width="1"/>`;
+    svg+=txt(xEff+cEff,pi.y,`${fmt(pi.value.lo)} to ${fmt(pi.value.hi)}`,9.5,{anchor:"end",italic:true,fill:GREY});
   }
 
   // ---- x-axis ----
-  svg+=line(xPlot,axisY,xPlotEnd,axisY,INK,1);
+  svg+=line(xPlot,RG.axisY,xPlotEnd,RG.axisY,INK,1);
   ticks.forEach(tk=>{
-    svg+=line(tk.x,axisY,tk.x,axisY+4,INK,0.9);
-    svg+=txt(tk.x,tickLabelY,tk.label,9.5,{anchor:"middle"});
+    svg+=line(tk.x,RG.axisY,tk.x,RG.axisY+4,INK,0.9);
+    svg+=txt(tk.x,RG.tickLabelY,tk.label,9.5,{anchor:"middle"});
   });
 
   // ---- favours labels (own line, anchored to plot edges → no overlap) ----
-  const favLow = (isLog||isProp)?(o.favLow||"favours experimental"):"favours lower";
-  const favHigh= (isLog||isProp)?(o.favHigh||"favours control"):"favours higher";
-  // For ratio measures: <1 (left) usually favours treatment; keep it configurable but sensible.
+  // 116.md §25 — the defaults state DIRECTION only ("favours lower/higher"); the
+  // clinical reading ("Favours intervention") is never inferred from PICO (a harm
+  // outcome inverts it) and comes only from the persisted per-figure configuration.
   // Arrowheads are explicit <path> triangles, NOT the ◄/► glyphs — Georgia has no
   // glyph for those codepoints, so Word's SVG renderer (and some canvas font
-  // fallbacks) drew tofu boxes. Same size/position/color as the old glyphs.
-  const favTri=(x,dir)=>`<path d="M${(x+dir*6).toFixed(1)},${(favY-6.5).toFixed(1)} L${x.toFixed(1)},${(favY-3).toFixed(1)} L${(x+dir*6).toFixed(1)},${(favY+0.5).toFixed(1)} Z" fill="${GREY}"/>`;
-  svg+=favTri(xPlot+2,1);
-  svg+=txt(xPlot+11, favY, favLow, 9, {anchor:"start",fill:GREY,italic:true});
-  svg+=favTri(xPlotEnd-2,-1);
-  svg+=txt(xPlotEnd-11, favY, favHigh, 9, {anchor:"end",fill:GREY,italic:true});
+  // fallbacks) drew tofu boxes.
+  if(favours.show){
+    const favTri=(f)=>`<path d="M${(f.arrowX+f.dir*6).toFixed(1)},${(favours.y-6.5).toFixed(1)} L${f.arrowX.toFixed(1)},${(favours.y-3).toFixed(1)} L${(f.arrowX+f.dir*6).toFixed(1)},${(favours.y+0.5).toFixed(1)} Z" fill="${GREY}"/>`;
+    svg+=favTri(favours.low);
+    svg+=txt(favours.low.x, favours.y, favours.low.text, 9, {anchor:favours.low.anchor,fill:GREY,italic:true});
+    svg+=favTri(favours.high);
+    svg+=txt(favours.high.x, favours.y, favours.high.text, 9, {anchor:favours.high.anchor,fill:GREY,italic:true});
+  }
 
-  // ---- axis label (clean measure name) ----
-  const axisName = ratioScale ? measureFull : isProp?"Proportion (%)" : isLog&&logOut?("log "+measureFull) : measureFull;
-  svg+=txt((xPlot+xPlotEnd)/2, axisLabelY, axisName, 11, {anchor:"middle",bold:true});
+  // ---- axis label (configured label, else the clean measure name) ----
+  svg+=txt((xPlot+xPlotEnd)/2, RG.axisLabelY, axisLabel, 11, {anchor:"middle",bold:true});
 
-  // ---- heterogeneity + model line (well spaced) ----
-  const Qp=result.Qpval<0.001?"< 0.001":"= "+fmtNum(result.Qpval,prec);
-  const op=result.pval<0.001?"< 0.001":"= "+fmtNum(result.pval,prec);
-  const het=`Heterogeneity: I² = ${fmtI2(result.I2,prec)}%,  τ² = ${fmtNum(result.tau2,prec)},  Q = ${fmtNum(result.Q,prec)} (df = ${result.k-1}),  p ${Qp}`;
-  svg+=txt(MLEFT,hetY,het,9.5,{italic:true});
-  let line2=`Test for overall effect: p ${op}  ·  Filled diamond: ${method==="random"?"random effects":"common / fixed effect"}`;
-  if(result.hksj) line2+=`  ·  HKSJ 95% CI: ${fmt(result.hksj.lo)} to ${fmt(result.hksj.hi)} (t-based)`;
-  svg+=txt(MLEFT,hetY+13,line2,9,{fill:GREY});
+  // ---- heterogeneity + model line (wrapped by the layout, well spaced) ----
+  footerLines.forEach((ln,i)=>{ svg+=txt(MLEFT,ln.y,ln.text,i===0?9.5:9,{italic:i===0,fill:i===0?INK:GREY}); });
 
   const full=`<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">${svg}</svg>`;
   return {svg:full,W,H};

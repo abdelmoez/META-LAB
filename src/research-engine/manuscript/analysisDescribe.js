@@ -37,7 +37,14 @@ export const TAU2_PHRASES = {
  */
 export function resolveAnalysis(project, opts = {}) {
   const a = (opts && opts.analysis) || {};
-  const rawModel = a.model || (opts && opts.model) || 'random';
+  // 116.md §124 — the synthesis MODEL is persisted alongside the τ² estimator
+  // (analysisSettings.model; absent ⇒ 'random', which keeps every pre-116 blob and
+  // every generated string byte-identical). Reading it here is what stops the
+  // Analysis tab, the forest figure, the journal ZIP and the manuscript from
+  // describing three different models at the same moment. An explicit caller
+  // override still wins, exactly as before.
+  const projModel = project && project.analysisSettings && project.analysisSettings.model;
+  const rawModel = a.model || (opts && opts.model) || projModel || 'random';
   const model = rawModel === 'fixed' ? 'fixed' : 'random';
   const projTau2 = project && project.analysisSettings && project.analysisSettings.tau2Method;
   const raw = a.tau2Method || projTau2 || 'DL';

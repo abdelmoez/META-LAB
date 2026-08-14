@@ -13,12 +13,18 @@ import { ES_TYPES } from "../../../research-engine/project-model/monolithConstan
 // (svgBuilders.js) and CSV/report export keep their own user-configurable
 // precision; chart ≠ export by construction.
 import { chartNum, chartES, chartI2, chartWeight, chartP, chartAxisTick } from "../../../research-engine/format/chartFormat.js";
+// 116.md §22-§25 (D15) — ALL forest geometry now comes from ONE pure module that
+// the publication builder (svgBuilders.js) shares. This component is a SKIN: it
+// decides colours and fonts, never coordinates. See forestLayout.js's header for
+// the contract and the invariants it guarantees (null always inside the domain,
+// measure-aware ticks, explicit out-of-scale arrows, de-collided labels).
+import { computeForestLayout } from "../../../research-engine/charts/forestLayout.js";
 
-export function ForestPlot({result,esLabel="Effect Size",nullLine=0,esType="",showCounts=true,showWeights=true,svgId="forestplot-svg",prec,live=false,theme="night"}){
+export function ForestPlot({result,esLabel="",nullLine=null,esType="",showCounts=true,showWeights=true,svgId="forestplot-svg",prec,live=false,theme="night",title="",favLow="",favHigh=""}){
   if(!result) return(<div style={{background:C.card,border:`1px solid ${C.brd}`,borderRadius:8,padding:40,textAlign:"center",color:C.muted}}>
     <div style={{fontSize:32,marginBottom:8}}>🌲</div>Enter effect sizes for at least 2 studies to generate a forest plot
   </div>);
-  const{studies,pES,lo95,hi95,I2,Q,Qpval,tau2,k,pval}=result;
+  const{I2,Q,Qpval,tau2,k,pval}=result;
   // prompt19 / 56.md §10 — the LIVE on-screen plot follows the app theme TOKENS (C),
   // so it harmonizes with the legacy day/night themes AND the Stitch light/dark
   // themes (incl. a custom admin brand) exactly like the funnel plot — no fixed
@@ -35,33 +41,29 @@ export function ForestPlot({result,esLabel="Effect Size",nullLine=0,esType="",sh
   const isProp=esType==="PROP";
   const bt=x=>{ if(isLog)return Math.exp(x); if(isProp){const e=Math.exp(x);return e/(1+e);} return x; };
   const fmtV=(x,pr)=>isProp?chartES(bt(x)*100,pr||prec)+"%":(isLog?chartES(bt(x),pr||prec):chartES(x,pr||prec));
-  // does any study actually have count data to show?
-  const anyExp=studies.some(s=>s.a!==""&&s.a!=null), anyCtrl=studies.some(s=>s.c!==""&&s.c!=null);
-  const colCounts=showCounts&&(anyExp||anyCtrl);
-  // ---- layout ----
-  const padL=12, nameW=150;
-  const cExp=colCounts?70:0, cCtrl=colCounts?70:0;
-  const LM=padL+nameW+cExp+cCtrl;            // left block width before the plot
-  const plotW=300;
-  const cEff=128;                             // "ES [95% CI]" text column
-  const cWf=showWeights?54:0, cWr=showWeights?54:0;
-  const RM=cEff+cWf+cWr+16;
-  const W=LM+plotW+RM;
-  const TOP=46, ROW=24, BOT=58, H=TOP+(k+2.6)*ROW+BOT;
-  const allVals=[...studies.flatMap(s=>[s._lo,s._hi]),lo95,hi95];
-  const minV=Math.min(...allVals)-0.2,maxV=Math.max(...allVals)+0.2,range=(maxV-minV)||1;
-  const xS=v=>LM+((Math.max(minV,Math.min(maxV,v))-minV)/range)*plotW,yP=i=>TOP+(i+0.5)*ROW;
-  const gridVals=[];
-  for(let v=Math.ceil(minV*2)/2;v<=maxV;v+=0.5) gridVals.push(+v.toFixed(1));
-  const xPlotEnd=LM+plotW;
-  const colEffX=xPlotEnd+10, colWfX=colEffX+cEff, colWrX=colWfX+cWf;
-  // prompt20 Task 4 — stack the x-axis annotations on SEPARATE rows so the
-  // centered effect-measure label (e.g. "SMD") never overlaps the "← favours /
-  // favours →" labels that flank the null line (they previously shared one y).
-  const yAxisTicks=TOP+(k+1.5)*ROW;   // back-transformed tick numbers
-  const yFavours=yAxisTicks+16;        // favours arrows, flanking the null line
-  const yEsLabel=yFavours+17;          // effect-measure label, centered, own row
-  const yHetero=yEsLabel+20;           // heterogeneity summary, below everything
+  // 116.md §22 — the heterogeneity/model footer is handed to the layout engine as
+  // TEXT so it can wrap it to the content width and size the canvas around it
+  // (an unwrapped single line used to run past the right edge on a narrow plot).
+  const hetLine=`Heterogeneity: I² = ${chartI2(I2)}%  ·  τ² = ${chartNum(tau2,prec)}  ·  Q = ${chartNum(Q,prec)} (df = ${k-1}, p ${Qpval<0.001?"< 0.001":"= "+chartNum(Qpval,prec)})  ·  overall p ${pval<0.001?"< 0.001":"= "+chartNum(pval,prec)}`;
+  const modelLine=`Filled diamond: ${result.method==="fixed"?"common / fixed effect":"random effects"}${result.hksj?`  ·  HKSJ 95% CI: ${fmtV(result.hksj.lo,prec)} to ${fmtV(result.hksj.hi,prec)} (t-based)`:""}`;
+  const L=computeForestLayout(result,{
+    variant:"live",esType,showCounts,showWeights,title,esLabel,favLow,favHigh,nullLine,
+    footerTexts:[hetLine,modelLine],
+  });
+  if(!L) return(<div style={{background:C.card,border:`1px solid ${C.brd}`,borderRadius:8,padding:40,textAlign:"center",color:C.muted}}>
+    <div style={{fontSize:32,marginBottom:8}}>🌲</div>Enter effect sizes for at least 2 studies to generate a forest plot
+  </div>);
+  const{columns:CO,rowsGeom:RG,ticks,rows,diamonds,pi,favours,axisLabel,footerLines}=L;
+  const W=L.W,H=L.H;
+  const colCounts=L.showCounts;
+  const tickText=v=>isLog?chartAxisTick(bt(v),{isLog:true}):(isProp?chartAxisTick(bt(v),{isProp:true}):chartAxisTick(v));
+  /* 116.md §22 (c) — an interval end outside the visible domain gets an explicit
+     truncation arrow (the journal convention); it is NEVER silently clamped onto
+     the frame as if the CI stopped there. */
+  const endCap=(p,cy,color,key)=>p.clamped
+    ? <polygon key={key} points={p.clamped<0?`${p.x},${cy} ${p.x+7},${cy-4} ${p.x+7},${cy+4}`:`${p.x},${cy} ${p.x-7},${cy-4} ${p.x-7},${cy+4}`} fill={color}/>
+    : <line key={key} x1={p.x} y1={cy-4} x2={p.x} y2={cy+4} stroke={color} strokeWidth={1.5}/>;
+  const favTri=(f,color)=>(<polygon points={`${f.arrowX},${favours.y-3} ${f.arrowX+f.dir*6},${favours.y-6.5} ${f.arrowX+f.dir*6},${favours.y+0.5}`} fill={color}/>);
   return(<div style={{overflowX:"auto",width:"100%"}}>
     <svg id={svgId} width={live?"100%":W} height={H} viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="xMidYMid meet"
       style={{fontFamily:"'IBM Plex Mono',monospace",background:BG,borderRadius:8,display:"block",
@@ -70,63 +72,82 @@ export function ForestPlot({result,esLabel="Effect Size",nullLine=0,esType="",sh
         // left-aligning it. Export render (live=false) is unaffected.
         ...(live?{width:"100%",height:"auto",maxWidth:Math.round(W*1.5),margin:"0 auto",border:`1px solid ${liveBorder}`}:{})}}>
       <rect x={0} y={0} width={W} height={H} fill={BG}/>
+      {/* Figure title — 116.md §26/§32: the on-screen plot shows the same title the
+          export prints, so the preview and the download are the same figure. */}
+      {L.title.lines.map((ln,i)=>(
+        <text key={"t"+i} x={W/2} y={L.title.y+i*L.title.lead} textAnchor="middle" fontSize={L.title.size} fill={FC.txt} fontWeight={700}>{ln}</text>
+      ))}
       {/* Header row */}
-      <text x={padL} y={26} fontSize={11} fill={FC.txt} fontWeight={700}>Study</text>
-      {colCounts&&<text x={padL+nameW} y={20} fontSize={9} fill={FC.dim} fontWeight={700}>Experimental</text>}
-      {colCounts&&<text x={padL+nameW} y={32} fontSize={9} fill={FC.dim}>events / total</text>}
-      {colCounts&&<text x={padL+nameW+cExp} y={20} fontSize={9} fill={FC.dim} fontWeight={700}>Control</text>}
-      {colCounts&&<text x={padL+nameW+cExp} y={32} fontSize={9} fill={FC.dim}>events / total</text>}
-      <text x={colEffX} y={26} fontSize={10} fill={FC.dim} fontWeight={700}>{isLog||isProp?"Effect [95% CI]":"ES [95% CI]"}</text>
-      {showWeights&&<text x={colWfX} y={20} fontSize={9} fill={FC.dim} fontWeight={700}>Weight</text>}
-      {showWeights&&<text x={colWfX} y={32} fontSize={9} fill={FC.dim}>(common)</text>}
-      {showWeights&&<text x={colWrX} y={20} fontSize={9} fill={FC.dim} fontWeight={700}>Weight</text>}
-      {showWeights&&<text x={colWrX} y={32} fontSize={9} fill={FC.dim}>(random)</text>}
-      <line x1={padL} y1={TOP-4} x2={W-6} y2={TOP-4} stroke={FC.brd}/>
-      {/* grid + null line */}
-      {gridVals.map(v=><line key={v} x1={xS(v)} y1={TOP} x2={xS(v)} y2={TOP+k*ROW} stroke={v===nullLine?nullGrid:FC.brd} strokeWidth={v===nullLine?1.5:0.5} strokeDasharray={v===nullLine?"none":"3,3"}/>)}
-      <line x1={xS(nullLine)} y1={TOP-4} x2={xS(nullLine)} y2={TOP+k*ROW+6} stroke={FC.muted} strokeWidth={1}/>
-      {studies.map((s,i)=>{
-        const cy=yP(i),x1=xS(s._lo),x2=xS(s._hi),xc=xS(s._es),sq=Math.max(4,Math.min(12,(s._wFixedPct||10)/4+3));
-        const expStr=(s.a!==""&&s.a!=null)?`${s.a} / ${(+s.a)+(+s.b||0)||s.nExp||"?"}`:(s.events!==""&&s.events!=null?`${s.events} / ${s.total||"?"}`:"—");
-        const ctrlStr=(s.c!==""&&s.c!=null)?`${s.c} / ${(+s.c)+(+s.d||0)||s.nCtrl||"?"}`:"—";
-        return(<g key={s.id||i}>
-          <text x={padL} y={cy+4} fontSize={11} fill={FC.txt}>{(s.author||"Study").slice(0,20)}{s.year?` ${s.year}`:""}</text>
-          {colCounts&&<text x={padL+nameW} y={cy+4} fontSize={10} fill={FC.muted}>{expStr}</text>}
-          {colCounts&&<text x={padL+nameW+cExp} y={cy+4} fontSize={10} fill={FC.muted}>{ctrlStr}</text>}
-          <line x1={x1} y1={cy} x2={x2} y2={cy} stroke={FC.acc} strokeWidth={1.5}/>
-          <line x1={x1} y1={cy-4} x2={x1} y2={cy+4} stroke={FC.acc} strokeWidth={1.5}/>
-          <line x1={x2} y1={cy-4} x2={x2} y2={cy+4} stroke={FC.acc} strokeWidth={1.5}/>
-          <rect x={xc-sq/2} y={cy-sq/2} width={sq} height={sq} fill={FC.acc} rx={1}/>
-          <text x={colEffX} y={cy+4} fontSize={10} fill={FC.muted}>{fmtV(s._es,prec)} [{fmtV(s._lo,prec)}, {fmtV(s._hi,prec)}]</text>
-          {showWeights&&<text x={colWfX} y={cy+4} fontSize={10} fill={FC.dim}>{chartWeight(s._wFixedPct||0)}%</text>}
-          {showWeights&&<text x={colWrX} y={cy+4} fontSize={10} fill={FC.dim}>{chartWeight(s._wRandomPct||0)}%</text>}
+      <text x={CO.xName} y={RG.headBottom-6} fontSize={11} fill={FC.txt} fontWeight={700}>Study</text>
+      {colCounts&&<text x={CO.xExp} y={RG.headBottom-18} fontSize={9} fill={FC.dim} fontWeight={700}>Experimental</text>}
+      {colCounts&&<text x={CO.xExp} y={RG.headBottom-6} fontSize={9} fill={FC.dim}>events / total</text>}
+      {colCounts&&<text x={CO.xCtrl} y={RG.headBottom-18} fontSize={9} fill={FC.dim} fontWeight={700}>Control</text>}
+      {colCounts&&<text x={CO.xCtrl} y={RG.headBottom-6} fontSize={9} fill={FC.dim}>events / total</text>}
+      <text x={CO.xEff} y={RG.headBottom-6} fontSize={10} fill={FC.dim} fontWeight={700}>{isLog||isProp?"Effect [95% CI]":"ES [95% CI]"}</text>
+      {showWeights&&<text x={CO.xW} y={RG.headBottom-18} fontSize={9} fill={FC.dim} fontWeight={700}>Weight</text>}
+      {showWeights&&<text x={CO.xW} y={RG.headBottom-6} fontSize={9} fill={FC.dim}>(common)</text>}
+      {showWeights&&<text x={CO.xW2} y={RG.headBottom-18} fontSize={9} fill={FC.dim} fontWeight={700}>Weight</text>}
+      {showWeights&&<text x={CO.xW2} y={RG.headBottom-6} fontSize={9} fill={FC.dim}>(random)</text>}
+      <line x1={CO.xName} y1={RG.headBottom} x2={W-6} y2={RG.headBottom} stroke={FC.brd}/>
+      {/* grid + null line (the layout engine guarantees the null is INSIDE the domain) */}
+      {ticks.map(t=><line key={"g"+t.v} x1={t.x} y1={RG.rowsTop} x2={t.x} y2={RG.bandBottom} stroke={t.isNull?nullGrid:FC.brd} strokeWidth={t.isNull?1.5:0.5} strokeDasharray={t.isNull?"none":"3,3"}/>)}
+      {L.nullLine.show&&<line x1={L.nullLine.x} y1={RG.rowsTop} x2={L.nullLine.x} y2={RG.yPI+8} stroke={FC.muted} strokeWidth={1}/>}
+      {rows.map((r)=>{
+        const s=r.study,cy=r.markerY,sq=r.size;
+        return(<g key={r.id}>
+          <text x={CO.xName} y={r.y} fontSize={11} fill={FC.txt}>{r.name}</text>
+          {colCounts&&<text x={CO.xExp} y={r.y} fontSize={10} fill={FC.muted}>{r.counts.exp}</text>}
+          {colCounts&&<text x={CO.xCtrl} y={r.y} fontSize={10} fill={FC.muted}>{r.counts.ctrl}</text>}
+          <line x1={r.lo.x} y1={cy} x2={r.hi.x} y2={cy} stroke={FC.acc} strokeWidth={1.5}/>
+          {endCap(r.lo,cy,FC.acc,"lo")}
+          {endCap(r.hi,cy,FC.acc,"hi")}
+          {r.es.clamped
+            ? <polygon points={r.es.clamped<0?`${r.es.x},${cy} ${r.es.x+sq},${cy-sq/2} ${r.es.x+sq},${cy+sq/2}`:`${r.es.x},${cy} ${r.es.x-sq},${cy-sq/2} ${r.es.x-sq},${cy+sq/2}`} fill={FC.acc}/>
+            : <rect x={r.es.x-sq/2} y={cy-sq/2} width={sq} height={sq} fill={FC.acc} rx={1}/>}
+          <text x={CO.xEff} y={r.y} fontSize={10} fill={FC.muted}>{fmtV(s._es,prec)} [{fmtV(s._lo,prec)}, {fmtV(s._hi,prec)}]</text>
+          {showWeights&&<text x={CO.xW} y={r.y} fontSize={10} fill={FC.dim}>{chartWeight(r.weightFixedPct)}%</text>}
+          {showWeights&&<text x={CO.xW2} y={r.y} fontSize={10} fill={FC.dim}>{chartWeight(r.weightRandomPct)}%</text>}
         </g>);
       })}
-      <line x1={padL} y1={TOP+k*ROW+6} x2={W-6} y2={TOP+k*ROW+6} stroke={FC.brd}/>
-      {/* Pooled diamond (selected model) */}
-      {(()=>{
-        const cy=yP(k+0.4),x1=xS(lo95),x2=xS(hi95),xc=xS(pES),dh=8;
-        return(<g>
-          <text x={padL} y={cy+4} fontSize={11} fill={FC.grn} fontWeight={700}>{result.method==="fixed"?"Pooled (common)":"Pooled (random)"}</text>
-          <polygon points={`${xc},${cy-dh} ${x2},${cy} ${xc},${cy+dh} ${x1},${cy}`} fill={FC.grn} opacity={0.9}/>
-          <text x={colEffX} y={cy+4} fontSize={10} fill={FC.grn} fontWeight={700}>{fmtV(pES,prec)} [{fmtV(lo95,prec)}, {fmtV(hi95,prec)}]</text>
-          {showWeights&&<text x={colWfX} y={cy+4} fontSize={10} fill={FC.grn}>100%</text>}
-          {showWeights&&<text x={colWrX} y={cy+4} fontSize={10} fill={FC.grn}>100%</text>}
-        </g>);
-      })()}
-      {/* axis ticks (back-transformed labels for log/prop) */}
-      {gridVals.map(v=><text key={v} x={xS(v)} y={yAxisTicks} textAnchor="middle" fontSize={10} fill={FC.muted}>{isLog?chartAxisTick(bt(v),{isLog:true}):(isProp?chartAxisTick(bt(v),{isProp:true}):chartAxisTick(v))}</text>)}
-      {/* favours labels — flank the null line, one row below the ticks */}
-      <text x={xS(nullLine)-6} y={yFavours} textAnchor="end" fontSize={9} fill={FC.dim}>← favours</text>
-      <text x={xS(nullLine)+6} y={yFavours} textAnchor="start" fontSize={9} fill={FC.dim}>favours →</text>
+      <line x1={CO.xName} y1={RG.ySep} x2={W-6} y2={RG.ySep} stroke={FC.brd}/>
+      {/* 116.md §32 — BOTH pooled diamonds, exactly like the publication figure;
+          the selected model is the filled one. A reviewer can now see on screen
+          what the exported file will contain. */}
+      {diamonds.map(d=>(
+        <g key={d.key}>
+          <text x={CO.xName} y={d.y} fontSize={11} fill={d.strong?FC.grn:FC.muted} fontWeight={d.strong?700:400}>{d.label}</text>
+          <polygon points={`${d.es.x},${d.markerY-d.height} ${d.hi.x},${d.markerY} ${d.es.x},${d.markerY+d.height} ${d.lo.x},${d.markerY}`}
+            fill={d.strong?FC.grn:"none"} stroke={FC.grn} strokeWidth={1.1} opacity={d.strong?0.9:1}/>
+          <text x={CO.xEff} y={d.y} fontSize={10} fill={d.strong?FC.grn:FC.muted} fontWeight={d.strong?700:400}>{fmtV(d.value.es,prec)} [{fmtV(d.value.lo,prec)}, {fmtV(d.value.hi,prec)}]</text>
+          {showWeights&&<text x={d.key==="fixed"?CO.xW:CO.xW2} y={d.y} fontSize={10} fill={d.strong?FC.grn:FC.dim}>100%</text>}
+        </g>
+      ))}
+      {pi&&(<g>
+        <text x={CO.xName} y={pi.y} fontSize={9.5} fill={FC.dim} fontStyle="italic">{pi.label}</text>
+        <line x1={pi.lo.x} y1={pi.markerY} x2={pi.hi.x} y2={pi.markerY} stroke={FC.dim} strokeWidth={1.4} strokeDasharray="4,2"/>
+        <text x={CO.xEff} y={pi.y} fontSize={9.5} fill={FC.dim} fontStyle="italic">{fmtV(pi.value.lo,prec)} to {fmtV(pi.value.hi,prec)}</text>
+      </g>)}
+      {/* x-axis: its own line below the diamond band, then de-collided ticks */}
+      <line x1={CO.xPlot} y1={RG.axisY} x2={CO.xPlotEnd} y2={RG.axisY} stroke={FC.muted} strokeWidth={1}/>
+      {ticks.map(t=>(<g key={"tk"+t.v}>
+        <line x1={t.x} y1={RG.axisY} x2={t.x} y2={RG.axisY+4} stroke={FC.muted} strokeWidth={0.9}/>
+        <text x={t.x} y={RG.tickLabelY} textAnchor="middle" fontSize={10} fill={FC.muted}>{tickText(t.v)}</text>
+      </g>))}
+      {/* favours labels — 116.md §25: edge-anchored under the two axis halves, on
+          their own row, ellipsised so they can never meet or leave the plot band. */}
+      {favours.show&&(<g>
+        {favTri(favours.low,FC.dim)}
+        <text x={favours.low.x} y={favours.y} textAnchor={favours.low.anchor} fontSize={9} fill={FC.dim}>{favours.low.text}</text>
+        {favTri(favours.high,FC.dim)}
+        <text x={favours.high.x} y={favours.y} textAnchor={favours.high.anchor} fontSize={9} fill={FC.dim}>{favours.high.text}</text>
+      </g>)}
       {/* effect-measure label — centered under the plot, on its own row */}
-      <text x={LM+plotW/2} y={yEsLabel} textAnchor="middle" fontSize={11} fill={FC.txt}>{esLabel}</text>
-      {/* heterogeneity line — prompt50 WS4: route every number through the
-          CHART formatter (bounded, edge-case safe, never `full`). I²/weights stay
-          1dp by convention; τ²/Q render a clean "0.000" instead of a digit wall. */}
-      <text x={padL} y={yHetero} fontSize={10} fill={FC.dim}>
-        Heterogeneity: I² = {chartI2(I2)}%  ·  τ² = {chartNum(tau2,prec)}  ·  Q = {chartNum(Q,prec)} (p {Qpval<0.001?"< 0.001":"= "+chartNum(Qpval,prec)})  ·  overall p {pval<0.001?"< 0.001":"= "+chartNum(pval,prec)}
-      </text>
+      <text x={CO.xPlot+CO.plotW/2} y={RG.axisLabelY} textAnchor="middle" fontSize={11} fill={FC.txt} fontWeight={700}>{axisLabel}</text>
+      {/* heterogeneity / model footer — prompt50 WS4: every number goes through the
+          CHART formatter (bounded, edge-case safe, never `full`). */}
+      {footerLines.map((ln,i)=>(
+        <text key={"f"+i} x={CO.xName} y={ln.y} fontSize={10} fill={FC.dim}>{ln.text}</text>
+      ))}
     </svg>
   </div>);
 }

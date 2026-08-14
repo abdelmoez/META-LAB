@@ -15,7 +15,7 @@
 
 import { runMeta as defaultRunMeta } from '../statistics/meta-analysis.js';
 import { getOutcomePairs, filterStudiesForOutcome } from '../import-export/journalSubmission.js';
-import { fmtES, fmtNum } from '../format/precision.js';
+import { fmtES, fmtNum, fmtP } from '../format/precision.js';
 import { resolveAnalysis } from './analysisDescribe.js';
 import { deriveSearchMethodology } from '../search/searchMethodology.js';
 import { caseDisplayName, caseSeriesCounts } from '../extraction/caseSeries.js';
@@ -185,7 +185,9 @@ export function buildSummaryOfFindingsTable(project, opts = {}) {
       measure: measure.label,
       estimate: fmt(pe),
       ci: lo != null && hi != null ? `${fmt(lo)} to ${fmt(hi)}` : '',
-      pValue: res.pval != null ? (res.pval < 0.001 ? '<0.001' : fmtNum(res.pval, prec)) : '',
+      // 116.md §31 — p-values through fmtP (three-place floor), never fmtNum: a
+      // 2-dp project printed "0.00" for p = 0.004 in the summary-of-findings table.
+      pValue: res.pval != null ? fmtP(res.pval, prec) : '',
       i2: res.I2 != null ? `${fmtNum(res.I2, prec)}%` : '',
       model: (opts.model || 'random') === 'fixed' ? 'Fixed effect' : 'Random effects',
       certainty: clean(grade),

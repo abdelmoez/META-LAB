@@ -21,7 +21,11 @@ import { useProjectHistory } from "../../history/HistoryContext.jsx";
 import { useOpsGovernance } from "../../featureAccess/opsGovernance.js";
 import { useTheme } from "../../theme/ThemeContext.jsx";
 import { rasterizeSvg, downloadBlob, downloadText } from "../../components/exportCore.js";
-import { fmtNum, fmtES, fmtP, fmtPct, fmtI2, fmtWeight, normalizePrecision, DECIMAL_OPTIONS } from "../../../research-engine/format/precision.js";
+import { fmtNum, fmtES, fmtP, fmtPExpr, fmtPct, fmtI2, fmtWeight, fmtScaled, makeScaledFormatter, normalizePrecision, DECIMAL_OPTIONS } from "../../../research-engine/format/precision.js";
+// 116.md §27 (D4) — the ONE outcome-rename path (studies[].outcome + every
+// name-keyed analysisSettings map, migrated atomically). Never rewrite an
+// outcome string anywhere else.
+import { renameOutcome, outcomePairKey } from "../../../research-engine/project-model/renameOutcome.js";
 import { isNonPrimary } from "../../../research-engine/import-export/referenceParsers.js";
 import { ES_TYPES, DATA_NATURE_LABEL, ADJUST_LABEL, SOURCE_LABEL } from "../../../research-engine/project-model/monolithConstants.js";
 import { normalCDF, runMeta, eggersTest, leaveOneOut, trimFill, influenceDiagnostics, subgroupAnalysis, analysisTypeWarnings, CONVERSIONS, checkPoolability, TAU2_METHODS, TAU2_LABELS, poolableStudyView, withPoolableViews, hasUsableEffect } from "../../../research-engine/statistics/monolithStats.js";
@@ -39,7 +43,7 @@ import { isExcludedFromAnalysis } from "../../../research-engine/statistics/stud
 // degrades gracefully until the engine is wired in. Once landed it "just works".
 import * as MonolithStats from "../../../research-engine/statistics/monolithStats.js";
 import { openExportDialog } from "../exportDialogBridge.js";
-import { SVG_XML_HEADER, presetTag, liveSvgToString, buildPubForestSVG } from "../charts/svgBuilders.js";
+import { SVG_XML_HEADER, presetTag, liveSvgToString, buildPubForestSVG, esMeasureName } from "../charts/svgBuilders.js";
 import { ForestPlot, FunnelPlot } from "../charts/charts.jsx";
 import { BubblePlot, buildBubbleSVG } from "../BubblePlot.jsx";
 import { C, btnS, inp, th, tagS } from "../ui/styles.js";
@@ -128,6 +132,22 @@ export function pairProportionOverride(project,pair){
   const m=project&&project.analysisSettings&&project.analysisSettings.proportionOverrides;
   return (pair&&m&&m[pair.key])||null;
 }
+/** 116.md §26 — the persisted FIGURE-LOCAL labels for one outcome pair
+ *  (analysisSettings.figureLabels[pairKey] = {title?, favLow?, favHigh?, esLabel?}).
+ *  Absent ⇒ `{}` ⇒ every label falls back to its measure-derived default. These are
+ *  figure text ONLY: renaming an outcome is a PROJECT edit (renameOutcome, D4). */
+export function pairFigureLabels(project,pair){
+  const m=project&&project.analysisSettings&&project.analysisSettings.figureLabels;
+  return (pair&&m&&m[pair.key])||EMPTY_FIGURE_LABELS;
+}
+const EMPTY_FIGURE_LABELS=Object.freeze({});
+/** 116.md §124 — the persisted synthesis model. ABSENT ⇒ 'random' (byte-compat: a
+ *  project that never touched the toggle keeps a blob without the key). */
+export function projectModel(project){
+  const m=project&&project.analysisSettings&&project.analysisSettings.model;
+  return m==="fixed"?"fixed":"random";
+}
+
 /** True when this pair is a single-arm proportion analysis — every 107.md §11 gate is
  *  conditioned on it so no other measure changes behaviour. */
 export function pairIsProportion(pair,dominantEsType){
@@ -259,6 +279,42 @@ export function writeProportionOverride(project,outcomeKey,record){
   if(Object.keys(po).length) as.proportionOverrides=po; else delete as.proportionOverrides;
   return {...project,analysisSettings:as};
 }
+/**
+ * 116.md §26 — write (or clear) the FIGURE-LOCAL labels for one outcome pair.
+ * Same shape/discipline as the two writers above: pure, no ids or timestamps
+ * generated inside, and an emptied field/entry/container is DELETED so a project
+ * that never customised a figure keeps a byte-identical blob.
+ * `patch` fields set to '' or null are removed (= "back to the auto default").
+ */
+export function writeFigureLabels(project,outcomeKey,patch){
+  const as={...((project&&project.analysisSettings)||{})};
+  const fl={...(as.figureLabels||{})};
+  const cur={...(fl[outcomeKey]||{})};
+  Object.keys(patch||{}).forEach(f=>{
+    const v=patch[f];
+    if(v==null||String(v).trim()==="") delete cur[f]; else cur[f]=String(v).trim();
+  });
+  if(Object.keys(cur).length) fl[outcomeKey]=cur; else delete fl[outcomeKey];
+  if(Object.keys(fl).length) as.figureLabels=fl; else delete as.figureLabels;
+  const out={...project};
+  if(Object.keys(as).length) out.analysisSettings=as; else delete out.analysisSettings;
+  return out;
+}
+
+/**
+ * 116.md §124 — persist the synthesis model so AnalysisTab, ForestTab, the
+ * exports and the manuscript stop disagreeing. 'random' is stored as ABSENCE:
+ * every reader already defaults to random, so a project that never picks 'fixed'
+ * (or switches back) serialises byte-identically to a pre-116 blob.
+ */
+export function writeAnalysisModel(project,value){
+  const as={...((project&&project.analysisSettings)||{})};
+  if(value==="fixed") as.model="fixed"; else delete as.model;
+  const out={...project};
+  if(Object.keys(as).length) out.analysisSettings=as; else delete out.analysisSettings;
+  return out;
+}
+
 /** Display name recorded on an override — null when the shell has no signed-in user. */
 export function overrideActorName(user){
   if(!user||typeof user!=="object") return null;
@@ -289,6 +345,9 @@ export const ANALYSIS_CONFIG_TARGETS=Object.freeze({
   PRECISION:"analysisPrecision",
   PROP_FILTER:"proportionFilter",
   PROP_OVERRIDE:"proportionOverride",
+  // 116.md §26/§124 — two more undoable configuration writes on the same rails.
+  FIGURE_LABELS:"figureLabels",
+  MODEL:"model",
 });
 
 /** Write (or delete) analysisSettings.tau2Method, dropping an emptied container. */
@@ -319,6 +378,13 @@ export function readAnalysisConfig(project,op){
     return v==null||v===""?null:v;
   }
   if(t===ANALYSIS_CONFIG_TARGETS.PROP_OVERRIDE) return (as.proportionOverrides||{})[op.outcomeKey]||null;
+  // 116.md §26 — one FIELD of one pair's figure labels ('' / missing ⇒ null = "auto").
+  if(t===ANALYSIS_CONFIG_TARGETS.FIGURE_LABELS){
+    const cur=(as.figureLabels||{})[op.outcomeKey]||{};
+    const v=cur[op.field];
+    return v==null||v===""?null:v;
+  }
+  if(t===ANALYSIS_CONFIG_TARGETS.MODEL) return as.model==="fixed"?"fixed":null;
   return null;
 }
 
@@ -335,6 +401,8 @@ export function applyAnalysisConfig(project,op){
   // restored record is honoured, so a redo can never silently re-bless data that
   // changed underneath it.
   if(t===ANALYSIS_CONFIG_TARGETS.PROP_OVERRIDE) return writeProportionOverride(project,op.outcomeKey,op.record||null);
+  if(t===ANALYSIS_CONFIG_TARGETS.FIGURE_LABELS) return writeFigureLabels(project,op.outcomeKey,{[op.field]:op.value});
+  if(t===ANALYSIS_CONFIG_TARGETS.MODEL) return writeAnalysisModel(project,op.value);
   return project;
 }
 
@@ -363,7 +431,148 @@ export function analysisConfigLabel(op){
   if(t===ANALYSIS_CONFIG_TARGETS.PRECISION) return "Decimal places change";
   if(t===ANALYSIS_CONFIG_TARGETS.PROP_FILTER) return "Proportion filter change";
   if(t===ANALYSIS_CONFIG_TARGETS.PROP_OVERRIDE) return "Compatibility override change";
+  if(t===ANALYSIS_CONFIG_TARGETS.FIGURE_LABELS) return FIGURE_LABEL_FIELDS[op.field]?`${FIGURE_LABEL_FIELDS[op.field]} change`:"Figure label change";
+  if(t===ANALYSIS_CONFIG_TARGETS.MODEL) return "Synthesis model change";
   return "Analysis setting change";
+}
+
+/** 116.md §26 — the four editable figure-local labels and their human names. */
+export const FIGURE_LABEL_FIELDS=Object.freeze({
+  title:"Figure title",
+  esLabel:"X-axis label",
+  favLow:"Left favours label",
+  favHigh:"Right favours label",
+});
+
+/* ── 116.md §30 — the shared analysis-config plumbing ─────────────────────────
+   AnalysisTab grew this in 108.md. §30 requires the decimal control on EVERY
+   Analysis page writing the SAME project setting, and §26 adds two more undoable
+   writes, so the executor + recorder live here once instead of in four copies.
+   Everything the (asynchronous) executor reads goes through render-assigned refs:
+   `project`/`updateProject` are recreated by both shells on every render and a
+   closure over either would be stale by the time an undo runs — the §14 hazard. */
+export function useAnalysisConfigOps(project,updateProject,opts={}){
+  const history=useProjectHistory();
+  const historyRef=useRef(history); historyRef.current=history;
+  const projectRef=useRef(project); projectRef.current=project;
+  const updateProjectRef=useRef(updateProject); updateProjectRef.current=updateProject;
+  const onExecuted=useRef(opts.onExecuted); onExecuted.current=opts.onExecuted;
+  const registerExecutor=history.registerExecutor;
+  useEffect(()=>registerExecutor("analysis.config",(op)=>{
+    const cur=projectRef.current;
+    const write=updateProjectRef.current;
+    if(!cur||typeof write!=="function") return {ok:false,reason:"refused"};
+    // Re-validate against the CURRENT project, never the one at record time.
+    if(!analysisConfigMatches(cur,op)) return {ok:false,reason:"refused"};
+    write(ap=>applyAnalysisConfig(ap,op));
+    if(typeof onExecuted.current==="function") onExecuted.current(op);
+    return true;
+  }),[registerExecutor]);
+  const recordConfig=useCallback((undoOp,redoOp)=>{
+    historyRef.current.record({
+      kind:"analysis.config",
+      label:analysisConfigLabel(redoOp),
+      entityKey:analysisConfigKey(redoOp),
+      undoOp,redoOp,
+    });
+  },[]);
+  /** One `value`-shaped setting: write through the SAME pure writer the executor
+   *  uses, then record the prior value as the inverse. No-ops when unchanged. */
+  const setConfigValue=useCallback((addr,next)=>{
+    const write=updateProjectRef.current;
+    if(typeof write!=="function") return false;
+    const prev=readAnalysisConfig(projectRef.current,addr);
+    if(sameConfigValue(prev,next===undefined?null:next)) return false;
+    write(ap=>applyAnalysisConfig(ap,{...addr,value:next}));
+    recordConfig({...addr,value:prev,expect:next},{...addr,value:next,expect:prev});
+    return true;
+  },[recordConfig]);
+  const setAnalysisPrecision=useCallback((next)=>
+    setConfigValue({target:ANALYSIS_CONFIG_TARGETS.PRECISION},next),[setConfigValue]);
+  const setAnalysisModel=useCallback((next)=>
+    setConfigValue({target:ANALYSIS_CONFIG_TARGETS.MODEL},next==="fixed"?"fixed":null),[setConfigValue]);
+  /* 116.md §27 (D4) — the PROJECT-level outcome rename, on the same undo rails but
+     its own executor kind: it rewrites studies[].outcome AND migrates every
+     name-keyed analysisSettings map in one atomic pure operation. This is the ONLY
+     rename path; a figure-title edit (setFigureLabel above) can never reach it. */
+  useEffect(()=>registerExecutor("analysis.outcomeRename",(op)=>{
+    const cur=projectRef.current;
+    const write=updateProjectRef.current;
+    if(!cur||typeof write!=="function") return {ok:false,reason:"refused"};
+    const probe=renameOutcome(cur,op.from,op.to,op.timepoint==null?{}:{timepoint:op.timepoint});
+    if(!probe.changed) return {ok:false,reason:"refused"};   // someone already moved it
+    write(ap=>renameOutcome(ap,op.from,op.to,op.timepoint==null?{}:{timepoint:op.timepoint}).project);
+    return true;
+  }),[registerExecutor]);
+  const renameProjectOutcome=useCallback((from,to,timepoint)=>{
+    const write=updateProjectRef.current;
+    if(typeof write!=="function") return null;
+    const res=renameOutcome(projectRef.current,from,to,timepoint==null?{}:{timepoint});
+    if(!res.changed) return res;
+    write(ap=>renameOutcome(ap,from,to,timepoint==null?{}:{timepoint}).project);
+    historyRef.current.record({
+      kind:"analysis.outcomeRename",
+      label:"Outcome rename",
+      entityKey:`outcomeRename:${outcomePairKey(res.rename.to,timepoint||"")}`,
+      undoOp:{from:res.rename.to,to:res.rename.from,timepoint:timepoint==null?null:timepoint},
+      redoOp:{from:res.rename.from,to:res.rename.to,timepoint:timepoint==null?null:timepoint},
+    });
+    return res;
+  },[]);
+  const setFigureLabel=useCallback((outcomeKey,field,value)=>{
+    if(!outcomeKey||!FIGURE_LABEL_FIELDS[field]) return false;
+    const v=value==null||String(value).trim()===""?null:String(value).trim();
+    return setConfigValue({target:ANALYSIS_CONFIG_TARGETS.FIGURE_LABELS,outcomeKey,field},v);
+  },[setConfigValue]);
+  return {history,projectRef,recordConfig,setConfigValue,setAnalysisPrecision,setAnalysisModel,setFigureLabel,renameProjectOutcome};
+}
+
+/** 116.md §29/§30 — the decimal-precision control. ONE component, rendered on every
+ *  Analysis page, reading/writing the single project-level `analysisPrecision`. */
+export function PrecisionControl({prec,onChange,onApplyAll}){
+  if(typeof onChange!=="function") return null;
+  const np=normalizePrecision(prec);
+  return(<div style={{display:"flex",alignItems:"center",gap:8,marginLeft:8,paddingLeft:8,borderLeft:`1px solid ${themeAlpha(C.brd,'88')}`}}>
+    <span style={{fontSize:11,color:C.muted,whiteSpace:"nowrap"}}>Decimal places:</span>
+    <select value={np.decimals} onChange={e=>onChange({...np,decimals:Number(e.target.value)})} style={{...inp,width:"auto",fontSize:11,padding:"3px 6px"}}>
+      {DECIMAL_OPTIONS.map(d=><option key={d} value={d}>{d}</option>)}
+    </select>
+    <label style={{display:"flex",alignItems:"center",gap:4,fontSize:11,color:C.muted,cursor:"pointer",whiteSpace:"nowrap"}}>
+      <input type="checkbox" checked={np.trailingZeros} onChange={e=>onChange({...np,trailingZeros:e.target.checked})} style={{accentColor:C.acc}}/>trailing zeros
+    </label>
+    {/* 108.md §6 — "Apply to all" is deliberately NOT recorded: it fans out to
+        every project the user can edit, so one entry cannot describe it and one
+        undo cannot reverse it (see applyAnalysisConfig's header). */}
+    {onApplyAll&&<button onClick={()=>onApplyAll({decimals:np.decimals,trailingZeros:np.trailingZeros})} title="Apply this decimal-places setting to every project you can edit" style={{...btnS("ghost"),fontSize:10,padding:"3px 8px",whiteSpace:"nowrap"}}>Apply to all</button>}
+  </div>);
+}
+
+/* ── 116.md §26/§28 — the compact inline label editor ─────────────────────────
+   Hover/▸click a pencil → a small input in place; Enter commits, Escape cancels,
+   blur commits, and the commit goes straight through the persisted-config writer
+   so it autosaves, rerenders immediately and lands in Undo. The plot itself keeps
+   NO editing chrome and no SVG text node is ever contentEditable (§26). */
+export function InlineLabelEdit({label,value,placeholder,onCommit,width=190,hint}){
+  const[editing,setEditing]=useState(false);
+  const[draft,setDraft]=useState("");
+  const start=()=>{ setDraft(value||""); setEditing(true); };
+  const commit=()=>{ setEditing(false); if(typeof onCommit==="function") onCommit(draft); };
+  const cancel=()=>{ setEditing(false); setDraft(""); };
+  return(<div style={{display:"flex",alignItems:"center",gap:6,fontSize:11,color:C.muted}}>
+    <span style={{whiteSpace:"nowrap"}}>{label}</span>
+    {editing?(
+      <input autoFocus value={draft} placeholder={placeholder||""} onChange={e=>setDraft(e.target.value)}
+        onKeyDown={e=>{ if(e.key==="Enter"){e.preventDefault();commit();} else if(e.key==="Escape"){e.preventDefault();cancel();} }}
+        onBlur={commit} aria-label={label}
+        style={{...inp,width,fontSize:11,padding:"3px 6px"}}/>
+    ):(
+      <button onClick={start} title={hint||`Edit ${label}`}
+        style={{...btnS("ghost"),fontSize:11,padding:"3px 8px",maxWidth:width+24,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>
+        {value?value:<span style={{color:C.dim}}>{placeholder||"auto"}</span>} <span aria-hidden="true">✎</span>
+      </button>
+    )}
+    {!editing&&value&&<button onClick={()=>onCommit&&onCommit("")} title="Reset to the automatic label" style={{...btnS("ghost"),fontSize:10,padding:"2px 6px"}}>reset</button>}
+  </div>);
 }
 
 /** Coalescing/diagnostic key — one logical setting per outcome. */
@@ -641,44 +850,24 @@ export function AnalysisEligibilityNotice({reasons,title}){
 /* ════════════ TAB: ANALYSIS ════════════ */
 export function AnalysisTab({project,updateProject,onApplyPrecisionToAll,currentUser}){
   const studies=Array.isArray(project&&project.studies)?project.studies:[];
-  const[method,setMethod]=useState("random");
+  // 116.md §124 — the model is PERSISTED (absent ⇒ 'random'), so ForestTab, the
+  // exports and the manuscript can no longer show three different models at once.
+  const method=projectModel(project);
   // RoadMap/2.md — opt-in τ² estimator (DerSimonian–Laird default keeps existing results).
   // PERSISTED to the project so every pooled view (forest diamond, sensitivity, subgroup,
   // write-up) uses the SAME estimator — otherwise tabs would show contradicting CIs.
   const[localTau2,setLocalTau2]=useState("DL");
   const tau2Method=(project&&project.analysisSettings&&project.analysisSettings.tau2Method)||localTau2;
 
-  /* ── 108.md §6 — history plumbing for the four undoable config writes ──────
-     Everything the executor reads goes through render-assigned refs: `project` and
-     `updateProject` are recreated by both shells on every render, and the executor
-     runs LATER (an undo is asynchronous), so a closure over either would be stale by
-     the time it matters — exactly the §14 hazard. */
-  const history=useProjectHistory();
-  const historyRef=useRef(history); historyRef.current=history;
-  const projectRef=useRef(project); projectRef.current=project;
-  const updateProjectRef=useRef(updateProject); updateProjectRef.current=updateProject;
-  const registerExecutor=history.registerExecutor;
-  useEffect(()=>registerExecutor("analysis.config",(op)=>{
-    const cur=projectRef.current;
-    const write=updateProjectRef.current;
-    if(!cur||typeof write!=="function") return {ok:false,reason:"refused"};
-    // Re-validate against the CURRENT project, never the one at record time.
-    if(!analysisConfigMatches(cur,op)) return {ok:false,reason:"refused"};
-    write(ap=>applyAnalysisConfig(ap,op));
+  /* ── 108.md §6 / 116.md §30 — the shared history plumbing (useAnalysisConfigOps). */
+  const cfg=useAnalysisConfigOps(project,updateProject,{onExecuted:(op)=>{
     // The τ² select prefers the persisted value and falls back to this local mirror,
     // so restoring an ABSENT persisted value without restoring the mirror would leave
     // the control showing the post-action estimator.
     if(op.target===ANALYSIS_CONFIG_TARGETS.TAU2&&typeof op.localTau2==="string") setLocalTau2(op.localTau2);
-    return true;
-  }),[registerExecutor]);
-  const recordConfig=useCallback((undoOp,redoOp)=>{
-    historyRef.current.record({
-      kind:"analysis.config",
-      label:analysisConfigLabel(redoOp),
-      entityKey:analysisConfigKey(redoOp),
-      undoOp,redoOp,
-    });
-  },[]);
+  }});
+  const{projectRef,recordConfig,setAnalysisPrecision,setAnalysisModel}=cfg;
+  const setMethod=(m)=>{ setAnalysisModel(m); };
 
   const setTau2Method=(v)=>{
     const prev=readAnalysisConfig(projectRef.current,{target:ANALYSIS_CONFIG_TARGETS.TAU2});
@@ -690,16 +879,6 @@ export function AnalysisTab({project,updateProject,onApplyPrecisionToAll,current
     recordConfig(
       {target:ANALYSIS_CONFIG_TARGETS.TAU2,value:prev,localTau2:prevLocal,expect:v},
       {target:ANALYSIS_CONFIG_TARGETS.TAU2,value:v,localTau2:v,expect:prev},
-    );
-  };
-  /** Decimal places / trailing zeros — ONE entry per change, whole-object inverse. */
-  const setAnalysisPrecision=(next)=>{
-    if(!updateProject) return;
-    const prev=readAnalysisConfig(projectRef.current,{target:ANALYSIS_CONFIG_TARGETS.PRECISION});
-    updateProject(ap=>({...ap,analysisPrecision:next}));
-    recordConfig(
-      {target:ANALYSIS_CONFIG_TARGETS.PRECISION,value:prev,expect:next},
-      {target:ANALYSIS_CONFIG_TARGETS.PRECISION,value:next,expect:prev},
     );
   };
   const[showAudit,setShowAudit]=useState(false);
@@ -861,7 +1040,7 @@ export function AnalysisTab({project,updateProject,onApplyPrecisionToAll,current
         const rows=buildOutcomeSummaryRows(project,studies,outcomePairs,method,{tau2Method}).map(row=>{
           const tt=ES_TYPES[row.et]||{};const isLog=!!tt.log,isProp=row.et==="PROP";
           const bt=x=>isLog?Math.exp(x):isProp?(()=>{const e=Math.exp(x);return e/(1+e);})():x;
-          const dv=x=>x==null?"—":isProp?(bt(x)*100).toFixed(normalizePrecision(prec).decimals)+"%":isLog?fmtES(bt(x),prec):fmtES(+x,prec);
+          const dv=makeScaledFormatter({isLog,isProp},prec);   // 116.md §31 — centralized, honours trailingZeros
           return {...row,dv};
         });
         return(
@@ -928,19 +1107,7 @@ export function AnalysisTab({project,updateProject,onApplyPrecisionToAll,current
         </span>
       )}
       <span style={{marginLeft:"auto",fontSize:11,color:C.muted}}>{valid.length} of {studies.length} studies usable</span>
-      {updateProject&&(()=>{const np=normalizePrecision(prec);return(<div style={{display:"flex",alignItems:"center",gap:8,marginLeft:8,paddingLeft:8,borderLeft:`1px solid ${themeAlpha(C.brd,'88')}`}}>
-        <span style={{fontSize:11,color:C.muted,whiteSpace:"nowrap"}}>Decimal places:</span>
-        <select value={np.decimals} onChange={e=>setAnalysisPrecision({...np,decimals:Number(e.target.value)})} style={{...inp,width:"auto",fontSize:11,padding:"3px 6px"}}>
-          {DECIMAL_OPTIONS.map(d=><option key={d} value={d}>{d}</option>)}
-        </select>
-        <label style={{display:"flex",alignItems:"center",gap:4,fontSize:11,color:C.muted,cursor:"pointer",whiteSpace:"nowrap"}}>
-          <input type="checkbox" checked={np.trailingZeros} onChange={e=>setAnalysisPrecision({...np,trailingZeros:e.target.checked})} style={{accentColor:C.acc}}/>trailing zeros
-        </label>
-        {/* 108.md §6 — "Apply to all" is deliberately NOT recorded: it fans out to
-            every project the user can edit, so one entry cannot describe it and one
-            undo cannot reverse it (see applyAnalysisConfig's header). */}
-        {onApplyPrecisionToAll&&<button onClick={()=>onApplyPrecisionToAll({decimals:np.decimals,trailingZeros:np.trailingZeros})} title="Apply this decimal-places setting to every project you can edit" style={{...btnS("ghost"),fontSize:10,padding:"3px 8px",whiteSpace:"nowrap"}}>Apply to all</button>}
-      </div>);})()}
+      <PrecisionControl prec={prec} onChange={updateProject?setAnalysisPrecision:undefined} onApplyAll={onApplyPrecisionToAll}/>
     </div>
 
     {/* POOLABILITY GATE */}
@@ -1036,7 +1203,7 @@ export function AnalysisTab({project,updateProject,onApplyPrecisionToAll,current
       {result.fixed&&result.random&&(()=>{
         const t=ES_TYPES[esType]||{};const isLog=!!t.log,isProp=esType==="PROP";
         const bt=x=>isLog?Math.exp(x):isProp?(()=>{const e=Math.exp(x);return e/(1+e);})():x;
-        const dv=x=>isProp?(bt(x)*100).toFixed(normalizePrecision(prec).decimals)+"%":isLog?fmtES(bt(x),prec):fmtES(+x,prec);
+        const dv=makeScaledFormatter({isLog,isProp},prec);   // 116.md §31 — centralized, honours trailingZeros
         const Cell=({title,o,active})=>(
           <div style={{flex:1,minWidth:200,background:active?`${themeAlpha(C.grn,'0d')}`:C.bg,border:`1px solid ${active?themeAlpha(C.grn,'55'):C.brd}`,borderRadius:8,padding:"12px 14px"}}>
             <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:4}}>
@@ -1061,7 +1228,7 @@ export function AnalysisTab({project,updateProject,onApplyPrecisionToAll,current
       {(result.hksj||result.predInt)&&(()=>{
         const t=ES_TYPES[esType]||{};const isLog=!!t.log,isProp=esType==="PROP";
         const bt=x=>isLog?Math.exp(x):isProp?(()=>{const e=Math.exp(x);return e/(1+e);})():x;
-        const dv=x=>isProp?(bt(x)*100).toFixed(normalizePrecision(prec).decimals)+"%":isLog?fmtES(bt(x),prec):fmtES(+x,prec);
+        const dv=makeScaledFormatter({isLog,isProp},prec);   // 116.md §31 — centralized, honours trailingZeros
         const nullV=isLog?1:0; // on display scale
         const hk=result.hksj, pi=result.predInt;
         const hkSig=hk&&((isLog?bt(hk.lo)>1||bt(hk.hi)<1:hk.lo>0||hk.hi<0));
@@ -1332,7 +1499,7 @@ export function ResearchExport({result,esType,method,studies,prec,proportionFilt
   const ratioName=scale.replace("ln","");        // OR / RR / HR
   const transform=isLog?"natural-log, back-transformed for display":isProp?"logit, back-transformed to %":esType==="COR"?"Fisher's z":"none";
   const bt=x=>isLog?Math.exp(x):isProp?(()=>{const e=Math.exp(x);return e/(1+e);})():x;
-  const dispVal=x=>isProp?(bt(x)*100).toFixed(normalizePrecision(prec).decimals)+"%":isLog?fmtES(bt(x),prec):fmtES(+x,prec);
+  const dispVal=makeScaledFormatter({isLog,isProp},prec);   // 116.md §31 — centralized, honours trailingZeros
 
   // build per-study rows
   const expTot=s=>(s.a!==""&&s.a!=null)?`${s.a}/${(+s.a)+(+s.b||0)||s.nExp||"?"}`:(s.events!==""&&s.events!=null?`${s.events}/${s.total||"?"}`:"");
@@ -1551,16 +1718,23 @@ export function ResultsWriteup({result,interp,esType,method,methodLabel,studies,
 }
 
 /* ════════════ TAB: FOREST PLOT ════════════ */
-export function ForestTab({project}){
+export function ForestTab({project,updateProject,onApplyPrecisionToAll}){
   const studies=Array.isArray(project&&project.studies)?project.studies:[];
   const{theme}=useTheme(); // prompt19 — live forest plot follows day/night
-  const[method,setMethod]=useState("random");
+  // 116.md §26/§29/§30/§124 — the persisted analysis config lives on the shared
+  // rails: model, decimals and the per-figure labels are all undoable writes
+  // through the ONE updateProject choke point (which this tab never had before).
+  const cfg=useAnalysisConfigOps(project,updateProject);
+  const{setAnalysisPrecision,setAnalysisModel,setFigureLabel,renameProjectOutcome}=cfg;
+  const method=projectModel(project);
+  const setMethod=(m)=>setAnalysisModel(m);
   // RoadMap/2.md recs — use the project-wide τ² estimator so the exported forest
   // diamond matches the Meta-Analysis headline (they must never disagree).
   const tau2Method=(project&&project.analysisSettings&&project.analysisSettings.tau2Method)||"DL";
   const[showCounts,setShowCounts]=useState(true);
   const[showWeights,setShowWeights]=useState(true);
   const[showPubPreview,setShowPubPreview]=useState(false);
+  const[showLabelEditor,setShowLabelEditor]=useState(false);
 
   // ── Outcome / time-point selector (shared helper — same rows as AnalysisTab) ──
   const outcomePairs=useMemo(()=>enumerateOutcomePairs(studies),[studies]);
@@ -1586,16 +1760,35 @@ export function ForestTab({project}){
   // to pool, with nothing on screen saying so.
   const gate=useMemo(()=>proportionGate(project,activeOutcome,filteredStudies,esType),
     [project,activeOutcome,filteredStudies,esType]);
-  const autoLabel=esType?`${ES_TYPES[esType]?.scale} (effect size)`:"Effect Size";
-  const[esLabel,setEsLabel]=useState(autoLabel);
-  const[nullLine,setNullLine]=useState(0);
-  const[touched,setTouched]=useState(false);
-  useEffect(()=>{if(!touched)setEsLabel(autoLabel);},[autoLabel,touched]);
+  /* 116.md §26/§27 — FIGURE-LOCAL text, persisted per outcome pair. An empty value
+     means "auto": the layout engine derives the axis name from the measure and the
+     title from the project + outcome. Editing any of these NEVER renames anything
+     project-level; the outcome rename below is a separate, explicitly labelled act. */
+  const labels=pairFigureLabels(project,activeOutcome);
+  const autoTitle=`${project.name||""}${activeOutcome?.outcome?` — ${activeOutcome.outcome}`:""}${activeOutcome?.timepoint?` (${activeOutcome.timepoint})`:""}`.trim();
+  const figTitle=labels.title||autoTitle;
+  const esLabel=labels.esLabel||"";
+  const favLow=labels.favLow||"";
+  const favHigh=labels.favHigh||"";
+  const outcomeKey=activeOutcome?activeOutcome.key:"";
   const result=useMemo(()=>runMeta(filteredStudies,method,{tau2Method}),[filteredStudies,method,tau2Method]);
   const isLog=esType&&ES_TYPES[esType]?.log;
+  const measureNull=esType&&ES_TYPES[esType]?ES_TYPES[esType].nullVal:0;
   const safeName=(project.name||"forest").replace(/[^a-z0-9]/gi,"_");
   const outcomeSafeName=(activeOutcome?.outcome||"outcome").replace(/[^a-z0-9]/gi,"_");
   const prec = project?.analysisPrecision;
+  /* 116.md §27 — renaming the outcome is a PROJECT edit. It is offered here because
+     the forest plot is where a reviewer notices a bad outcome name, but it goes
+     through the one shared renameOutcome writer (studies[] + every name-keyed map)
+     and propagates to Extraction, every selector and the manuscript. */
+  const otherOutcomeNames=useMemo(()=>new Set(outcomePairs
+    .filter(p=>p.key!==outcomeKey).map(p=>(p.outcome||"").trim().toLowerCase())),[outcomePairs,outcomeKey]);
+  const commitOutcomeRename=(next)=>{
+    const to=String(next||"").trim();
+    if(!activeOutcome||!to||to===activeOutcome.outcome) return;
+    renameProjectOutcome(activeOutcome.outcome,to,null);
+    setSelectedKey(outcomePairKey(to,activeOutcome.timepoint));
+  };
 
   return(<div>
     <SectionHeader icon="forest" title="Forest Plot" desc="One forest plot per outcome. Select the outcome to visualise below."/>
@@ -1656,24 +1849,55 @@ export function ForestTab({project}){
           <input type="checkbox" checked={showCounts} onChange={e=>setShowCounts(e.target.checked)} style={{accentColor:C.acc}}/>events/total</label>
         <label style={{display:"flex",alignItems:"center",gap:5,fontSize:11,color:C.muted,cursor:"pointer"}}>
           <input type="checkbox" checked={showWeights} onChange={e=>setShowWeights(e.target.checked)} style={{accentColor:C.acc}}/>weights</label>
-        <input value={esLabel} onChange={e=>{setEsLabel(e.target.value);setTouched(true);}} placeholder="X-axis label" style={{...inp,width:170,fontSize:11}}/>
-        <label style={{fontSize:11,color:C.muted,whiteSpace:"nowrap"}}>Null:</label>
-        <input type="number" value={nullLine} onChange={e=>setNullLine(+e.target.value)} style={{...inp,width:56,textAlign:"center"}}/>
+        {/* 116.md §28 — one compact affordance; the plot itself carries no editing chrome. */}
+        {updateProject&&outcomeKey&&<button onClick={()=>setShowLabelEditor(v=>!v)} style={{...btnS("ghost"),fontSize:11}}>{showLabelEditor?"▲ Done editing labels":"✎ Edit labels"}</button>}
+        {/* 116.md §29/§30 — the SAME project-level decimal setting, on this page too. */}
+        <PrecisionControl prec={prec} onChange={updateProject?setAnalysisPrecision:undefined} onApplyAll={onApplyPrecisionToAll}/>
       </div>
     </div>
+    {/* ── 116.md §26-§28 — figure-local labels + the project-level outcome rename ── */}
+    {showLabelEditor&&updateProject&&outcomeKey&&(
+      <div style={{background:C.card,border:`1px solid ${C.brd}`,borderRadius:8,padding:"12px 14px",marginBottom:14,display:"flex",flexDirection:"column",gap:10}}>
+        <div style={{fontSize:11,fontWeight:700,color:C.acc,letterSpacing:1}}>FIGURE LABELS — THIS PLOT ONLY</div>
+        <div style={{display:"flex",gap:16,flexWrap:"wrap"}}>
+          <InlineLabelEdit label="Title" value={labels.title||""} placeholder={autoTitle||"auto"} width={260}
+            onCommit={v=>setFigureLabel(outcomeKey,"title",v)} hint="Figure title — editing it never renames the outcome"/>
+          <InlineLabelEdit label="X-axis label" value={labels.esLabel||""} placeholder={ES_TYPES[esType]?esMeasureName(esType):"auto"} width={200}
+            onCommit={v=>setFigureLabel(outcomeKey,"esLabel",v)}/>
+        </div>
+        <div style={{display:"flex",gap:16,flexWrap:"wrap"}}>
+          <InlineLabelEdit label="Left favours" value={labels.favLow||""} placeholder="favours lower" width={190}
+            onCommit={v=>setFigureLabel(outcomeKey,"favLow",v)} hint="e.g. Favours intervention — state the direction yourself; it is never inferred"/>
+          <InlineLabelEdit label="Right favours" value={labels.favHigh||""} placeholder="favours higher" width={190}
+            onCommit={v=>setFigureLabel(outcomeKey,"favHigh",v)} hint="e.g. Favours control — for a harm outcome the clinical direction inverts"/>
+        </div>
+        <div style={{fontSize:10.5,color:C.dim,lineHeight:1.5}}>
+          These labels belong to this figure and are saved with the project. The default favours text states the axis direction only — PecanLab never infers which side is clinically better, because a harm outcome reverses it.
+        </div>
+        <div style={{borderTop:`1px solid ${C.brd}`,paddingTop:10,display:"flex",flexDirection:"column",gap:6}}>
+          <div style={{fontSize:11,fontWeight:700,color:C.yel,letterSpacing:1}}>OUTCOME NAME — WHOLE PROJECT</div>
+          <InlineLabelEdit label="Outcome" value={activeOutcome?.outcome||""} placeholder="(unnamed)" width={260}
+            onCommit={commitOutcomeRename} hint="Renames this outcome everywhere: Extraction, Analysis, every forest plot, selectors and the manuscript"/>
+          <div style={{fontSize:10.5,color:C.dim,lineHeight:1.5}}>
+            Renaming updates every study row with this outcome and carries its saved analysis settings across.
+            {otherOutcomeNames.size?" Renaming it to a name another outcome already uses merges the two.":""}
+          </div>
+        </div>
+      </div>
+    )}
     {esType&&<div style={{marginBottom:12,fontSize:11,color:C.muted}}>
-      Detected measure: <strong style={{color:C.acc}}>{ES_TYPES[esType]?.label}</strong>. {isLog?"Pooled on the log scale; axis ticks and the ES column show back-transformed values. Keep the null line at 0.":esType==="PROP"?"Pooled on the logit scale; shown as percentages.":"Null line at 0 represents no effect."}
+      Detected measure: <strong style={{color:C.acc}}>{ES_TYPES[esType]?.label}</strong>. {isLog?"Pooled on the log scale; the no-effect line sits at 1 on the ratio axis, and ticks and the ES column show back-transformed values.":esType==="PROP"?"Pooled on the logit scale and shown as percentages. A single-arm proportion has no no-effect value, so no null line or favours labels are drawn.":measureNull==null?"This measure has no no-effect value, so no null line is drawn.":`No-effect line at ${measureNull}.`}
     </div>}
     {/* prompt19 — LIVE plot follows the theme + scales to the column width. */}
-    <ForestPlot result={result} esLabel={esLabel} nullLine={nullLine} esType={esType} showCounts={showCounts} showWeights={showWeights} svgId="forestplot-live" prec={prec} live theme={theme}/>
+    <ForestPlot result={result} esLabel={esLabel} esType={esType} showCounts={showCounts} showWeights={showWeights} svgId="forestplot-live" prec={prec} live theme={theme} title={figTitle} favLow={favLow} favHigh={favHigh}/>
     {/* Hidden dark render kept in the DOM as the "Dark (screen)" PNG export source
         (serialized by id) — so the live theme switch never changes that download. */}
     <div aria-hidden="true" style={{position:"absolute",width:0,height:0,overflow:"hidden",left:-99999,top:0,pointerEvents:"none"}}>
-      <ForestPlot result={result} esLabel={esLabel} nullLine={nullLine} esType={esType} showCounts={showCounts} showWeights={showWeights} svgId="forestplot-svg" prec={prec}/>
+      <ForestPlot result={result} esLabel={esLabel} esType={esType} showCounts={showCounts} showWeights={showWeights} svgId="forestplot-svg" prec={prec} title={figTitle} favLow={favLow} favHigh={favHigh}/>
     </div>
     {result&&(()=>{
-      const outTitle=`${project.name||""}${activeOutcome?.outcome?` — ${activeOutcome.outcome}`:""}${activeOutcome?.timepoint?` (${activeOutcome.timepoint})`:""}`.trim();
-      const pubOpts={esType,esLabel,nullLine,showCounts,showWeights,title:outTitle,prec};
+      // 116.md §32 — the SAME resolved labels the live plot uses reach every export.
+      const pubOpts={esType,esLabel,showCounts,showWeights,title:figTitle,favLow,favHigh,prec};
       const exportName=`${safeName}_${outcomeSafeName}_forest_publication`;
       return(<div style={{marginTop:14,background:C.card,border:`1px solid ${themeAlpha(C.grn,'55')}`,borderRadius:8,padding:14}}>
         <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",flexWrap:"wrap",gap:10,marginBottom:4}}>
@@ -1735,16 +1959,22 @@ export function ForestTab({project}){
     {/* Dark (screen) version is now a variant inside the export dialog above. */}
     {isLog
       ? <InfoBox>💡 This is a ratio measure shown on the log scale. A study left of the null line favours fewer events; right favours more. The ES column shows the back-transformed ratio.</InfoBox>
-      : <InfoBox>💡 Squares left of the null line ({nullLine}) indicate effects in one direction, right of it the other. Set the effect-measure type per study (Data Extraction) so the axis labels itself correctly.</InfoBox>}
+      : esType==="PROP"
+        ? <InfoBox>💡 Single-arm proportions are pooled on the logit scale and labelled as percentages. There is no no-effect value for a proportion, so the figure draws no null line and no favours labels.</InfoBox>
+        : <InfoBox>💡 Squares left of the no-effect line ({measureNull==null?"—":measureNull}) indicate effects in one direction, right of it the other. Set the effect-measure type per study (Data Extraction) so the axis labels itself correctly.</InfoBox>}
     </>)}
   </div>);
 }
 
 /* ════════════ TAB: SENSITIVITY ANALYSIS ════════════ */
-export function SensitivityTab({project}){
+export function SensitivityTab({project,updateProject,onApplyPrecisionToAll}){
   const allStudies=Array.isArray(project&&project.studies)?project.studies:[];
   const prec = project?.analysisPrecision;
-  const[method,setMethod]=useState("random");
+  // 116.md §30/§124 — the decimal control and the synthesis model are the SAME
+  // project-level settings every other Analysis page reads and writes.
+  const{setAnalysisPrecision,setAnalysisModel}=useAnalysisConfigOps(project,updateProject);
+  const method=projectModel(project);
+  const setMethod=(m)=>setAnalysisModel(m);
   // RoadMap/2.md recs — sensitivity analyses use the project-wide τ² estimator too.
   const tau2Method=(project&&project.analysisSettings&&project.analysisSettings.tau2Method)||"DL";
   // 86.md P1.6 / 107.md §21 — this tab used to run leave-one-out, Egger and trim-and-fill
@@ -1838,10 +2068,13 @@ export function SensitivityTab({project}){
         <strong style={{color:C.yel}}>⚠ Only {result.k} studies.</strong> Cochrane and most guidance recommend assessing publication bias (funnel plot, Egger's test) <strong>only when ≥10 studies</strong> are pooled. With fewer, these tests have low power and the funnel is hard to read — interpret the results below with caution and don't over-rely on them.
       </div>
     )}
-    <div style={{display:"flex",gap:8,marginBottom:20,alignItems:"center"}}>
+    <div style={{display:"flex",gap:8,marginBottom:20,alignItems:"center",flexWrap:"wrap"}}>
       {[["random","Random Effects"],["fixed","Fixed Effects"]].map(([m,label])=>(
         <button key={m} onClick={()=>setMethod(m)} style={btnS(method===m?"primary":"ghost")}>{label}</button>
       ))}
+      {/* 116.md §30 — the decimal control lives on EVERY Analysis page. */}
+      <span style={{marginLeft:"auto"}}/>
+      <PrecisionControl prec={prec} onChange={updateProject?setAnalysisPrecision:undefined} onApplyAll={onApplyPrecisionToAll}/>
     </div>
 
     {/* === Leave-One-Out === */}
@@ -1952,7 +2185,7 @@ export function SensitivityTab({project}){
     {(()=>{
       const t=ES_TYPES[esType]||{};const isLog=!!t.log,isProp=esType==="PROP";
       const bt=x=>isLog?Math.exp(x):isProp?(()=>{const e=Math.exp(x);return e/(1+e);})():x;
-      const dv=x=>isProp?(bt(x)*100).toFixed(normalizePrecision(prec).decimals)+"%":isLog?fmtES(bt(x),prec):fmtES(+x,prec);
+      const dv=makeScaledFormatter({isLog,isProp},prec);   // 116.md §31 — centralized, honours trailingZeros
       return(<div style={{background:C.card,border:`1px solid ${C.brd}`,borderRadius:8,padding:16,marginBottom:16}}>
         <div style={{fontSize:11,fontWeight:700,color:C.acc,letterSpacing:1,marginBottom:6}}>TRIM-AND-FILL (Duval &amp; Tweedie)</div>
         <div style={{fontSize:12,color:C.muted,marginBottom:12,lineHeight:1.5}}>Estimates how many studies may be "missing" due to publication bias, imputes their mirror images, and re-pools. A large shift between observed and adjusted estimates signals the conclusion is sensitive to small-study effects.</div>
@@ -2009,7 +2242,7 @@ export function SensitivityTab({project}){
     {(()=>{
       const t=ES_TYPES[esType]||{};const isLog=!!t.log,isProp=esType==="PROP";
       const bt=x=>isLog?Math.exp(x):isProp?(()=>{const e=Math.exp(x);return e/(1+e);})():x;
-      const dv=x=>isProp?(bt(x)*100).toFixed(normalizePrecision(prec).decimals)+"%":isLog?fmtES(bt(x),prec):fmtES(+x,prec);
+      const dv=makeScaledFormatter({isLog,isProp},prec);   // 116.md §31 — centralized, honours trailingZeros
       return(<div style={{background:C.card,border:`1px solid ${C.brd}`,borderRadius:8,padding:16,marginBottom:16}}>
         <div style={{fontSize:11,fontWeight:700,color:C.acc,letterSpacing:1,marginBottom:6}}>PRIMARY-DATA-ONLY RE-ANALYSIS</div>
         <div style={{fontSize:12,color:C.muted,marginBottom:12,lineHeight:1.5}}>Re-pools using only studies with directly-reported primary data, excluding any flagged as converted, calculated, digitised from a figure, or otherwise indirect. If the conclusion holds, it doesn't hinge on derived numbers.</div>
@@ -2042,11 +2275,14 @@ export function SensitivityTab({project}){
 }
 
 /* ════════════ TAB: SUBGROUP ANALYSIS ════════════ */
-export function SubgroupTab({project}){
+export function SubgroupTab({project,updateProject,onApplyPrecisionToAll}){
   const allStudies=Array.isArray(project&&project.studies)?project.studies:[];
   const prec = project?.analysisPrecision;
   const[groupKey,setGroupKey]=useState("design");
-  const[method,setMethod]=useState("random");
+  // 116.md §30/§124 — shared project-level decimal + model settings.
+  const{setAnalysisPrecision,setAnalysisModel}=useAnalysisConfigOps(project,updateProject);
+  const method=projectModel(project);
+  const setMethod=(m)=>setAnalysisModel(m);
   // RoadMap/2.md recs — subgroup pools use the project-wide τ² estimator too.
   const tau2Method=(project&&project.analysisSettings&&project.analysisSettings.tau2Method)||"DL";
 
@@ -2131,6 +2367,8 @@ export function SubgroupTab({project}){
       {[["random","Random"],["fixed","Fixed"]].map(([m,label])=>(
         <button key={m} onClick={()=>setMethod(m)} style={{...btnS(method===m?"primary":"ghost"),fontSize:11,padding:"4px 10px"}}>{label}</button>
       ))}
+      {/* 116.md §30 — the decimal control lives on EVERY Analysis page. */}
+      <PrecisionControl prec={prec} onChange={updateProject?setAnalysisPrecision:undefined} onApplyAll={onApplyPrecisionToAll}/>
     </div>
 
     {/* ── CROSS-PAIR NOTE — this comparison is deliberately NOT pair-scoped ── */}

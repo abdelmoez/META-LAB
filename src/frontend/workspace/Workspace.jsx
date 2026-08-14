@@ -23,6 +23,10 @@ import { rasterizeSvg, downloadBlob, downloadText, zipFiles } from "../component
 // prompt42 Task 8 — one-click journal-submission ZIP (pure helpers + methods text).
 import { getOutcomePairs as jsOutcomePairs, filterStudiesForOutcome as jsFilterStudies, buildStudyTableCSV as jsStudyTableCSV, buildReadmeMarkdown as jsReadme, buildManifest as jsManifest, buildWarningsText as jsWarnings, safeName as jsSafeName } from "../../research-engine/import-export/journalSubmission.js";
 import { poolPrimaryOutcome } from "../../research-engine/statistics/summaryPool.js";
+// 116.md §124 — the ONE authority for "which model + τ² estimator is this project
+// configured to run" (the same one the manuscript engine uses). Every figure the
+// app emits must be drawn from the resolved analysis, never a hardcoded "random".
+import { resolveAnalysis } from "../../research-engine/manuscript/analysisDescribe.js";
 // prompt44 — reference-import parsers extracted to a pure module (verbatim).
 import { mkRecord, normTitle, parseRIS, parseNBIB, parseBibTeX, parseEndNoteXML, parseReferences, dedupeRecords, isNonPrimary } from "../../research-engine/import-export/referenceParsers.js";
 // prompt44 — pure domain constants extracted verbatim (no C/Icon/JSX).
@@ -669,7 +673,9 @@ export default function MetaLab({ initialProjectId = null, initialTab = null, on
     const p=project, pico=p.pico||{}, pr=p.prisma||{};
     // 86.md P1.6/P1.5 — report the PRIMARY outcome pool (persisted estimator), not
     // every outcome/measure pooled into one figure that exists in no real analysis.
-    const _pooled=poolPrimaryOutcome(p.studies||[],"random",{tau2Method:(p.analysisSettings&&p.analysisSettings.tau2Method)||"DL"});
+    // 116.md §124 — the report pools with the project's RESOLVED model + τ² estimator.
+    const _rep=resolveAnalysis(p);
+    const _pooled=poolPrimaryOutcome(p.studies||[],_rep.model,{tau2Method:_rep.tau2Method});
     const res=_pooled.result;
     const esType=_pooled.subset.map(s=>s.esType).filter(Boolean)[0]||"";
     const t=ES_TYPES[esType]||{}; const isLog=!!t.log, isProp=esType==="PROP";
@@ -781,14 +787,22 @@ export default function MetaLab({ initialProjectId = null, initialTab = null, on
     if(!pairs.length) warnings.push("No outcomes with effect sizes — no forest plots were generated.");
     let forestN=0;
     const usedForestSlugs=new Set(); // guard duplicate ZIP entry names (distinct labels can slugify the same)
+    // 116.md §124 — the ZIP used to call `runMeta(fs,"random")` with NO τ² options, so
+    // a project configured for REML/PM exported diamonds, weights and prediction
+    // intervals that matched no analysis anywhere in the app. Reuse the RESOLVED
+    // analysis (the manuscript's authority) instead of recomputing with defaults.
+    const zipAnalysis=resolveAnalysis(project);
+    const figureLabels=(project.analysisSettings&&project.analysisSettings.figureLabels)||{};
     for(const pair of pairs){
       const fs=jsFilterStudies(studies,pair);
-      const result=runMeta(fs,"random");
+      const result=runMeta(fs,zipAnalysis.model,{tau2Method:zipAnalysis.tau2Method});
       if(!result){ warnings.push(`Forest plot for "${pair.label}" skipped (not enough data).`); continue; }
       const esType=(fs.map(s=>s.esType).filter(Boolean)[0])||pair.esType||"";
       const t=ES_TYPES[esType]||{};
-      const esLabel=(t.scale||"Effect size")+(t.log?" (back-transformed)":esType==="PROP"?" (%)":"");
-      const built=buildPubForestSVG(result,{esType,esLabel,nullLine:0,showCounts:true,showWeights:true,title:pair.label||"",prec,noBg:transparent});
+      // 116.md §26/§32 — the reviewer's persisted per-figure labels reach the ZIP too.
+      const fl=figureLabels[pair.key]||{};
+      const esLabel=fl.esLabel||((t.scale||"Effect size")+(t.log?" (back-transformed)":esType==="PROP"?" (%)":""));
+      const built=buildPubForestSVG(result,{esType,esLabel,favLow:fl.favLow||"",favHigh:fl.favHigh||"",showCounts:true,showWeights:true,title:fl.title||pair.label||"",prec,noBg:transparent});
       if(!built){ warnings.push(`Forest plot for "${pair.label}" skipped (not enough studies to draw).`); continue; }
       let slug=jsSafeName(pair.label,`outcome-${forestN+1}`);
       if(usedForestSlugs.has(slug)) slug=`${slug}-${forestN+1}`; // distinct labels can slugify identically → keep unique
@@ -807,7 +821,8 @@ export default function MetaLab({ initialProjectId = null, initialTab = null, on
     // 3) Methods text (markdown) — drafted from the project's actual settings + primary result.
     report("Preparing methods text…");
     try{
-      const primary=pairs.length?runMeta(jsFilterStudies(studies,pairs[0]),"random"):null;
+      // 116.md §124 — the methods text describes the SAME resolved analysis the figures draw.
+      const primary=pairs.length?runMeta(jsFilterStudies(studies,pairs[0]),zipAnalysis.model,{tau2Method:zipAnalysis.tau2Method}):null;
       const esType0=pairs.length?((jsFilterStudies(studies,pairs[0]).map(s=>s.esType).filter(Boolean)[0])||pairs[0].esType||""):"";
       const idTotal=(+pr.dbs||0)+(+pr.reg||0)+(+pr.other||0);
       const md=jsMethodsMarkdown({
@@ -819,7 +834,7 @@ export default function MetaLab({ initialProjectId = null, initialTab = null, on
         prisma:{identified:idTotal||null,deduped:(+pr.dedupe||null),included:(+pr.included||null)},
         screening:{},
         measure:(ES_TYPES[esType0]&&ES_TYPES[esType0].label)||"",
-        model:"random",
+        model:zipAnalysis.model,
         hksj:!!(primary&&primary.hksj),
         k:primary?primary.k:undefined,
         heterogeneity:primary?{I2:primary.I2,tau2:fmtNum(primary.tau2,prec),Q:fmtNum(primary.Q,prec),Qdf:primary.k-1,Qp:primary.Qpval}:{},
@@ -1635,9 +1650,12 @@ export default function MetaLab({ initialProjectId = null, initialTab = null, on
           {/* 107.md §12 — currentUser only supplies the `by` field of a recorded
               compatibility override; absent → the override records by:null. */}
           {tab==="analysis"&&<AnalysisTab project={project} updateProject={fn=>updateProject(activeId,fn)} currentUser={authUser} onApplyPrecisionToAll={prec=>projects.forEach(p=>updateProject(p.id,x=>({...x,analysisPrecision:prec})))}/>}
-          {tab==="forest"&&<ForestTab project={project}/>}
-          {tab==="sensitivity"&&<SensitivityTab project={project}/>}
-          {tab==="subgroup"&&<SubgroupTab project={project}/>}
+          {/* 116.md §30 — every Analysis page gets updateProject so the decimal
+              control (and the persisted model / figure labels) can be rendered and
+              written from any of them, not only the Meta-Analysis tab. */}
+          {tab==="forest"&&<ForestTab project={project} updateProject={fn=>updateProject(activeId,fn)} onApplyPrecisionToAll={prec=>projects.forEach(p=>updateProject(p.id,x=>({...x,analysisPrecision:prec})))}/>}
+          {tab==="sensitivity"&&<SensitivityTab project={project} updateProject={fn=>updateProject(activeId,fn)} onApplyPrecisionToAll={prec=>projects.forEach(p=>updateProject(p.id,x=>({...x,analysisPrecision:prec})))}/>}
+          {tab==="subgroup"&&<SubgroupTab project={project} updateProject={fn=>updateProject(activeId,fn)} onApplyPrecisionToAll={prec=>projects.forEach(p=>updateProject(p.id,x=>({...x,analysisPrecision:prec})))}/>}
           {tab==="nma"&&<NmaTab project={project} updateProject={updateProject} activeId={activeId}/>}
           {tab==="living"&&<LivingReviewTab projectId={activeId}/>}
           {tab==="citation"&&<Suspense fallback={<div style={{padding:24,color:C.muted}}>Loading…</div>}><CitationMiningPanel projectId={activeId} project={project} readOnly={projectPerms(project).readOnly}/></Suspense>}

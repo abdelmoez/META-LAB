@@ -170,6 +170,54 @@ export function fmtWeight(x, prec, dash = DASH) {
   return fmtPct(x, prec, PCT_DEFAULT_DECIMALS, dash);
 }
 
+/**
+ * fmtScaled — 116.md §29/§31. ONE back-transforming display formatter for values
+ * stored on an analysis scale.
+ *
+ * Six Analysis surfaces used to inline the same lambda
+ *   `x => isProp ? (bt(x)*100).toFixed(normalizePrecision(prec).decimals)+'%' : …`
+ * which silently ignored `trailingZeros` (a project set to "strip trailing zeros"
+ * still got "12.500%") and bypassed the precision SSOT — exactly the scattered
+ * `.toFixed()` §31 forbids. Every one of them now calls this.
+ *
+ * `scale` describes how the value is STORED, using the same semantics as
+ * ES_TYPES: `{isLog}` → ln (display = exp x), `{isProp}` → logit (display =
+ * percent), otherwise identity. Deliberately NOT the extraction-side
+ * formatEffect scale map, which additionally back-transforms Fisher z: the
+ * Analysis tables and the forest plot both render COR on the z scale, and one
+ * shared formatter must not make them disagree.
+ *
+ * @returns {string} e.g. "1.12", "12.500%", "—"
+ */
+export function fmtScaled(x, scale = {}, prec, dash = DASH) {
+  if (isBlank(x)) return dash;
+  const n = toFiniteNumber(x);
+  if (n === null) return dash;
+  if (scale.isProp) {
+    const e = Math.exp(n);
+    return `${fmtNum((e / (1 + e)) * 100, prec, dash)}%`;
+  }
+  if (scale.isLog) return fmtNum(Math.exp(n), prec, dash);
+  return fmtNum(n, prec, dash);
+}
+
+/** makeScaledFormatter — the curried form for a table/loop call site. */
+export function makeScaledFormatter(scale = {}, prec, dash = DASH) {
+  return (x) => fmtScaled(x, scale, prec, dash);
+}
+
+/**
+ * fmtPExpr — 116.md §31. A complete p-value statement: "P < 0.001" / "P = 0.043".
+ * ALWAYS routed through fmtP, so a 2-dp project can never print "P = 0.00" for a
+ * p of 0.004 (fmtP floors at P_MIN_DECIMALS) and a genuinely tiny p always reads
+ * as a strict inequality.
+ */
+export function fmtPExpr(x, prec, label = 'P', dash = DASH) {
+  const s = fmtP(x, prec, dash);
+  if (s === dash) return `${label} ${dash}`;
+  return s.startsWith('<') ? `${label} < ${s.slice(1)}` : `${label} = ${s}`;
+}
+
 /** fmtInt — integer counts (k, n, events). Never decimals; locale grouping for big numbers. */
 export function fmtInt(x, dash = DASH) {
   if (isBlank(x)) return dash;
@@ -192,8 +240,11 @@ export default {
   fmtCI,
   fmtEstCI,
   fmtP,
+  fmtPExpr,
   fmtPct,
   fmtI2,
   fmtWeight,
   fmtInt,
+  fmtScaled,
+  makeScaledFormatter,
 };

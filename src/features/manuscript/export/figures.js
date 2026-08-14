@@ -16,12 +16,26 @@ import { rasterizeSvg } from '../../../frontend/components/exportCore.js';
 import { countsToPrismaShape } from '../../../research-engine/manuscript/index.js';
 
 /**
+ * 116.md §26/§32 — the builder options a manuscript figure passes through. The
+ * persisted per-figure labels (axis name, favours texts) must reach the DOCX and the
+ * repro bundle exactly as they reach the screen; anything absent stays undefined so
+ * the builder keeps its own defaults (counts/weights ON) byte-for-byte.
+ */
+function forestOpts(opts = {}) {
+  const o = { esType: opts.esType, title: opts.title, prec: opts.prec };
+  ['esLabel', 'favLow', 'favHigh', 'showCounts', 'showWeights', 'showPI', 'noBg'].forEach((k) => {
+    if (opts[k] !== undefined) o[k] = opts[k];
+  });
+  return o;
+}
+
+/**
  * Render a forest-plot PNG from a runMeta result.
  * @returns {Promise<{blob:Blob,width:number,height:number,svg:string}>|null}
  */
 export async function forestPng(result, opts = {}) {
   if (!result) return null;
-  const built = buildPubForestSVG(result, { esType: opts.esType, title: opts.title, prec: opts.prec });
+  const built = buildPubForestSVG(result, forestOpts(opts));
   if (!built || !built.svg) return null;
   const targetWidthPx = opts.targetWidthPx || 1100;
   const blob = await rasterizeSvg(built.svg, built.W, built.H, { targetWidthPx, background: '#ffffff' });
@@ -143,7 +157,7 @@ export async function robPng(assessments, opts = {}) {
 /** Forest SVG string (no rasterization) for the repro bundle. */
 export function forestSvg(result, opts = {}) {
   if (!result) return null;
-  const built = buildPubForestSVG(result, { esType: opts.esType, title: opts.title, prec: opts.prec });
+  const built = buildPubForestSVG(result, forestOpts(opts));
   return built ? built.svg : null;
 }
 

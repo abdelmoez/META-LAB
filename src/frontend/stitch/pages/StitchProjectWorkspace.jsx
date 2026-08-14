@@ -398,12 +398,20 @@ function DeepToolPage({ stage }) {
     body = (<LazyAnalysis project={project} currentUser={user}
       updateProject={(fn) => doc.updateProject(projectId, fn)}
       onApplyPrecisionToAll={(prec) => doc.updateProject(projectId, (x) => ({ ...x, analysisPrecision: prec }))} />);
+  // 116.md §30 — the decimal control (and the persisted model / per-figure labels)
+  // must be reachable from every Analysis page, so all three get updateProject too.
   } else if (stage === 'forest') {
-    body = (<LazyForest project={project} />);
+    body = (<LazyForest project={project}
+      updateProject={(fn) => doc.updateProject(projectId, fn)}
+      onApplyPrecisionToAll={(prec) => doc.updateProject(projectId, (x) => ({ ...x, analysisPrecision: prec }))} />);
   } else if (stage === 'sensitivity') {
-    body = (<LazySensitivity project={project} />);
+    body = (<LazySensitivity project={project}
+      updateProject={(fn) => doc.updateProject(projectId, fn)}
+      onApplyPrecisionToAll={(prec) => doc.updateProject(projectId, (x) => ({ ...x, analysisPrecision: prec }))} />);
   } else if (stage === 'subgroup') {
-    body = (<LazySubgroup project={project} />);
+    body = (<LazySubgroup project={project}
+      updateProject={(fn) => doc.updateProject(projectId, fn)}
+      onApplyPrecisionToAll={(prec) => doc.updateProject(projectId, (x) => ({ ...x, analysisPrecision: prec }))} />);
   } else if (stage === 'nma') {
     body = (<LazyNma project={project} updateProject={doc.updateProject} activeId={projectId} />);
   } else if (stage === 'living') {

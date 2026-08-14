@@ -73,15 +73,37 @@ describe('buildFunnelSVG', () => {
 });
 
 describe('buildPubForestSVG favours arrows', () => {
-  it('uses <path> triangles instead of ◄/► glyphs (Word-safe), same labels', () => {
+  it('uses <path> triangles instead of ◄/► glyphs (Word-safe)', () => {
     const result = runMeta(fixtureStudies(), 'random');
     const out = buildPubForestSVG(result, { esType: 'OR', showCounts: true, showWeights: true });
     expect(out.svg).not.toContain('◄');
     expect(out.svg).not.toContain('►');
-    expect(out.svg).toContain('favours experimental');
-    expect(out.svg).toContain('favours control');
     // two filled triangle paths flanking the axis
     const tris = out.svg.match(/<path d="M[\d.]+,[\d.]+ L[\d.]+,[\d.]+ L[\d.]+,[\d.]+ Z" fill="#555555"\/>/g) || [];
     expect(tris.length).toBe(2);
+  });
+
+  /* 116.md §25 — DELIBERATE CHANGE (was: 'favours experimental' / 'favours control'
+     for every log/proportion measure). The builder can no longer assert a clinical
+     direction it cannot know: for a harm outcome "left favours experimental" is
+     exactly backwards, and nothing in a runMeta result says which it is. The
+     default now states the AXIS direction only; contextual text is opt-in through
+     the persisted per-figure favLow/favHigh (analysisSettings.figureLabels). */
+  it('defaults to direction-only favours text and never infers a clinical direction', () => {
+    const result = runMeta(fixtureStudies(), 'random');
+    const out = buildPubForestSVG(result, { esType: 'OR', showCounts: true, showWeights: true });
+    expect(out.svg).toContain('favours lower');
+    expect(out.svg).toContain('favours higher');
+    expect(out.svg).not.toContain('favours experimental');
+    expect(out.svg).not.toContain('favours control');
+  });
+
+  it('honours configured favLow/favHigh (the options existed but had no caller)', () => {
+    const result = runMeta(fixtureStudies(), 'random');
+    const out = buildPubForestSVG(result, {
+      esType: 'OR', favLow: 'Favours intervention', favHigh: 'Favours control',
+    });
+    expect(out.svg).toContain('Favours intervention');
+    expect(out.svg).toContain('Favours control');
   });
 });
