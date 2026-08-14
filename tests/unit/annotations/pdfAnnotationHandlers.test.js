@@ -600,6 +600,46 @@ describe('116.md §91 — the list contract', () => {
     expect(Number.isNaN(Date.parse(res.body.serverTime))).toBe(false);
   });
 
+  /**
+   * 116.md §91 (r3) — the watermark must be stamped BEHIND the read, not at it.
+   *
+   * `PdfAnnotation.updatedAt` is Prisma's `@updatedAt`: the query engine produces the
+   * value when the statement is BUILT, strictly before it commits (the migration
+   * declares the column with no database default). So a row can carry a timestamp
+   * that predates a reader's watermark and still become visible only after that
+   * reader's query returned — it is then in NO response (uncommitted at read time)
+   * and in NO later delta (`updatedAt` <= the watermark, and the filter is `gt`).
+   * The highlight never reaches that reader until a full refresh, while its author
+   * sees it saved and shared.
+   */
+  it('a write that was in flight while the watermark was stamped still arrives in the next delta', async () => {
+    const t1 = Date.now();
+    const first = mkRes();
+    await AN.listScreeningAnnotations(mkReq({ query: { docHash: HASH } }), first);
+    expect(first.body.annotations).toEqual([]);
+
+    // Reviewer B's INSERT was built 100 ms before A stamped its watermark, and only
+    // commits now (it was queued behind an unrelated write).
+    seedRow({ clientId: 'an-late00001', createdAt: new Date(t1 - 100), updatedAt: new Date(t1 - 100) });
+
+    const delta = mkRes();
+    await AN.listScreeningAnnotations(mkReq({ query: { docHash: HASH, since: first.body.serverTime } }), delta);
+    expect(delta.body.annotations.map((a) => a.clientId)).toEqual(['an-late00001']);
+  });
+
+  it('the watermark is deliberately behind the wall clock, and re-reading it is idempotent', async () => {
+    const before = Date.now();
+    seedRow({ updatedAt: new Date() });   // a row touched just now
+    const res = mkRes();
+    await AN.listScreeningAnnotations(mkReq({ query: { docHash: HASH } }), res);
+    expect(Date.parse(res.body.serverTime)).toBeLessThan(before);
+    // The overlap it buys costs a repeat of a just-touched row, which merges to the
+    // same list — §91's idempotency is what makes the lag safe.
+    const again = mkRes();
+    await AN.listScreeningAnnotations(mkReq({ query: { docHash: HASH, since: res.body.serverTime } }), again);
+    expect(again.body.annotations).toHaveLength(1);
+  });
+
   it('an unparseable ?since is ignored rather than returning nothing', async () => {
     seedRow();
     const res = mkRes();

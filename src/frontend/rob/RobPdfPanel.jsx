@@ -26,6 +26,7 @@ import AppPdfViewer from '../components/AppPdfViewer.jsx';
 // study with no screening record), which renders a bare AppPdfViewer.
 import { usePdfAnnotations } from '../components/usePdfAnnotations.js';
 import { ANNOTATION_SCOPE } from '../components/pdfAnnotationApi.js';
+import { pinPdfBytesVersion } from '../components/pdfBytesCache.js';
 
 export default function RobPdfPanel({
   loading, error, screenProjectId, recordId, studyDocUrl, canManage, onRetry, previewHeight,
@@ -33,6 +34,14 @@ export default function RobPdfPanel({
   // to no annotations (§74): the PDF renders, there is just no highlight affordance.
   studyDocHash = '', metaLabProjectId = null, studyId = null,
 }) {
+  // 116.md §74/§95 (r3) — a study-document URL is STABLE across a replace, so the
+  // session byte cache would serve another member's superseded file on the next mount
+  // while `studyDocHash` (re-resolved from the server) already names the NEW document.
+  // Pinning the hash the panel was just handed drops those bytes. Done in the RENDER
+  // phase on purpose: child effects run before parent effects, so an effect here would
+  // fire only after <AppPdfViewer> had already asked the cache for bytes. `useMemo`
+  // makes it once per (url, hash) pair, and the pin itself is idempotent.
+  useMemo(() => { pinPdfBytesVersion(studyDocUrl, studyDocHash); }, [studyDocUrl, studyDocHash]);
   const annTarget = useMemo(
     () => ((studyDocHash && metaLabProjectId) ? { scope: ANNOTATION_SCOPE.METALAB, metaLabProjectId } : null),
     [studyDocHash, metaLabProjectId],

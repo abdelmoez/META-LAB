@@ -17,6 +17,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { screeningApi } from '../../../frontend/screening/api-client/screeningApi.js';
 import { studyDocApi } from './studyDocApi.js';
+// 116.md §74/§95 (r3) — a study-document URL is stable across a replace, so the
+// session byte cache must be told which FILE the URL currently serves. See
+// pinPdfBytesVersion; without it a collaborator's replace leaves this tab rendering
+// the old bytes under the new document's annotation coordinates.
+import { pinPdfBytesVersion } from '../../../frontend/components/pdfBytesCache.js';
 import { normalizeItems } from '../../../research-engine/extraction/pdfTextGrid.js';
 
 const MAX_PAGES = 120;
@@ -178,6 +183,7 @@ export function usePdfSource(study, projectId, { onDocumentPersisted, publicatio
           } else if (docStored && docSid) {
             const h = await studyDocHash(projectId, docSid, docStored, study);
             if (superseded()) return;
+            pinPdfBytesVersion(studyDocApi.downloadUrl(projectId, docSid), h);   // 116.md §74 (r3)
             setResolved({ url: studyDocApi.downloadUrl(projectId, docSid), source: 'study-doc', screenProjectId: sp, recordId: rid, fileKey: `doc:${docStored}`, docHash: h, docStudyId: docSid });
           } else {
             setResolved({ url: null, source: null, screenProjectId: sp, recordId: rid, fileKey: null, docHash: '', docStudyId: null });
@@ -187,6 +193,7 @@ export function usePdfSource(study, projectId, { onDocumentPersisted, publicatio
           // Manual study with a persisted document — resolve it straight from the blob pointer.
           const h = await studyDocHash(projectId, docSid, docStored, study);
           if (superseded()) return;
+          pinPdfBytesVersion(studyDocApi.downloadUrl(projectId, docSid), h);   // 116.md §74 (r3)
           setResolved({ url: studyDocApi.downloadUrl(projectId, docSid), source: 'study-doc', screenProjectId: null, recordId: null, fileKey: `doc:${docStored}`, docHash: h, docStudyId: docSid });
         } else if (samePaper) {
           // Re-resolve of the same paper found nothing (e.g. the linkage was removed) —
@@ -240,7 +247,11 @@ export function usePdfSource(study, projectId, { onDocumentPersisted, publicatio
         const att = (listing && listing.attachments && listing.attachments[0]) || null;
         if (att) {
           supersedeRef.current += 1; revokeLocal();
-          setResolved({ url: screeningApi.pdfDownloadUrl(sp, rid, att.id), source: 'screening', screenProjectId: sp, recordId: rid, fileKey: `att:${att.id}` });
+          // 116.md §73 (r3) — `setResolved` REPLACES the whole record, so every call site
+          // must restate the document identity. Dropping it here left a just-uploaded PDF
+          // with docHash '' — the hook reported `enabled:false` and the Highlight
+          // affordance silently vanished until the reviewer switched studies and back.
+          setResolved({ url: screeningApi.pdfDownloadUrl(sp, rid, att.id), source: 'screening', screenProjectId: sp, recordId: rid, fileKey: `att:${att.id}`, docHash: att.fileHash || '', docStudyId: null });
           setUploading(false);
           return;
         }
@@ -267,7 +278,12 @@ export function usePdfSource(study, projectId, { onDocumentPersisted, publicatio
         if (pubKeyRef.current !== startPub) { setUploading(false); return; }
         if (r && r.document && r.document.storedName) {
           supersedeRef.current += 1; revokeLocal();
-          setResolved({ url: studyDocApi.downloadUrl(projectId, startStudy), source: 'study-doc', screenProjectId: null, recordId: null, fileKey: `doc:${r.document.storedName}` });
+          // 116.md §73/§74 (r3) — restate the identity (see the screening branch above)
+          // and pin the freshly-uploaded file's hash so no stale bytes can be served for
+          // this stable study-document URL.
+          const h = r.document.fileHash || '';
+          pinPdfBytesVersion(studyDocApi.downloadUrl(projectId, startStudy), h);
+          setResolved({ url: studyDocApi.downloadUrl(projectId, startStudy), source: 'study-doc', screenProjectId: null, recordId: null, fileKey: `doc:${r.document.storedName}`, docHash: h, docStudyId: startStudy });
           if (onDocumentPersisted) onDocumentPersisted(startStudy, r.document);
           setUploading(false);
           return;
@@ -283,7 +299,7 @@ export function usePdfSource(study, projectId, { onDocumentPersisted, publicatio
 
   const clearLocal = useCallback(() => {
     revokeLocal();
-    setResolved({ url: null, source: null, screenProjectId: null, recordId: null, fileKey: null });
+    setResolved({ url: null, source: null, screenProjectId: null, recordId: null, fileKey: null, docHash: '', docStudyId: null });
   }, [revokeLocal]);
 
   // Third sourcing mode: auto-retrieve an open-access PDF by DOI/PMID and persist it as a
@@ -309,7 +325,9 @@ export function usePdfSource(study, projectId, { onDocumentPersisted, publicatio
         const listing = await screeningApi.listPdf(sp, rid).catch(() => null);
         if (stale()) return;
         const att = (listing && listing.attachments && listing.attachments[0]) || null;
-        if (att) { supersedeRef.current += 1; revokeLocal(); setResolved({ url: screeningApi.pdfDownloadUrl(sp, rid, att.id), source: 'oa', screenProjectId: sp, recordId: rid, fileKey: `att:${att.id}` }); }
+        // 116.md §73 (r3) — carry the content hash through, or a retrieved PDF renders
+        // with no annotation affordance at all (see the persist-upload branch).
+        if (att) { supersedeRef.current += 1; revokeLocal(); setResolved({ url: screeningApi.pdfDownloadUrl(sp, rid, att.id), source: 'oa', screenProjectId: sp, recordId: rid, fileKey: `att:${att.id}`, docHash: att.fileHash || '', docStudyId: null }); }
       } else {
         const why = r && (r.status === 'not_found' ? 'No open-access copy was found for this DOI/PMID.'
           : r.status === 'skipped_feature_disabled' ? 'Automatic PDF retrieval is turned off by your administrator.'

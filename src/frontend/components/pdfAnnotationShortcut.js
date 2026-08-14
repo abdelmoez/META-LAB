@@ -24,13 +24,25 @@
  *
  * SSR/test-safe: `useShortcut` and `useProjectHistory` both degrade to no-ops outside
  * their providers, and every DOM read happens inside an effect or a keydown-time
- * predicate. A viewer with `active:false` registers bindings that always decline —
- * which is what keeps AppPdfViewer inert for every caller that passes no annotations.
+ * predicate. A viewer with `active:false` registers NOTHING at all — which is what
+ * keeps AppPdfViewer inert for every caller that passes no annotations.
+ *
+ * ── ONE BINDING PER PANE, NOT ONE PER APP (116.md §86, r3) ───────────────────
+ * `registerBinding` REPLACES by id, and the viewer can be mounted more than once at
+ * a time (the Conflicts tab mounts one per unresolved conflict). Two panes sharing
+ * the module-level id `pdf.annotation.undo` therefore left only the later one in the
+ * registry — and its `when()` reads ITS OWN pane, so it declined for keystrokes aimed
+ * at the other pane and Ctrl+Z fell through to the TIER.GLOBAL chord, which reads the
+ * STAGE scope and pops a SCREENING decision. §86 forbids exactly that. The id is now
+ * per-instance, so every open pane keeps its own binding; they all sit in
+ * TIER.COMPONENT and `when()` (focus-within / last pointerdown) is what picks the
+ * one the user is actually in. Nothing else about the routing changes.
  */
 import { useCallback, useEffect, useRef } from 'react';
 import { useProjectHistory } from '../history/HistoryContext.jsx';
 import { useShortcut, TIER } from '../shortcuts/ShortcutProvider.jsx';
 import { SCOPE_PDF } from '../../research-engine/interaction/projectScopes.js';
+import { newViewerId, annotationShortcutIds } from './pdfAnnotationViewers.js';
 import { isUndoChord, isRedoChord, historyShortcutAllowed } from '../../research-engine/interaction/undoChords.js';
 
 /**
@@ -43,6 +55,12 @@ export function usePdfAnnotationUndoShortcut({ active = false, paneRef = null } 
   const pointerInsideRef = useRef(false);
   const live = useRef({});
   live.current = { active, paneRef, history };
+  // Per-pane binding ids (see the header note). `useShortcut` registers nothing for an
+  // empty id, so an inert viewer stays out of the registry — and out of the Ops
+  // shortcut inventory — entirely, instead of parking a binding that always declines.
+  const idRef = useRef('');
+  if (!idRef.current) idRef.current = newViewerId();
+  const { undo: undoId, redo: redoId } = annotationShortcutIds(idRef.current, active);
 
   useEffect(() => {
     if (!active || typeof document === 'undefined') return undefined;
@@ -74,7 +92,7 @@ export function usePdfAnnotationUndoShortcut({ active = false, paneRef = null } 
   }, [paneActive]);
 
   useShortcut({
-    id: 'pdf.annotation.undo',
+    id: undoId,
     tier: TIER.COMPONENT,
     chord: 'Ctrl/Cmd + Z', label: 'Undo the last highlight change', scopeLabel: 'PDF viewer',
     match: isUndoChord,
@@ -83,7 +101,7 @@ export function usePdfAnnotationUndoShortcut({ active = false, paneRef = null } 
   }, []);
 
   useShortcut({
-    id: 'pdf.annotation.redo',
+    id: redoId,
     tier: TIER.COMPONENT,
     chord: 'Ctrl/Cmd + Shift + Z', label: 'Redo the last undone highlight change', scopeLabel: 'PDF viewer',
     // The Ctrl+Y alias uses the pure default (ON), which is also the shipped catalogue

@@ -12,7 +12,7 @@
  */
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import {
-  getPdfBytes, invalidatePdfBytes, clearPdfBytesCache, pdfBytesCacheStats,
+  getPdfBytes, invalidatePdfBytes, pinPdfBytesVersion, clearPdfBytesCache, pdfBytesCacheStats,
 } from '../../../src/frontend/components/pdfBytesCache.js';
 
 const bytes = (n, fill = 1) => {
@@ -136,6 +136,137 @@ describe('116.md §95 — the session byte cache', () => {
     await getPdfBytes('', fetcher);
     expect(fetcher).toHaveBeenCalledTimes(2);
     expect(pdfBytesCacheStats().entries).toBe(0);
+  });
+
+  /**
+   * 116.md §95 (r3) — the byte ACCOUNTING. An entry can leave the map while its
+   * promise is still in flight (a replace calls `invalidate`, or a concurrent load
+   * pushes it past the LRU cap). Adding its size to the running total afterwards
+   * leaked the whole document into a counter nothing could ever subtract from again,
+   * and once the leak passed MAX_BYTES `evict()` emptied the map on EVERY call — the
+   * cache stopped working for the rest of the session while still looking present.
+   */
+  describe('the running byte total can never outlive its entries', () => {
+    const inFlight = () => {
+      let settle;
+      const p = new Promise((res) => { settle = res; });
+      return { fetcher: () => p, settle };
+    };
+
+    it('an invalidate DURING a fetch leaves no phantom bytes behind', async () => {
+      const { fetcher, settle } = inFlight();
+      const p = getPdfBytes('/api/doc.pdf', fetcher);
+      await Promise.resolve();
+      invalidatePdfBytes('/api/doc.pdf');       // the replace path, mid-download
+      settle(bytes(4 * 1024 * 1024));
+      await p;
+      expect(pdfBytesCacheStats()).toMatchObject({ entries: 0, bytes: 0 });
+    });
+
+    it('an eviction DURING a fetch leaves no phantom bytes behind', async () => {
+      const { maxEntries } = pdfBytesCacheStats();
+      const { fetcher, settle } = inFlight();
+      const p = getPdfBytes('/api/slow.pdf', fetcher);
+      await Promise.resolve();
+      for (let i = 0; i <= maxEntries; i++) await getPdfBytes(`/api/${i}.pdf`, async () => bytes(8));
+      settle(bytes(4 * 1024 * 1024));           // resolves after it was evicted
+      await p;
+      expect(pdfBytesCacheStats().bytes).toBe(pdfBytesCacheStats().entries * 8);
+    });
+
+    it('repeated replaces-while-loading never disable the cache', async () => {
+      const { maxBytes } = pdfBytesCacheStats();
+      const big = Math.ceil(maxBytes / 4);
+      for (let i = 0; i < 8; i++) {
+        const { fetcher, settle } = inFlight();
+        const p = getPdfBytes(`/api/big${i}.pdf`, fetcher);
+        await Promise.resolve();
+        invalidatePdfBytes(`/api/big${i}.pdf`);
+        settle(bytes(big));
+        await p;
+      }
+      expect(pdfBytesCacheStats().bytes).toBeLessThanOrEqual(maxBytes);
+      // …and the cache still caches, which is the point of §95.
+      const fetcher = vi.fn(async () => bytes(1024));
+      await getPdfBytes('/api/after.pdf', fetcher);
+      await getPdfBytes('/api/after.pdf', fetcher);
+      expect(fetcher).toHaveBeenCalledTimes(1);
+    });
+
+    it('a late FAILURE cannot evict a newer successful load of the same URL', async () => {
+      let reject;
+      const first = getPdfBytes('/api/x.pdf', () => new Promise((_, rej) => { reject = rej; }));
+      const failed = first.catch(() => 'failed');
+      await Promise.resolve();
+      invalidatePdfBytes('/api/x.pdf');
+      await getPdfBytes('/api/x.pdf', async () => bytes(32));   // a successful retry
+      reject(new Error('network'));
+      expect(await failed).toBe('failed');
+      expect(pdfBytesCacheStats()).toMatchObject({ entries: 1, bytes: 32 });
+    });
+  });
+
+  /**
+   * 116.md §74/§95 (r3) — a STUDY-DOCUMENT URL is stable across a replace, so
+   * `invalidate` (which only runs in the tab that performed the replace) cannot be
+   * the whole answer. Serving the old bytes here is not a stale-cache annoyance: the
+   * annotation layer re-resolves the NEW content hash from the server and paints the
+   * new document's rectangles over the OLD document's pages — the "coordinates from
+   * a different document" state §74 exists to prevent.
+   */
+  describe('version pins keep a stable URL honest across a replace', () => {
+    const H1 = 'a'.repeat(64);
+    const H2 = 'b'.repeat(64);
+    const URL = '/api/projects/p1/studies/s1/document/download';
+
+    it('a revisit is still a cache hit while the document is unchanged', async () => {
+      const fetcher = vi.fn(async () => bytes(64, 1));
+      pinPdfBytesVersion(URL, H1);
+      await getPdfBytes(URL, fetcher);
+      pinPdfBytesVersion(URL, H1);              // the next mount re-resolves the same hash
+      await getPdfBytes(URL, fetcher);
+      expect(fetcher).toHaveBeenCalledTimes(1);
+    });
+
+    it('another member replacing the file forces a refetch on the next mount', async () => {
+      const fetcher = vi.fn()
+        .mockResolvedValueOnce(bytes(64, 1))
+        .mockResolvedValueOnce(bytes(64, 2));
+      pinPdfBytesVersion(URL, H1);
+      const before = await getPdfBytes(URL, fetcher);
+      expect(new Uint8Array(before)[0]).toBe(1);
+
+      pinPdfBytesVersion(URL, H2);              // the panel resolved a NEW hash
+      const after = await getPdfBytes(URL, fetcher);
+      expect(new Uint8Array(after)[0]).toBe(2);
+      expect(fetcher).toHaveBeenCalledTimes(2);
+      expect(pdfBytesCacheStats().entries).toBe(1);   // no accounting drift either
+      expect(pdfBytesCacheStats().bytes).toBe(64);
+    });
+
+    it('an explicit version argument beats the standing pin', async () => {
+      const fetcher = vi.fn(async () => bytes(16));
+      pinPdfBytesVersion(URL, H1);
+      await getPdfBytes(URL, fetcher, { version: H1 });
+      await getPdfBytes(URL, fetcher, { version: H2 });
+      expect(fetcher).toHaveBeenCalledTimes(2);
+    });
+
+    it('URLs nobody pins behave exactly as before (screening attachments)', async () => {
+      const fetcher = vi.fn(async () => bytes(16));
+      const att = '/api/screening/projects/p/records/r/pdf/att-1/download';
+      await getPdfBytes(att, fetcher);
+      await getPdfBytes(att, fetcher);
+      expect(fetcher).toHaveBeenCalledTimes(1);
+      expect(pdfBytesCacheStats().pins).toBe(0);
+    });
+
+    it('an empty url or version is a no-op, never a silent cache wipe', async () => {
+      await getPdfBytes('/api/a.pdf', async () => bytes(8));
+      pinPdfBytesVersion('', H1);
+      pinPdfBytesVersion('/api/a.pdf', '');
+      expect(pdfBytesCacheStats()).toMatchObject({ entries: 1, bytes: 8, pins: 0 });
+    });
   });
 
   it('stores nothing outside memory — no persistent storage API is referenced', async () => {

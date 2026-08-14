@@ -49,6 +49,28 @@ import {
 
 const LIST_CAP = 2000;   // a single document's annotation list — small by construction
 
+/**
+ * 116.md §91 (r3) — how far BEHIND the read the `?since=` watermark is stamped.
+ *
+ * `PdfAnnotation.updatedAt` is Prisma's `@updatedAt`: the value is produced by the
+ * query engine when the statement is BUILT, strictly before that statement commits
+ * (there is no database-side default — see the 20260813120000 migration). A row
+ * therefore carries a timestamp for the whole interval between statement
+ * construction and commit, and a list request that stamps its watermark inside that
+ * interval sees neither the row (not yet committed at its snapshot) nor, ever again,
+ * in a `?since=` delta (`updatedAt` is now <= the watermark, and the filter is `gt`).
+ * The highlight simply never appears for that reader until a full refresh — while
+ * its author sees it saved and shared.
+ *
+ * Stamping the watermark slightly in the PAST closes that window: the next delta
+ * re-reads the overlap, and merging is IDEMPOTENT by construction (§91,
+ * `mergeServerList`), so re-sending a handful of just-touched rows costs a few
+ * hundred bytes and changes nothing the client renders. It is a bound, not a proof —
+ * a write that stalls longer than this behind the writer lock still needs the
+ * existing full-refresh backstops (document change, remount, SSE reconnect).
+ */
+const SINCE_LAG_MS = 5000;
+
 /* ── Scope resolution ─────────────────────────────────────────────────────── */
 
 /**
@@ -221,10 +243,10 @@ async function list(scope, req, res) {
     if (validSince) where.updatedAt = { gt: validSince };
     else where.deletedAt = null;
 
-    // §91 — the watermark is stamped BEFORE the read, never after. A row committed
-    // between the query and the response would otherwise fall in the gap between this
-    // answer and the next `?since=` delta, and be lost until a full refresh.
-    const serverTime = new Date().toISOString();
+    // §91 — the watermark is stamped BEFORE the read, never after, and SINCE_LAG_MS
+    // behind it (r3): "before the read" alone only closes the harmless direction,
+    // because a row's `updatedAt` predates its own commit. See SINCE_LAG_MS.
+    const serverTime = new Date(Date.now() - SINCE_LAG_MS).toISOString();
     const rows = await prisma.pdfAnnotation.findMany({
       where, orderBy: [{ page: 'asc' }, { createdAt: 'asc' }], take: LIST_CAP,
     });

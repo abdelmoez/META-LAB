@@ -30,12 +30,25 @@
  * inverse ops (create↔delete, recolor, comment edit). Executors re-validate
  * against the CURRENT list and refuse politely when a collaborator moved first —
  * they never roll back local state, they replay through the same API path.
+ *
+ * ── WHICH VIEWER RUNS AN UNDO (§74/§86, r3) ──────────────────────────────────
+ * `registerExecutor` holds ONE slot per entry kind, and the viewer can be mounted
+ * more than once at a time (RobPdfPanel calls this hook AND renders the screening
+ * <PdfViewer> which calls it again; ConflictsTab mounts one per card). So the hook
+ * no longer assumes the slot it claimed is the slot that will be invoked: every
+ * recorded op carries the `docHash` it was made on plus the recording `viewerId`,
+ * and the registered executor is a DISPATCHER that routes the op through
+ * pdfAnnotationViewers to the instance actually showing that document. An op for a
+ * document nobody is showing is refused, which is also what stops an undo-of-delete
+ * from painting a previous document's highlight onto the one on screen (§74).
+ * An INERT viewer registers nothing at all.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useRealtime } from '../hooks/useRealtime.js';
 import { useProjectHistory } from '../history/HistoryContext.jsx';
 import { SCOPE_PDF } from '../../research-engine/interaction/projectScopes.js';
 import { pdfAnnotationApi, annotationBase, ANNOTATION_SCOPE } from './pdfAnnotationApi.js';
+import { pdfAnnotationViewers, newViewerId, NO_OWNER_DETAIL } from './pdfAnnotationViewers.js';
 import {
   colorFor, indexByPage, mergeServerList, pendingAnnotation,
   upsertByClientId, dropByClientId, markFailed, MAX_COMMENT, createMountGate,
@@ -114,6 +127,23 @@ export function usePdfAnnotations({
   const docHashRef = useRef(docHash); docHashRef.current = docHash;
   const activeRef = useRef(active); activeRef.current = active;
 
+  // 116.md §74/§86 (r3) — this instance's identity in the shared viewer registry.
+  // Stamped into every recorded op so an undo comes back to the viewer that made it.
+  const viewerIdRef = useRef('');
+  if (!viewerIdRef.current) viewerIdRef.current = newViewerId();
+  const viewerId = viewerIdRef.current;
+
+  /**
+   * 116.md §74 (r3) — a server row may only enter THIS viewer's list when it belongs
+   * to the document currently on screen. Every write below is asynchronous, and the
+   * document can change (a different record, a replaced file) while one is in flight;
+   * without this test the answer to a request about document H1 lands in the list of
+   * document H2 and its rectangles are projected onto H2's pages.
+   */
+  const sameDoc = useCallback((row) => (
+    !!row && String(row.docHash || '') === String(docHashRef.current || '')
+  ), []);
+
   const history = useProjectHistory();
 
   /* ── Fetching ───────────────────────────────────────────────────────────── */
@@ -144,8 +174,11 @@ export function usePdfAnnotations({
     if (!activeRef.current) return;
     if (!sinceRef.current) { await fetchFull(); return; }
     try {
-      const res = await pdfAnnotationApi.list(targetRef.current, { docHash: docHashRef.current, since: sinceRef.current });
-      if (!mountGate.isAlive()) return;
+      const askedFor = docHashRef.current;
+      const res = await pdfAnnotationApi.list(targetRef.current, { docHash: askedFor, since: sinceRef.current });
+      // §74 (r3) — the same document guard `fetchFull` already applies: a delta that
+      // resolves after the viewer moved on describes the PREVIOUS file's pages.
+      if (!mountGate.isAlive() || docHashRef.current !== askedFor) return;
       rememberIds(res.annotations);
       sinceRef.current = res.serverTime || sinceRef.current;
       if (res.capabilities) setCaps(res.capabilities);
@@ -231,7 +264,10 @@ export function usePdfAnnotations({
       studyId: draft.studyId,
     });
     const row = res && res.annotation;
-    if (row) {
+    // §74 (r3) — the POST may land after the viewer moved to another document. The
+    // row is still saved (and the id still worth remembering for a later undo), it
+    // just must not be merged into a list that describes different pages.
+    if (row && sameDoc(row)) {
       rememberIds([row]);
       // §89 idempotency can legitimately answer with a TOMBSTONE (the same clientId was
       // created and then deleted). Re-adding it would resurrect a highlight the team
@@ -241,7 +277,7 @@ export function usePdfAnnotations({
       else setList((cur) => upsertByClientId(cur, { ...row, pending: false, failed: false }));
     }
     return row;
-  }, [rememberIds]);
+  }, [rememberIds, sameDoc]);
 
   /**
    * PATCH one annotation. `baseRevision` is the §90 compare-and-set baseline; it is
@@ -255,38 +291,53 @@ export function usePdfAnnotations({
     if (base !== undefined && base !== null) body.baseRevision = base;
     const res = await pdfAnnotationApi.update(targetRef.current, id, body);
     const row = res && res.annotation;
-    if (row) {
+    if (row && sameDoc(row)) {
       rememberIds([row]);
       setList((prev) => upsertByClientId(prev, { ...row, pending: false, failed: false }));
     }
     return row;
-  }, [rememberIds]);
+  }, [rememberIds, sameDoc]);
 
   const applyDelete = useCallback(async (id) => {
     const res = await pdfAnnotationApi.remove(targetRef.current, id);
     const row = res && res.annotation;
-    if (row) {
+    if (row && sameDoc(row)) {
       rememberIds([row]);   // keep the id so undo can restore this exact tombstone
       setList((prev) => dropByClientId(prev, row.clientId));
     }
     return row;
-  }, [rememberIds]);
+  }, [rememberIds, sameDoc]);
 
   const applyRestore = useCallback(async (id) => {
     const res = await pdfAnnotationApi.update(targetRef.current, id, { restore: true });
     const row = res && res.annotation;
-    if (row && !row.deleted) {
+    // §74 (r3) — the LAST line of defence for the undo-restore path: the server
+    // resolves a row by (id, project), not by document, so a restore aimed at another
+    // file would otherwise return a row whose rectangles belong to different pages.
+    // The registry refuses to route such an op at all; this keeps the invariant true
+    // even if a row's document changed under a race.
+    if (row && !row.deleted && sameDoc(row)) {
       rememberIds([row]);
       setList((prev) => upsertByClientId(prev, { ...row, pending: false, failed: false }));
     }
     return row;
-  }, [rememberIds]);
+  }, [rememberIds, sameDoc]);
 
   /* ── Undo/redo executor (§86, D9) ───────────────────────────────────────── */
 
-  useEffect(() => history.registerExecutor(PDF_ANNOTATION_KIND, async (op) => {
+  /**
+   * THIS viewer's executor body. It is reached through the shared registry, which has
+   * already established that this instance is active and is showing `op.docHash`; the
+   * two guards below re-check that at execution time (108.md §15 — always re-validate
+   * against current state, never the state at record time).
+   */
+  const runAnnotationOp = useCallback(async (op) => {
     if (!activeRef.current) return REFUSED('Open the PDF again to undo this highlight.');
     if (!op || typeof op !== 'object') return false;
+    // 116.md §74 (r3) — an op names the document it was made on. Never replay one
+    // recorded on a different PDF: the row ids are project-scoped server-side, so a
+    // restore would succeed and its rectangles would be painted over the page on screen.
+    if (op.docHash && op.docHash !== docHashRef.current) return REFUSED(NO_OWNER_DETAIL);
     // §86 + §89 — run the inverse THROUGH THE SAME serialized chain as the forward
     // write. Ctrl+Z pressed while the create POST is still in flight therefore QUEUES
     // behind it and finds a real server id, instead of racing it and refusing (or,
@@ -330,7 +381,53 @@ export function usePdfAnnotations({
         throw e;   // a genuine persistence failure — the provider reports it
       }
     });
-  }), [history.registerExecutor, applyDelete, applyRestore, applyUpdate, findByClientId, serverIdFor, fetchDelta, serialize]);
+  }, [applyDelete, applyRestore, applyUpdate, findByClientId, serverIdFor, fetchDelta, serialize]);
+
+  /**
+   * 116.md §74/§86 (r3) — membership in the shared viewer registry.
+   *
+   * `isActive`/`docHash` are getters over the render-assigned refs, so the registry
+   * always judges this viewer on what it is showing NOW. `registryGen` re-runs the
+   * registration effect below whenever another viewer detaches or goes inert: the
+   * single executor slot is otherwise emptied by whichever instance happened to claim
+   * it, while other viewers are still open (two conflict cards, one folded away).
+   */
+  const runRef = useRef(runAnnotationOp); runRef.current = runAnnotationOp;
+  const [registryGen, setRegistryGen] = useState(0);
+  useEffect(() => {
+    const detach = pdfAnnotationViewers.attach({
+      id: viewerId,
+      isActive: () => activeRef.current,
+      docHash: () => docHashRef.current,
+      run: (op) => runRef.current(op),
+    });
+    // Only an ACTIVE viewer has a registration to re-assert, so an inert one takes no
+    // render from a notification. That is what keeps a surface mounting one viewer per
+    // row (the Conflicts tab) from turning membership churn into an N² re-render.
+    const unsubscribe = pdfAnnotationViewers.subscribe(() => {
+      if (activeRef.current) setRegistryGen((g) => g + 1);
+    });
+    return () => { detach(); unsubscribe(); };
+  }, [viewerId]);
+
+  /**
+   * The registered executor is a pure DISPATCHER — every mounted viewer would register
+   * an identical one, so it no longer matters which instance won the kind-keyed slot.
+   *
+   * Registering only while ACTIVE is the other half: an inert viewer (RobPdfPanel's
+   * study-document hook while the screening <PdfViewer> is the one on screen) must not
+   * appear in the executor registry at all. It never could run an op, and claiming the
+   * slot is exactly what killed annotation undo for the whole RoB workspace.
+   */
+  const dispatchOp = useCallback((op) => pdfAnnotationViewers.dispatch(op), []);
+  useEffect(() => {
+    if (!active) return undefined;
+    return history.registerExecutor(PDF_ANNOTATION_KIND, dispatchOp);
+  }, [active, registryGen, dispatchOp, history.registerExecutor]);
+  // Declared AFTER the registration effect so React tears that one down first: a
+  // viewer going inert unregisters, and this then tells any other OPEN viewer to
+  // re-claim the slot it just vacated.
+  useEffect(() => { pdfAnnotationViewers.refresh(); }, [active]);
 
   /* ── Public mutations ───────────────────────────────────────────────────── */
 
@@ -354,19 +451,22 @@ export function usePdfAnnotations({
     setList((cur) => [...cur, draft]);
     // Record BEFORE the round-trip so Ctrl+Z immediately after the gesture works
     // (§86); the executor re-validates and refuses if the save never landed.
+    // 116.md §74/§86 (r3) — `docHash` + `viewerId` are what route this entry back to
+    // the viewer showing this document, and what make it un-replayable on any other.
+    const at = { clientId, docHash: draft.docHash, viewerId };
     history.record({
       kind: PDF_ANNOTATION_KIND,
       scope: SCOPE_PDF,
       label: 'Highlight',
       entityKey: clientId,
-      undoOp: { type: 'delete', clientId },
-      redoOp: { type: 'restore', clientId, id: null },
+      undoOp: { type: 'delete', ...at },
+      redoOp: { type: 'restore', ...at, id: null },
     });
     serialize(async () => {
       try {
         await persistCreate(draft);   // stamps idByClientRef for the redo/restore path
       } catch (e) {
-        if (!mountGate.isAlive()) return;
+        if (!mountGate.isAlive() || docHashRef.current !== draft.docHash) return;
         setList((cur) => markFailed(cur, clientId));
         setError((e && e.message) || 'That highlight could not be saved.');
         // §89 — never pretend it persisted: drop the failed row shortly after the
@@ -375,7 +475,7 @@ export function usePdfAnnotations({
       }
     });
     return draft;
-  }, [caps.canCreate, history, persistCreate, recordId, serialize, studyId, effUserId, effUserName]);
+  }, [caps.canCreate, history, persistCreate, recordId, serialize, studyId, effUserId, effUserName, viewerId]);
 
   /**
    * Recolour (§77) — undoable, precondition-guarded.
@@ -390,14 +490,15 @@ export function usePdfAnnotations({
     const next = colorFor(color).key;
     const prev = colorFor(annotation.color).key;
     if (next === prev) return;
+    const at = { clientId: annotation.clientId, docHash: annotation.docHash || docHashRef.current, viewerId };
     setList((cur) => upsertByClientId(cur, { ...annotation, color: next }));
     history.record({
       kind: PDF_ANNOTATION_KIND,
       scope: SCOPE_PDF,
       label: 'Highlight colour',
       entityKey: annotation.clientId,
-      undoOp: { type: 'update', clientId: annotation.clientId, patch: { color: prev }, expect: { color: next } },
-      redoOp: { type: 'update', clientId: annotation.clientId, patch: { color: next }, expect: { color: prev } },
+      undoOp: { type: 'update', ...at, patch: { color: prev }, expect: { color: next } },
+      redoOp: { type: 'update', ...at, patch: { color: next }, expect: { color: prev } },
     });
     serialize(async () => {
       try {
@@ -405,13 +506,14 @@ export function usePdfAnnotations({
         if (!id) throw Object.assign(new Error('That highlight is no longer here.'), { status: 404 });
         await applyUpdate(id, { color: next });
       } catch (e) {
-        if (!mountGate.isAlive()) return;
+        // §74 (r3) — never revert a row back into a list that now describes another PDF.
+        if (!mountGate.isAlive() || !sameDoc(annotation)) return;
         setList((cur) => upsertByClientId(cur, { ...annotation, color: prev }));
         setError((e && e.message) || 'That colour change could not be saved.');
         if (e && e.status === 409) fetchDelta();
       }
     });
-  }, [applyUpdate, fetchDelta, history, serialize, serverIdFor]);
+  }, [applyUpdate, fetchDelta, history, serialize, serverIdFor, sameDoc, viewerId]);
 
   /** Add/edit a comment (§79) — undoable as one discrete edit on commit. */
   const setComment = useCallback((annotation, comment) => {
@@ -419,14 +521,15 @@ export function usePdfAnnotations({
     const next = String(comment || '').slice(0, MAX_COMMENT);
     const prev = String(annotation.comment || '');
     if (next === prev) return;
+    const at = { clientId: annotation.clientId, docHash: annotation.docHash || docHashRef.current, viewerId };
     setList((cur) => upsertByClientId(cur, { ...annotation, comment: next }));
     history.record({
       kind: PDF_ANNOTATION_KIND,
       scope: SCOPE_PDF,
       label: 'Highlight comment',
       entityKey: annotation.clientId,
-      undoOp: { type: 'update', clientId: annotation.clientId, patch: { comment: prev }, expect: { comment: next } },
-      redoOp: { type: 'update', clientId: annotation.clientId, patch: { comment: next }, expect: { comment: prev } },
+      undoOp: { type: 'update', ...at, patch: { comment: prev }, expect: { comment: next } },
+      redoOp: { type: 'update', ...at, patch: { comment: next }, expect: { comment: prev } },
     });
     serialize(async () => {
       try {
@@ -434,18 +537,19 @@ export function usePdfAnnotations({
         if (!id) throw Object.assign(new Error('That highlight is no longer here.'), { status: 404 });
         await applyUpdate(id, { comment: next });
       } catch (e) {
-        if (!mountGate.isAlive()) return;
+        if (!mountGate.isAlive() || !sameDoc(annotation)) return;   // §74 (r3)
         setList((cur) => upsertByClientId(cur, { ...annotation, comment: prev }));
         setError((e && e.message) || 'That comment could not be saved.');
         if (e && e.status === 409) fetchDelta();
       }
     });
-  }, [applyUpdate, fetchDelta, history, serialize, serverIdFor]);
+  }, [applyUpdate, fetchDelta, history, serialize, serverIdFor, sameDoc, viewerId]);
 
   /** Delete (§83 author-or-leader; the server re-decides) — undoable via restore. */
   const deleteAnnotation = useCallback((annotation) => {
     if (!annotation || annotation.failed) return;
     const snapshot = { ...annotation };
+    const at = { clientId: annotation.clientId, docHash: annotation.docHash || docHashRef.current, viewerId };
     setList((cur) => dropByClientId(cur, annotation.clientId));
     history.record({
       kind: PDF_ANNOTATION_KIND,
@@ -455,8 +559,10 @@ export function usePdfAnnotations({
       // `id: null` for a still-pending row — the undo executor resolves the real id
       // from the same map the delete below stamps, so an undo of "highlight, delete"
       // restores the RIGHT tombstone even when both happened inside one round-trip.
-      undoOp: { type: 'restore', clientId: annotation.clientId, id: annotation.pending ? null : annotation.id },
-      redoOp: { type: 'delete', clientId: annotation.clientId },
+      // The baked-in id is why `docHash` matters here more than anywhere: it is the
+      // ONE op that can address a row without consulting this viewer's live state.
+      undoOp: { type: 'restore', ...at, id: annotation.pending ? null : annotation.id },
+      redoOp: { type: 'delete', ...at },
     });
     serialize(async () => {
       try {
@@ -464,12 +570,12 @@ export function usePdfAnnotations({
         if (!id) throw Object.assign(new Error('That highlight is no longer here.'), { status: 404 });
         await applyDelete(id);
       } catch (e) {
-        if (!mountGate.isAlive()) return;
+        if (!mountGate.isAlive() || !sameDoc(snapshot)) return;   // §74 (r3)
         setList((cur) => upsertByClientId(cur, snapshot));
         setError((e && e.message) || 'That highlight could not be removed.');
       }
     });
-  }, [applyDelete, history, serialize, serverIdFor]);
+  }, [applyDelete, history, serialize, serverIdFor, sameDoc, viewerId]);
 
   /** §85 — 'mine' (any member) or 'all' (leader/owner). Never touches the PDF. */
   const clearAnnotations = useCallback(async (mode) => {
