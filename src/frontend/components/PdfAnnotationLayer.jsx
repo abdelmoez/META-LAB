@@ -21,11 +21,20 @@
  *    layout during render.
  *
  * ── NOT INTERFERING (§75) ────────────────────────────────────────────────────
- * Selection capture is a single `mouseup` listener on the existing text layer. It
- * never calls preventDefault, never blocks copy, never touches scroll or zoom, and
- * a click that produced no selection just dismisses the control. On a scanned PDF
- * with no text layer there is nothing to select, so the control simply never
- * appears (§96) — the viewer does not pretend text exists.
+ * Selection capture listens for `mouseup` (the end of the §75 drag) and, when no
+ * drag is in progress, for a debounced `selectionchange`. It never calls
+ * preventDefault, never blocks copy, never touches scroll or zoom, and a click that
+ * produced no selection just dismisses the control. Every capture re-validates that
+ * the selection is inside THIS page's text layer, so a listener at document level
+ * cannot steal another page's selection. On a scanned PDF with no text layer there
+ * is nothing to select, so the control simply never appears (§96) — the viewer does
+ * not pretend text exists.
+ *
+ * ── KEYBOARD (§100) ──────────────────────────────────────────────────────────
+ * The `selectionchange` half is not a nicety: selecting with Shift+Arrow fires no
+ * mouse event at all, so a `mouseup`-only capture path is unreachable without a
+ * mouse. The timing rule (which event captures, and after how long) is pure and
+ * lives in `selectionCaptureDelay`.
  */
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { C, FONT, MONO, alpha } from '../theme/tokens.js';
@@ -33,6 +42,7 @@ import {
   ANNOTATION_COLORS, colorFor, toPageRects, mergeLineRects, cssRectsToUser,
   userRectsToCss, rectsBounds, annotationAriaLabel, isOwnAnnotation,
   canMutateAnnotation, sortForList, MAX_COMMENT,
+  selectionThresholds, selectionCaptureDelay,
 } from './pdfAnnotationModel.js';
 
 const EMPTY = Object.freeze([]);
@@ -74,20 +84,55 @@ function PdfAnnotationPageLayerBase({
     if (!text) { setPending(null); return; }
     let host;
     try { host = tl.getBoundingClientRect(); } catch { return; }
-    const merged = mergeLineRects(toPageRects(Array.from(range.getClientRects() || []), host));
+    // 116.md §76 — the tolerances that separate "a real text line" from selection
+    // noise are PDF-user-space quantities, so they are projected to the current zoom
+    // rather than fixed in CSS px. At fit-width in a narrow panel a 12 pt line is
+    // barely 1 px tall; a fixed 1.5 px floor silently threw that selection away and
+    // the reviewer got no Highlight control and no explanation.
+    const tol = selectionThresholds(scale);
+    const merged = mergeLineRects(
+      toPageRects(Array.from(range.getClientRects() || []), host, { minSize: tol.minSize }),
+      { lineGap: tol.lineGap },
+    );
     if (!merged.length) { setPending(null); return; }
     const last = merged[merged.length - 1];
     setPending({ cssRects: merged, text, anchor: { left: last.x0, top: last.y1 } });
-  }, [canCreate, textLayerRef, usable]);
+  }, [canCreate, scale, textLayerRef, usable]);
 
   useEffect(() => {
     const tl = textLayerRef && textLayerRef.current;
-    if (!tl || !canCreate || !usable) return undefined;
-    // `mouseup` on the text layer, bubble phase, no preventDefault: plain selection
-    // and copy keep working exactly as before (§75).
-    const onUp = () => { setTimeout(captureSelection, 0); };
-    tl.addEventListener('mouseup', onUp);
-    return () => tl.removeEventListener('mouseup', onUp);
+    if (!tl || !canCreate || !usable || typeof document === 'undefined') return undefined;
+    let timer = 0;
+    let dragging = false;
+    // No preventDefault anywhere below: plain selection, copy, scroll and zoom keep
+    // working exactly as before (§75). `captureSelection` re-validates that the
+    // selection really is inside THIS page's text layer, so listening at document
+    // level is safe — and it is what makes a drag that ENDS outside the text layer
+    // (past the right margin, the usual way a line gets selected) still offer the
+    // control instead of silently doing nothing.
+    const schedule = (source) => {
+      const delay = selectionCaptureDelay(source, { dragging });
+      if (delay == null) return;
+      clearTimeout(timer);
+      timer = setTimeout(captureSelection, delay);
+    };
+    const onDown = () => { dragging = true; };
+    const onUp = () => { dragging = false; schedule('mouseup'); };
+    // §100 — a reviewer selecting with Shift+Arrow produces NO mouseup at all, so
+    // `mouseup` alone left the keyboard path with no way to reach the control.
+    // `selectionchange` is the only event a caret-driven selection fires; it is
+    // debounced and ignored mid-drag, so the mouse gesture still resolves once, on
+    // release, instead of flickering along under the cursor.
+    const onSelChange = () => schedule('selectionchange');
+    document.addEventListener('mousedown', onDown, true);
+    document.addEventListener('mouseup', onUp, true);
+    document.addEventListener('selectionchange', onSelChange);
+    return () => {
+      clearTimeout(timer);
+      document.removeEventListener('mousedown', onDown, true);
+      document.removeEventListener('mouseup', onUp, true);
+      document.removeEventListener('selectionchange', onSelChange);
+    };
   }, [captureSelection, canCreate, textLayerRef, usable]);
 
   // Escape / a click elsewhere dismisses the control (§75) without touching the

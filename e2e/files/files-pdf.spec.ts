@@ -142,6 +142,20 @@ test.describe('Files & PDF viewer — screening record (empty / upload state)', 
  * AppPdfViewer selectors so they run as-is once unblocked.
  */
 test.describe('Files & PDF viewer — loaded PDF (requires an attached, renderable PDF)', () => {
+  // 116.md §71-104 — VIEWPORT IS A PRECONDITION HERE, and it was the missing one.
+  // These specs assert what the VIEWER does — the zoom ladder, live search, page
+  // navigation — so they need a viewer with a reading-sized surface. The Title &
+  // Abstract workbench splits the window between the workspace rail, the engine nav,
+  // the record list and the filters sidebar; at the 1280 px default that leaves the
+  // middle column (and the PDF panel inside it) about 130 px wide, so the viewer is
+  // ~74 px, fit-width lands at ~0.09× and all three pages sit on screen at once.
+  // Everything the viewer does at that size is CORRECT — zoom-out is genuinely
+  // unavailable below the ladder floor of 0.25×, and the page under the viewport
+  // centre really is the last one — it is simply not the situation these specs
+  // describe. 1600×900 is the smallest common desktop size that gives the panel a
+  // real reading column (~394 px ⇒ ~0.62×), and no assertion below is relaxed for it.
+  test.use({ viewport: { width: 1600, height: 900 } });
+
   // Three pages of real Helvetica text: enough for page navigation AND for the live
   // search to find matches, without making the fixture slow to render.
   test.beforeEach(async ({ request, screeningProject }) => {
@@ -156,6 +170,11 @@ test.describe('Files & PDF viewer — loaded PDF (requires an attached, renderab
     const viewer = page.getByRole('group', { name: /PDF viewer/i });
     await expect(viewer).toBeVisible();
     await expect(viewer.getByText(/\d+ \/ \d+/)).toBeVisible(); // page indicator "1 / N"
+    // The viewer opens in fit-width mode, and in a reading-sized panel that fit sits
+    // INSIDE the zoom ladder — so both directions are available. (Zoom-out correctly
+    // disables itself when fit-width is already below the ladder's 0.25× floor, which
+    // is why this spec pins the window size above.)
+    await expect(page.getByRole('button', { name: /fit width/i })).toHaveText(/fit width/i);
     await expect(page.getByRole('button', { name: /zoom in/i })).toBeEnabled();
     await expect(page.getByRole('button', { name: /zoom out/i })).toBeEnabled();
   });
@@ -177,10 +196,17 @@ test.describe('Files & PDF viewer — loaded PDF (requires an attached, renderab
     await gotoWorkbenchPdfPanel(page, screeningProject.project.id);
 
     await page.getByRole('button', { name: 'Preview', exact: true }).click();
+    const viewer = page.getByRole('group', { name: /PDF viewer/i });
     await page.getByRole('button', { name: /search in document/i }).click();
     const input = page.getByPlaceholder(/find in document/i);
     await input.fill('the'); // no Enter — search is as-you-type (debounced)
-    await expect(page.locator('[aria-live="polite"]')).toContainText(/\d+\s*\/\s*\d+/);
+    // The count lives in the viewer's own polite live region. It MUST be scoped:
+    // the screening workbench has three other aria-live regions (the score-unlock
+    // notice, the decision bar's status, the toast host), so an unscoped locator is
+    // a strict-mode violation rather than a real assertion.
+    await expect(viewer.locator('[aria-live="polite"]')).toContainText(/\d+\s*\/\s*\d+/);
+    // …and the matches really are painted into the text layer, not just counted.
+    await expect(page.locator('.mlpdf-tl mark').first()).toBeAttached();
   });
 
   test('previous / next page navigation updates the page indicator', async ({ page, screeningProject }) => {
@@ -192,5 +218,8 @@ test.describe('Files & PDF viewer — loaded PDF (requires an attached, renderab
     await expect(viewer.getByText(/1 \/ \d+/)).toBeVisible();
     await page.getByRole('button', { name: /next page/i }).click();
     await expect(viewer.getByText(/2 \/ \d+/)).toBeVisible();
+    // The spec is named "previous / next": prove the way back too.
+    await page.getByRole('button', { name: /previous page/i }).click();
+    await expect(viewer.getByText(/1 \/ \d+/)).toBeVisible();
   });
 });

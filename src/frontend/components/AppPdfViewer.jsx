@@ -1074,9 +1074,10 @@ function PdfPageView({
         // 116.md §75/§76/§93 — the annotation layer for THIS page. It reads the same
         // `pageDims` + `scale` the canvas and the reveal box use, so a highlight, a
         // jump-to-source box and an extraction provenance bbox are all projected by
-        // one piece of math (pdfRevealBox.revealBoxFor). Selection capture attaches a
-        // single bubble-phase `mouseup` listener to the text layer below — no
-        // preventDefault, so plain selection, copy, scroll and zoom are untouched.
+        // one piece of math (pdfRevealBox.revealBoxFor). Selection capture listens for
+        // `mouseup` and (§100, for keyboard selections that fire no mouse event) a
+        // debounced `selectionchange` — no preventDefault anywhere, so plain
+        // selection, copy, scroll and zoom are untouched.
         <PdfAnnotationPageLayer
           page={pageNumber}
           items={annotationItems}

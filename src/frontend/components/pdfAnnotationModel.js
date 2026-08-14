@@ -64,17 +64,58 @@ export function colorFor(key) {
 /* ── Selection geometry (§75/§76) ─────────────────────────────────────────── */
 
 const finite = (v) => Number.isFinite(+v);
-const MIN_RECT_PX = 1.5;          // sub-pixel client rects are selection noise
+/**
+ * The two size tolerances used while turning a browser selection into rectangles.
+ * They are expressed in PDF USER UNITS (points), not CSS px, and projected to the
+ * current zoom by `selectionThresholds` below — see the note there.
+ */
+const MIN_RECT_UNITS = 1.5;       // below this a rect is selection noise, not a line
 const LINE_OVERLAP = 0.55;        // vertical overlap ratio that means "same line"
-const LINE_GAP_PX = 4;            // horizontal gap still merged inside one line
+const LINE_GAP_UNITS = 4;         // horizontal gap still merged inside one line
 
 /**
- * toPageRects(clientRects, host) — viewport DOMRect-likes → page-local CSS rects.
- * `host` is the page wrapper's bounding rect ({left, top}). Anything degenerate is
- * dropped rather than clamped: an empty result means "there was no real selection
- * here", which the caller must treat as "do not offer to highlight".
+ * selectionThresholds(scale) → { minSize, lineGap } in CSS px at that scale.
+ *
+ * 116.md §76 — a highlight must mean the same thing at every zoom level. Fixing
+ * these tolerances in CSS px broke that in both directions: at fit-width inside a
+ * narrow panel a 12 pt text line is barely 1 px tall, so a REAL selection was
+ * discarded as noise and no Highlight control appeared (with no explanation); zoomed
+ * in, genuine sub-pixel noise sailed through and two columns 4 px apart on screen
+ * were merged into one rectangle. Scaling them keeps the decision a property of the
+ * DOCUMENT. At scale 1 the numbers are exactly the pre-116 constants, so nothing
+ * changes for a page rendered at 100 %.
  */
-export function toPageRects(clientRects, host) {
+export function selectionThresholds(scale) {
+  const s = +scale > 0 ? +scale : 1;
+  return { minSize: MIN_RECT_UNITS * s, lineGap: LINE_GAP_UNITS * s };
+}
+
+/**
+ * §75/§100 — how long to wait before turning a settled selection into the pending
+ * highlight control, per the event that reported it. Returning null means "ignore
+ * this one".
+ *   'mouseup'         → immediately (the drag has ended; this is the §75 gesture);
+ *   'selectionchange' → only when NO drag is in progress, after a short settle. A
+ *                       keyboard user selecting with Shift+Arrow never produces a
+ *                       mouseup at all, so this is the only event that can offer
+ *                       them the control (§100); suppressing it mid-drag is what
+ *                       stops the control flickering along under the cursor.
+ */
+export const SELECTION_SETTLE_MS = 150;
+export function selectionCaptureDelay(source, { dragging = false } = {}) {
+  if (source === 'mouseup') return 0;
+  if (source === 'selectionchange') return dragging ? null : SELECTION_SETTLE_MS;
+  return null;
+}
+
+/**
+ * toPageRects(clientRects, host, { minSize }) — viewport DOMRect-likes → page-local
+ * CSS rects. `host` is the page wrapper's bounding rect ({left, top}). Anything
+ * degenerate is dropped rather than clamped: an empty result means "there was no
+ * real selection here", which the caller must treat as "do not offer to highlight".
+ * `minSize` is a CSS-px floor — callers pass `selectionThresholds(scale).minSize`.
+ */
+export function toPageRects(clientRects, host, { minSize = MIN_RECT_UNITS } = {}) {
   const hl = host && finite(host.left) ? +host.left : 0;
   const ht = host && finite(host.top) ? +host.top : 0;
   const out = [];
@@ -82,7 +123,7 @@ export function toPageRects(clientRects, host) {
     if (!r) continue;
     const x0 = +r.left - hl, y0 = +r.top - ht, x1 = +r.right - hl, y1 = +r.bottom - ht;
     if (![x0, y0, x1, y1].every(finite)) continue;
-    if (x1 - x0 < MIN_RECT_PX || y1 - y0 < MIN_RECT_PX) continue;
+    if (x1 - x0 < minSize || y1 - y0 < minSize) continue;
     out.push({ x0, y0, x1, y1 });
   }
   return out;
@@ -106,7 +147,7 @@ function vOverlap(a, b) {
  * home-grown highlighter has. Grouping by vertical overlap and unioning within a
  * group is both prettier and cheaper to store (§76 "normalized rectangles").
  */
-export function mergeLineRects(rects) {
+export function mergeLineRects(rects, { lineGap = LINE_GAP_UNITS } = {}) {
   const list = (Array.isArray(rects) ? rects : []).filter(Boolean)
     .slice()
     .sort((a, b) => (a.y0 - b.y0) || (a.x0 - b.x0));
@@ -136,7 +177,7 @@ export function mergeLineRects(rects) {
     const items = b.items.slice().sort((x, y) => x.x0 - y.x0 || x.x1 - y.x1);
     let cur = null;
     for (const r of items) {
-      if (cur && r.x0 <= cur.x1 + LINE_GAP_PX) {
+      if (cur && r.x0 <= cur.x1 + lineGap) {
         cur.x1 = Math.max(cur.x1, r.x1);
         cur.y0 = Math.min(cur.y0, r.y0);
         cur.y1 = Math.max(cur.y1, r.y1);
@@ -267,6 +308,34 @@ export function annotationAriaLabel(annotation, userId) {
   return `${color} highlight by ${who}${excerpt ? `: ${excerpt}` : ''}${note}`;
 }
 
+/* ── Mount gate (§89) ─────────────────────────────────────────────────────── */
+
+/**
+ * createMountGate() — the "is this hook instance still mounted?" gate that every
+ * async continuation in `usePdfAnnotations` checks before touching state.
+ *
+ * WHY IT IS A FACTORY AND NOT A `useRef(true)` + teardown-only effect. React 18
+ * StrictMode double-invokes mount effects in development: mount → cleanup → mount.
+ * A gate that is only ever CLOSED (by the cleanup) is therefore closed permanently
+ * after the first simulated unmount, and every later server answer — the capability
+ * list, the annotation list, an optimistic reconcile — is silently discarded. That
+ * is exactly the shape of bug an SSR-only unit suite cannot see and a production
+ * build does not reproduce, so the invariant is pinned here instead:
+ *
+ *   arming the gate again after a teardown MUST re-open it.
+ *
+ * `alive` starts open so a continuation that somehow resolves between the first
+ * render and the first effect still lands, which is the pre-existing behaviour.
+ */
+export function createMountGate() {
+  let alive = true;
+  return {
+    isAlive: () => alive,
+    /** Call from a mount effect and RETURN the result as that effect's cleanup. */
+    arm() { alive = true; return () => { alive = false; }; },
+  };
+}
+
 /* ── Optimistic list reducer (§89/§91) ────────────────────────────────────── */
 
 /**
@@ -361,7 +430,8 @@ export default {
   ANNOTATION_COLORS, ANNOTATION_COLOR_KEYS, DEFAULT_ANNOTATION_COLOR,
   MAX_SELECTED_TEXT, MAX_COMMENT, colorFor,
   toPageRects, mergeLineRects, cssRectsToUser, userRectsToCss, rectsBounds,
-  indexByPage, sortForList,
+  selectionThresholds, selectionCaptureDelay, SELECTION_SETTLE_MS,
+  indexByPage, sortForList, createMountGate,
   canMutateAnnotation, isOwnAnnotation, annotationAriaLabel,
   pendingAnnotation, upsertByClientId, markFailed, dropByClientId, mergeServerList,
 };

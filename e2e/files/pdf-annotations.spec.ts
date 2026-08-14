@@ -14,7 +14,9 @@
  *
  * Selection is created with a real Range + a real bubbling `mouseup` on the text layer,
  * which is exactly the path a mouse drag takes into the capture listener. Driving raw
- * mouse coordinates over pdf.js glyph boxes is not deterministic in CI; this is.
+ * mouse coordinates over pdf.js glyph boxes is not deterministic in CI; this is. The
+ * last spec drops the `mouseup` entirely to cover the §100 keyboard path, where a
+ * `selectionchange` is the only event the browser fires.
  */
 import type { Page } from '@playwright/test';
 import { test, expect } from '../fixtures/stitch-test';
@@ -46,8 +48,8 @@ async function openViewer(page: Page, projectId: string): Promise<ShellNav> {
  * bubbling `mouseup` the capture listener waits for. Returns 'ok' | 'no-text-layer' |
  * 'no-match' so a spec can assert the scanned-PDF case honestly.
  */
-async function selectPdfText(page: Page, needle: string): Promise<string> {
-  return page.evaluate((text: string) => {
+async function selectPdfText(page: Page, needle: string, opts: { mouseup?: boolean } = {}): Promise<string> {
+  return page.evaluate(({ text, withMouseup }: { text: string; withMouseup: boolean }) => {
     const tl = document.querySelector('.mlpdf-tl');
     if (!tl) return 'no-text-layer';
     const spans = Array.from(tl.querySelectorAll(':scope > span')) as HTMLElement[];
@@ -59,15 +61,28 @@ async function selectPdfText(page: Page, needle: string): Promise<string> {
     if (!sel) return 'no-selection';
     sel.removeAllRanges();
     sel.addRange(range);
-    target.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+    // withMouseup:false leaves the selection exactly as a Shift+Arrow user leaves it —
+    // changed, with no mouse event anywhere. That is the §100 path.
+    if (withMouseup) target.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
     return 'ok';
-  }, needle);
+  }, { text: needle, withMouseup: opts.mouseup !== false });
 }
 
 /** Every painted highlight rectangle carries data-annotation-id. */
 const marks = (page: Page) => page.locator('[data-annotation-id]');
 
 test.describe('PDF annotations — the full collaborative arc', () => {
+  // 116.md §71-104 — the annotation gesture needs a viewer big enough to annotate in.
+  // The T&A workbench splits the window between four columns, so at the 1280 px
+  // default the PDF panel is ~74 px wide and fit-width lands at ~0.09×, where a 12 pt
+  // line is a single pixel tall and the popover is wider than the panel. That is a
+  // caricature of reading a paper, not the reviewing situation §75 describes. 1600×900
+  // gives the panel a real reading column (~394 px ⇒ ~0.62×). Nothing below is
+  // relaxed for it — the low-zoom capture behaviour itself is pinned by
+  // tests/unit/annotations/pdfAnnotationModel.test.js instead, where it can be
+  // asserted exactly.
+  test.use({ viewport: { width: 1600, height: 900 } });
+
   test('highlight → comment → reload → persists → recolour → undo @smoke', async ({ page, request, screeningProject }) => {
     await attachPdfToFirstRecord(request, screeningProject.siftId, { pages: 2 });
     await openViewer(page, screeningProject.project.id);
@@ -186,5 +201,24 @@ test.describe('PDF annotations — the full collaborative arc', () => {
     // The browser selection survives, so the reviewer can still copy what they selected.
     const stillSelected = await page.evaluate(() => String(window.getSelection() || ''));
     expect(stillSelected).toContain(FIXTURE_SELECTABLE.slice(0, 20));
+  });
+
+  test('§100 — a selection made with no mouse at all still offers the control', async ({ page, request, screeningProject }) => {
+    await attachPdfToFirstRecord(request, screeningProject.siftId, { pages: 1 });
+    await openViewer(page, screeningProject.project.id);
+
+    // Selecting with Shift+Arrow fires `selectionchange` and NOTHING else — no
+    // mousedown, no mouseup. A capture path bound only to `mouseup` leaves a keyboard
+    // reviewer with no way to reach the Highlight control at all, which is the gap
+    // §100 ("comments and controls need keyboard focus") closes.
+    expect(await selectPdfText(page, FIXTURE_SELECTABLE, { mouseup: false })).toBe('ok');
+    const highlightBtn = page.getByRole('button', { name: 'Highlight selected text' });
+    await expect(highlightBtn).toBeVisible();
+    // And it is a real, reachable control: focus it from the keyboard and activate it.
+    await highlightBtn.focus();
+    await expect(highlightBtn).toBeFocused();
+    await page.keyboard.press('Enter');
+    await expect(marks(page).first()).toBeVisible();
+    await expect(page.getByRole('button', { name: /Highlights \(1\)/ })).toBeVisible();
   });
 });

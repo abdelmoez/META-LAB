@@ -19,6 +19,7 @@ import {
   canMutateAnnotation, isOwnAnnotation, annotationAriaLabel,
   pendingAnnotation, upsertByClientId, markFailed, dropByClientId, mergeServerList,
   MAX_SELECTED_TEXT, MAX_COMMENT,
+  selectionThresholds, selectionCaptureDelay, SELECTION_SETTLE_MS, createMountGate,
 } from '../../../src/frontend/components/pdfAnnotationModel.js';
 
 /* A page of US-Letter size, and one physical line of text on it. */
@@ -194,6 +195,143 @@ describe('116.md §76 — the anchor cannot be moved by zoom, viewport, device o
 
   it('a degenerate stored rect projects to NOTHING rather than a stray box', () => {
     expect(userRectsToCss([{ x0: 10, y0: 10, x1: 10, y1: 20 }], { w: PAGE_W, h: PAGE_H }, 1)).toEqual([]);
+  });
+});
+
+/**
+ * REGRESSION (116.md §76). The capture tolerances used to be fixed CSS-px constants,
+ * which quietly made "can this selection become a highlight?" a question about ZOOM.
+ * The e2e viewer opens fit-width inside the screening workbench's middle column and
+ * lands around 0.1×, where a real 12 pt line is ~1 px tall: every such selection was
+ * discarded as sub-pixel noise, so no Highlight control ever appeared and the reviewer
+ * got no explanation. The suite never saw it because every case here was written at
+ * 0.5× or above.
+ */
+describe('116.md §76 — capture tolerances are document-space, not screen-space', () => {
+  const TRUTH = { x0: 72, y0: 640, x1: 288, y1: 652 };   // one 12 pt line
+  const FIT_WIDTH_IN_A_NARROW_PANEL = 0.0948;
+
+  it('selectionThresholds scales with the zoom and reproduces the pre-116 numbers at 1×', () => {
+    expect(selectionThresholds(1)).toEqual({ minSize: 1.5, lineGap: 4 });
+    expect(selectionThresholds(0.5).minSize).toBeCloseTo(0.75, 9);
+    expect(selectionThresholds(4).lineGap).toBeCloseTo(16, 9);
+    // A missing / nonsense scale must not disable the floor entirely.
+    for (const bad of [0, -1, NaN, null, undefined, 'x']) {
+      expect(selectionThresholds(bad)).toEqual({ minSize: 1.5, lineGap: 4 });
+    }
+  });
+
+  it('a real text line selected at ~0.1× survives, and still stores the TRUE rectangle', () => {
+    const s = FIT_WIDTH_IN_A_NARROW_PANEL;
+    const seen = clientRectFor(TRUTH, s, { left: 0, top: 0 });
+    expect(seen.bottom - seen.top).toBeLessThan(1.5);      // the line really is ~1 px tall
+
+    // The old fixed floor threw this away — that was the bug.
+    expect(toPageRects([seen], { left: 0, top: 0 }, { minSize: 1.5 })).toEqual([]);
+
+    const kept = toPageRects([seen], { left: 0, top: 0 }, { minSize: selectionThresholds(s).minSize });
+    expect(kept).toHaveLength(1);
+    const stored = cssRectsToUser(mergeLineRects(kept), { scale: s, pageHeight: PAGE_H })[0];
+    expect(stored.x0).toBeCloseTo(TRUTH.x0, 2);
+    expect(stored.y0).toBeCloseTo(TRUTH.y0, 2);
+    expect(stored.x1).toBeCloseTo(TRUTH.x1, 2);
+    expect(stored.y1).toBeCloseTo(TRUTH.y1, 2);
+  });
+
+  it('genuine sub-pixel noise is still rejected at every zoom', () => {
+    for (const s of [0.0948, 0.5, 1, 3.7]) {
+      const { minSize } = selectionThresholds(s);
+      const collapsed = { left: 100, top: 100, right: 100, bottom: 112 * s };   // zero width
+      expect(toPageRects([collapsed], { left: 0, top: 0 }, { minSize })).toEqual([]);
+    }
+  });
+
+  it('the two-column gap is judged in document space, so zoom cannot merge the columns', () => {
+    // Two runs 40 pt apart in the document: separate at every zoom, including one so
+    // small that the fixed 4 px gap would have welded them into a single rectangle.
+    for (const s of [0.0948, 0.5, 1, 3.7]) {
+      const { lineGap } = selectionThresholds(s);
+      const merged = mergeLineRects([
+        { x0: 10 * s, y0: 100 * s, x1: 120 * s, y1: 112 * s },
+        { x0: 160 * s, y0: 100 * s, x1: 270 * s, y1: 112 * s },
+      ], { lineGap });
+      expect(merged, `scale ${s}`).toHaveLength(2);
+    }
+  });
+
+  it('a broken run 2 pt from its neighbour re-joins at every zoom', () => {
+    for (const s of [0.0948, 0.5, 1, 3.7]) {
+      const { lineGap } = selectionThresholds(s);
+      const merged = mergeLineRects([
+        { x0: 10 * s, y0: 100 * s, x1: 120 * s, y1: 112 * s },
+        { x0: 122 * s, y0: 100 * s, x1: 270 * s, y1: 112 * s },
+      ], { lineGap });
+      expect(merged, `scale ${s}`).toHaveLength(1);
+    }
+  });
+});
+
+/**
+ * REGRESSION (116.md §100/§89). Two decisions the component makes that must not live
+ * in the component: WHEN a settled selection becomes the pending control, and whether
+ * this hook instance is still allowed to touch state.
+ */
+describe('116.md §100 — a selection reaches the control from the keyboard too', () => {
+  it('a finished mouse drag captures immediately', () => {
+    expect(selectionCaptureDelay('mouseup', { dragging: true })).toBe(0);
+    expect(selectionCaptureDelay('mouseup', {})).toBe(0);
+  });
+
+  it('a caret-driven selection captures after a settle — that is the keyboard path', () => {
+    // Shift+Arrow fires selectionchange and NOTHING else: without this branch the
+    // control is unreachable without a mouse.
+    expect(selectionCaptureDelay('selectionchange', { dragging: false })).toBe(SELECTION_SETTLE_MS);
+    expect(SELECTION_SETTLE_MS).toBeGreaterThan(0);
+  });
+
+  it('selectionchange is ignored mid-drag, so the control does not chase the cursor', () => {
+    expect(selectionCaptureDelay('selectionchange', { dragging: true })).toBe(null);
+  });
+
+  it('an unknown source is ignored rather than treated as a capture', () => {
+    for (const bad of ['keyup', '', null, undefined, 'click']) {
+      expect(selectionCaptureDelay(bad, { dragging: false })).toBe(null);
+    }
+  });
+});
+
+describe('116.md §89 — the mount gate must survive a StrictMode remount', () => {
+  it('starts open, closes on teardown, and RE-OPENS when armed again', () => {
+    const gate = createMountGate();
+    expect(gate.isAlive()).toBe(true);
+
+    // React 18 StrictMode: mount → cleanup → mount. A gate that only ever closes is
+    // shut for the rest of the session, and every server answer after it (capabilities,
+    // the annotation list, an optimistic reconcile) is silently discarded — the
+    // subsystem renders but never loads.
+    const teardown1 = gate.arm();
+    expect(gate.isAlive()).toBe(true);
+    teardown1();
+    expect(gate.isAlive()).toBe(false);
+
+    const teardown2 = gate.arm();
+    expect(gate.isAlive()).toBe(true);
+    teardown2();
+    expect(gate.isAlive()).toBe(false);
+  });
+
+  it('tearing down twice is idempotent and never re-opens the gate', () => {
+    const gate = createMountGate();
+    const teardown = gate.arm();
+    teardown(); teardown();
+    expect(gate.isAlive()).toBe(false);
+  });
+
+  it('two instances are independent (one viewer closing cannot mute another)', () => {
+    const a = createMountGate(); const b = createMountGate();
+    a.arm()();
+    expect(a.isAlive()).toBe(false);
+    expect(b.isAlive()).toBe(true);
   });
 });
 

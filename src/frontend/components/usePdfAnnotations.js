@@ -38,7 +38,7 @@ import { SCOPE_PDF } from '../../research-engine/interaction/projectScopes.js';
 import { pdfAnnotationApi, annotationBase, ANNOTATION_SCOPE } from './pdfAnnotationApi.js';
 import {
   colorFor, indexByPage, mergeServerList, pendingAnnotation,
-  upsertByClientId, dropByClientId, markFailed, MAX_COMMENT,
+  upsertByClientId, dropByClientId, markFailed, MAX_COMMENT, createMountGate,
 } from './pdfAnnotationModel.js';
 
 /** The history entry kind — one kind, many ops, so one executor covers §86. */
@@ -88,8 +88,16 @@ export function usePdfAnnotations({
   const listRef = useRef(list); listRef.current = list;
   const sinceRef = useRef('');           // serverTime of the last successful sync
   const chainRef = useRef(Promise.resolve());   // serialize mutations per viewer
-  const aliveRef = useRef(true);
-  useEffect(() => () => { aliveRef.current = false; }, []);
+  // 116.md §89 — the mount gate every async continuation below checks before it
+  // touches state. It MUST be re-armed on mount, not merely closed on unmount:
+  // React 18 StrictMode runs mount → cleanup → mount in development, so a
+  // close-only gate stays shut for the rest of the session and every server
+  // answer (capabilities, the annotation list, an optimistic reconcile) is thrown
+  // away — the whole subsystem renders but never loads. See createMountGate.
+  const gateRef = useRef(null);
+  if (!gateRef.current) gateRef.current = createMountGate();
+  const mountGate = gateRef.current;
+  useEffect(() => mountGate.arm(), [mountGate]);
   /**
    * clientId → server id. Soft-delete keeps the row id stable, so this is what
    * lets a §86 undo-of-delete (and redo-of-create) restore the RIGHT tombstone
@@ -114,7 +122,7 @@ export function usePdfAnnotations({
     if (!activeRef.current) return;
     try {
       const res = await pdfAnnotationApi.list(targetRef.current, { docHash: docHashRef.current });
-      if (!aliveRef.current || docHashRef.current !== (res.docHash || docHashRef.current)) return;
+      if (!mountGate.isAlive() || docHashRef.current !== (res.docHash || docHashRef.current)) return;
       rememberIds(res.annotations);
       sinceRef.current = res.serverTime || '';
       setViewer((cur) => (cur.id === (res.viewerId || '') && cur.name === (res.viewerName || '')
@@ -124,7 +132,7 @@ export function usePdfAnnotations({
       setError('');
       setReady(true);
     } catch (e) {
-      if (!aliveRef.current) return;
+      if (!mountGate.isAlive()) return;
       // 404 here means "this document is not one of yours" — degrade to no
       // annotations rather than showing a scary error over a working PDF.
       setReady(true);
@@ -137,7 +145,7 @@ export function usePdfAnnotations({
     if (!sinceRef.current) { await fetchFull(); return; }
     try {
       const res = await pdfAnnotationApi.list(targetRef.current, { docHash: docHashRef.current, since: sinceRef.current });
-      if (!aliveRef.current) return;
+      if (!mountGate.isAlive()) return;
       rememberIds(res.annotations);
       sinceRef.current = res.serverTime || sinceRef.current;
       if (res.capabilities) setCaps(res.capabilities);
@@ -358,12 +366,12 @@ export function usePdfAnnotations({
       try {
         await persistCreate(draft);   // stamps idByClientRef for the redo/restore path
       } catch (e) {
-        if (!aliveRef.current) return;
+        if (!mountGate.isAlive()) return;
         setList((cur) => markFailed(cur, clientId));
         setError((e && e.message) || 'That highlight could not be saved.');
         // §89 — never pretend it persisted: drop the failed row shortly after the
         // message so the page cannot be mistaken for a saved state.
-        setTimeout(() => { if (aliveRef.current) setList((cur) => dropByClientId(cur, clientId)); }, 2500);
+        setTimeout(() => { if (mountGate.isAlive()) setList((cur) => dropByClientId(cur, clientId)); }, 2500);
       }
     });
     return draft;
@@ -397,7 +405,7 @@ export function usePdfAnnotations({
         if (!id) throw Object.assign(new Error('That highlight is no longer here.'), { status: 404 });
         await applyUpdate(id, { color: next });
       } catch (e) {
-        if (!aliveRef.current) return;
+        if (!mountGate.isAlive()) return;
         setList((cur) => upsertByClientId(cur, { ...annotation, color: prev }));
         setError((e && e.message) || 'That colour change could not be saved.');
         if (e && e.status === 409) fetchDelta();
@@ -426,7 +434,7 @@ export function usePdfAnnotations({
         if (!id) throw Object.assign(new Error('That highlight is no longer here.'), { status: 404 });
         await applyUpdate(id, { comment: next });
       } catch (e) {
-        if (!aliveRef.current) return;
+        if (!mountGate.isAlive()) return;
         setList((cur) => upsertByClientId(cur, { ...annotation, comment: prev }));
         setError((e && e.message) || 'That comment could not be saved.');
         if (e && e.status === 409) fetchDelta();
@@ -456,7 +464,7 @@ export function usePdfAnnotations({
         if (!id) throw Object.assign(new Error('That highlight is no longer here.'), { status: 404 });
         await applyDelete(id);
       } catch (e) {
-        if (!aliveRef.current) return;
+        if (!mountGate.isAlive()) return;
         setList((cur) => upsertByClientId(cur, snapshot));
         setError((e && e.message) || 'That highlight could not be removed.');
       }
