@@ -26,7 +26,9 @@ import { createElement as h } from 'react';
 import { renderToStaticMarkup as r } from 'react-dom/server';
 import { MiddleColumn } from '../../../src/frontend/screening/tabs/ScreeningTab.jsx';
 import RecordArticleCard from '../../../src/frontend/screening/components/RecordArticleCard.jsx';
-import { ConflictCard, conflictReviewerRows } from '../../../src/frontend/screening/tabs/ConflictsTab.jsx';
+import {
+  ConflictCard, conflictReviewerRows, eagerPdfIds, PDF_EAGER_CARDS,
+} from '../../../src/frontend/screening/tabs/ConflictsTab.jsx';
 
 const noop = () => {};
 
@@ -181,6 +183,50 @@ describe('ConflictCard PDF (116.md §69)', () => {
   it('renders nothing PDF-ish when the conflict carries no record', () => {
     const html = card({ conflict: { ...CONFLICT, record: null } });
     expect(html).not.toContain('Full-text PDF');
+  });
+});
+
+/* ── 3b. §69 (r3) — the fan-out bound: one viewer per card is one FETCH per card ─ */
+
+describe('ConflictCard PDF mounting is bounded (116.md §69 r3)', () => {
+  // PdfViewer issues `GET …/records/:rid/pdf` from its own mount effect regardless
+  // of whether the preview is open, and this list is unpaginated by design, so a
+  // card that is nowhere near the viewport must not mount one. The deferred branch
+  // is what SSR renders (effects, and therefore the IntersectionObserver fallback,
+  // do not run under renderToStaticMarkup) — which is exactly the state a resolver
+  // with 500 open conflicts is in for cards 4..500 at first paint.
+  it('a deferred card mounts NO viewer and says why, instead of fetching', () => {
+    const deferred = card({ pdfEager: false });
+    expect(deferred).not.toContain('Full-text PDF');
+    expect(deferred).toContain('data-testid="conflict-pdf-deferred"');
+    expect(deferred).toContain('PDF loads when this conflict scrolls into view.');
+  });
+
+  it('an on-screen card is unchanged — §69 keeps every capability, nothing is removed', () => {
+    // default (and explicit) eager cards render the real viewer with its full bar
+    expect(card()).toContain('Full-text PDF');
+    expect(card({ pdfEager: true })).toContain('Full-text PDF');
+    expect(card({ pdfEager: true })).not.toContain('conflict-pdf-deferred');
+    // …and it is the real viewer, already reaching for the attachment ("Checking…"
+    // is the state its listPdf call is in) — the fetch a deferred card must not do.
+    expect(card({ pdfEager: true })).toContain('Checking…');
+    expect(card({ pdfEager: false })).not.toContain('Checking…');
+  });
+
+  it('only the first PDF_EAGER_CARDS conflicts load eagerly, however long the list', () => {
+    const many = Array.from({ length: 500 }, (_, i) => ({ id: `cf-${i}` }));
+    const eager = eagerPdfIds(many);
+    expect(PDF_EAGER_CARDS).toBeGreaterThan(0);
+    expect(eager.size).toBe(PDF_EAGER_CARDS);
+    // it is the TOP of the list (what the tab actually shows), in order
+    expect([...eager]).toEqual(many.slice(0, PDF_EAGER_CARDS).map(c => c.id));
+    expect(eager.has('cf-499')).toBe(false);
+    // a short list is entirely eager — the bound never costs a capability
+    const few = [{ id: 'a' }, { id: 'b' }];
+    expect(eagerPdfIds(few).size).toBe(2);
+    // degenerate inputs are safe
+    expect(eagerPdfIds(null).size).toBe(0);
+    expect(eagerPdfIds([{ id: null }, { id: 'x' }]).size).toBe(1);
   });
 });
 

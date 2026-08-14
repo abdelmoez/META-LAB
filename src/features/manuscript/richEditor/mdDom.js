@@ -315,8 +315,10 @@ export function serializePipeTable({ header, rows, align }) {
 
 function tableHtml(escLines, orderMap, assetNumbers, factOpts) {
   const { header, rows, align } = parsePipeTable(escLines);
-  // 116.md §61/§66 — rectangularize so short rows (hand-typed markdown, rowspan'd
-  // Word paste) can never shift columns under their header.
+  // 116.md §61/§66 — rectangularize so short rows (hand-typed markdown) can never
+  // shift columns under their header. This is END-padding, so it is the fix for a
+  // row that is short at its TAIL only; a row shortened in the MIDDLE by a vertical
+  // merge is padded positionally on the way in, by tableRowsOf (§66 r3).
   const width = Math.max(header ? header.length : 0, ...rows.map((r) => r.length), 1);
   const alignAttr = (i) => {
     const a = align && align[i];
@@ -505,6 +507,19 @@ function inlineOf(nodes, opts = {}) {
     const italic = tag === 'i' || tag === 'em' || /font-style\s*:\s*italic/.test(style);
     const inner = inlineOf(n.children, opts);
     if (!inner.trim()) { out += inner; continue; }
+    // 116.md §66 (r3) — a BLOCK child inside an inline run is a real content
+    // boundary, so it may never be unwrapped to NOTHING. Word and Google Docs wrap
+    // every line of a table cell (and of a list item) in its own <p>, and gluing
+    // those together silently rewrote data: `<td><p>3.2</p><p>(1.1)</p></td>` became
+    // the cell `3.2(1.1)`, and `<p>12.4</p><p>8.1</p>` became the single number
+    // `12.48.1`. The corrupted text is a fixed point of the round trip, so nothing
+    // downstream could ever detect or repair it — it just autosaved and exported.
+    // The pipe grammar has no intra-cell newline, so the boundary degrades to
+    // exactly the separator a <br> already degrades to (line 468: a space in
+    // oneLine mode, a newline otherwise) — visibly two values, never one token.
+    if (BLOCK_TAGS.has(tag) && out && !/\s$/.test(out) && !/^\s/.test(inner)) {
+      out += opts.oneLine ? ' ' : '\n';
+    }
     if (bold || italic) {
       const lead = inner.match(/^\s*/)[0];
       const trail = inner.match(/\s*$/)[0];
@@ -576,6 +591,19 @@ function cellAlignOf(cell) {
 
 function tableRowsOf(node) {
   const rows = [];
+  // 116.md §66 (r3) — BOTH merge directions are flattened POSITIONALLY, against one
+  // occupancy grid. `carry[col]` is how many further rows that column is still
+  // covered by a vertical merge, so a covered row gets an EMPTY placeholder cell IN
+  // PLACE — the same honest degradation colspan already gets — instead of letting
+  // the row's next real cell slide left into its neighbour's column.
+  //
+  // End-padding is NOT positional padding: the serializer's rectangularization
+  // appends at the END of a short row, so `<td rowspan="2">Arm A</td>` used to file
+  // the following row's "MI" under Group and its "12" under Outcome, leaving N
+  // blank — a silent column shift that autosaved and exported to Word as data.
+  // A merge is still lossy (the value is not repeated into the rows it spans;
+  // inventing it would be worse), but the loss is now a VISIBLE blank cell.
+  const carry = [];
   const walk = (n, inHead) => {
     for (const c of n.children || []) {
       if (c.text != null) continue;
@@ -584,23 +612,35 @@ function tableRowsOf(node) {
         const aligns = [];
         let allTh = true;
         let any = false;
+        let col = 0;
+        const place = (text, align) => { cells[col] = text; aligns[col] = align; col += 1; };
+        // Walk past (and consume one row of) every column a merge already covers.
+        const skipCovered = () => { while (carry[col] > 0) { carry[col] -= 1; place('', null); } };
         for (const cell of c.children || []) {
           if (cell.text != null) continue;
           if (cell.tag === 'td' || cell.tag === 'th') {
             any = true;
             if (cell.tag !== 'th') allTh = false;
+            skipCovered();
+            const span = (name) => Math.max(1, parseInt((cell.attrs && cell.attrs[name]) || '1', 10) || 1);
+            const colspan = span('colspan');
+            const rowspan = span('rowspan');
+            const start = col;
             // RAW cell text — a literal '|' is escaped later by serializePipeTable
             // (116.md §63; it used to be corrupted to '/').
-            cells.push(inlineOf(cell.children, { oneLine: true }).trim());
-            aligns.push(cellAlignOf(cell));
-            // 116.md §66 — a colspan'd (merged) Word cell is flattened honestly:
-            // pad with empty cells so the following columns stay aligned instead
-            // of silently shifting left. Rowspan makes later rows SHORT; the
-            // serializer's rectangularization pads those the same way.
-            const span = Math.max(1, parseInt((cell.attrs && cell.attrs.colspan) || '1', 10) || 1);
-            for (let i = 1; i < span; i += 1) { cells.push(''); aligns.push(null); }
+            place(inlineOf(cell.children, { oneLine: true }).trim(), cellAlignOf(cell));
+            // A colspan'd (merged) Word cell is flattened honestly: pad with empty
+            // cells so the following columns stay aligned instead of shifting left.
+            for (let i = 1; i < colspan; i += 1) place('', null);
+            // …and a rowspan reserves the SAME columns in the rows below it.
+            if (rowspan > 1) for (let i = start; i < col; i += 1) carry[i] = rowspan - 1;
           }
         }
+        // Columns still covered PAST this row's last real cell (a merge in the
+        // trailing columns) get their placeholders too, so the grid stays square.
+        let lastCovered = -1;
+        for (let i = col; i < carry.length; i += 1) if (carry[i] > 0) lastCovered = i;
+        while (col <= lastCovered) { if (carry[col] > 0) carry[col] -= 1; place('', null); }
         if (any) rows.push({ cells, aligns, header: inHead || allTh });
       } else if (c.tag === 'thead') walk(c, true);
       else if (c.tag === 'tbody' || c.tag === 'tfoot') walk(c, false);

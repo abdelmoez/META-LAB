@@ -16,7 +16,7 @@
  *        rating where present — blind-aware, straight from listConflicts' wire
  *        shape — while the leader's resolve form keeps its exact semantics.
  */
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { C, FONT, MONO, alpha } from '../ui/theme.js';
 import { Loading, ErrorBanner, Button, Badge, DecisionChip, Card, EmptyState } from '../ui/components.jsx';
 import RecordArticleCard from '../components/RecordArticleCard.jsx';
@@ -92,6 +92,71 @@ function ReviewerDecisionRow({ row, index }) {
 }
 
 /**
+ * 116.md §69 (r3) — how many conflict cards mount their <PdfViewer> at first paint.
+ *
+ * The conflicts list is unpaginated BY DESIGN (listConflicts has no take/cursor —
+ * "conflicts are unpaginated and few by construction"), and every mounted PdfViewer
+ * issues its own `GET …/records/:rid/pdf` from its mount effect whether or not the
+ * preview is open. One viewer per card therefore turned "open the Conflicts tab"
+ * into one request per unresolved conflict: a dual-independent-screening project
+ * with 5,000 records and a normal ~10% disagreement rate fires ~500 of them in a
+ * single commit phase (and 500 localStorage writes with them).
+ *
+ * The fix is DEFERRAL, never removal — §69 keeps every capability on every card
+ * (see whether a PDF exists, upload, open, view, annotate). A card mounts its
+ * viewer when it is on screen: the first PDF_EAGER_CARDS are on screen the moment
+ * the tab opens, so they mount immediately, and the rest mount from an
+ * IntersectionObserver as the resolver scrolls — with a screenful of rootMargin
+ * head start, so the PDF row is already there by the time the card is readable.
+ * No click is introduced, because §69 asks the tab to ANSWER "does a PDF exist?".
+ */
+export const PDF_EAGER_CARDS = 3;
+
+/** Pure — the conflict ids whose PDF viewer mounts at first paint (§69 r3). */
+export function eagerPdfIds(unresolved, limit = PDF_EAGER_CARDS) {
+  const out = new Set();
+  for (const c of unresolved || []) {
+    if (out.size >= Math.max(0, limit)) break;
+    if (c && c.id != null) out.add(c.id);
+  }
+  return out;
+}
+
+/**
+ * Mount `children` once this slot is (nearly) on screen — see PDF_EAGER_CARDS.
+ *
+ * `eager` short-circuits the whole thing for the cards that are already visible.
+ * Where there is NO IntersectionObserver the effect mounts immediately, i.e. the
+ * pre-r3 behaviour: a missing optimisation must never cost a capability. That also
+ * makes the deferred branch the SSR-pinnable one (effects do not run under
+ * renderToStaticMarkup), which is how the bound is regression-tested without jsdom.
+ * Same shape as the landing page's whileInView gate.
+ */
+function DeferredPdf({ eager, children }) {
+  const [shown, setShown] = useState(!!eager);
+  const ref = useRef(null);
+  useEffect(() => {
+    if (shown) return undefined;
+    if (typeof IntersectionObserver === 'undefined') { setShown(true); return undefined; }
+    const el = ref.current;
+    if (!el) { setShown(true); return undefined; }
+    const io = new IntersectionObserver((entries) => {
+      if (entries.some(e => e.isIntersecting)) { setShown(true); io.disconnect(); }
+    }, { rootMargin: '600px 0px' });
+    io.observe(el);
+    return () => io.disconnect();
+  }, [shown]);
+  if (shown) return children;
+  return (
+    <div ref={ref} data-testid="conflict-pdf-deferred"
+      style={{ border: `1px solid ${C.brd}`, borderRadius: 10, background: C.card,
+        padding: '11px 14px', fontSize: 11.5, color: C.muted, fontFamily: FONT }}>
+      PDF loads when this conflict scrolls into view.
+    </div>
+  );
+}
+
+/**
  * One unresolved conflict: full article context (§§67-69) above the reviewer
  * decisions and the leader's resolve form (§70). Exported so the layout can be
  * SSR-pinned without standing up the tab's fetch/realtime machinery.
@@ -99,6 +164,8 @@ function ReviewerDecisionRow({ row, index }) {
 export function ConflictCard({
   pid, conflict, blindMode, inclusion = [], exclusion = [], access, canResolve,
   expanded = true, onToggleAbstract, form = {}, onFormChange, onResolve, busy = false,
+  // 116.md §69 (r3) — true for the cards that are on screen when the tab opens.
+  pdfEager = true,
 }) {
   const decs = conflictReviewerRows(conflict, blindMode);
   const set = (patch) => onFormChange?.({ ...form, ...patch });
@@ -115,10 +182,14 @@ export function ConflictCard({
       />
 
       {/* §69 — the record-keyed PDF: same ScreenPdfAttachment entity, same viewer,
-          same permission bar as Title & Abstract / Final Review. */}
+          same permission bar as Title & Abstract / Final Review. Mounted through
+          DeferredPdf so an unpaginated list of conflicts cannot fan out one
+          attachment fetch per card the moment the tab opens (§69 r3). */}
       {expanded && conflict.record?.id && (
         <div style={{ margin: '4px 0 16px' }}>
-          <PdfViewer pid={pid} recordId={conflict.record.id} canManage={access.canScreen || access.isLeader} />
+          <DeferredPdf eager={pdfEager}>
+            <PdfViewer pid={pid} recordId={conflict.record.id} canManage={access.canScreen || access.isLeader} />
+          </DeferredPdf>
         </div>
       )}
 
@@ -236,6 +307,9 @@ export default function ConflictsTab({ pid, project, access, refreshProject }) {
 
   const unresolved = conflicts.filter(c => !c.resolvedAt);
   const resolved   = conflicts.filter(c => c.resolvedAt);
+  // 116.md §69 (r3) — only the cards that are on screen at first paint mount their
+  // PDF viewer eagerly; the rest mount on scroll (DeferredPdf).
+  const eagerPdf = eagerPdfIds(unresolved);
 
   return (
     <div>
@@ -267,6 +341,7 @@ export default function ConflictsTab({ pid, project, access, refreshProject }) {
               key={c.id} pid={pid} conflict={c} blindMode={blindMode}
               inclusion={inclusion} exclusion={exclusion}
               access={access} canResolve={canResolve}
+              pdfEager={eagerPdf.has(c.id)}
               expanded={expanded}
               onToggleAbstract={() => setFolded(s => ({ ...s, [c.id]: expanded }))}
               form={forms[c.id] || {}}

@@ -253,6 +253,93 @@ describe('native tables (116.md §59-§66)', () => {
       .toBe('| H |  |\n| --- | --- |\n| 1 | 2 |');
   });
 
+  // 116.md §66 (r3) — the sibling of the colspan case. A vertical merge leaves the
+  // rows BELOW it short, and end-padding (rectangularization) appends at the end of
+  // the row, so every value after the merged column used to slide one place LEFT.
+  // These pin the COLUMN each value lands in, not merely that nothing threw.
+  it('rowspan on Word paste pads the covered column IN PLACE, never shifting values left (§66)', () => {
+    // The routine outcome table: `Arm A` is vertically merged across two rows.
+    const md = htmlToMd(
+      '<table><thead><tr><th>Group</th><th>Outcome</th><th>N</th></tr></thead><tbody>'
+      + '<tr><td rowspan="2">Arm A</td><td>Death</td><td>10</td></tr>'
+      + '<tr><td>MI</td><td>12</td></tr></tbody></table>');
+    expect(md).toBe('| Group | Outcome | N |\n| --- | --- | --- |\n| Arm A | Death | 10 |\n|  | MI | 12 |');
+    // …and assert the column assignment through the parser, not the string shape:
+    // "MI" is an Outcome and "12" is an N — never a Group and an Outcome.
+    const t = parsePipeTable(md.split('\n'));
+    expect(t.header).toEqual(['Group', 'Outcome', 'N']);
+    expect(t.rows[1]).toEqual(['', 'MI', '12']);
+    expect(t.rows[1][t.header.indexOf('Outcome')]).toBe('MI');
+    expect(t.rows[1][t.header.indexOf('N')]).toBe('12');
+  });
+
+  it('a rowspan in a MIDDLE or trailing column pads that column, not the row end (§66)', () => {
+    expect(htmlToMd(
+      '<table><thead><tr><th>H1</th><th>H2</th><th>H3</th></tr></thead><tbody>'
+      + '<tr><td>a</td><td rowspan="2">mid</td><td>c</td></tr>'
+      + '<tr><td>d</td><td>f</td></tr></tbody></table>'))
+      .toBe('| H1 | H2 | H3 |\n| --- | --- | --- |\n| a | mid | c |\n| d |  | f |');
+    // a merge in the LAST column leaves nothing after it — the placeholder still
+    // has to be emitted or the row is short and the grid stops being square
+    expect(htmlToMd(
+      '<table><tbody><tr><td>a</td><td rowspan="2">tail</td></tr><tr><td>b</td></tr></tbody></table>'))
+      .toBe('| a | tail |\n| b |  |');
+  });
+
+  it('multi-row and combined row+col merges keep every later row aligned (§66)', () => {
+    expect(htmlToMd(
+      '<table><tbody><tr><td rowspan="3">A</td><td>x</td></tr>'
+      + '<tr><td>y</td></tr><tr><td>z</td></tr></tbody></table>'))
+      .toBe('| A | x |\n|  | y |\n|  | z |');
+    // rowspan × colspan reserves the whole 2-wide block in the row below
+    expect(htmlToMd(
+      '<table><tbody><tr><td rowspan="2" colspan="2">block</td><td>c</td></tr>'
+      + '<tr><td>z</td></tr></tbody></table>'))
+      .toBe('| block |  | c |\n|  |  | z |');
+  });
+
+  it('a rowspan-flattened table is a markdown fixed point (no second-pass drift)', () => {
+    const md = htmlToMd(
+      '<table><thead><tr><th>Group</th><th>Outcome</th><th>N</th></tr></thead><tbody>'
+      + '<tr><td rowspan="2">Arm A</td><td>Death</td><td>10</td></tr>'
+      + '<tr><td>MI</td><td>12</td></tr></tbody></table>');
+    expect(rt(md)).toBe(md);
+    expect(rt(rt(md))).toBe(md);
+  });
+
+  // 116.md §66 (r3) — Word/Docs wrap EVERY line of a cell in its own <p>. Gluing
+  // them produced a different NUMBER, and the glued text is itself a fixed point,
+  // so no later pass could detect it. The boundary must survive as the same visible
+  // space a <br> already becomes.
+  it('multi-paragraph cells keep their value boundary instead of gluing values (§66)', () => {
+    expect(htmlToMd(
+      '<table><thead><tr><th>Var</th><th>Value</th></tr></thead><tbody>'
+      + '<tr><td><p>Age, years</p><p>mean (SD)</p></td><td><p>3.2</p><p>(1.1)</p></td></tr>'
+      + '</tbody></table>'))
+      .toBe('| Var | Value |\n| --- | --- |\n| Age, years mean (SD) | 3.2 (1.1) |');
+    // the dangerous case: two bare numbers must not become one number
+    expect(htmlToMd('<table><tbody><tr><td><div>12.4</div><div>8.1</div></td><td>ok</td></tr></tbody></table>'))
+      .toBe('| 12.4 8.1 | ok |');
+    // …which is exactly what the <br> form of the same cell already produced
+    expect(htmlToMd('<table><tbody><tr><td>12.4<br>8.1</td><td>ok</td></tr></tbody></table>'))
+      .toBe('| 12.4 8.1 | ok |');
+  });
+
+  it('a single-paragraph cell and an already-spaced boundary gain no stray padding', () => {
+    expect(htmlToMd('<table><tbody><tr><td><p>x</p></td><td><p> y </p></td></tr></tbody></table>'))
+      .toBe('| x | y |');
+    // <br> already contributed the space — the block rule must not double it
+    expect(htmlToMd('<table><tbody><tr><td><p>a</p><br><p>b</p></td></tr></tbody></table>'))
+      .toBe('| a b |');
+    // an empty paragraph between two values is not a value
+    expect(htmlToMd('<table><tbody><tr><td><p>a</p><p></p><p>b</p></td></tr></tbody></table>'))
+      .toBe('| a b |');
+  });
+
+  it('the same boundary rule applies to multi-paragraph list items', () => {
+    expect(htmlToMd('<ul><li><p>10</p><p>5</p></li></ul>')).toBe('- 10 5');
+  });
+
   it('ragged rows converge to a rectangular fixed point (§61)', () => {
     const once = rt('| a |\n| b | c |');
     expect(once).toBe('| a |  |\n| b | c |');
