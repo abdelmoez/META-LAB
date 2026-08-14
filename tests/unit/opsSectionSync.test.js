@@ -19,6 +19,9 @@
 import { restoreShellEnv } from '../screening/helpers/prismaEnvGuard.js'; // FIRST import
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
+// 116.md validation — read source through the LF-normalising helper so these
+// wiring pins compare content, not the checkout's line-ending policy.
+import { readSource } from '../helpers/readSource.js';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { NAV_SECTIONS, MOD_SECTIONS, roleSections } from '../../src/frontend/pages/admin/opsSections.js';
@@ -27,7 +30,7 @@ import { getConsole } from '../../server/controllers/adminController.js';
 restoreShellEnv();
 
 const ROOT = resolve(fileURLToPath(import.meta.url), '..', '..', '..');
-const read = (...parts) => readFileSync(resolve(ROOT, ...parts), 'utf8');
+const read = (...parts) => readSource(resolve(ROOT, ...parts));
 
 /** Call the real handler with a stub req/res and return the JSON body. */
 async function consoleFor(role) {

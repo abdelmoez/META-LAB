@@ -11,13 +11,16 @@
  */
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
+// 116.md validation — read source through the LF-normalising helper so these
+// wiring pins compare content, not the checkout's line-ending policy.
+import { readSource } from '../helpers/readSource.js';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { HistoryControlsView } from '../../src/frontend/stitch/shell/StitchHistoryControls.jsx';
 import {
   createRegistry, registerBinding, routeKeydown, shortcutInventory, TIER,
 } from '../../src/research-engine/interaction/shortcutRouter.js';
 
-const src = (p) => readFileSync(new URL(`../../${p}`, import.meta.url), 'utf8');
+const src = (p) => readSource(new URL(`../../${p}`, import.meta.url));
 const SCREENING = src('src/frontend/screening/tabs/ScreeningTab.jsx');
 const PROVIDER = src('src/frontend/history/ProjectInteractionProvider.jsx');
 const HISTORY = src('src/frontend/history/HistoryContext.jsx');

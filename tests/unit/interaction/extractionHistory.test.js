@@ -20,6 +20,9 @@
  */
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
+// 116.md validation — read source through the LF-normalising helper so these
+// wiring pins compare content, not the checkout's line-ending policy.
+import { readSource } from '../../helpers/readSource.js';
 import { createElement as h } from 'react';
 import { renderToStaticMarkup as ssr } from 'react-dom/server';
 import {
@@ -44,7 +47,7 @@ import {
 import { denominatorPopulationPatch } from '../../../src/research-engine/extraction/proportionMeta.js';
 import { enableCaseSeries, addCase, casesForPublication } from '../../../src/research-engine/extraction/caseSeries.js';
 
-const SRC = (rel) => readFileSync(new URL(`../../../src/${rel}`, import.meta.url), 'utf8');
+const SRC = (rel) => readSource(new URL(`../../../src/${rel}`, import.meta.url));
 const WORKSPACE = SRC('features/extraction/engine/ArticleWorkspace.jsx');
 const ENGINE = SRC('features/extraction/engine/PecanExtractionEngine.jsx');
 const CLASSIC = SRC('frontend/workspace/tabs/extractionTabs.jsx');

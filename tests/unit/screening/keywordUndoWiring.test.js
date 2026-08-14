@@ -19,6 +19,9 @@
  */
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
+// 116.md validation — read source through the LF-normalising helper so these
+// wiring pins compare content, not the checkout's line-ending policy.
+import { readSource } from '../../helpers/readSource.js';
 import {
   applyKeywordOp, applyKeywordOps, emptyKeywordMeta,
 } from '../../../src/research-engine/screening/keywordModel.js';

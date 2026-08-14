@@ -12,6 +12,9 @@
  */
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
+// 116.md validation — read source through the LF-normalising helper so these
+// wiring pins compare content, not the checkout's line-ending policy.
+import { readSource } from '../../helpers/readSource.js';
 import { createElement as h } from 'react';
 import { renderToStaticMarkup as r } from 'react-dom/server';
 import ProjectInteractionProvider, {
@@ -26,7 +29,7 @@ import {
 import { emptyHistory, recordAction } from '../../../src/research-engine/interaction/historyStacks.js';
 import { STITCH_MODAL_ATTR } from '../../../src/research-engine/interaction/modalSignal.js';
 
-const src = (p) => readFileSync(new URL(`../../../${p}`, import.meta.url), 'utf8');
+const src = (p) => readSource(new URL(`../../../${p}`, import.meta.url));
 
 let seen = null;
 function Probe() {

@@ -11,6 +11,9 @@
 
 import { describe, it, expect } from 'vitest';
 import { readFileSync, existsSync } from 'node:fs';
+// 116.md validation — read source through the LF-normalising helper so these
+// wiring pins compare content, not the checkout's line-ending policy.
+import { readSource } from '../helpers/readSource.js';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -25,7 +28,7 @@ function srcPath(...parts) {
 }
 
 function readSrc(...parts) {
-  return readFileSync(srcPath(...parts), 'utf8');
+  return readSource(srcPath(...parts));
 }
 
 // ── 1. Landing.jsx — must not link to /ops ───────────────────────────────────
@@ -126,17 +129,17 @@ describe('AdminRoute.jsx — component file exists', () => {
 
 describe('App.jsx — /ops route is registered in the router', () => {
   it('src/App.jsx is readable', () => {
-    expect(() => readFileSync(resolve(ROOT, 'src', 'App.jsx'), 'utf8')).not.toThrow();
+    expect(() => readSource(resolve(ROOT, 'src', 'App.jsx'))).not.toThrow();
   });
 
   it('contains a Route with path="/ops"', () => {
     // App.jsx is at src/App.jsx (one level above frontend/)
-    const content = readFileSync(resolve(ROOT, 'src', 'App.jsx'), 'utf8');
+    const content = readSource(resolve(ROOT, 'src', 'App.jsx'));
     expect(content).toContain('/ops');
   });
 
   it('/ops route is wrapped in AdminRoute (not a public route)', () => {
-    const content = readFileSync(resolve(ROOT, 'src', 'App.jsx'), 'utf8');
+    const content = readSource(resolve(ROOT, 'src', 'App.jsx'));
     // The /ops route element must reference AdminRoute
     expect(content).toMatch(/AdminRoute/);
     // Specifically: the /ops Route should have AdminRoute somewhere near it
@@ -145,7 +148,7 @@ describe('App.jsx — /ops route is registered in the router', () => {
   });
 
   it('App.jsx imports AdminRoute component', () => {
-    const content = readFileSync(resolve(ROOT, 'src', 'App.jsx'), 'utf8');
+    const content = readSource(resolve(ROOT, 'src', 'App.jsx'));
     expect(content).toMatch(/import\s+AdminRoute/);
   });
 });
@@ -166,7 +169,7 @@ describe('Other UI pages — no accidental /ops links', () => {
   it('Dashboard.jsx does not contain "/ops" (if file exists)', () => {
     const p = srcPath('frontend', 'pages', 'Dashboard.jsx');
     if (!existsSync(p)) return; // file may not exist — skip gracefully
-    const content = readFileSync(p, 'utf8');
+    const content = readSource(p);
     expect(content).not.toContain('/ops');
   });
 });

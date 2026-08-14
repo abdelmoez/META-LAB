@@ -9,6 +9,9 @@
  */
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
+// 116.md validation — read source through the LF-normalising helper so these
+// wiring pins compare content, not the checkout's line-ending policy.
+import { readSource } from '../../helpers/readSource.js';
 import {
   sectionLockOf, sectionLockMatches, captureFactPin, applyFactPin, factPinMatches,
 } from '../../../src/research-engine/manuscript/historyOps.js';
@@ -160,7 +163,7 @@ describe('fact pin — capture/apply restore BOTH halves', () => {
  * component too large to mount.
  */
 describe('useManuscript wiring (source pins)', () => {
-  const s = readFileSync(new URL('../../../src/features/manuscript/useManuscript.js', import.meta.url), 'utf8');
+  const s = readSource(new URL('../../../src/features/manuscript/useManuscript.js', import.meta.url));
 
   it('registers an executor for each recordable kind', () => {
     expect(s).toContain("registerExecutor('manuscript.sectionLock'");

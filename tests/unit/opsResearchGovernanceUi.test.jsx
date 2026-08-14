@@ -19,6 +19,9 @@ import { describe, it, expect } from 'vitest';
 import { createElement as h } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { readFileSync, readdirSync } from 'node:fs';
+// 116.md validation — read source through the LF-normalising helper so these
+// wiring pins compare content, not the checkout's line-ending policy.
+import { readSource } from '../helpers/readSource.js';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
@@ -81,7 +84,7 @@ describe('Research Governance section shell', () => {
   });
 
   it('every catalogue category is routed to a sub-tab (nothing unreachable)', () => {
-    const src = readFileSync(resolve(PKG, 'ResearchGovernanceSection.jsx'), 'utf8');
+    const src = readSource(resolve(PKG, 'ResearchGovernanceSection.jsx'));
     const map = src.slice(src.indexOf('const CATEGORY_TAB = {'), src.indexOf('};', src.indexOf('const CATEGORY_TAB = {')));
     const tabIds = new Set(RESEARCH_TABS.map((t) => t.id));
     for (const c of CATALOG_CATEGORIES) {
@@ -304,7 +307,7 @@ describe('Catalogue-driven rendering rules', () => {
  * facts — the same technique adminVisibility.test.js uses.
  */
 describe('AdminConsole — the 109 in-place rewrites', () => {
-  const src = readFileSync(resolve(ROOT, 'src', 'frontend', 'pages', 'admin', 'AdminConsole.jsx'), 'utf8');
+  const src = readSource(resolve(ROOT, 'src', 'frontend', 'pages', 'admin', 'AdminConsole.jsx'));
 
   it('the Flags section is driven by the shared catalogue, not a hand-maintained copy', () => {
     expect(src).toContain('VISIBLE_FLAGS.filter');
@@ -335,7 +338,7 @@ describe('Legacy design constraint', () => {
 
   it('no module imports a Stitch primitive or design-system component', () => {
     for (const f of files) {
-      const src = readFileSync(resolve(PKG, f), 'utf8');
+      const src = readSource(resolve(PKG, f));
       const imports = [...src.matchAll(/from '([^']+)'/g)].map((m) => m[1]);
       for (const spec of imports) {
         expect(/stitch|design-system|\/ds\//i.test(spec), `${f} must not import "${spec}" — /ops is legacy-design only`).toBe(false);
@@ -344,12 +347,12 @@ describe('Legacy design constraint', () => {
   });
 
   it('styling goes through the legacy theme tokens, and alpha() is used instead of hex concatenation', () => {
-    const src = readFileSync(resolve(PKG, 'primitives.jsx'), 'utf8');
+    const src = readSource(resolve(PKG, 'primitives.jsx'));
     expect(src).toContain("from '../../../theme/tokens.js'");
     expect(src).toContain('alpha(');
     // `${C.x}40` string concatenation silently breaks on CSS variables.
     for (const f of files) {
-      const body = readFileSync(resolve(PKG, f), 'utf8');
+      const body = readSource(resolve(PKG, f));
       expect(/\$\{C\.[a-zA-Z0-9]+\}[0-9a-fA-F]{2}[^0-9a-fA-F]/.test(body), `${f} concatenates a hex alpha onto a CSS var`).toBe(false);
     }
   });
