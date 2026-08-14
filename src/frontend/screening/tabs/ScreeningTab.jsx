@@ -62,6 +62,11 @@ import { parseScreeningShortcuts, DEFAULT_SCREENING_SHORTCUTS, keyLabel } from '
 import { shouldWindow, computeListWindow, measuredRowHeight, nearestScrollTop, DEFAULT_ROW_HEIGHT } from '../lib/listWindow.js';
 // 107.md rec — the keyword gate, resolved in one pure place (see lib/screenAccess.js).
 import { canEditScreeningKeywords } from '../lib/screenAccess.js';
+// 116.md §20/§126 (validation) — the three-column allocation as ONE pure, Node-tested
+// rule. See lib/workbenchLayout.js for the measurements that motivated it.
+import {
+  WORKBENCH_COLUMNS, resolveWorkbenchLayout, readPanelPrefs, DEFAULT_PANEL_PREFS,
+} from '../lib/workbenchLayout.js';
 // 100.md §13 — pure page-window arithmetic (what is still loadable before/after the
 // contiguous run of pages currently held), shared with the list-query module's tests.
 // 107.md §7 — moveIntent: what a next/previous keystroke means at the current position.
@@ -85,6 +90,15 @@ function fmtDecisionDate(iso) {
 }
 
 const LIMIT = 50;
+
+// 116.md §20 (validation) — the per-user side-panel preference. The SHAPE and the
+// back-compat rule live in lib/workbenchLayout.js (pure + unit-tested); this is only
+// the storage read, which cannot be unit-tested without a DOM.
+function readStoredPanelPrefs(key) {
+  if (!key) return DEFAULT_PANEL_PREFS;
+  try { return readPanelPrefs(JSON.parse(localStorage.getItem(key) || '{}')); }
+  catch { return DEFAULT_PANEL_PREFS; }
+}
 
 // 109.md §5 — the three screening kill switches. Module-level + frozen so the flag
 // hook's effect keys on a stable identity.
@@ -313,18 +327,52 @@ export default function ScreeningTab({ pid, project, access, refreshProject, use
   // thin rail; all screening state (selection, filters, keyword selection) lives
   // here in the parent, so nothing is lost. ───────────────────────────────────
   const uiPrefsKey = userId ? `metalab.screeningUI.${userId}` : null;
-  const [uiPrefs, setUiPrefs] = useState(() => {
-    if (!uiPrefsKey) return { leftCollapsed: false, rightCollapsed: false };
-    try { const v = JSON.parse(localStorage.getItem(uiPrefsKey) || '{}'); return { leftCollapsed: !!v.leftCollapsed, rightCollapsed: !!v.rightCollapsed }; }
-    catch { return { leftCollapsed: false, rightCollapsed: false }; }
-  });
+  // 116.md §20 (validation) — `rightChosen` (parsed by readPanelPrefs) records that the
+  // reviewer has TOUCHED the filters sidebar. While it is false the width rule in
+  // lib/workbenchLayout.js decides whether that secondary sidebar is open; once it is
+  // true the reviewer's own choice wins in both directions, for good.
+  const [uiPrefs, setUiPrefs] = useState(() => readStoredPanelPrefs(uiPrefsKey));
+  // The signed-in user arrives ASYNCHRONOUSLY, so the first render can have no storage
+  // key at all and the initializer above then reads nothing. Hydrate once the key
+  // exists — without this a reload silently forgets the reviewer's explicit choice,
+  // which is exactly the thing §20 says must outrank the automatic collapse. A choice
+  // already made in this session is never overwritten.
+  const prefsTouched = useRef(false);
+  const hydratedKey = useRef(null);
+  useEffect(() => {
+    if (!uiPrefsKey || prefsTouched.current || hydratedKey.current === uiPrefsKey) return;
+    hydratedKey.current = uiPrefsKey;
+    setUiPrefs(readStoredPanelPrefs(uiPrefsKey));
+  }, [uiPrefsKey]);
   const setPanel = useCallback((key, val) => {
+    prefsTouched.current = true;
     setUiPrefs(prev => {
       const next = { ...prev, [key]: val };
+      // 116.md §20 — using the sidebar's own toggle IS the explicit choice.
+      if (key === 'rightCollapsed') next.rightChosen = true;
       if (uiPrefsKey) { try { localStorage.setItem(uiPrefsKey, JSON.stringify(next)); } catch { /* storage full */ } }
       return next;
     });
   }, [uiPrefsKey]);
+
+  // 116.md §20 (validation) — the workbench measures ITSELF, not the window: the space
+  // it actually gets is the window minus the workspace rail (72px, or 248px pinned)
+  // and the engine submenu (280px), and that is what starves the centre column. A
+  // ResizeObserver therefore also covers pinning/unpinning the rail, Focus Mode and
+  // browser zoom for free. Until it fires (SSR, first paint) the width is 0 and
+  // resolveWorkbenchLayout returns the shipped wide layout unchanged.
+  const workbenchRef = useRef(null);
+  const [workbenchWidth, setWorkbenchWidth] = useState(0);
+  useEffect(() => {
+    const el = workbenchRef.current;
+    if (!el || typeof ResizeObserver === 'undefined') return undefined;
+    const ro = new ResizeObserver((entries) => {
+      const w = Math.round(entries[0]?.contentRect?.width ?? el.clientWidth ?? 0);
+      setWorkbenchWidth(prev => (prev === w ? prev : w));
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
 
   // ── Records & selection ──────────────────────────────────────────────────
   const [records, setRecords]       = useState([]);
@@ -1451,8 +1499,23 @@ export default function ScreeningTab({ pid, project, access, refreshProject, use
   });
 
   // ── Render ───────────────────────────────────────────────────────────────
+  // 116.md §20/§126 (validation) — one pure call decides the whole allocation.
+  const layout = resolveWorkbenchLayout({
+    width: workbenchWidth,
+    leftCollapsed: uiPrefs.leftCollapsed,
+    rightPreference: uiPrefs.rightChosen ? uiPrefs.rightCollapsed : null,
+  });
+
   return (
-    <div style={{ display: 'flex', height: '100%', background: C.bg, fontFamily: FONT, color: C.txt, overflow: 'hidden' }}>
+    <div
+      ref={workbenchRef}
+      /* 116.md §20 (validation) — the RESOLVED allocation, published as state the way
+         the rest of the workbench publishes `data-status` / `data-decision`. Absent
+         until the first measurement (so SSR output is unchanged), which also makes it
+         the honest thing for an e2e to await instead of racing the ResizeObserver. */
+      data-workbench={layout.measured ? (layout.rightCollapsed ? 'filters-rail' : 'filters-open') : undefined}
+      style={{ display: 'flex', height: '100%', background: C.bg, fontFamily: FONT, color: C.txt, overflow: 'hidden' }}
+    >
       <style>{`
         .sift-rl::-webkit-scrollbar, .sift-mid::-webkit-scrollbar, .sift-rt::-webkit-scrollbar { width: 8px; }
         .sift-rl::-webkit-scrollbar-thumb, .sift-mid::-webkit-scrollbar-thumb, .sift-rt::-webkit-scrollbar-thumb { background: ${C.brd2}; border-radius: 4px; }
@@ -1486,6 +1549,11 @@ export default function ScreeningTab({ pid, project, access, refreshProject, use
           onLoadMore={loadMore} onLoadEarlier={loadEarlier}
           shortcutPrefs={shortcutPrefs}
           onCollapse={() => setPanel('leftCollapsed', true)}
+          /* 116.md §20 (validation) — the record list is the primary navigation for
+             screening, so it is NEVER hidden automatically; below ~1040px it simply
+             gives back up to 60px so the centre can keep its reading floor. `null`
+             (unmeasured / SSR) keeps the shipped rigid 300px column. */
+          minWidth={layout.leftMinWidth}
           ai={ai} queueMode={queueMode} onQueueMode={setQueueMode} aiBand={aiBand} onAiBand={setAiBand} onRefreshRankings={refreshRankings}
           /* 100.md §§12-15 */
           resume={resume} resuming={resuming} resumeNote={resumeNote} onResume={doResume}
@@ -1519,10 +1587,23 @@ export default function ScreeningTab({ pid, project, access, refreshProject, use
         ai={ai}
         elig={elig}
         abstractRef={abstractRef}
+        /* 116.md §20/§126 (validation) — the centre's reading floor. Clamped by
+           resolveWorkbenchLayout to what the row can actually spare, so it can never
+           overflow (and therefore clip) a side column; `null` = no floor = shipped. */
+        minWidth={layout.midMinWidth}
       />
 
-      {uiPrefs.rightCollapsed ? (
-        <CollapsedRail side="right" label="Filters & keywords" hint={selectedKeywords.length ? `${selectedKeywords.length} active` : ''} onExpand={() => setPanel('rightCollapsed', false)} />
+      {/* 116.md §20 (validation) — the filters sidebar is the one column that may close
+          itself: it is secondary (filtering + highlight toggles), it already owns a
+          collapse affordance, and closing it is what buys the centre a readable PDF at
+          1280px. It degrades to the SAME keyboard-reachable rail button the manual
+          collapse uses, so it is never unreachable, and one click on that button is an
+          explicit choice that outranks the width rule from then on. */}
+      {layout.rightCollapsed ? (
+        <CollapsedRail side="right" label="Filters & keywords"
+          hint={selectedKeywords.length ? `${selectedKeywords.length} active`
+            : layout.rightAutoCollapsed ? 'hidden — narrow window' : ''}
+          onExpand={() => setPanel('rightCollapsed', false)} />
       ) : (
         <RightColumn
           pid={pid} project={project} access={access} refreshProject={refreshProject}
@@ -1598,7 +1679,7 @@ export default function ScreeningTab({ pid, project, access, refreshProject, use
 function CollapsedRail({ side, label, hint, onExpand }) {
   const border = side === 'left' ? { borderRight: `1px solid ${C.brd}` } : { borderLeft: `1px solid ${C.brd}` };
   return (
-    <div style={{ width: 38, flexShrink: 0, background: C.surf, ...border, display: 'flex', flexDirection: 'column', alignItems: 'center', paddingTop: 10, gap: 12 }}>
+    <div style={{ width: WORKBENCH_COLUMNS.railWidth, flexShrink: 0, background: C.surf, ...border, display: 'flex', flexDirection: 'column', alignItems: 'center', paddingTop: 10, gap: 12 }}>
       <button
         onClick={onExpand}
         title={`Show ${label} panel`}
@@ -1628,6 +1709,9 @@ function LeftColumn({
   // 109.md §7 — presentation knobs. Both default to the shipped behaviour so a
   // LeftColumn rendered by an older caller (or an SSR test) is unchanged.
   decisionIndicators = true, autoScrollSelected = true,
+  // 116.md §20 (validation) — a shrink floor from resolveWorkbenchLayout. `null` (the
+  // default, and what SSR / the first paint pass) keeps the rigid 300px column.
+  minWidth = null,
 }) {
   const k = shortcutPrefs?.keys ?? DEFAULT_SCREENING_SHORTCUTS.keys;
 
@@ -1777,7 +1861,7 @@ function LeftColumn({
   }, [selectedId, scrollToSelected, windowed, records, rowH, scrollTop, hasMore, autoScrollSelected]);
 
   return (
-    <div style={{ width: 300, flexShrink: 0, borderRight: `1px solid ${C.brd}`, display: 'flex', flexDirection: 'column', background: C.surf, overflow: 'hidden', minHeight: 0 }}>
+    <div style={{ width: WORKBENCH_COLUMNS.leftWidth, flexShrink: minWidth == null ? 0 : 1, minWidth: minWidth ?? undefined, borderRight: `1px solid ${C.brd}`, display: 'flex', flexDirection: 'column', background: C.surf, overflow: 'hidden', minHeight: 0 }}>
       {/* 100.md §12 — Resume Screening: prominent (first thing in the panel, full
           width, accent-tinted) but unobtrusive (one line, no icon noise, and it
           disappears entirely once the stage is finished or there is nothing to
@@ -2083,15 +2167,20 @@ export function MiddleColumn({
   recordIndex, recordCount, totalCount, onPrev, onNext,
   hasMore, loadingMore, listError,
   shortcutPrefs, ai, elig, abstractRef,
+  // 116.md §20/§126 (validation) — the reading floor resolveWorkbenchLayout allows the
+  // centre. `null` (the default, SSR, and every existing caller) emits no min-width at
+  // all, so the shipped wide layout is byte-for-byte unchanged.
+  minWidth = null,
 }) {
   const k = shortcutPrefs?.keys ?? DEFAULT_SCREENING_SHORTCUTS.keys;
   const shortcutsOn = shortcutPrefs?.enabled !== false;
+  const midFloor = minWidth ?? undefined;
   if (loading && !record) {
-    return <div className="sift-mid" style={{ flex: 1, overflowY: 'auto', padding: 28 }}><Loading label="Loading workbench…" /></div>;
+    return <div className="sift-mid" style={{ flex: 1, minWidth: midFloor, overflowY: 'auto', padding: 28 }}><Loading label="Loading workbench…" /></div>;
   }
   if (!record) {
     return (
-      <div className="sift-mid" style={{ flex: 1, overflowY: 'auto', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 40 }}>
+      <div className="sift-mid" style={{ flex: 1, minWidth: midFloor, overflowY: 'auto', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 40 }}>
         <div style={{ maxWidth: 420, width: '100%' }}>
           <EmptyState icon="📄" title="Select a record">Choose a record from the list to review its abstract and record your decision.</EmptyState>
         </div>
@@ -2100,7 +2189,7 @@ export function MiddleColumn({
   }
 
   return (
-    <div className="sift-mid" style={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0, overflow: 'hidden' }}>
+    <div className="sift-mid" style={{ display: 'flex', flexDirection: 'column', flex: 1, minWidth: midFloor, minHeight: 0, overflow: 'hidden' }}>
       <div style={{ flex: 1, overflowY: 'auto', minHeight: 0 }}>
       <div style={{ padding: '24px 28px', maxWidth: 860, margin: '0 auto', animation: 'sift-fade 0.25s ease' }}>
 
@@ -2535,7 +2624,7 @@ function RightColumn({
   const toggle = key => setOpen(o => ({ ...o, [key]: !o[key] }));
 
   return (
-    <div className="sift-rt" style={{ width: 320, flexShrink: 0, borderLeft: `1px solid ${C.brd}`, background: C.surf, overflowY: 'auto', display: 'flex', flexDirection: 'column', minHeight: 0 }}>
+    <div className="sift-rt" style={{ width: WORKBENCH_COLUMNS.rightWidth, flexShrink: 0, borderLeft: `1px solid ${C.brd}`, background: C.surf, overflowY: 'auto', display: 'flex', flexDirection: 'column', minHeight: 0 }}>
       {/* Collapse control (prompt29 Part 4) */}
       {onCollapse && (
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, padding: '8px 12px 8px 16px', borderBottom: `1px solid ${C.brd}` }}>

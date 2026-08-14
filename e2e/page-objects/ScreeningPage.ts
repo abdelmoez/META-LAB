@@ -133,6 +133,41 @@ export class ScreeningPage {
   get undoButton(): Locator { return this.main.getByTestId('screening-decision-undo'); }
   get notesTextarea(): Locator { return this.main.getByPlaceholder('Optional screening notes…'); }
 
+  /* ── Filters & keywords sidebar (right column) ─────────────────────────────────
+   *  116.md §20 (validation) — this sidebar AUTO-COLLAPSES to its 38px rail when the
+   *  workbench is narrower than ~1040px, so the centre column keeps a readable PDF
+   *  (at the 1280×720 default with the rail pinned the workbench gets 752px, and
+   *  before this rule the centre was 132px / the PDF viewer 74px). It is never
+   *  unreachable: the rail carries the same keyboard-accessible "Show Filters &
+   *  keywords panel" button the manual collapse uses, and one click is an EXPLICIT
+   *  choice that is persisted and outranks the automatic rule from then on. Anything
+   *  that reads or edits keywords, labels, reasons or the highlight toggles must open
+   *  the panel first — exactly as a reviewer on a 1280px laptop would. */
+
+  /** The workbench root. `data-workbench` carries the RESOLVED column allocation
+   *  (`filters-open` | `filters-rail`) and only appears once the width has actually
+   *  been measured — so awaiting it is how a test avoids racing the ResizeObserver. */
+  get workbench(): Locator { return this.main.locator('[data-workbench]'); }
+
+  /** The right-hand filters & keywords column (absent while auto/manually collapsed). */
+  get filtersPanel(): Locator { return this.main.locator('.sift-rt'); }
+
+  /** The rail button that restores it. Present only while the column is collapsed. */
+  get showFiltersButton(): Locator {
+    return this.main.getByRole('button', { name: 'Show Filters & keywords panel' });
+  }
+
+  /** Open the filters & keywords sidebar if the width rule (or the user) closed it. */
+  async openFilters(): Promise<void> {
+    // Wait for the allocation to be RESOLVED first: until then the sidebar is still
+    // rendered open and a "is it collapsed?" probe would read the pre-measurement frame.
+    await expect(this.workbench).toHaveAttribute('data-workbench', /^filters-(open|rail)$/);
+    if (await this.showFiltersButton.count()) await this.showFiltersButton.click();
+    await expect(this.filtersPanel).toBeVisible();
+    // Clicking the rail is an explicit choice, so this is stable from here on.
+    await expect(this.workbench).toHaveAttribute('data-workbench', 'filters-open');
+  }
+
   /* ── Keywords (107.md §2, 108.md §§18-21) ──────────────────────────────────────
    *  TWO surfaces show the same keyword and share one context menu:
    *    · `keywordRow`  — the ALWAYS-VISIBLE checkbox list in the right-hand filter

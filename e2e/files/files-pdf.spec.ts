@@ -142,19 +142,22 @@ test.describe('Files & PDF viewer — screening record (empty / upload state)', 
  * AppPdfViewer selectors so they run as-is once unblocked.
  */
 test.describe('Files & PDF viewer — loaded PDF (requires an attached, renderable PDF)', () => {
-  // 116.md §71-104 — VIEWPORT IS A PRECONDITION HERE, and it was the missing one.
-  // These specs assert what the VIEWER does — the zoom ladder, live search, page
-  // navigation — so they need a viewer with a reading-sized surface. The Title &
-  // Abstract workbench splits the window between the workspace rail, the engine nav,
-  // the record list and the filters sidebar; at the 1280 px default that leaves the
-  // middle column (and the PDF panel inside it) about 130 px wide, so the viewer is
-  // ~74 px, fit-width lands at ~0.09× and all three pages sit on screen at once.
-  // Everything the viewer does at that size is CORRECT — zoom-out is genuinely
-  // unavailable below the ladder floor of 0.25×, and the page under the viewport
-  // centre really is the last one — it is simply not the situation these specs
-  // describe. 1600×900 is the smallest common desktop size that gives the panel a
-  // real reading column (~394 px ⇒ ~0.62×), and no assertion below is relaxed for it.
-  test.use({ viewport: { width: 1600, height: 900 } });
+  // 116.md §20 (validation) — THE 1600×900 PIN IS GONE, and it can be, because the
+  // reason for it was a LAYOUT BUG rather than a property of these specs.
+  //
+  // It used to read: "these specs assert what the VIEWER does — the zoom ladder, live
+  // search, page navigation — so they need a reading-sized surface; at the 1280px
+  // default the middle column is ~130px, the viewer ~74px and fit-width lands at
+  // ~0.09×". Everything the viewer did at that size was correct; the workbench simply
+  // took every pixel of shortfall out of its centre column, because the record list
+  // and the filters sidebar were both `flexShrink: 0` and the centre had no floor.
+  // src/frontend/screening/lib/workbenchLayout.js fixes that at the source: the centre
+  // now has a measured floor and the (secondary) filters sidebar auto-collapses to its
+  // keyboard-reachable rail below ~1040px of workbench width. Re-measured at the
+  // 1280×720 default: centre 420px, viewer 362px, fit-width ~0.57× — inside the zoom
+  // ladder in both directions, which is all these specs ever needed. So they run at
+  // the project default again, and `viewer sizing at the 1280×720 default` below pins
+  // the numbers so the workaround can never be needed a second time.
 
   // Three pages of real Helvetica text: enough for page navigation AND for the live
   // search to find matches, without making the fixture slow to render.
@@ -172,8 +175,9 @@ test.describe('Files & PDF viewer — loaded PDF (requires an attached, renderab
     await expect(viewer.getByText(/\d+ \/ \d+/)).toBeVisible(); // page indicator "1 / N"
     // The viewer opens in fit-width mode, and in a reading-sized panel that fit sits
     // INSIDE the zoom ladder — so both directions are available. (Zoom-out correctly
-    // disables itself when fit-width is already below the ladder's 0.25× floor, which
-    // is why this spec pins the window size above.)
+    // disables itself when fit-width is already below the ladder's 0.25× floor; before
+    // 116.md §20 the workbench squeezed the panel to ~74px at this viewport, which is
+    // what used to force the 1600×900 pin — see the describe comment.)
     await expect(page.getByRole('button', { name: /fit width/i })).toHaveText(/fit width/i);
     await expect(page.getByRole('button', { name: /zoom in/i })).toBeEnabled();
     await expect(page.getByRole('button', { name: /zoom out/i })).toBeEnabled();
@@ -221,5 +225,50 @@ test.describe('Files & PDF viewer — loaded PDF (requires an attached, renderab
     // The spec is named "previous / next": prove the way back too.
     await page.getByRole('button', { name: /previous page/i }).click();
     await expect(viewer.getByText(/1 \/ \d+/)).toBeVisible();
+  });
+
+  /**
+   * 116.md §20/§126 (validation) — the regression pin for the defect that produced the
+   * 1600×900 workaround above. This one MEASURES, because that is how the defect was
+   * found: at the project-default 1280×720 the workbench (752px once the pinned
+   * workspace rail and the engine submenu are subtracted) used to hand the centre
+   * column 132px and the PDF viewer 74px, i.e. a pdf.js fit-width of 0.095×.
+   *
+   * The numbers below are the ones the fix produces, with margin. If a future change
+   * re-widens a side column or drops the centre's floor, this fails with the actual
+   * pixel count rather than with some downstream symptom.
+   */
+  test('viewer sizing at the 1280×720 default: a reading column, not a 74px sliver', async ({ page, screeningProject }) => {
+    test.skip(!PDF_FIXTURE_AVAILABLE, PDF_FIXTURE_TODO);
+    await gotoWorkbenchPdfPanel(page, screeningProject.project.id);
+    await page.getByRole('button', { name: 'Preview', exact: true }).click();
+    const viewer = page.getByRole('group', { name: /PDF viewer/i });
+    await expect(viewer).toBeVisible();
+
+    // The record list is NEVER hidden automatically — it is the primary navigation.
+    await expect(page.locator('.sift-rl')).toBeVisible();
+    // The filters sidebar is: it collapses to a rail whose toggle stays reachable.
+    await expect(page.getByRole('button', { name: 'Show Filters & keywords panel' }))
+      .toBeVisible();
+
+    const mid = await page.locator('.sift-mid').boundingBox();
+    const box = await viewer.boundingBox();
+    expect(mid && box).toBeTruthy();
+    if (!mid || !box) return;
+    expect(mid.width, 'centre column at 1280×720').toBeGreaterThanOrEqual(400);
+    expect(box.width, 'PDF viewer pane at 1280×720').toBeGreaterThan(300);
+
+    // fit-width really lands in a readable range: the rendered page canvas, over the
+    // 612pt width of the US-Letter fixture, IS the scale pdf.js chose.
+    const canvasWidth = await page.locator('canvas').first().evaluate(
+      (el) => Math.round(el.getBoundingClientRect().width));
+    expect(canvasWidth / 612).toBeGreaterThanOrEqual(0.5);
+
+    // …and none of it is bought with horizontal page scrolling.
+    const doc = await page.evaluate(() => ({
+      scrollW: document.documentElement.scrollWidth,
+      clientW: document.documentElement.clientWidth,
+    }));
+    expect(doc.scrollW).toBeLessThanOrEqual(doc.clientW);
   });
 });

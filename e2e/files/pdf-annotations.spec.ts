@@ -72,16 +72,20 @@ async function selectPdfText(page: Page, needle: string, opts: { mouseup?: boole
 const marks = (page: Page) => page.locator('[data-annotation-id]');
 
 test.describe('PDF annotations — the full collaborative arc', () => {
-  // 116.md §71-104 — the annotation gesture needs a viewer big enough to annotate in.
-  // The T&A workbench splits the window between four columns, so at the 1280 px
-  // default the PDF panel is ~74 px wide and fit-width lands at ~0.09×, where a 12 pt
-  // line is a single pixel tall and the popover is wider than the panel. That is a
-  // caricature of reading a paper, not the reviewing situation §75 describes. 1600×900
-  // gives the panel a real reading column (~394 px ⇒ ~0.62×). Nothing below is
-  // relaxed for it — the low-zoom capture behaviour itself is pinned by
-  // tests/unit/annotations/pdfAnnotationModel.test.js instead, where it can be
-  // asserted exactly.
-  test.use({ viewport: { width: 1600, height: 900 } });
+  // 116.md §20 (validation) — THE 1600×900 PIN IS GONE. It used to read: "the
+  // annotation gesture needs a viewer big enough to annotate in; the T&A workbench
+  // splits the window between four columns, so at the 1280px default the PDF panel is
+  // ~74px wide and fit-width lands at ~0.09×, where a 12pt line is a single pixel tall
+  // and the popover is wider than the panel."
+  //
+  // That was a layout defect, not a property of the annotation flow: the record list
+  // and the filters sidebar were both `flexShrink: 0` and the centre column had no
+  // floor, so every missing pixel came out of the centre. With
+  // src/frontend/screening/lib/workbenchLayout.js the same 1280×720 default now gives
+  // the panel a 362px reading column at ~0.57×, which is the reviewing situation §75
+  // describes — so this suite runs at the project default like every other spec.
+  // (The low-zoom capture behaviour itself stays pinned by
+  // tests/unit/annotations/pdfAnnotationModel.test.js, where it can be asserted exactly.)
 
   test('highlight → comment → reload → persists → recolour → undo @smoke', async ({ page, request, screeningProject }) => {
     await attachPdfToFirstRecord(request, screeningProject.siftId, { pages: 2 });

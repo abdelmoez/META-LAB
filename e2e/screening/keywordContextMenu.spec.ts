@@ -55,12 +55,30 @@ async function seedManualKeyword(page: Page, siftId: string, term: string): Prom
 async function openWorkbench(page: Page, projectId: string): Promise<ScreeningPage> {
   const sift = new ScreeningPage(page);
   await sift.openWorkbench(projectId);
+  // 116.md §20 (validation) — the keyword rows live in the filters sidebar, which
+  // auto-collapses on a narrow workbench. This suite pins a viewport where it is
+  // already open (see the describe below), so this is a no-op safety net rather than
+  // a click — but it keeps the helper correct if the viewport ever changes again.
+  await sift.openFilters();
   await expect(sift.keywordRows.first()).toBeVisible();
   await sift.expandKeywordGroups();
   return sift;
 }
 
 test.describe('Screening — right-click a keyword (108.md §§18-21)', () => {
+  // 116.md §20 (validation) — VIEWPORT IS A PRECONDITION, honestly stated. Everything
+  // this suite drives lives in the "Filters & keywords" sidebar, and that sidebar now
+  // auto-collapses to its rail below ~1040px of workbench width so the centre column
+  // keeps a readable PDF (the 1280×720 default leaves 752px once the pinned workspace
+  // rail and the engine submenu are subtracted). `openFilters()` below would open it,
+  // but doing so MOUNTS the sidebar in the middle of the test, and this suite's
+  // right-click assertions are sensitive to a list that is still settling. 1600×900 is
+  // the smallest common desktop size that seats all three columns, so the sidebar is
+  // simply there from the first paint, as it was before. Nothing else is relaxed; the
+  // auto-collapse itself is pinned by tests/unit/screening/workbenchLayout116.test.jsx
+  // and by "viewer sizing at the 1280×720 default" in e2e/files/files-pdf.spec.ts.
+  test.use({ viewport: { width: 1600, height: 900 } });
+
   test('@smoke opens a PecanRev menu on a manually added keyword, and Escape closes it', async ({ page, screeningProject }) => {
     await seedManualKeyword(page, screeningProject.siftId, TERM);
     const sift = await openWorkbench(page, screeningProject.project.id);
