@@ -24,13 +24,16 @@
  *           document is byte-identical in both modes and turning the toggle off
  *           leaves a genuinely clean manuscript.
  */
-import { useRef, useEffect, useMemo, useCallback, useImperativeHandle, forwardRef } from 'react';
+import { useRef, useState, useEffect, useMemo, useCallback, useImperativeHandle, forwardRef } from 'react';
 import { C, btnS, inp } from '../../../frontend/workspace/ui/styles.js';
 import { alpha } from '../../../frontend/theme/tokens.js';
 import {
   mdToHtml, htmlToMd, citeChipHtml, factChipText, factOf,
   CITE_CHIP_CLASS, ASSET_CHIP_CLASS, FACT_CHIP_CLASS, INPUT_CHIP_CLASS,
 } from './mdDom.js';
+// 116.md §59-§66 — pure structural table ops; the editor only ever applies them
+// by whole-table replacement through the execCommand/insertHtml path below.
+import { makeTableMd, applyTableOp } from './tableOps.js';
 import { SHOW_CHANGES_CSS, indexFactChanges, factChipTitle } from '../showChanges.js';
 
 /* Page-scoped CSS: the paper is LITERAL white in both themes (a printed page),
@@ -124,6 +127,10 @@ export const RichSectionEditor = forwardRef(function RichSectionEditor({
   // 102.md §3 — notified with the placeholder's label when the researcher clicks
   // one, so the workspace can keep its "current field" marker in step.
   onPlaceholderFocus = null,
+  // 116.md §61/§62 — notified when the caret enters/leaves a table so the parent
+  // can show the floating table controls. Called with {gridRow, col, rows, cols,
+  // rect} while inside a table, null on leaving; never called during SSR.
+  onTableFocus = null,
 }, ref) {
   const rootRef = useRef(null);
   const savedRange = useRef(null);
@@ -268,6 +275,93 @@ export const RichSectionEditor = forwardRef(function RichSectionEditor({
   useEffect(() => { readOnlyRef.current = readOnly; });
   const onPlaceholderFocusRef = useRef(onPlaceholderFocus);
   useEffect(() => { onPlaceholderFocusRef.current = onPlaceholderFocus; });
+  const onTableFocusRef = useRef(onTableFocus);
+  useEffect(() => { onTableFocusRef.current = onTableFocus; });
+
+  /* ══════════ 116.md §59-§66 — native table support ══════════
+   *
+   * Structural ops NEVER mutate the table DOM directly: a raw insertRow/
+   * removeChild would be invisible to the browser's native undo stack AND would
+   * not fire an input event, so autosave would miss it until the next keystroke
+   * (the two-sided trap of §63/§64). Instead every op is a WHOLE-TABLE
+   * replacement routed through the same insertHtml/execCommand path the toolbar
+   * uses: serialize the table (htmlToMd), transform it with the pure tableOps
+   * module, re-render (mdToHtml) and insertHTML over the selected table node.
+   * Native undo records it, emit() autosaves it, and the markdown stays inside
+   * the pipe grammar, so nothing here can become a DOM-only table.
+   */
+
+  /** The enclosing td/th of a DOM node, or null when outside root/table. */
+  const cellFromNode = (node) => {
+    let el = node && (node.nodeType === 1 ? node : node.parentElement);
+    while (el && el !== rootRef.current) {
+      const tag = el.tagName;
+      if (tag === 'TD' || tag === 'TH') return el;
+      el = el.parentElement;
+    }
+    return null;
+  };
+
+  /** Caret's table context: { table, cell, gridRow, col, rows, cols } | null. */
+  const tableDomContext = () => {
+    const sel = typeof window !== 'undefined' && window.getSelection && window.getSelection();
+    if (!sel || !sel.rangeCount || !rootRef.current) return null;
+    const cell = cellFromNode(sel.getRangeAt(0).startContainer);
+    if (!cell || typeof cell.closest !== 'function') return null;
+    const table = cell.closest('table');
+    if (!table || !rootRef.current.contains(table)) return null;
+    const trs = Array.from(table.querySelectorAll('tr'));
+    const tr = cell.closest('tr');
+    const gridRow = trs.indexOf(tr);
+    const rowCells = tr ? Array.from(tr.querySelectorAll('th,td')) : [];
+    const col = rowCells.indexOf(cell);
+    if (gridRow < 0 || col < 0) return null;
+    return { table, cell, gridRow, col, rows: trs.length, cols: rowCells.length };
+  };
+
+  /** Word-style cell entry: select the cell's contents so typing replaces them. */
+  const selectCellContents = (cell) => {
+    const sel = window.getSelection();
+    if (!sel) return;
+    const r = document.createRange();
+    r.selectNodeContents(cell);
+    sel.removeAllRanges();
+    sel.addRange(r);
+    savedRange.current = r.cloneRange();
+  };
+
+  const focusCellAt = (table, gridRow, col) => {
+    const trs = table.querySelectorAll('tr');
+    const tr = trs[Math.max(0, Math.min(gridRow, trs.length - 1))];
+    if (!tr) return;
+    const cells = tr.querySelectorAll('th,td');
+    const cell = cells[Math.max(0, Math.min(col, cells.length - 1))];
+    if (!cell) return;
+    rootRef.current && rootRef.current.focus();
+    selectCellContents(cell);
+  };
+
+  // Notify the parent when the caret enters/moves within/leaves a table. Only
+  // the leave transition sends null (once), so a caret outside any table costs
+  // nothing per keystroke.
+  const wasInTable = useRef(false);
+  const notifyTableFocus = () => {
+    const cb = onTableFocusRef.current;
+    if (!cb) return;
+    const ctx = tableDomContext();
+    if (!ctx) {
+      if (wasInTable.current) { wasInTable.current = false; cb(null); }
+      return;
+    }
+    wasInTable.current = true;
+    cb({
+      gridRow: ctx.gridRow,
+      col: ctx.col,
+      rows: ctx.rows,
+      cols: ctx.cols,
+      rect: typeof ctx.table.getBoundingClientRect === 'function' ? ctx.table.getBoundingClientRect() : null,
+    });
+  };
 
   const emit = useCallback(() => {
     if (readOnlyRef.current) return;
@@ -293,6 +387,10 @@ export const RichSectionEditor = forwardRef(function RichSectionEditor({
       // hand THIS editor's api to the parent — one shared toolbar can then act on
       // whichever field last held the caret (abstract subsections, MS-5)
       onActivate && onActivate(apiRef.current);
+      // 116.md §61 — keep the parent's floating table controls in step with the
+      // caret (runs on keyup/mouseup/focus/input, so the anchor rect stays fresh
+      // while the table grows).
+      notifyTableFocus();
     }
   };
 
@@ -350,6 +448,45 @@ export const RichSectionEditor = forwardRef(function RichSectionEditor({
     emit();
   }, [emit]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  /** 116.md §61 — apply a pure table op by whole-table replacement (see the
+      table header comment above). Returns true when a table op was applied. */
+  const runTableOp = (opId, ctxOverride) => {
+    if (readOnlyRef.current) return false;
+    const ctx = tableDomContext();
+    if (!ctx) return false;
+    const res = applyTableOp(opId, htmlToMd(ctx.table.outerHTML), {
+      gridRow: ctx.gridRow, col: ctx.col, ...(ctxOverride || {}),
+    });
+    if (!res) return false;
+    const sel = window.getSelection();
+    if (!sel) return false;
+    const r = document.createRange();
+    r.selectNode(ctx.table);
+    sel.removeAllRanges();
+    sel.addRange(r);
+    savedRange.current = r.cloneRange();
+    if (res.md == null) {
+      // delete-table → an empty paragraph keeps a caret target; htmlToMd drops
+      // it again, so the persisted markdown stays clean
+      insertHtml('<p><br></p>');
+      notifyTableFocus();
+      return true;
+    }
+    const html = mdToHtml(res.md, {
+      orderMap: orderMapRef.current, assetNumbers: assetNumbersRef.current, ...factOptsRef.current,
+    }).replace('<table>', '<table data-ms-new="1">');
+    insertHtml(html);
+    const nt = rootRef.current && rootRef.current.querySelector('table[data-ms-new="1"]');
+    if (nt) {
+      // the marker only exists to find the replacement table again; it is removed
+      // immediately and htmlToMd ignores unknown attributes, so it never persists
+      nt.removeAttribute('data-ms-new');
+      if (res.caret) focusCellAt(nt, res.caret.gridRow, res.caret.col);
+    }
+    notifyTableFocus();
+    return true;
+  };
+
   const api = useMemo(() => ({
     exec,
     focus: () => rootRef.current && rootRef.current.focus(),
@@ -357,6 +494,23 @@ export const RichSectionEditor = forwardRef(function RichSectionEditor({
     insertMarkdown: (md) => insertHtml(mdToHtml(md, {
       orderMap: orderMapRef.current, assetNumbers: assetNumbersRef.current, ...factOptsRef.current,
     })),
+    /** 116.md §60 — insert a fresh rows × cols table at the caret and land in
+        its first cell. Goes through insertHtml → native undo + autosave emit. */
+    insertTable: (rows, cols) => {
+      if (readOnlyRef.current) return;
+      const html = mdToHtml(makeTableMd(rows, cols), {
+        orderMap: orderMapRef.current, assetNumbers: assetNumbersRef.current, ...factOptsRef.current,
+      }).replace('<table>', '<table data-ms-new="1">');
+      // the trailing empty paragraph gives a caret target below a table inserted
+      // at the section end; htmlToMd drops it, so the markdown stays clean
+      insertHtml(`${html}<p><br></p>`);
+      const nt = rootRef.current && rootRef.current.querySelector('table[data-ms-new="1"]');
+      if (nt) { nt.removeAttribute('data-ms-new'); focusCellAt(nt, 0, 0); }
+      notifyTableFocus();
+    },
+    /** 116.md §61 — structural op ('rowAbove'|'rowBelow'|'colLeft'|'colRight'|
+        'deleteRow'|'deleteCol'|'deleteTable') on the table holding the caret. */
+    tableOp: (opId, ctxOverride) => runTableOp(opId, ctxOverride),
     /** Insert an atomic citation chip at the caret. */
     insertCitation: (refId) => {
       if (!refId) return;
@@ -390,7 +544,9 @@ export const RichSectionEditor = forwardRef(function RichSectionEditor({
       if (!el || typeof el.querySelectorAll !== 'function') return 0;
       return el.querySelectorAll(`span.${INPUT_CHIP_CLASS}[data-input]`).length;
     },
-  }), [exec, insertHtml, selectPlaceholderNode]);
+    // runTableOp/focusCellAt/notifyTableFocus close over refs only, so the
+    // memoized closures can never go stale (same pattern as factOptsRef).
+  }), [exec, insertHtml, selectPlaceholderNode]); // eslint-disable-line react-hooks/exhaustive-deps
   apiRef.current = api;
   useImperativeHandle(ref, () => api, [api]);
 
@@ -418,9 +574,40 @@ export const RichSectionEditor = forwardRef(function RichSectionEditor({
    * route to execCommand('redo') — the same native stack, just a shortcut some
    * engines do not map by default.
    */
+  /**
+   * 116.md §61 — Word-style Tab/Shift+Tab cell navigation. ONLY the unmodified
+   * Tab (Shift for direction) is claimed, and only while the caret sits inside a
+   * table cell: preventDefault on a MODIFIED chord would mark it claimed for the
+   * 108.md §23 shortcut router (exactly the regression the placeholder handler
+   * above documents), and outside tables the browser's focus-move behaviour must
+   * stay untouched. Runs on React's root bubble, so the claim is visible to the
+   * window-bubble router via defaultPrevented. Tab in the LAST cell appends a
+   * row (Word behaviour) through the same replace-table op as the menus.
+   */
+  const onTableTab = (e) => {
+    if (e.key !== 'Tab' || e.ctrlKey || e.metaKey || e.altKey) return false;
+    const ctx = tableDomContext();
+    if (!ctx) return false;
+    e.preventDefault();
+    const cellsAll = Array.from(ctx.table.querySelectorAll('th,td'));
+    const idx = cellsAll.indexOf(ctx.cell);
+    if (e.shiftKey) {
+      if (idx > 0) selectCellContents(cellsAll[idx - 1]); // first cell → stay put (Word)
+    } else if (idx + 1 < cellsAll.length) {
+      selectCellContents(cellsAll[idx + 1]);
+    } else {
+      runTableOp('rowBelow', { col: 0 }); // caret lands in the new row's first cell
+    }
+    rememberSelection();
+    return true;
+  };
+
   const onKeyDown = (e) => {
     // 102.md §3 — Enter/Space on a focused placeholder selects the whole field.
     if (onPlaceholderKeyDown(e)) return;
+    // 116.md §61 — Tab moves between table cells (and never leaves the editor
+    // while inside a table).
+    if (onTableTab(e)) return;
     if (!(e.ctrlKey || e.metaKey)) return;
     const k = String(e.key || '').toLowerCase();
     if (k === 'b') { e.preventDefault(); exec('bold'); }
@@ -487,6 +674,79 @@ const TB_BUTTONS = [
 ];
 
 /**
+ * 116.md §60 — Insert → Table: a compact grid selector (Word-style rows × cols
+ * picker) behind one toolbar button. Same selection-preserving onMouseDown
+ * preventDefault pattern as every other toolbar control, so the editor caret
+ * survives the whole interaction; insertion goes through api.insertTable →
+ * insertHtml (native undo + autosave emit).
+ */
+const TABLE_GRID_MAX = 6;
+export function TableGridPicker({ getApi, disabled }) {
+  const [open, setOpen] = useState(false);
+  const [hover, setHover] = useState({ r: 0, c: 0 });
+  const insert = (r, c) => {
+    setOpen(false);
+    setHover({ r: 0, c: 0 });
+    const api = getApi && getApi();
+    if (api && api.insertTable) api.insertTable(r, c);
+  };
+  return (
+    <span style={{ position: 'relative', display: 'inline-flex' }}>
+      <button type="button" aria-label="Insert table" title="Insert a table"
+        disabled={disabled} aria-haspopup="true" aria-expanded={open}
+        data-testid="stitch-manuscript-tb-table"
+        onMouseDown={(e) => e.preventDefault()}
+        onClick={() => setOpen((v) => !v)}
+        style={{
+          ...btnS('ghost'), padding: '5px 9px', fontSize: 11.5, border: '1px solid transparent',
+          background: 'transparent', color: C.txt2, opacity: disabled ? 0.5 : 1,
+        }}>
+        ⊞ Table
+      </button>
+      {open && !disabled && (
+        <>
+          {/* click-away backdrop; preventDefault keeps the editor selection */}
+          <div onMouseDown={(e) => { e.preventDefault(); setOpen(false); }}
+            style={{ position: 'fixed', inset: 0, zIndex: 40, background: 'transparent' }} />
+          <div role="dialog" aria-label="Table size"
+            data-testid="stitch-manuscript-table-grid"
+            onMouseDown={(e) => e.preventDefault()}
+            style={{
+              position: 'absolute', top: '100%', left: 0, marginTop: 4, zIndex: 41,
+              background: C.card, border: `1px solid ${C.brd}`, borderRadius: 10,
+              padding: 10, boxShadow: '0 10px 26px rgba(15,23,42,0.18)',
+            }}>
+            <div style={{ display: 'grid', gridTemplateColumns: `repeat(${TABLE_GRID_MAX}, 16px)`, gap: 3 }}>
+              {Array.from({ length: TABLE_GRID_MAX * TABLE_GRID_MAX }, (_, i) => {
+                const r = Math.floor(i / TABLE_GRID_MAX) + 1;
+                const c = (i % TABLE_GRID_MAX) + 1;
+                const on = r <= hover.r && c <= hover.c;
+                return (
+                  <button key={i} type="button" tabIndex={-1}
+                    aria-label={`Insert ${r} by ${c} table`}
+                    data-testid={`stitch-manuscript-table-grid-${r}-${c}`}
+                    onMouseEnter={() => setHover({ r, c })}
+                    onFocus={() => setHover({ r, c })}
+                    onClick={() => insert(r, c)}
+                    style={{
+                      width: 16, height: 16, padding: 0, cursor: 'pointer', borderRadius: 3,
+                      border: `1px solid ${on ? C.acc : C.brd2}`,
+                      background: on ? alpha(C.acc, '22') : 'transparent',
+                    }} />
+                );
+              })}
+            </div>
+            <div aria-live="polite" style={{ marginTop: 6, fontSize: 10.5, color: C.txt2, textAlign: 'center' }}>
+              {hover.r > 0 ? `${hover.r} × ${hover.c} (first row is the header)` : 'Pick rows × columns'}
+            </div>
+          </div>
+        </>
+      )}
+    </span>
+  );
+}
+
+/**
  * Formatting toolbar. `getApi()` returns the imperative handle of the editor that
  * last had the caret (one toolbar serves the abstract's multiple fields too).
  * onMouseDown preventDefault keeps the editor selection alive through the click.
@@ -515,6 +775,8 @@ export function RichToolbar({ getApi, citeRefs, refLabel, disabled }) {
           {b.glyph}
         </button>
       ))}
+      {/* 116.md §60 — Insert → Table grid selector */}
+      <TableGridPicker getApi={getApi} disabled={disabled} />
       {!disabled && citeRefs && citeRefs.length > 0 && (
         <>
           <span style={{ width: 1, alignSelf: 'stretch', background: C.brd, margin: '0 4px' }} />

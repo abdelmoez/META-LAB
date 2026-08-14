@@ -10,7 +10,7 @@ import { describe, it, expect } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { RichSectionEditor, RichToolbar } from '../../../src/features/manuscript/richEditor/RichSectionEditor.jsx';
 import { AbstractEditor } from '../../../src/features/manuscript/richEditor/AbstractEditor.jsx';
-import { EditorPanel, SaveStatusPill } from '../../../src/features/manuscript/manuscriptPanels.jsx';
+import { EditorPanel, SaveStatusPill, TableContextBar } from '../../../src/features/manuscript/manuscriptPanels.jsx';
 import { ManuscriptWorkspace } from '../../../src/features/manuscript/ManuscriptWorkspace.jsx';
 import { makeManuscriptDraft, normalizeDraft } from '../../../src/research-engine/manuscript/model.js';
 import { generateAbstract } from '../../../src/research-engine/manuscript/draft.js';
@@ -57,6 +57,41 @@ describe('RichToolbar — keyboard-accessible formatting controls', () => {
     }
     expect(html).toContain('role="toolbar"');
     expect(html).toContain('data-testid="stitch-manuscript-insert-citation"');
+  });
+
+  it('116.md §60 — carries the Insert → Table control (grid selector closed by default)', () => {
+    const html = renderToStaticMarkup(
+      <RichToolbar getApi={() => null} citeRefs={[]} refLabel={(r) => r.id} />,
+    );
+    expect(html).toContain('aria-label="Insert table"');
+    expect(html).toContain('data-testid="stitch-manuscript-tb-table"');
+    expect(html).toContain('aria-haspopup="true"');
+    // popup only opens on interaction — never on first paint
+    expect(html).not.toContain('stitch-manuscript-table-grid');
+  });
+});
+
+describe('TableContextBar — floating table controls (116.md §61/§62)', () => {
+  it('renders the seven structural ops, each labelled, when the caret is in a table', () => {
+    const ctx = { gridRow: 1, col: 0, rows: 3, cols: 2, rect: { top: 120, right: 640 } };
+    const pageEl = { getBoundingClientRect: () => ({ top: 40, right: 700, width: 700 }) };
+    const html = renderToStaticMarkup(<TableContextBar ctx={ctx} pageEl={pageEl} getApi={() => null} />);
+    expect(html).toContain('data-testid="stitch-manuscript-table-ctl"');
+    expect(html).toContain('aria-label="Table controls"');
+    for (const op of ['rowAbove', 'rowBelow', 'colLeft', 'colRight', 'deleteRow', 'deleteCol', 'deleteTable']) {
+      expect(html).toContain(`data-testid="stitch-manuscript-table-op-${op}"`);
+    }
+    for (const label of ['Insert row above', 'Insert row below', 'Insert column left', 'Insert column right', 'Delete row', 'Delete column', 'Delete table']) {
+      expect(html).toContain(`aria-label="${label}"`);
+    }
+  });
+
+  it('renders nothing without a table context (first paint is always bar-free)', () => {
+    expect(renderToStaticMarkup(<TableContextBar ctx={null} pageEl={null} getApi={() => null} />)).toBe('');
+    // EditorPanel first paint: no floating controls
+    const draft = normalizeDraft(makeManuscriptDraft({ title: 'T' }));
+    const html = renderToStaticMarkup(<EditorPanel m={mockM(draft)} exporters={mockExporters} />);
+    expect(html).not.toContain('stitch-manuscript-table-ctl');
   });
 });
 

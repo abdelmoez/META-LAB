@@ -7,7 +7,9 @@
  * Supported subset (everything else is stripped to plain text — never raw-leaked):
  *   #/##/###  → h2/h3/h4        - item      → ul>li        1. item → ol>li
  *   **bold**  → strong          *italic*    → em           `code`  → code
- *   [text](https://…)           | pipe | tables | (with `| --- |` header separator)
+ *   [text](https://…)           | pipe | tables | (with `| --- |` header separator;
+ *                                 116.md §59-§66: `:---:` alignment colons and the
+ *                                 `\|` literal-pipe escape are part of the grammar)
  *   [[cite:id]]                 → atomic chip <span class="ms-cite" data-cite=…
  *                                 contenteditable="false">[n]</span> (n from orderMap)
  *   [[table:id]]/[[figure:id]]  → atomic chip <span class="ms-asset" data-asset=…
@@ -235,25 +237,103 @@ function inlineHtml(escText, orderMap, assetNumbers, factOpts) {
   return t;
 }
 
-/** Parse consecutive `| … |` lines into { header:[cells]|null, rows:[[cells]] }.
-    Shared with the docx converter (works on raw OR escaped lines — `|` survives). */
+/** 116.md §63 — escape literal pipes so cell text survives the pipe grammar
+    ('|' used to be silently corrupted to '/'; '\|' round-trips instead). */
+export function escapePipeCell(s) {
+  return String(s == null ? '' : s).replace(/\|/g, '\\|');
+}
+
+/**
+ * Parse consecutive `| … |` lines into { header:[cells]|null, rows:[[cells]],
+ * align:[per-column 'left'|'center'|'right'|null]|null }.
+ * Shared with the docx converter (works on raw OR escaped lines — `|` survives),
+ * so the editor render and the Word export follow the same grammar (116.md §65).
+ * Returned cells are UNESCAPED: `\|` comes back as a literal `|` (116.md §63).
+ * Alignment comes from the `:---:` colons on the separator row and therefore
+ * only exists on tables WITH a header.
+ */
 export function parsePipeTable(lines) {
   const parseRow = (line) => {
     let s = String(line).trim();
     if (s.startsWith('|')) s = s.slice(1);
-    if (s.endsWith('|')) s = s.slice(0, -1);
-    return s.split('|').map((c) => c.trim());
+    // the trailing border pipe — never strip an escaped `\|` that ends a cell
+    if (s.endsWith('|') && !s.endsWith('\\|')) s = s.slice(0, -1);
+    // manual split so `\|` stays inside its cell (116.md §63)
+    const cells = [];
+    let cur = '';
+    for (let i = 0; i < s.length; i += 1) {
+      const ch = s[i];
+      if (ch === '\\' && s[i + 1] === '|') { cur += '\\|'; i += 1; continue; }
+      if (ch === '|') { cells.push(cur); cur = ''; continue; }
+      cur += ch;
+    }
+    cells.push(cur);
+    return cells.map((c) => c.trim().replace(/\\\|/g, '|'));
   };
   const isSeparator = (cells) => cells.length > 0 && cells.every((c) => /^:?-{2,}:?$/.test(c));
+  const alignOf = (c) => {
+    const l = c.startsWith(':');
+    const r = c.endsWith(':');
+    if (l && r) return 'center';
+    if (r) return 'right';
+    if (l) return 'left';
+    return null;
+  };
   const all = (lines || []).map(parseRow);
-  if (all.length >= 2 && isSeparator(all[1])) return { header: all[0], rows: all.slice(2) };
-  return { header: null, rows: all };
+  if (all.length >= 2 && isSeparator(all[1])) {
+    return { header: all[0], rows: all.slice(2), align: all[1].map(alignOf) };
+  }
+  return { header: null, rows: all, align: null };
+}
+
+/**
+ * 116.md §59-§66 — canonical pipe-table serializer, the exact inverse of
+ * parsePipeTable. Cells are RAW text (a literal '|' is emitted as '\|'); rows are
+ * rectangularized to the widest row so columns can never shift; alignment needs
+ * the separator row, so it only survives on tables WITH a header. Shared by
+ * htmlToMd's table emitter and the pure tableOps module so structural edits and
+ * ordinary typing serialize byte-identically.
+ */
+export function serializePipeTable({ header, rows, align }) {
+  const body = rows || [];
+  const width = Math.max(header ? header.length : 0, ...body.map((r) => r.length), 1);
+  const pad = (cells) => {
+    const c = cells.map((x) => escapePipeCell(String(x == null ? '' : x).trim()));
+    while (c.length < width) c.push('');
+    return c;
+  };
+  const fmt = (cells) => `| ${cells.join(' | ')} |`;
+  const sepCell = (a) => (a === 'center' ? ':---:' : a === 'right' ? '---:' : a === 'left' ? ':---' : '---');
+  const lines = [];
+  if (header) {
+    lines.push(fmt(pad(header)));
+    lines.push(fmt(Array.from({ length: width }, (_, i) => sepCell(align ? align[i] : null))));
+  }
+  for (const r of body) lines.push(fmt(pad(r)));
+  return lines.join('\n');
 }
 
 function tableHtml(escLines, orderMap, assetNumbers, factOpts) {
-  const { header, rows } = parsePipeTable(escLines);
-  const cell = (tag, c) => `<${tag}>${inlineHtml(c, orderMap, assetNumbers, factOpts)}</${tag}>`;
-  const tr = (cells, tag) => `<tr>${cells.map((c) => cell(tag, c)).join('')}</tr>`;
+  const { header, rows, align } = parsePipeTable(escLines);
+  // 116.md §61/§66 — rectangularize so short rows (hand-typed markdown, rowspan'd
+  // Word paste) can never shift columns under their header.
+  const width = Math.max(header ? header.length : 0, ...rows.map((r) => r.length), 1);
+  const alignAttr = (i) => {
+    const a = align && align[i];
+    return a ? ` style="text-align:${a}"` : '';
+  };
+  // An EMPTY cell gets a <br> placeholder: a td with no text node is a flaky
+  // caret target across engines (116.md §60); inlineOf turns the <br> back into
+  // '' so the round trip stays clean.
+  const cell = (tag, c, i) => {
+    const inner = inlineHtml(c, orderMap, assetNumbers, factOpts);
+    return `<${tag}${alignAttr(i)}>${inner || '<br>'}</${tag}>`;
+  };
+  const tr = (cells, tag) => {
+    const c = cells.slice();
+    while (c.length < width) c.push('');
+    return `<tr>${c.map((x, i) => cell(tag, x, i)).join('')}</tr>`;
+  };
   const parts = ['<table>'];
   if (header) parts.push(`<thead>${tr(header, 'th')}</thead>`);
   parts.push(`<tbody>${rows.map((r) => tr(r, 'td')).join('')}</tbody>`);
@@ -476,6 +556,24 @@ function emitList(node, blocks) {
   blocks.push(lines.join('\n'));
 }
 
+/** 116.md §65 — per-cell alignment from the cell's own style/align attrs or its
+    first block child (Word puts text-align on the inner <p>, not the td). */
+function cellAlignOf(cell) {
+  const pick = (attrs) => {
+    if (!attrs) return null;
+    const m = String(attrs.style || '').toLowerCase().match(/text-align\s*:\s*(left|center|right)/);
+    if (m) return m[1];
+    const al = String(attrs.align || '').toLowerCase();
+    return (al === 'left' || al === 'center' || al === 'right') ? al : null;
+  };
+  const own = pick(cell.attrs);
+  if (own) return own;
+  for (const k of cell.children || []) {
+    if (k.tag === 'p' || k.tag === 'div') { const a = pick(k.attrs); if (a) return a; }
+  }
+  return null;
+}
+
 function tableRowsOf(node) {
   const rows = [];
   const walk = (n, inHead) => {
@@ -483,6 +581,7 @@ function tableRowsOf(node) {
       if (c.text != null) continue;
       if (c.tag === 'tr') {
         const cells = [];
+        const aligns = [];
         let allTh = true;
         let any = false;
         for (const cell of c.children || []) {
@@ -490,11 +589,19 @@ function tableRowsOf(node) {
           if (cell.tag === 'td' || cell.tag === 'th') {
             any = true;
             if (cell.tag !== 'th') allTh = false;
-            // literal | inside a cell would break the pipe grammar → substitute
-            cells.push(inlineOf(cell.children, { oneLine: true }).trim().replace(/\|/g, '/'));
+            // RAW cell text — a literal '|' is escaped later by serializePipeTable
+            // (116.md §63; it used to be corrupted to '/').
+            cells.push(inlineOf(cell.children, { oneLine: true }).trim());
+            aligns.push(cellAlignOf(cell));
+            // 116.md §66 — a colspan'd (merged) Word cell is flattened honestly:
+            // pad with empty cells so the following columns stay aligned instead
+            // of silently shifting left. Rowspan makes later rows SHORT; the
+            // serializer's rectangularization pads those the same way.
+            const span = Math.max(1, parseInt((cell.attrs && cell.attrs.colspan) || '1', 10) || 1);
+            for (let i = 1; i < span; i += 1) { cells.push(''); aligns.push(null); }
           }
         }
-        if (any) rows.push({ cells, header: inHead || allTh });
+        if (any) rows.push({ cells, aligns, header: inHead || allTh });
       } else if (c.tag === 'thead') walk(c, true);
       else if (c.tag === 'tbody' || c.tag === 'tfoot') walk(c, false);
       else if (c.tag) walk(c, inHead);
@@ -507,16 +614,26 @@ function tableRowsOf(node) {
 function emitTable(node, blocks) {
   const rows = tableRowsOf(node);
   if (!rows.length) return;
-  const fmt = (cells) => `| ${cells.join(' | ')} |`;
-  const lines = [];
-  let body = rows;
-  if (rows[0].header) {
-    lines.push(fmt(rows[0].cells));
-    lines.push(`| ${rows[0].cells.map(() => '---').join(' | ')} |`);
-    body = rows.slice(1);
+  const hasHeader = rows[0].header;
+  const header = hasHeader ? rows[0].cells : null;
+  const body = (hasHeader ? rows.slice(1) : rows).map((r) => r.cells);
+  // 116.md §65 — per-COLUMN alignment for the separator row: the header cell
+  // decides; a column whose header carries none falls back to the first aligned
+  // body cell (Word paste often styles only body paragraphs). Headerless tables
+  // have no separator row, so alignment cannot be represented and drops.
+  let align = null;
+  if (hasHeader) {
+    const width = Math.max(...rows.map((r) => r.cells.length), 1);
+    align = [];
+    for (let i = 0; i < width; i += 1) {
+      let a = rows[0].aligns[i] || null;
+      if (!a) {
+        for (const r of rows.slice(1)) { if (r.aligns[i]) { a = r.aligns[i]; break; } }
+      }
+      align.push(a);
+    }
   }
-  for (const r of body) lines.push(fmt(r.cells));
-  blocks.push(lines.join('\n'));
+  blocks.push(serializePipeTable({ header, rows: body, align }));
 }
 
 function emitBlock(node, blocks) {
@@ -602,6 +719,7 @@ export function extractOutline(md) {
 
 export default {
   escapeHtml, mdToHtml, htmlToMd, citeChipHtml, assetChipHtml, factChipHtml,
-  factChipText, factOf, parsePipeTable, extractOutline, stripInlineMd,
+  factChipText, factOf, parsePipeTable, serializePipeTable, escapePipeCell,
+  extractOutline, stripInlineMd,
   CITE_CHIP_CLASS, ASSET_CHIP_CLASS, FACT_CHIP_CLASS, INPUT_CHIP_CLASS,
 };

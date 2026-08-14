@@ -7,7 +7,8 @@
  */
 import { describe, it, expect } from 'vitest';
 import {
-  mdToHtml, htmlToMd, citeChipHtml, parsePipeTable, extractOutline, stripInlineMd, escapeHtml,
+  mdToHtml, htmlToMd, citeChipHtml, parsePipeTable, serializePipeTable, escapePipeCell,
+  extractOutline, stripInlineMd, escapeHtml,
 } from '../../../src/features/manuscript/richEditor/mdDom.js';
 import {
   parseAbstractSubsections, serializeAbstractSubsections, abstractTemplateInfo,
@@ -187,8 +188,110 @@ describe('htmlToMd sanitizes editor/paste HTML', () => {
   it('unwraps unknown inline wrappers instead of leaking tags', () => {
     expect(htmlToMd('<p><font color="red"><u>plain</u></font></p>')).toBe('plain');
   });
-  it('escapes literal pipes inside table cells', () => {
-    expect(htmlToMd('<table><tbody><tr><td>a|b</td></tr></tbody></table>')).toBe('| a/b |');
+  it('escapes literal pipes inside table cells as \\| (116.md §63 — was silently corrupted to "/")', () => {
+    expect(htmlToMd('<table><tbody><tr><td>a|b</td></tr></tbody></table>')).toBe('| a\\|b |');
+  });
+});
+
+/* ── 116.md §59-§66 — native tables: pipe escaping, alignment, padding ─────── */
+
+describe('native tables (116.md §59-§66)', () => {
+  it('a literal | in a cell round-trips via the \\| escape, byte-for-byte', () => {
+    const md = '| a\\|b | c |';
+    expect(rt(md)).toBe(md);
+    // the reader sees the real pipe, never the escape
+    expect(textContent(mdToHtml(md))).toContain('a|b');
+    expect(textContent(mdToHtml(md))).not.toContain('\\|');
+  });
+
+  it('escapePipeCell escapes every pipe and is stable under parse', () => {
+    expect(escapePipeCell('a|b|c')).toBe('a\\|b\\|c');
+    const { rows } = parsePipeTable([`| ${escapePipeCell('a|b|c')} |`]);
+    expect(rows).toEqual([['a|b|c']]);
+  });
+
+  it('parsePipeTable returns per-column alignment from the separator colons (§65)', () => {
+    const t = parsePipeTable(['| a | b | c | d |', '| :--- | :---: | ---: | --- |', '| 1 | 2 | 3 | 4 |']);
+    expect(t.align).toEqual(['left', 'center', 'right', null]);
+    expect(t.header).toEqual(['a', 'b', 'c', 'd']);
+    // headerless tables have no separator row → no alignment channel
+    expect(parsePipeTable(['| 1 | 2 |']).align).toBeNull();
+  });
+
+  it('alignment renders as text-align styles on th AND td, and round-trips byte-for-byte', () => {
+    const md = '| Name | Mid | N |\n| :--- | :---: | ---: |\n| a | b | 42 |';
+    const html = mdToHtml(md);
+    expect(html).toContain('<th style="text-align:left">Name</th>');
+    expect(html).toContain('<th style="text-align:center">Mid</th>');
+    expect(html).toContain('<th style="text-align:right">N</th>');
+    expect(html).toContain('<td style="text-align:right">42</td>');
+    expect(rt(md)).toBe(md);
+    expect(rt(rt(md))).toBe(md);
+  });
+
+  it('unmarked columns keep the plain --- separator (existing drafts stay byte-identical)', () => {
+    const md = '| A | B |\n| --- | --- |\n| 1 | 2 |';
+    expect(rt(md)).toBe(md);
+    expect(mdToHtml(md)).not.toContain('text-align');
+  });
+
+  it('serializePipeTable is the canonical inverse of parsePipeTable', () => {
+    expect(serializePipeTable({ header: ['A', 'B'], rows: [['1', '2']], align: ['center', null] }))
+      .toBe('| A | B |\n| :---: | --- |\n| 1 | 2 |');
+    // raw pipes in cells are escaped on the way out
+    expect(serializePipeTable({ header: null, rows: [['a|b']], align: null })).toBe('| a\\|b |');
+    // rectangularization pads short rows so columns can never shift
+    expect(serializePipeTable({ header: ['A', 'B', 'C'], rows: [['1']], align: null }))
+      .toBe('| A | B | C |\n| --- | --- | --- |\n| 1 |  |  |');
+  });
+
+  it('colspan on Word paste pads with empty cells instead of shifting columns (§66)', () => {
+    expect(htmlToMd('<table><tbody><tr><td colspan="2">a</td><td>b</td></tr><tr><td>1</td><td>2</td><td>3</td></tr></tbody></table>'))
+      .toBe('| a |  | b |\n| 1 | 2 | 3 |');
+    // header colspan pads the same way
+    expect(htmlToMd('<table><thead><tr><th colspan="2">H</th></tr></thead><tbody><tr><td>1</td><td>2</td></tr></tbody></table>'))
+      .toBe('| H |  |\n| --- | --- |\n| 1 | 2 |');
+  });
+
+  it('ragged rows converge to a rectangular fixed point (§61)', () => {
+    const once = rt('| a |\n| b | c |');
+    expect(once).toBe('| a |  |\n| b | c |');
+    expect(rt(once)).toBe(once);
+  });
+
+  it('empty cells render a <br> caret target and reverse to an empty cell (§60)', () => {
+    const html = mdToHtml('|  | x |');
+    expect(html).toContain('<td><br></td>');
+    expect(rt('|  | x |')).toBe('|  | x |');
+  });
+
+  it('pasted Word alignment (style on the inner <p> or align attr) survives into the separator', () => {
+    expect(htmlToMd('<table><thead><tr><th><p style="text-align:center">H</p></th></tr></thead><tbody><tr><td>v</td></tr></tbody></table>'))
+      .toBe('| H |\n| :---: |\n| v |');
+    expect(htmlToMd('<table><thead><tr><th align="right">H</th></tr></thead><tbody><tr><td>v</td></tr></tbody></table>'))
+      .toBe('| H |\n| ---: |\n| v |');
+    // an unaligned header falls back to the first aligned body cell
+    expect(htmlToMd('<table><thead><tr><th>H</th></tr></thead><tbody><tr><td style="text-align:right">9</td></tr></tbody></table>'))
+      .toBe('| H |\n| ---: |\n| 9 |');
+  });
+
+  it('headerless pasted tables drop alignment honestly (no separator row to carry it)', () => {
+    expect(htmlToMd('<table><tbody><tr><td style="text-align:center">a</td></tr></tbody></table>'))
+      .toBe('| a |');
+  });
+
+  it('chips inside aligned cells still round-trip', () => {
+    const md = '| a | [[table:sof]] |\n| ---: | :---: |\n| 1 | 2 |';
+    expect(rt(md)).toBe(md);
+    const html = mdToHtml(md, { assetNumbers: { 'table:sof': 4 } });
+    expect(html).toContain('<th style="text-align:center"><span class="ms-asset"');
+    expect(htmlToMd(html)).toBe(md);
+  });
+
+  it('the fully-empty header table (fresh insert shape) round-trips', () => {
+    const md = '|  |  |\n| --- | --- |\n|  |  |';
+    expect(rt(md)).toBe(md);
+    expect(mdToHtml(md)).toContain('<th><br></th>');
   });
 });
 

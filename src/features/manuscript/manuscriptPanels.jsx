@@ -883,6 +883,63 @@ function AuthorshipCard({ m }) {
 /* ════════════ 2. EDITOR (65.md MS-CORE/MS-3) — outline · paper page · tools ════════════ */
 const dotColor = (st) => (st === 'edited' ? C.grn : st === 'ai-draft' ? C.yel : C.dim);
 
+/**
+ * 116.md §61/§62 — the floating table controls: visible ONLY while the caret is
+ * inside a table (the editor reports the context via onTableFocus), anchored to
+ * the table's top-right corner inside the paper page. Subtle by design: small
+ * ghost buttons, no decorative theme, and it disappears the moment the caret
+ * leaves the table. Every op routes through api.tableOp → whole-table
+ * replacement on the editor's execCommand path, so native undo (§64) and the
+ * input→autosave emit (§63) both record it.
+ */
+const TABLE_CTL_OPS = [
+  { op: 'rowAbove', glyph: '+ Row ↑', aria: 'Insert row above' },
+  { op: 'rowBelow', glyph: '+ Row ↓', aria: 'Insert row below' },
+  { op: 'colLeft', glyph: '+ Col ←', aria: 'Insert column left' },
+  { op: 'colRight', glyph: '+ Col →', aria: 'Insert column right' },
+  { op: 'deleteRow', glyph: '− Row', aria: 'Delete row', danger: true },
+  { op: 'deleteCol', glyph: '− Col', aria: 'Delete column', danger: true },
+  { op: 'deleteTable', glyph: '✕ Table', aria: 'Delete table', danger: true },
+];
+
+export function TableContextBar({ ctx, pageEl, getApi }) {
+  if (!ctx || !ctx.rect || !pageEl || typeof pageEl.getBoundingClientRect !== 'function') return null;
+  const pr = pageEl.getBoundingClientRect();
+  // Anchor above the table's top-right corner; clamp inside the page so a table
+  // at the very top still shows its controls.
+  const top = Math.max(ctx.rect.top - pr.top - 34, 2);
+  const right = Math.max(pr.right - ctx.rect.right, 8);
+  const run = (op) => {
+    const api = getApi && getApi();
+    if (api && api.tableOp) api.tableOp(op);
+  };
+  return (
+    <div role="toolbar" aria-label="Table controls" data-testid="stitch-manuscript-table-ctl"
+      style={{
+        position: 'absolute', top, right, zIndex: 5,
+        display: 'flex', alignItems: 'center', gap: 2, padding: '3px 5px',
+        background: C.card, border: `1px solid ${C.brd}`, borderRadius: 8,
+        boxShadow: '0 4px 14px rgba(15,23,42,0.14)', whiteSpace: 'nowrap',
+      }}>
+      {TABLE_CTL_OPS.map((b) => (
+        <button key={b.op} type="button" aria-label={b.aria} title={b.aria}
+          data-testid={`stitch-manuscript-table-op-${b.op}`}
+          // preventDefault keeps the editor caret alive through the click — the
+          // same selection-preserving pattern as every toolbar control
+          onMouseDown={(e) => e.preventDefault()}
+          onClick={() => run(b.op)}
+          style={{
+            ...btnS('ghost'), padding: '3px 7px', fontSize: 10.5,
+            border: '1px solid transparent', background: 'transparent',
+            color: b.danger ? C.red : C.txt2,
+          }}>
+          {b.glyph}
+        </button>
+      ))}
+    </div>
+  );
+}
+
 export function EditorPanel({ m, exporters, sectionRequest }) {
   const [sel, setSel] = useState('title');
   const [genNotice, setGenNotice] = useState(null); // { only:null|[id], skipped:[...], skippedLocked:[...] }
@@ -918,6 +975,13 @@ export function EditorPanel({ m, exporters, sectionRequest }) {
 
   const pageRef = useRef(null);
   const pendingScroll = useRef(null);
+
+  // 116.md §61/§62 — the caret's table context (null outside tables), reported
+  // by the main rich editor; drives the floating table controls. Cleared on
+  // section switch / regeneration because the editor remounts and the old rect
+  // is meaningless.
+  const [tableCtx, setTableCtx] = useState(null);
+  useEffect(() => { setTableCtx(null); }, [sel, m.activeId, lastGen]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const citeRefs = m.references || [];
   const refLabel = (r) => {
@@ -1284,8 +1348,9 @@ export function EditorPanel({ m, exporters, sectionRequest }) {
         {!isTitle && <RichToolbar getApi={getApi} citeRefs={citeRefs} refLabel={refLabel} disabled={locked} />}
 
         <div style={{ display: 'flex', justifyContent: 'center' }}>
+          {/* position:relative anchors the 116.md §61 floating table controls */}
           <div ref={pageRef} className="ms-paper" data-testid="stitch-manuscript-page"
-            style={{ width: '100%', maxWidth: 760, padding: '44px 52px 56px', minHeight: 480, boxSizing: 'border-box' }}>
+            style={{ width: '100%', maxWidth: 760, padding: '44px 52px 56px', minHeight: 480, boxSizing: 'border-box', position: 'relative' }}>
             {isTitle ? (
               <div style={{ display: 'flex', flexDirection: 'column', gap: 22 }}>
                 <input value={buf} onChange={(e) => onType(e.target.value)} placeholder="Full manuscript title…"
@@ -1335,8 +1400,15 @@ export function EditorPanel({ m, exporters, sectionRequest }) {
                   if (hit) m.setCurrentPlaceholderId && m.setCurrentPlaceholderId(hit.id);
                 }}
                 onChange={onType} onActivate={setActive} readOnly={locked}
+                // 116.md §61 — report the caret's table context for the floating
+                // table controls (never while locked: no edits are possible).
+                onTableFocus={locked ? null : setTableCtx}
                 ariaLabel={(SECTION_TYPES.find((s) => s.id === sel) || {}).label || 'Section'}
                 placeholder="Write this section here, or generate it from your project data. Use the toolbar for headings, lists and citations." />
+            )}
+            {/* 116.md §61/§62 — floating row/col/table ops while the caret is in a table */}
+            {!isTitle && !isAbstract && !locked && tableCtx && (
+              <TableContextBar ctx={tableCtx} pageEl={pageRef.current} getApi={getApi} />
             )}
           </div>
         </div>

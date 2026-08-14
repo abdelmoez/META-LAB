@@ -309,6 +309,62 @@ describe('manuscript export — 85.md placement-aware assets', () => {
     expect(docBig).not.toContain('<w:cantSplit');
   });
 
+  it('116.md §65 — editor-authored table: real w:tbl with per-column alignment and escaped pipes', async () => {
+    // Empty-ish project → no data tables, so every <w:tbl> comes from the markdown.
+    const eProj = { id: 'e', name: 'TblParity', pico: {}, search: { dbs: {} }, prisma: {}, studies: [] };
+    const d = blankDraft();
+    // Exactly what the 116.md editor produces: header separator with alignment
+    // colons, a literal pipe escaped as \|, and an empty cell.
+    d.sections.methods.content = [
+      'Before the table.',
+      '',
+      '| LeftCol | MidCol | NumCol |',
+      '| :--- | :---: | ---: |',
+      '| plaincell | centrecell | 42 |',
+      '| pipe\\|cell |  | 9 |',
+      '',
+      'After the table.',
+    ].join('\n');
+    const doc = await unpack(eProj, d);
+
+    // real Word table with a repeating bold header row
+    expect(doc).toContain('<w:tbl>');
+    expect(doc).toContain('<w:tblHeader');
+    expect(doc).toContain('LeftCol');
+    expect(doc).not.toContain('| LeftCol |');
+
+    // the escaped pipe arrives as a literal | in the cell text — never the
+    // escape sequence, never the legacy '/' corruption
+    expect(doc).toContain('pipe|cell');
+    expect(doc).not.toContain('pipe\\|cell');
+    expect(doc).not.toContain('pipe/cell');
+
+    // the empty cell keeps the honest em-dash placeholder
+    expect(doc).toContain('—');
+
+    // per-column alignment lands on the CELL PARAGRAPH's w:jc. The paragraph
+    // XML puts <w:jc> (inside pPr) before the run text, so the alignment of a
+    // cell is the last w:jc preceding its text.
+    const paraStart = (xml, i) => Math.max(xml.lastIndexOf('<w:p>', i), xml.lastIndexOf('<w:p ', i), 0);
+    const paraAlign = (text) => {
+      const i = doc.indexOf(text);
+      expect(i, `cell "${text}" should be in the document`).toBeGreaterThan(-1);
+      const slice = doc.slice(paraStart(doc, i), i);
+      const m = slice.match(/<w:jc w:val="(\w+)"\/>/);
+      return m ? m[1] : null;
+    };
+    expect(paraAlign('plaincell')).toBe('left');
+    expect(paraAlign('centrecell')).toBe('center');
+    expect(paraAlign('>42<')).toBe('right');
+    // an unmarked column (legacy '---' separator) gets NO explicit alignment:
+    const dPlain = blankDraft('Plain');
+    dPlain.sections.methods.content = '| A |\n| --- |\n| unmarkedcell |';
+    const docPlain = await unpack(eProj, dPlain);
+    const iCell = docPlain.indexOf('unmarkedcell');
+    expect(iCell).toBeGreaterThan(-1);
+    expect(docPlain.slice(paraStart(docPlain, iCell), iCell)).not.toContain('<w:jc');
+  });
+
   it('builder warnings[] export as italic notes under the table', async () => {
     const project = fixtureProject();
     const d = blankDraft();

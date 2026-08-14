@@ -159,21 +159,32 @@ function parseInline(text, D, base = {}, ictx = null) {
   return runs;
 }
 
-/** Pipe-table markdown → a real docx Table (same look as the data tables). */
+/** Pipe-table markdown → a real docx Table (same look as the data tables).
+    116.md §65 — parsePipeTable is SHARED with the editor, so the `\|` literal-
+    pipe escape and the `:---:` alignment colons behave identically on screen and
+    in Word: alignment maps to the cell paragraph's w:jc, escaped pipes arrive as
+    literal '|' cell text. */
 function mdTableToDocx(lines, D, ictx) {
   const { Table, TableRow, TableCell, Paragraph, WidthType, BorderStyle, AlignmentType } = D;
-  const { header, rows } = parsePipeTable(lines);
+  const { header, rows, align } = parsePipeTable(lines);
   const width = Math.max(header ? header.length : 0, ...rows.map((r) => r.length), 1);
   const pad = (cells) => { const c = cells.slice(); while (c.length < width) c.push(''); return c; };
   const border = { style: BorderStyle.SINGLE, size: 4, color: '999999' };
   const borders = { top: border, bottom: border, left: border, right: border, insideHorizontal: border, insideVertical: border };
-  const cell = (text, bold) => new TableCell({
+  const alignFor = (i) => {
+    const a = align && align[i];
+    if (a === 'center') return AlignmentType.CENTER;
+    if (a === 'right') return AlignmentType.RIGHT;
+    if (a === 'left') return AlignmentType.LEFT;
+    return undefined; // unmarked column → Word's default (left)
+  };
+  const cell = (text, bold, ci) => new TableCell({
     margins: { top: 40, bottom: 40, left: 80, right: 80 },
-    children: [new Paragraph({ children: parseInline(text === '' ? '—' : text, D, { bold, size: 18 }, ictx) })],
+    children: [new Paragraph({ alignment: alignFor(ci), children: parseInline(text === '' ? '—' : text, D, { bold, size: 18 }, ictx) })],
   });
   const trs = [];
-  if (header) trs.push(new TableRow({ tableHeader: true, children: pad(header).map((h) => cell(h, true)) }));
-  for (const r of rows) trs.push(new TableRow({ children: pad(r).map((v) => cell(v, false)) }));
+  if (header) trs.push(new TableRow({ tableHeader: true, children: pad(header).map((h, i) => cell(h, true, i)) }));
+  for (const r of rows) trs.push(new TableRow({ children: pad(r).map((v, i) => cell(v, false, i)) }));
   return new Table({ width: { size: 100, type: WidthType.PERCENTAGE }, borders, rows: trs, alignment: AlignmentType.CENTER });
 }
 
