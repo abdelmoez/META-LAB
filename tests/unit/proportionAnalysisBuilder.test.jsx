@@ -880,3 +880,42 @@ describe('reproducibility config carries the selection (107.md §12/§13)', () =
     expect(rich.proportionOverrides[KEY].at).toBe('2026-08-09T09:00:00.000Z');
   });
 });
+
+/* ── 116.md §49 (r2) — the two tiers are PER FIELD, so one outcome can carry a
+   BLOCKING issue on one variable and a WARNING on another at the same time. While
+   the block hides the result, the warning card must not tell the user the pool
+   proceeded. ── */
+describe('116.md §49 (r2) — warning copy never contradicts an active block', () => {
+  // denominatorPopulation: 2 real categories → BLOCKING.
+  // actionStatus: classified on one row, blank on the rest → WARNING.
+  const BLOCK_PLUS_WARN = [
+    prop({ id: '1', author: 'Smith', year: '2024', denominatorPopulation: 'all_patients_tested', actionStatus: 'implemented' }),
+    prop({ id: '2', author: 'Jones', year: '2023', es: '-0.20', lo: '-0.80', hi: '0.40', denominatorPopulation: 'all_patients_tested', actionStatus: '' }),
+    prop({ id: '3', author: 'Kim', year: '2021', es: '-0.60', lo: '-1.20', hi: '0.00', denominatorPopulation: 'plp_molecular_diagnoses', actionStatus: '' }),
+    prop({ id: '4', author: 'Lee', year: '2022', es: '-0.10', lo: '-0.70', hi: '0.50', denominatorPopulation: 'plp_molecular_diagnoses', actionStatus: '' }),
+  ];
+
+  it('the fixture really does produce a block and a warning together', () => {
+    const c = checkProportionCompatibility(BLOCK_PLUS_WARN);
+    expect(c.blocking).toBe(true);
+    expect(c.warning).toBe(true);
+  });
+
+  it('does not claim "the pool proceeds" while the result is hidden', () => {
+    const html = renderAnalysis(project(BLOCK_PLUS_WARN));
+    expect(html).toContain('Result hidden until you confirm');
+    expect(html).not.toContain('the pool proceeds');
+    expect(html).not.toContain('Pooled with unclassified estimates');
+    expect(html).toContain('they will pool once the incompatibility above is resolved');
+  });
+
+  it('still says the pool proceeds when nothing is blocking', () => {
+    const warnOnly = BLOCK_PLUS_WARN.map((s, i) => ({ ...s, denominatorPopulation: 'all_patients_tested', id: String(i + 1) }));
+    const c = checkProportionCompatibility(warnOnly);
+    expect(c.blocking).toBe(false);
+    expect(c.warning).toBe(true);
+    const html = renderAnalysis(project(warnOnly));
+    expect(html).toContain('the pool proceeds');
+    expect(html).toContain('Pooled with unclassified estimates');
+  });
+});

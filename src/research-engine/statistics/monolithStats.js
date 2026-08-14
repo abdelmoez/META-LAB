@@ -13,6 +13,8 @@ import { isDenominatorPopulationKey, isActionStatusKey } from "../extraction/pro
 import { isNonPrimary } from "../import-export/referenceParsers.js";
 // RoadMap/2.md — opt-in τ² estimators (DL stays the default; existing results unchanged).
 import { estimateTau2, TAU2_METHODS } from "./tau2.js";
+// 116.md §41 (r2) — shared row-eligibility rule (see poolableRow.js header).
+import { derivesPropEffect } from "./poolableRow.js";
 export { estimateTau2, TAU2_METHODS, TAU2_LABELS } from "./tau2.js";
 
 /* P13 — meta-regression + bubble plots. Re-exported from the pure engine so the
@@ -46,12 +48,11 @@ export function normalCDF(z) {
        Complete-time backfill as their only bridge. */
 export function poolableStudyView(s){
   if(!s) return s;
-  // hasEffectSize (deriveEffectSize.js), verbatim: a stored numeric es wins.
-  if(s.es!==""&&s.es!==null&&s.es!==undefined&&!isNaN(+s.es)) return s;
-  if(s.esType!=="PROP") return s;
-  const ev=s.events, tot=s.total;
-  if(ev===""||ev===null||ev===undefined||tot===""||tot===null||tot===undefined) return s;
-  const r=calcES("PROP",{events:ev,total:tot});   // rejects total<1, events<0, events>total
+  // 116.md §41 (r2) — the eligibility rule lives in poolableRow.js so the light
+  // server-side progress model can count the same rows without importing this
+  // engine. A stored numeric es still wins (hasEffectSize, deriveEffectSize.js).
+  if(!derivesPropEffect(s)) return s;
+  const r=calcES("PROP",{events:s.events,total:s.total});
   if(!r||isNaN(+r.es)||isNaN(+r.lo)||isNaN(+r.hi)) return s;
   const fx=(n)=>String(+Number(n).toFixed(6));    // deriveEffectSizeFromRaw's rounding, verbatim
   return {...s,es:fx(r.es),lo:fx(r.lo),hi:fx(r.hi),_derivedEs:true};

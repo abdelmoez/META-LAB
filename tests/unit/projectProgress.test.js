@@ -389,3 +389,52 @@ describe('computeProjectProgress — search reads the real strategy, not the sta
     expect(out.steps.find((s) => s.id === 'search').status).toBe('partial');
   });
 });
+
+/* ── 116.md §41/§46 (r2) — the rail must agree with what Analysis actually pools ──
+   Raw proportion rows (events/total, no stored es) are derived at the analysis
+   boundary by `poolableStudyView`, so runMeta pools them. Before this fix the
+   progress counts saw only STORED es/lo/hi, so a project of raw proportion rows
+   pooled in Analysis while the rail reported "0/N studies have an effect size"
+   and left Analysis/Forest/Sensitivity empty. */
+describe('computeProjectProgress — raw proportion rows count as poolable (116.md §41 r2)', () => {
+  const rawProp = (n = 3) =>
+    Array.from({ length: n }, (_, i) => ({
+      esType: 'PROP', events: String(10 + i), total: '100', es: '', lo: '', hi: '',
+    }));
+
+  it('counts raw events/total proportion rows as having an effect size and as poolable', () => {
+    const out = computeProjectProgress({ pico: {}, studies: rawProp(3) }, {}, {});
+    const step = (id) => out.steps.find((s) => s.id === id).status;
+    expect(step('extraction')).toBe('done');
+    expect(step('analysis')).toBe('done');
+    expect(step('forest')).toBe('done');
+    expect(step('sensitivity')).toBe('done');
+  });
+
+  it('agrees with runMeta: the rail is not empty for exactly the rows the engine pools', async () => {
+    const { runMeta } = await import('../../src/research-engine/statistics/monolithStats.js');
+    const studies = rawProp(3);
+    expect(runMeta(studies, 'random').k).toBe(3);
+    const out = computeProjectProgress({ pico: {}, studies }, {}, {});
+    expect(out.steps.find((s) => s.id === 'analysis').status).not.toBe('empty');
+  });
+
+  it('does NOT count proportion rows whose raw data cannot yield an estimate', () => {
+    const bad = [
+      { esType: 'PROP', events: '5', total: '', es: '', lo: '', hi: '' },   // no denominator
+      { esType: 'PROP', events: '120', total: '100', es: '', lo: '', hi: '' }, // events > total
+      { esType: 'PROP', events: '5', total: '0', es: '', lo: '', hi: '' },  // zero denominator
+    ];
+    const out = computeProjectProgress({ pico: {}, studies: bad }, {}, {});
+    expect(out.steps.find((s) => s.id === 'analysis').status).toBe('empty');
+  });
+
+  it('0-event and all-event rows still count (they take the continuity correction)', () => {
+    const edge = [
+      { esType: 'PROP', events: '0', total: '40', es: '', lo: '', hi: '' },
+      { esType: 'PROP', events: '40', total: '40', es: '', lo: '', hi: '' },
+    ];
+    const out = computeProjectProgress({ pico: {}, studies: edge }, {}, {});
+    expect(out.steps.find((s) => s.id === 'analysis').status).toBe('done');
+  });
+});

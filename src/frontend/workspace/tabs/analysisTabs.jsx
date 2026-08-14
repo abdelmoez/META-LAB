@@ -436,6 +436,10 @@ export function ProportionCompatibilityPanel({check,filters,override,stale,onSet
   const c=check||{applicable:false,blocking:false,infoOnly:false,issues:[]};
   const filterEntries=compact?[]:activeProportionFilters(filters);
   const honored=!!override&&!stale;
+  /* 116.md §49 (r2) — the two tiers are per-FIELD, so an outcome can carry a blocking
+     issue on one field and a warning on another at the same time. While the blocking
+     issue hides the result, the warning card must not claim the pool proceeded. */
+  const poolBlocked=!!c.blocking&&!honored;
   if(!c.applicable&&!filterEntries.length&&!override) return null;
 
   return(<div style={{marginBottom:16,display:"flex",flexDirection:"column",gap:8}}>
@@ -532,7 +536,7 @@ export function ProportionCompatibilityPanel({check,filters,override,stale,onSet
       return(
         <div key={`warn-${issue.field}`} data-testid={`prop-warning-${issue.field}`}
           style={{background:"var(--t-yel-bg)",border:`1px solid ${themeAlpha(C.yel,'66')}`,borderLeft:`4px solid ${C.yel}`,borderRadius:8,padding:"12px 16px"}}>
-          <div style={{fontSize:12,fontWeight:700,color:C.yel,marginBottom:6}}>⚠ Pooled with unclassified estimates</div>
+          <div style={{fontSize:12,fontWeight:700,color:C.yel,marginBottom:6}}>{poolBlocked?"⚠ Unclassified estimates":"⚠ Pooled with unclassified estimates"}</div>
           <div style={{fontSize:12,color:C.txt,lineHeight:1.6}}>{headline}</div>
           <ul style={{margin:"8px 0 6px",paddingLeft:20,fontSize:12,color:C.txt,lineHeight:1.7}}>
             {issue.values.map((v)=>(
@@ -543,8 +547,10 @@ export function ProportionCompatibilityPanel({check,filters,override,stale,onSet
             ))}
           </ul>
           <div style={{fontSize:11,color:C.muted,lineHeight:1.6}}>
-            {issue.unclassifiedCount} of {issue.totalAffected} pooled estimate{issue.totalAffected===1?"":"s"} {issue.unclassifiedCount===1?"is":"are"} not classified —
-            the pool proceeds, but confirm they estimate the same quantity. Classify them in Data Extraction, or filter to one group.
+            {issue.unclassifiedCount} of {issue.totalAffected} {poolBlocked?"eligible":"pooled"} estimate{issue.totalAffected===1?"":"s"} {issue.unclassifiedCount===1?"is":"are"} not classified —
+            {poolBlocked
+              ?" they will pool once the incompatibility above is resolved, so confirm they estimate the same quantity."
+              :" the pool proceeds, but confirm they estimate the same quantity."} Classify them in Data Extraction, or filter to one group.
           </div>
           {onSetFilter&&(
             <div style={{marginTop:10,display:"flex",gap:6,flexWrap:"wrap",alignItems:"center"}}>
@@ -1092,6 +1098,12 @@ export function AnalysisTab({project,updateProject,onApplyPrecisionToAll,current
           })()}
         </div>);
       })()}
+
+      {/* 116.md §57 — the conditional opener was missing, so its closing `)}` fell
+          through to the renderer as literal JSX text and printed ")}" under this
+          card. Restored (rather than deleting the brace) because `interpretResult`
+          returns null without a result, which this card dereferences. */}
+      {interp&&(
         <div style={{background:C.card,border:`1px solid ${themeAlpha(C.acc,'44')}`,borderLeft:`3px solid ${C.acc}`,borderRadius:8,padding:18}}>
           <div style={{fontSize:11,fontWeight:700,color:C.acc,letterSpacing:1,marginBottom:12}}>📖 PLAIN-LANGUAGE INTERPRETATION</div>
           <div style={{fontSize:13,color:C.txt,lineHeight:1.7}}>

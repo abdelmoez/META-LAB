@@ -25,6 +25,9 @@
  */
 import { timeframeComplete } from '../../features/protocol/constants.js';
 import { PRISMA_CL } from '../project-model/monolithConstants.js';
+// 116.md §41/§46 (r2) — the SAME row-eligibility rule the analysis boundary uses,
+// in a dependency-free module so this stays server-light. See poolableRow.js.
+import { rowHasEffect, rowIsPoolable } from '../statistics/poolableRow.js';
 
 /* The real reporting-checklist size (PRISMA 2020, currently 26 items). Deriving it
    from PRISMA_CL keeps the "done" threshold in lock-step with the actual ReportTab
@@ -61,18 +64,19 @@ const STATUS_WEIGHT = { done: 1, partial: 0.5, empty: 0 };
 const S = (status, reason) => (reason ? { status, reason } : { status });
 const nonEmpty = (v) => v != null && String(v).trim() !== '';
 
-/* Studies with a numeric effect size on the analysis scale. */
+/* Studies with an effect size on the analysis scale — stored, or derived at the
+   analysis boundary for a raw proportion row (116.md §41/§46 r2). */
 function countWithES(studies) {
-  return studies.filter((s) => s && s.es !== '' && s.es != null && !Number.isNaN(Number(s.es))).length;
+  return studies.filter((s) => rowHasEffect(s)).length;
 }
-/* Studies that are actually poolable: a numeric ES AND a CI (lo+hi). This is the
-   cheap server-derivable proxy for runMeta being runnable (recon §3), so the model
-   needs no heavy statistics engine on the request path. */
+/* Studies that are actually poolable: an ES AND a CI. Still the cheap
+   server-derivable proxy for runMeta being runnable (recon §3) — `poolableRow.js`
+   is dependency-free, so the model keeps needing no statistics engine on the
+   request path, while counting exactly the rows runMeta pools. Before 116.md r2
+   these predicates were inlined here and saw only STORED values, so a project of
+   raw proportion rows pooled in Analysis while the rail called it empty. */
 function countPoolable(studies) {
-  return studies.filter((s) => s
-    && s.es !== '' && s.es != null && !Number.isNaN(Number(s.es))
-    && s.lo !== '' && s.lo != null && !Number.isNaN(Number(s.lo))
-    && s.hi !== '' && s.hi != null && !Number.isNaN(Number(s.hi))).length;
+  return studies.filter((s) => rowIsPoolable(s)).length;
 }
 
 /* ── Per-step completion rules ─────────────────────────────────────────────
