@@ -390,6 +390,23 @@ failure snapshot is a stuck "Loading your workspace…" state. Also still failin
 baseline: `projects/public-synthesis.spec.ts` flag-gate against the stale pre-117 server
 (§J.1, already recorded in §K2).
 
+## K4. v4.24.1 addendum — the blocked e2e ran (dev server restarted)
+
+§J.1 is CLOSED: the dev server was restarted onto current code (user-authorized) and every
+previously-blocked spec executed. finalReviewUndo: **7/7** on its first full run (5 passed
+immediately; the §56 failure was a SPEC race — Ctrl+Z typed while the exclude dialog was
+still closing, which the 108.md chord gate correctly refuses; a control run proved the
+human path works, and the spec now waits for dialog-close + snackbar like a human would).
+public-synthesis flag-gate: the old spec asserted the flag-off 404 against the ADMIN
+caller, but `featureAccess` deliberately keeps globally-disabled features usable by admins
+(75.md Phase 7) — the spec now drives the gate with member users and pins the full
+caller×flag matrix (member 404, non-member 404 with the access-resolver message, admin 200
+override). The new /api/citation routes verified live (401 auth-gated). Four unit pins
+added for the modal/editable chord-refusal invariant the e2e wait depends on. Latent UX
+note, deliberately unchanged: the exclude dialog stays up through write + list reload +
+refreshProject, so the §55 undo snackbar is unreachable for that window — closing the
+dialog on write-success is a product decision left open.
+
 ## K. Recommended Follow-up Improvements
 
 1. Restart `npm run dev`, run the full e2e matrix (incl. webkit-pdf), fix what surfaces.

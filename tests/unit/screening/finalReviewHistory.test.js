@@ -30,6 +30,12 @@ import {
   finalizeAlreadyApplied, finalizeRequest,
   decisionPayload, previousDecision, decisionEntry, decisionPrecondition,
 } from '../../../src/frontend/screening/lib/screeningHistory.js';
+// 108.md §7/§24 — the two predicates that decide whether Ctrl+Z is even offered
+// while the exclude dialog is up. See the describe block at the bottom.
+import { historyShortcutAllowed } from '../../../src/research-engine/interaction/undoChords.js';
+import { isEditableTarget } from '../../../src/research-engine/interaction/editableTarget.js';
+import { MODAL_SELECTOR, SCREENING_MODAL_ATTR, isAnyModalOpen }
+  from '../../../src/research-engine/interaction/modalSignal.js';
 
 const FT = FULL_TEXT_STAGE;
 const rec = (over = {}) => ({ id: 'r1', currentStage: FT, finalStatus: '', rejectedReason: '', ...over });
@@ -419,6 +425,74 @@ describe('SecondReviewTab wiring (source pin)', () => {
     // …and the confirmation stops claiming Data Extraction is involved.
     expect(SRC).toContain('Reopen this final decision?');
     expect(SRC).toContain('clears the recorded');
+  });
+});
+
+/**
+ * 117.md §52 + 108.md §7/§24 — WHO OWNS THE KEYBOARD WHILE THE VERDICT IS IN FLIGHT.
+ *
+ * The exclude confirmation is a screening `Modal` with an autofocused reason
+ * textarea, and `submitReject` keeps it mounted until `runFinalize` has finished —
+ * the write, the silent list reload AND the project refresh. For that whole window
+ * Ctrl+Z is refused twice over: the keystroke's target is editable (§7 — native
+ * text undo wins while the user is in a field) and a dialog is open (§24 tier 1 — a
+ * modal owns the keyboard). The chord falls through untouched: no preventDefault, no
+ * history note, no request.
+ *
+ * That is correct, and it is exactly why nothing may press Ctrl+Z on the strength of
+ * an API read. The server commits `finalStatus:'rejected'` when the POST lands, which
+ * is BEFORE the client closes the dialog, so "the server says rejected" is not "the
+ * page can undo". A reviewer never meets the gap — they are not told the article was
+ * excluded until the dialog closes and the §55 snackbar appears — but a test polling
+ * the API is, and e2e/screening/finalReviewUndo.spec.ts waits for the dialog to go
+ * plus the snackbar to arrive because of it. These pins are what keep that wait
+ * meaningful: if the dialog ever stopped stamping the attribute, or started closing
+ * before the write settled, the e2e wait would silently become a different wait.
+ */
+describe('the exclude dialog owns the keyboard until the write settles (§24)', () => {
+  it('renders the confirmation inside the stamped screening Modal', () => {
+    const modalAt = SRC.indexOf('{rejectFor && (');
+    const confirmAt = SRC.indexOf('testId="final-review-exclude-confirm"', modalAt);
+    const closeAt = SRC.indexOf('</Modal>', modalAt);
+    expect(modalAt).toBeGreaterThan(-1);
+    expect(confirmAt).toBeGreaterThan(modalAt);
+    // …and the confirm button is INSIDE it, not a sibling that outlives it.
+    expect(closeAt).toBeGreaterThan(confirmAt);
+    expect(SRC).toMatch(/Loading,\s*ErrorBanner,\s*Button,\s*Badge,\s*DecisionChip,\s*Card,\s*EmptyState,\s*Modal,/);
+  });
+
+  it('autofocuses the reason box, so the §7 editable-target half is real too', () => {
+    const boxAt = SRC.indexOf('placeholder="e.g. Wrong population, no full text available, retracted…"');
+    expect(boxAt).toBeGreaterThan(-1);
+    expect(SRC.slice(boxAt, boxAt + 160)).toMatch(/autoFocus/);
+  });
+
+  it('closes the dialog only AFTER the whole write path resolves', () => {
+    const runAt = SRC.indexOf('const out = await runFinalize(rec.id, {\n      finalStatus: FINAL_STATUS.REJECTED,');
+    expect(runAt).toBeGreaterThan(-1);
+    const clearAt = SRC.indexOf('setRejectFor(null);', runAt);
+    expect(clearAt).toBeGreaterThan(runAt);
+    // runFinalize itself does not return until the reload and the refresh have landed.
+    expect(SRC).toMatch(/await load\(\{ silent: true \}\);\s*\n\s*if \(refreshProjectRef\.current\) await refreshProjectRef\.current\(\);/);
+  });
+
+  it('composes to a refused chord: a stamped dialog on screen ⇒ no history undo', () => {
+    // The attribute the Modal stamps is the one the router's selector looks for…
+    expect(MODAL_SELECTOR).toContain(`[${SCREENING_MODAL_ATTR}]`);
+    const withDialog = { querySelector: (sel) => (sel === MODAL_SELECTOR ? {} : null) };
+    const withoutDialog = { querySelector: () => null };
+    // …so the two halves compose exactly as ProjectInteractionProvider composes them.
+    expect(historyShortcutAllowed({
+      editableTarget: isEditableTarget({ tagName: 'TEXTAREA' }),
+      modalOpen: isAnyModalOpen(withDialog),
+    })).toBe(false);
+    // Either half alone is enough to refuse.
+    expect(historyShortcutAllowed({ editableTarget: false, modalOpen: isAnyModalOpen(withDialog) })).toBe(false);
+    // And once the dialog is gone and focus is back on the page body, it is allowed.
+    expect(historyShortcutAllowed({
+      editableTarget: isEditableTarget({ tagName: 'BODY' }),
+      modalOpen: isAnyModalOpen(withoutDialog),
+    })).toBe(true);
   });
 });
 

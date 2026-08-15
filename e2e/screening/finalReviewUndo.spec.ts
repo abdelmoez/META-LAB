@@ -116,6 +116,40 @@ const confirmReopen = (sift: ScreeningPage) => dialog(sift).getByTestId('final-r
 const voteButton = (sift: ScreeningPage, v: 'include' | 'exclude' | 'maybe') =>
   sift.main.getByTestId(`final-review-vote-${v}`);
 
+/**
+ * Exclude the open record and WAIT FOR THE CLIENT TO SETTLE — 117.md §55, 108.md §7/§24.
+ *
+ * THE RACE THIS EXISTS TO CLOSE. The exclude dialog does not close when the POST
+ * returns: `submitReject` → `runFinalize` awaits the write, THEN the silent list
+ * reload, THEN `refreshProject()`, and only then clears `rejectFor`. For those
+ * ~200-400 ms the dialog is still on screen with focus in its reason textarea. A
+ * Ctrl+Z issued in that window is REFUSED BY DESIGN and not by accident:
+ * `historyShortcutAllowed` (undoChords.js) declines on an editable target (§7 —
+ * native text undo wins while the user is typing) AND on an open modal (§24 tier 1
+ * — a dialog owns the keyboard), so the chord falls through with no preventDefault,
+ * no note and no request. Verified against the live app: at keypress time the DOM
+ * still carried `[data-screening-modal]` and `document.activeElement` was the
+ * dialog's TEXTAREA, and the identical Ctrl+Z pressed after the dialog closed drove
+ * a real POST /final-review/revert and returned the record to pending.
+ *
+ * A test that synchronises only on the SERVER (`expect.poll` over the API, which
+ * sees `finalStatus:'rejected'` the moment the POST commits — i.e. BEFORE the
+ * client is finished) therefore types the chord into a textarea and reads a
+ * correct no-op as a broken undo. A human never hits this: the exclusion is not
+ * announced to them until the dialog closes and the §55 snackbar appears, which is
+ * exactly the state this helper waits for.
+ */
+async function excludeRecord(sift: ScreeningPage, reason: string): Promise<void> {
+  await excludeButton(sift).click();
+  await reasonBox(sift).fill(reason);
+  await confirmExclude(sift).click();
+  // The dialog is gone → no modal owns the keyboard and focus has left the textarea.
+  await expect(dialog(sift)).toHaveCount(0);
+  // §55 — and the visible affordance the decision promises is on screen.
+  await expect(sift.snackbar).toContainText('Article excluded');
+  await expect(sift.snackbarUndo).toBeVisible();
+}
+
 test.describe('Final Review — exclude undo/redo (117.md §52-§56)', () => {
   test('@smoke Exclude → Ctrl+Z clears the status AND the reason → Ctrl+Shift+Z restores both', async ({
     page, request, seed, normalContext, screeningProject,
@@ -132,18 +166,14 @@ test.describe('Final Review — exclude undo/redo (117.md §52-§56)', () => {
     await expect(excludeButton(sift)).toBeVisible();
     await expect(sift.main.getByRole('button', { name: /^Exclude$/ })).toHaveCount(2);
 
-    await excludeButton(sift).click();
-    await reasonBox(sift).fill('Wrong population');
-    await confirmExclude(sift).click();
+    // §55 — the visible affordance names the article-level outcome (asserted inside
+    // the helper, which is also what makes the Ctrl+Z below land on a settled page).
+    await excludeRecord(sift, 'Wrong population');
 
     // §8 — a real mutation, reconciled with the server.
     await expect.poll(async () => (await finalRecord(request, screeningProject.siftId, rid)).finalStatus)
       .toBe('rejected');
     expect((await finalRecord(request, screeningProject.siftId, rid)).rejectedReason).toBe('Wrong population');
-
-    // §55 — the visible affordance names the article-level outcome.
-    await expect(sift.snackbar).toContainText('Article excluded');
-    await expect(sift.snackbarUndo).toBeVisible();
 
     await sift.undo();
     // §17 — the provider's own confirmation names the entry that was reversed.
@@ -169,10 +199,7 @@ test.describe('Final Review — exclude undo/redo (117.md §52-§56)', () => {
     const rid = await promoteOne(request, normalContext.request, screeningProject.siftId);
 
     const sift = await openFinalReview(page, screeningProject.project.id);
-    await excludeButton(sift).click();
-    await reasonBox(sift).fill('No full text');
-    await confirmExclude(sift).click();
-    await expect(sift.snackbar).toContainText('Article excluded');
+    await excludeRecord(sift, 'No full text');
 
     await sift.snackbarUndo.click();
     await expect.poll(async () => (await finalRecord(request, screeningProject.siftId, rid)).finalStatus)
@@ -187,9 +214,7 @@ test.describe('Final Review — exclude undo/redo (117.md §52-§56)', () => {
     const rid = await promoteOne(request, normalContext.request, screeningProject.siftId);
 
     const sift = await openFinalReview(page, screeningProject.project.id);
-    await excludeButton(sift).click();
-    await reasonBox(sift).fill('Retracted');
-    await confirmExclude(sift).click();
+    await excludeRecord(sift, 'Retracted');
     await expect.poll(async () => (await finalRecord(request, screeningProject.siftId, rid)).finalStatus)
       .toBe('rejected');
     await expect.poll(() => auditActions(request, screeningProject.siftId)).toContain('RECORD_REJECTED');
