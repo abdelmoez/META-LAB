@@ -266,6 +266,27 @@ that broke author-format idempotence for PubMed-form names).
 19. Reload can outrun the 800ms shell autosave debounce (unload-time fetch may be
     cancelled) — an immediate F5 after an edit can lose it; pre-existing shell seam.
 
+## K2. v4.23.0 addendum — limitations solved after the first push
+
+Commits `b2c7f5f` (references-117.1) + `e9ef34d` (forest-unification-117.1). Closed:
+**§J.3** (Open PDF is real — derived refs resolve their screening attachment through the
+existing listPdf endpoint, batched/cached/on-menu-open, opening the screening PdfViewer in
+a read-only modal), **§J.16** (merged-away references show "Merged into …" with an exact
+Unmerge — restore-resurrection is structurally unreachable; merges record their fills for
+byte-exact reversal), **§K.4** (Harvard year suffixes a/b/c… assigned in bibliography
+order, read back by every surface), **§K.6** (BroadcastChannel closes the same-user
+two-window gap through the same debounced refresh path as SSE), **§J.11/§K.7**
+(InteractiveForest + NMA mini-forest rebased onto computeForestLayout — the public page's
+unconditional null-at-0 bug is gone; PROP draws no null, AUC's sits at 0.5; clamp arrows +
+measure-aware axes for the first time; NMA GENERIC maps to GENERIC_LOG), **§K.2**
+(manuscriptEditor defaults ON on both sides of the drift gate; flag-OFF stays the
+supported kill-switch degrade. Existing installs keep their stored row — flip in
+Ops › Flags). Verification: unit 554 files / 10,905 tests green; manuscript e2e 20/20;
+meta-analysis e2e 5 passed/4 skipped; two pre-existing environmental e2e failures
+re-verified at baseline (public-synthesis flag-gate on the stale server; screening
+end-key flake passes isolated). New visible copy: both rebased renderers print the
+platform-standard `0.80 [0.64, 1.01]` effect cell (engine measures what it prints).
+
 ## K. Recommended Follow-up Improvements
 
 1. Restart `npm run dev`, run the full e2e matrix (incl. webkit-pdf), fix what surfaces.
