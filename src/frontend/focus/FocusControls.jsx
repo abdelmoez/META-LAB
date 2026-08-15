@@ -1,10 +1,14 @@
 /**
  * focus/FocusControls.jsx — 104.md Part 1, the visible surface of Focus Mode.
  *
- * Two components:
+ * Three components:
  *   FocusToggle  — the small icon that enters/leaves Focus Mode. Lives in the top
  *                  header beside the theme toggle, i.e. the SAME place on every
  *                  page, which is what "a consistent location" asks for.
+ *   FocusNavMenuButton — 117.md §43, the hamburger. Exported rather than inlined
+ *                  because BOTH focus bars need it and there is exactly one
+ *                  drawer: the workspace's FocusNavBar below and the shell's
+ *                  DefaultFocusBar (StitchAppShell) must not grow two.
  *   FocusNavBar  — the slim bar that replaces all page chrome while focused: exit,
  *                  where-you-are, and Previous/Next drawn from the shared workflow
  *                  sequence (never a second nav model).
@@ -21,7 +25,9 @@ import { StitchIconButton } from '../stitch/primitives/core.jsx';
 import { StitchTooltip } from '../stitch/primitives/overlay.jsx';
 import { Icon } from '../components/icons.jsx';
 import { S, salpha } from '../stitch/theme/stitchTokens.js';
-import { useFocusMode, useFocusAvailable, focusShortcutLabel } from './FocusModeContext.jsx';
+import {
+  useFocusMode, useFocusAvailable, useFocusNav, focusShortcutLabel,
+} from './FocusModeContext.jsx';
 import { stepTitle } from '../stitch/nav/workflowSequence.js';
 
 /* ════════════════════════ the toggle ════════════════════════ */
@@ -115,6 +121,62 @@ export function FocusToggle({ size = 'md', placement = 'bottom' }) {
   );
 }
 
+/* ════════════════════════ the hamburger (117.md §43) ════════════════════════ */
+
+/** The drawer's DOM id. One constant, referenced by the button's aria-controls
+ *  and by the panel itself, so the two can never drift apart. */
+export const FOCUS_NAV_DRAWER_ID = 'focus-nav-drawer';
+
+/**
+ * The hamburger's words, as a pure function of the one state it reports.
+ *
+ * Same reasoning as focusToggleCopy: the aria label is STABLE (it names the
+ * control, "Navigation", which is what a screen-reader user needs on every
+ * press), while the designed tooltip describes what the press will DO. Exported
+ * so both branches are pinned without hovering anything.
+ */
+export function focusNavMenuCopy(navOpen) {
+  return { aria: 'Navigation', tip: navOpen ? 'Hide menu' : 'Show menu' };
+}
+
+/**
+ * The three-line menu icon. Toggles the focus nav drawer the shell renders.
+ *
+ * The id it controls is the drawer's, which the shell mounts (empty) for the
+ * whole focused session precisely so this reference is never dangling — see
+ * StitchAppShell's FocusNavOverlay.
+ *
+ * `aria-expanded`, not `aria-pressed`: this is a disclosure control for a region
+ * that exists in the DOM, which is what expanded/collapsed means. StitchIconButton
+ * derives aria-pressed from `active`, so that one is suppressed explicitly here —
+ * `active` is carried for the visual state alone. Announcing both would tell a
+ * screen-reader user the button is "pressed" AND "expanded" for one fact.
+ */
+export function FocusNavMenuButton({ size = 'sm', placement = 'bottom' }) {
+  const { navOpen, navPinned, toggleNav } = useFocusNav();
+  const copy = focusNavMenuCopy(navOpen);
+  return (
+    <StitchTooltip label={copy.tip} placement={placement}>
+      <StitchIconButton
+        icon="menu"
+        label={copy.aria}
+        title={null}
+        size={size}
+        active={navOpen}
+        aria-pressed={undefined}
+        aria-expanded={navOpen}
+        aria-controls={FOCUS_NAV_DRAWER_ID}
+        onClick={toggleNav}
+        // Read by the drawer's outside-click dismissal, so the click that closes
+        // the drawer is not immediately followed by this button reopening it.
+        data-focus-nav-toggle="true"
+        data-nav-state={navPinned ? 'pinned' : navOpen ? 'open' : 'hidden'}
+        data-testid="focus-nav-menu"
+      />
+    </StitchTooltip>
+  );
+}
+
 /* ════════════════════════ the focus bar ════════════════════════ */
 
 /** Height of the focus bar, in px. Exported so layouts can do their height maths
@@ -173,11 +235,14 @@ function NavButton({ item, dir, onGo }) {
  *                  worth keeping — losing it is how people edit the wrong review).
  */
 export function FocusNavBar({ current, prev, next, onGo, projectName = '', stageLabel = '' }) {
-  const { exitFocus, enterFullscreen, isFullscreen } = useFocusMode();
+  const { exitFocus, enterFullscreen, isFullscreen, fullscreenPhase } = useFocusMode();
   const exitCopy = focusToggleCopy(true, isFullscreen);
   return (
     <div
       data-testid="focus-nav-bar"
+      // 117.md §45 — the phase, where a test (and a bug report) can read it.
+      // Absent at rest, so a transition that never finished is visible.
+      data-fullscreen-phase={fullscreenPhase !== 'normal' ? fullscreenPhase : undefined}
       style={{
         display: 'flex', alignItems: 'center', gap: 10,
         height: FOCUS_BAR_H, flexShrink: 0, padding: '0 14px',
@@ -186,6 +251,9 @@ export function FocusNavBar({ current, prev, next, onGo, projectName = '', stage
         position: 'sticky', top: 0, zIndex: 30,
       }}
     >
+      {/* 117.md §43 — the way back to the navigation, first in the bar because
+          that is where the navigation itself lives. */}
+      <FocusNavMenuButton size="sm" />
       <FocusToggle size="sm" />
 
       <div style={{

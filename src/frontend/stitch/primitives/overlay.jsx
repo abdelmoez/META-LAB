@@ -15,6 +15,9 @@ import { S, salpha } from '../theme/stitchTokens.js';
 // 108.md §24 — the neutral (design-system-free) modal marker every dialog family
 // stamps, so the shortcut router's tier-1 gate can see Stitch dialogs too.
 import { STITCH_MODAL_ATTR } from '../../../research-engine/interaction/modalSignal.js';
+// 117.md §44 — a dialog that eats an Escape must say so, because the browser
+// leaves fullscreen on that same press and Focus Mode has to tell the two apart.
+import { markOverlayEscape } from '../../focus/overlayEscapeLatch.js';
 
 /* ─── Focus trap helper ───────────────────────────────────────────────────── */
 function useFocusTrap(active, onClose) {
@@ -32,7 +35,16 @@ function useFocusTrap(active, onClose) {
     };
     const t = setTimeout(focusFirst, 0);
     const onKey = (e) => {
-      if (e.key === 'Escape') { e.stopPropagation(); onClose?.(); return; }
+      if (e.key === 'Escape') {
+        // 117.md §44 — CONSUMED here, so the fullscreenchange the browser fires
+        // for the very same press is understood as "a dialog closed", not as
+        // "the researcher left full screen". Without this mark, dismissing a
+        // modal while focused would eject the whole workspace layout.
+        markOverlayEscape();
+        e.stopPropagation();
+        onClose?.();
+        return;
+      }
       if (e.key !== 'Tab') return;
       const f = Array.from(node?.querySelectorAll(sel) || []).filter((el) => el.offsetParent !== null);
       if (!f.length) return;

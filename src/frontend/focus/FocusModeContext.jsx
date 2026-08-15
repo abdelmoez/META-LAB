@@ -18,15 +18,36 @@
  * That is the honest reading of "persist while navigating during the same
  * session … not necessarily forever between separate sessions".
  *
- * The provider renders NOTHING. Chrome components subscribe and hide themselves;
- * the workspace body is untouched, which is what keeps the transition free of
- * remounts (§"do not recreate expensive components unnecessarily").
+ * The provider renders NOTHING but its two contexts. Chrome components subscribe
+ * and hide themselves; the workspace body is untouched, which is what keeps the
+ * transition free of remounts (§"do not recreate expensive components
+ * unnecessarily").
+ *
+ * 117.md adds three things to the same state, none of which is a new source of
+ * truth:
+ *   §44  an external fullscreen exit now returns the NORMAL layout (see
+ *        resolveExternalFullscreenExit — this reverses 114-r2 §2 deliberately),
+ *        except when an app overlay just consumed the Escape that caused it.
+ *   §45  `fullscreenPhase` — a named view over the bridge's wanted/pending/owned
+ *        triple, for labels and diagnostics. Derived, never stored.
+ *   §42/§43 the focus nav drawer's tri-state (hidden/open/pinned), because the
+ *        edge reveal, the hamburger and the pin are three doors into ONE drawer
+ *        and live in two different trees (the shell renders it, the focus bars
+ *        toggle it).
  */
 import {
-  createContext, useContext, useState, useCallback, useEffect, useMemo, useRef,
+  createContext, useContext, useState, useCallback, useEffect, useMemo, useRef, useReducer,
 } from 'react';
+import { overlayEscapeRecent, clearOverlayEscape } from './overlayEscapeLatch.js';
 
 const KEY = 'pecanrev.focusMode';
+// 117.md §43 — the focus nav drawer's pin. sessionStorage, and for exactly the
+// reasons the mode itself uses it (see the header): a preference that survives
+// navigation and a mid-session reload, but never quietly outlives the tab.
+// Deliberately NOT the server-backed `useSidebarPin`: that one is the project
+// rail's own pin, a different control on a different surface, and folding the
+// two would make pinning the focus drawer silently change the normal layout.
+const NAV_PIN_KEY = 'pecanrev.focusNav.pinned';
 
 const FocusModeContext = createContext(null);
 
@@ -66,6 +87,23 @@ function writeStored(on) {
     if (on) sessionStorage.setItem(KEY, '1');
     else sessionStorage.removeItem(KEY);
   } catch { /* storage is a convenience here, never a requirement */ }
+}
+
+function readNavPinned() {
+  try {
+    if (typeof sessionStorage === 'undefined') return false;
+    return sessionStorage.getItem(NAV_PIN_KEY) === '1';
+  } catch {
+    return false;
+  }
+}
+
+function writeNavPinned(on) {
+  try {
+    if (typeof sessionStorage === 'undefined') return;
+    if (on) sessionStorage.setItem(NAV_PIN_KEY, '1');
+    else sessionStorage.removeItem(NAV_PIN_KEY);
+  } catch { /* same contract as the mode flag: convenience, never a requirement */ }
 }
 
 /**
@@ -292,8 +330,161 @@ export function createFullscreenBridge(doc) {
   };
 
   return {
-    enter, leave, attach, element, isOwned: () => owned, isWanted: () => wanted,
+    enter,
+    leave,
+    attach,
+    element,
+    isOwned: () => owned,
+    isWanted: () => wanted,
+    // 117.md §45 — the third fact, read-only. The phase view needs it to tell
+    // "a request is in flight" (entering) apart from "our fullscreen ended and
+    // the intent has not been cleared yet" (windowed focus): both have
+    // wanted=true, owned=false, and only `pending` separates them.
+    isPending: () => pending,
   };
+}
+
+/* ═══════════════ 117.md §45 — the phase view ═══════════════ */
+
+/** The bridge's three facts at rest. One frozen object, so "nothing happened"
+ *  is identity-stable and never costs a render. */
+const FS_VIEW_IDLE = Object.freeze({ wanted: false, pending: false, owned: false });
+
+/**
+ * The four states 117.md §45 names, DERIVED from the booleans that already exist.
+ *
+ * Deliberately a named view and not a rewrite: the wanted/pending/owned triple in
+ * createFullscreenBridge is battle-tested (114-r2 found a real bug for every pair
+ * that used to be conflated), and replacing it with a state machine would trade
+ * proven code for a nicer diagram. What §45 actually asks for is that the app can
+ * SAY which state it is in — for labels, for diagnostics, and so a stale phase is
+ * something a test can catch. So this is one pure function over the same facts.
+ *
+ *   normal      nothing of ours is fullscreen and nothing is on its way there.
+ *               Includes focused-but-windowed (a reload, a refusal, an external
+ *               exit that degraded): Focus Mode is a LAYOUT, this is about the
+ *               browser.
+ *   entering    a request is in flight and we still want it.
+ *   fullscreen  we have observed our own element in fullscreen.
+ *   exiting     the intent is gone but the browser has not caught up — either a
+ *               grant still landing that will be undone on arrival (114-r2 §1),
+ *               or an exit we asked for that has not been observed yet.
+ *
+ * `focus` participates because leaving Focus Mode drops the claim even in the
+ * frames before the bridge's own bookkeeping settles.
+ */
+export function deriveFullscreenPhase(state) {
+  const s = state || {};
+  const want = !!s.wanted && !!s.focus;
+  if (s.owned) return want ? 'fullscreen' : 'exiting';
+  if (s.pending) return want ? 'entering' : 'exiting';
+  return 'normal';
+}
+
+/* ═══════════════ 117.md §44 — what an external exit means ═══════════════ */
+
+/**
+ * OUR fullscreen just ended without us asking. What should happen to Focus Mode?
+ *
+ * 117.md §44 reverses 114-r2 §2 at the product level: the default is now a FULL
+ * exit — "PecanRev must return to the normal application layout … no stale
+ * fullscreen class/state should remain". A window with no browser chrome to
+ * speak of and no application navigation either is precisely the inconsistent
+ * state the prompt is complaining about.
+ *
+ * The single exception is the case 114-r2 §2 was actually protecting: an Escape
+ * that an app overlay consumed. The browser exits fullscreen on Escape whatever
+ * the page does with the event, so closing a modal or the focus nav drawer is
+ * indistinguishable from a deliberate exit unless the overlay says so — which is
+ * what overlayEscapeLatch is for. There we keep the old behaviour: the layout
+ * stays, the fullscreen claim is dropped, and the focus bar offers the way back
+ * up. Dismissing a dialog must never eject the workspace.
+ *
+ * Pure and exported so both branches are pinned without a browser.
+ */
+export function resolveExternalFullscreenExit({ focus, escapeRecent } = {}) {
+  if (!focus) return 'ignore';                 // not focused ⇒ nothing to unwind
+  if (escapeRecent) return 'keep-windowed';    // the Escape belonged to an overlay
+  return 'exit-focus';
+}
+
+/* ═══════════════ 117.md §42/§43 — the focus nav drawer ═══════════════ */
+
+/**
+ * The tri-state 117.md §43 asks for — hidden / temporarily open / pinned open —
+ * as ONE reducer, so the edge reveal (§42), the hamburger (§43) and the pin
+ * cannot drift into three disagreeing notions of "open".
+ *
+ * `open` is the single truth: `pinned` never means open by itself, it means
+ * "auto-hide does not apply and the next focus session starts revealed". That
+ * keeps the state legal at all times (there is no pinned-but-closed limbo to
+ * render) and makes the persistence question trivial — only `pinned` is stored.
+ *
+ * Actions:
+ *   reveal   the edge dwell fired (§42). Idempotent.
+ *   hide     the pointer left and the auto-hide delay elapsed, or a click landed
+ *            outside. Respects the pin — that is the whole point of pinning.
+ *   toggle   the hamburger (§43). Closing an open drawer also unpins, because a
+ *            control that visibly does nothing is worse than one that unpins.
+ *   dismiss  an explicit close (the drawer's own ×, Escape). Same as toggle-off.
+ *   pin      the drawer header's pin control. Unpinning leaves it OPEN — the user
+ *            is looking at it; auto-hide takes over from there.
+ *   focus-on / focus-off  entering and leaving Focus Mode. The drawer belongs to
+ *            the focused layout, so it closes with it; the PIN survives, which is
+ *            what makes persisting it worth anything.
+ */
+export function focusNavReducer(state, action) {
+  const open = !!state.open;
+  const pinned = !!state.pinned;
+  switch (action) {
+    case 'reveal':
+      return open ? state : { open: true, pinned };
+    case 'hide':
+      return pinned || !open ? state : { open: false, pinned };
+    case 'toggle':
+    case 'dismiss':
+      return open ? { open: false, pinned: false } : { open: true, pinned };
+    case 'pin':
+      return pinned ? { open: true, pinned: false } : { open: true, pinned: true };
+    case 'focus-on':
+      return open === pinned ? state : { open: pinned, pinned };
+    case 'focus-off':
+      return open ? { open: false, pinned } : state;
+    default:
+      return state;
+  }
+}
+
+/** The label form of the same state, for `data-state` and for tests. */
+export function focusNavState(state) {
+  if (!state || !state.open) return 'hidden';
+  return state.pinned ? 'pinned' : 'open';
+}
+
+const FocusNavContext = createContext(null);
+
+const NAV_OFF = {
+  navOpen: false,
+  navPinned: false,
+  navState: 'hidden',
+  revealNav: () => {},
+  hideNav: () => {},
+  toggleNav: () => {},
+  dismissNav: () => {},
+  toggleNavPin: () => {},
+};
+
+/**
+ * The focus nav drawer's state, shared by the shell (which renders the drawer and
+ * the edge zone) and the focus bars (which render the hamburger).
+ *
+ * A SECOND context rather than a field on the focus value: the drawer opens and
+ * closes on hover, and folding it into the main value would re-render every
+ * FocusToggle in the app on every reveal. Safe outside the provider — a bar
+ * rendered in isolation gets an inert shape instead of a crash.
+ */
+export function useFocusNav() {
+  return useContext(FocusNavContext) || NAV_OFF;
 }
 
 export function FocusModeProvider({ children, initial = null }) {
@@ -303,7 +494,13 @@ export function FocusModeProvider({ children, initial = null }) {
   // aimed at an overlay. Exposing the observed fullscreen state separately is
   // what lets the controls describe the state the user is actually in instead of
   // promising to "leave full screen" from a windowed page (114-r2 §5).
-  const [isFullscreen, setIsFullscreen] = useState(false);
+  //
+  // 117.md §45 — ONE mirror of the bridge's three facts, not three states. The
+  // bridge stays the authority; this is the render-time copy the phase view and
+  // `isFullscreen` are both read from, so the two can never disagree.
+  const [fsView, setFsView] = useState(FS_VIEW_IDLE);
+  // 117.md §42/§43 — the focus nav drawer's tri-state, in one reducer.
+  const [nav, dispatchNav] = useReducer(focusNavReducer, null, () => ({ open: false, pinned: readNavPinned() }));
   // Ref-count of mounted focusable surfaces. Used ONLY to decide whether the
   // keyboard shortcut should claim its combination — a DOM-time question, so an
   // effect is the right tool. Whether the BUTTON renders is answered synchronously
@@ -324,9 +521,22 @@ export function FocusModeProvider({ children, initial = null }) {
   // state after a sessionStorage restore: a restore must not move focus.
   const changedAtRef = useRef(0);
 
-  /** Mirror the bridge's observed ownership into render state. Idempotent. */
+  /**
+   * Mirror the bridge's three facts into render state. Idempotent, and identity-
+   * stable when nothing moved: the fullscreen lifecycle fires several events per
+   * transition (change, settle, error) and each one must not cost a render of
+   * every Focus Mode consumer in the app.
+   */
   const syncFullscreen = useCallback(() => {
-    setIsFullscreen(!!(fsRef.current && fsRef.current.isOwned()));
+    const b = fsRef.current;
+    const next = b
+      ? { wanted: b.isWanted(), pending: b.isPending(), owned: b.isOwned() }
+      : FS_VIEW_IDLE;
+    setFsView((prev) => (
+      prev.wanted === next.wanted && prev.pending === next.pending && prev.owned === next.owned
+        ? prev
+        : next
+    ));
   }, []);
 
   const setFocus = useCallback((on) => {
@@ -350,6 +560,10 @@ export function FocusModeProvider({ children, initial = null }) {
     // an honest one. The focus bar's "Enter full screen" button (which only
     // appears in exactly that windowed state) is the way back up.
     const settled = next ? fsRef.current.enter() : fsRef.current.leave();
+    // 117.md §45 — sync IMMEDIATELY as well as on settle, or the in-flight phase
+    // ('entering', and the disowned-grant 'exiting') would never reach a render:
+    // the request promise stays pending for exactly as long as that state lasts.
+    syncFullscreen();
     settled.then(syncFullscreen, syncFullscreen);
   }, [syncFullscreen]);
 
@@ -364,8 +578,30 @@ export function FocusModeProvider({ children, initial = null }) {
    */
   const enterFullscreen = useCallback(() => {
     if (!focusRef.current) { setFocus(true); return; }
-    fsRef.current.enter().then(syncFullscreen, syncFullscreen);
+    const settled = fsRef.current.enter();
+    syncFullscreen();
+    settled.then(syncFullscreen, syncFullscreen);
   }, [setFocus, syncFullscreen]);
+
+  /**
+   * 117.md §44 — OUR fullscreen ended and we did not ask for it.
+   *
+   * The policy lives in `resolveExternalFullscreenExit` (pure, both branches
+   * pinned); this is only the wiring. `syncFullscreen` has already run as the
+   * change listener's onChange, so the controls have stopped claiming a full
+   * screen either way — the decision here is purely about the LAYOUT.
+   */
+  const onExternalFullscreenEnd = useCallback(() => {
+    const action = resolveExternalFullscreenExit({
+      focus: focusRef.current,
+      escapeRecent: overlayEscapeRecent(),
+    });
+    // The mark explains exactly ONE exit — the one the overlay's own Escape
+    // caused. Spending it here keeps a second, unrelated end inside the same
+    // half-second from also being excused.
+    if (action === 'keep-windowed') clearOverlayEscape();
+    if (action === 'exit-focus') exitFocus();
+  }, [exitFocus]);
 
   /** A focusable shell registers on mount so the shortcut knows it has a target. */
   const registerSurface = useCallback(() => {
@@ -405,24 +641,22 @@ export function FocusModeProvider({ children, initial = null }) {
     };
     window.addEventListener('keydown', onKey);
     // Browser-Escape, F11 and OS-level exits end fullscreen without ever touching
-    // our state. 114.md §1 says the UI must not remain in a false full-screen
-    // state — and that is ALL it says. It does NOT say the layout must collapse.
+    // our state.
     //
-    // 114-r2 §2: it must not. Escape inside fullscreen is not interceptable — the
-    // browser exits whatever the page does with the event — so a researcher
-    // dismissing a modal or an autocomplete produces exactly this event. Tearing
-    // the whole focus layout down there ejected them from a mode they never asked
-    // to leave. So we degrade to the documented focused-but-windowed state: the
-    // false fullscreen claim is dropped (syncFullscreen re-reads the bridge, the
-    // exit copy stops promising to leave a full screen we are not in), and no
-    // layout state changes. Plain Escape still exits Focus Mode entirely through
-    // the window keydown handler above, which is idempotent alongside this one.
-    const detachFullscreen = fsRef.current.attach(syncFullscreen, syncFullscreen);
+    // 117.md §44 — this now returns the app to the NORMAL layout, reversing
+    // 114-r2 §2 on purpose: "PecanRev must return to the normal application
+    // layout … no stale fullscreen class/state should remain". A window that has
+    // lost the browser chrome AND still hides the navigation is the inconsistent
+    // state the prompt is about. The one case 114-r2 §2 was really protecting —
+    // an Escape an overlay consumed, which the browser turns into this same event
+    // — keeps the old degrade-to-windowed behaviour, via overlayEscapeLatch.
+    // See resolveExternalFullscreenExit for the full argument.
+    const detachFullscreen = fsRef.current.attach(onExternalFullscreenEnd, syncFullscreen);
     return () => {
       window.removeEventListener('keydown', onKey);
       detachFullscreen();
     };
-  }, [toggleFocus, exitFocus, syncFullscreen]);
+  }, [toggleFocus, exitFocus, syncFullscreen, onExternalFullscreenEnd]);
 
   // A body-level attribute lets CSS respond (e.g. reclaiming the shell's padding)
   // without threading the flag through every stylesheet.
@@ -434,15 +668,59 @@ export function FocusModeProvider({ children, initial = null }) {
     return () => el.removeAttribute('data-focus-mode');
   }, [focus]);
 
+  const phase = deriveFullscreenPhase({ focus, ...fsView });
+
+  // 117.md §45 — the phase, where a human (and a test) can see it. Present ONLY
+  // while something is actually happening: 'normal' removes the attribute, so a
+  // stale phase left behind by a failed transition is visible as a bug rather
+  // than hiding inside a boolean.
+  useEffect(() => {
+    if (typeof document === 'undefined' || !document.documentElement) return undefined;
+    const el = document.documentElement;
+    if (phase === 'normal') el.removeAttribute('data-fullscreen-phase');
+    else el.setAttribute('data-fullscreen-phase', phase);
+    return () => el.removeAttribute('data-fullscreen-phase');
+  }, [phase]);
+
+  // The drawer belongs to the focused layout; the PIN outlives it (that is what
+  // makes persisting the pin worth anything — the next focus session opens the
+  // way the researcher left it).
+  useEffect(() => { dispatchNav(focus ? 'focus-on' : 'focus-off'); }, [focus]);
+  useEffect(() => { writeNavPinned(nav.pinned); }, [nav.pinned]);
+
+  const revealNav = useCallback(() => dispatchNav('reveal'), []);
+  const hideNav = useCallback(() => dispatchNav('hide'), []);
+  const toggleNav = useCallback(() => dispatchNav('toggle'), []);
+  const dismissNav = useCallback(() => dispatchNav('dismiss'), []);
+  const toggleNavPin = useCallback(() => dispatchNav('pin'), []);
+
   const value = useMemo(() => ({
-    focus, isFullscreen, setFocus, toggleFocus, exitFocus, enterFullscreen, registerSurface,
+    focus,
+    isFullscreen: fsView.owned,
+    fullscreenPhase: phase,
+    setFocus,
+    toggleFocus,
+    exitFocus,
+    enterFullscreen,
+    registerSurface,
     // Read through the memo rather than held as state: it changes exactly when
     // `focus` does, so the memo already recomputes at the right moment and the
     // provider avoids a second render for a value only an effect ever reads.
     focusChangedAt: changedAtRef.current,
-  }), [focus, isFullscreen, setFocus, toggleFocus, exitFocus, enterFullscreen, registerSurface]);
+  }), [focus, fsView.owned, phase, setFocus, toggleFocus, exitFocus, enterFullscreen, registerSurface]);
 
-  return <FocusModeContext.Provider value={value}>{children}</FocusModeContext.Provider>;
+  const navValue = useMemo(() => ({
+    navOpen: nav.open,
+    navPinned: nav.pinned,
+    navState: focusNavState(nav),
+    revealNav, hideNav, toggleNav, dismissNav, toggleNavPin,
+  }), [nav, revealNav, hideNav, toggleNav, dismissNav, toggleNavPin]);
+
+  return (
+    <FocusModeContext.Provider value={value}>
+      <FocusNavContext.Provider value={navValue}>{children}</FocusNavContext.Provider>
+    </FocusModeContext.Provider>
+  );
 }
 
 /**
@@ -461,6 +739,7 @@ const noop = () => {};
 const OFF = {
   focus: false,
   isFullscreen: false,
+  fullscreenPhase: 'normal',
   focusChangedAt: 0,
   setFocus: noop,
   toggleFocus: noop,

@@ -13,9 +13,15 @@ import StitchAppShell from '../../../src/frontend/stitch/shell/StitchAppShell.js
 import { AuthProvider } from '../../../src/frontend/context/AuthContext.jsx';
 import {
   FocusModeProvider, FocusSurface, isFocusToggleEvent, isTypingTarget,
-  createFullscreenBridge,
+  createFullscreenBridge, deriveFullscreenPhase, resolveExternalFullscreenExit,
+  focusNavReducer, focusNavState,
 } from '../../../src/frontend/focus/FocusModeContext.jsx';
-import { FocusToggle, FocusNavBar, focusToggleCopy } from '../../../src/frontend/focus/FocusControls.jsx';
+import {
+  markOverlayEscape, overlayEscapeRecent, clearOverlayEscape, OVERLAY_ESCAPE_GRACE_MS,
+} from '../../../src/frontend/focus/overlayEscapeLatch.js';
+import {
+  FocusToggle, FocusNavBar, focusToggleCopy, focusNavMenuCopy, FOCUS_NAV_DRAWER_ID, FOCUS_BAR_H,
+} from '../../../src/frontend/focus/FocusControls.jsx';
 import {
   buildWorkflowSequence, sequenceIndex, sequenceNeighbours, stepTitle,
 } from '../../../src/frontend/stitch/nav/workflowSequence.js';
@@ -591,5 +597,261 @@ describe('the fullscreen bridge', () => {
     expect(doc.documentElement.requestFullscreen).not.toHaveBeenCalled();
     expect(fs.isOwned()).toBe(false);
     expect(fs.element()).toBe(null);
+  });
+
+  it('117.md §45 — reports the in-flight fact the phase view needs', async () => {
+    // `pending` is what separates "a request is on its way" from "our fullscreen
+    // ended and the intent has not been cleared yet": both have wanted=true and
+    // owned=false, and the phase view would call the second one "entering"
+    // without this accessor.
+    const doc = fakeDoc({ defer: true });
+    const fs = createFullscreenBridge(doc);
+    fs.attach(() => {});
+    expect(fs.isPending()).toBe(false);
+
+    fs.enter();
+    expect(fs.isPending()).toBe(true);
+    expect(fs.isOwned()).toBe(false);
+
+    await doc.grant();
+    expect(fs.isPending()).toBe(false);
+    expect(fs.isOwned()).toBe(true);
+
+    // The external end that 114-r2 leaves wanted=true through.
+    doc.fullscreenElement = null;
+    doc.fire();
+    expect(fs.isOwned()).toBe(false);
+    expect(fs.isPending()).toBe(false);
+    expect(fs.isWanted()).toBe(true);
+  });
+});
+
+/* ═══════════════ 117.md §45 — the phase view ═══════════════ */
+
+describe('the fullscreen phase', () => {
+  const phase = (o) => deriveFullscreenPhase(o);
+
+  it('names the four states 117.md §45 asks for, from the facts that exist', () => {
+    expect(phase({ focus: false })).toBe('normal');
+    expect(phase({ focus: true, wanted: true, pending: true })).toBe('entering');
+    expect(phase({ focus: true, wanted: true, owned: true })).toBe('fullscreen');
+    // The intent is gone but the browser has not caught up: a grant still landing
+    // after a toggle-off (114-r2 §1), or an exit not yet observed.
+    expect(phase({ focus: true, wanted: false, pending: true })).toBe('exiting');
+    expect(phase({ focus: false, wanted: true, owned: true })).toBe('exiting');
+  });
+
+  it('calls focused-but-windowed NORMAL — the phase is about the browser, not the layout', () => {
+    // After a reload, a refusal, or an external exit that degraded: Focus Mode is
+    // on, nothing is fullscreen, nothing is on its way. Reporting anything else
+    // here is what would make a control lie about a full screen (114-r2 §5).
+    expect(phase({ focus: true, wanted: false, pending: false, owned: false })).toBe('normal');
+    // …including the bridge state an external exit actually leaves behind, where
+    // `wanted` is still true and only `pending` says the request is over.
+    expect(phase({ focus: true, wanted: true, pending: false, owned: false })).toBe('normal');
+  });
+
+  it('is total — every combination of the four booleans resolves', () => {
+    const named = ['normal', 'entering', 'fullscreen', 'exiting'];
+    for (let i = 0; i < 16; i += 1) {
+      const got = phase({
+        focus: !!(i & 1), wanted: !!(i & 2), pending: !!(i & 4), owned: !!(i & 8),
+      });
+      expect(named).toContain(got);
+    }
+    expect(deriveFullscreenPhase()).toBe('normal');   // and no state at all is a state
+  });
+});
+
+/* ═══════════════ 117.md §44 — the Escape contract ═══════════════ */
+
+describe('an overlay that eats an Escape says so', () => {
+  it('marks a window, and the window closes', () => {
+    clearOverlayEscape();
+    expect(overlayEscapeRecent(1000)).toBe(false);   // nothing has ever happened
+
+    markOverlayEscape(1000);
+    expect(overlayEscapeRecent(1000)).toBe(true);
+    expect(overlayEscapeRecent(1000 + OVERLAY_ESCAPE_GRACE_MS)).toBe(true);
+    expect(overlayEscapeRecent(1000 + OVERLAY_ESCAPE_GRACE_MS + 1)).toBe(false);
+  });
+
+  it('a clock that jumped backwards fails SAFE, not latched forever', () => {
+    clearOverlayEscape();
+    markOverlayEscape(10_000);
+    expect(overlayEscapeRecent(9_000)).toBe(false);
+    clearOverlayEscape();
+  });
+});
+
+describe('117.md §44 — what an external fullscreen exit does to Focus Mode', () => {
+  it('returns the NORMAL layout — the reversal of 114-r2 §2', () => {
+    // The prompt's complaint is precisely the old behaviour: browser fullscreen
+    // gone, application fullscreen still on. One press, one consistent state.
+    expect(resolveExternalFullscreenExit({ focus: true, escapeRecent: false })).toBe('exit-focus');
+  });
+
+  it('keeps the workspace when the Escape belonged to a dialog', () => {
+    // Escape inside fullscreen is not interceptable: closing a modal produces the
+    // same fullscreenchange as leaving. Ejecting the workspace because a dialog
+    // was dismissed is a worse bug than the one §44 fixes, so that press degrades
+    // to the documented windowed-focus state instead.
+    expect(resolveExternalFullscreenExit({ focus: true, escapeRecent: true })).toBe('keep-windowed');
+  });
+
+  it('has nothing to say when Focus Mode was never on (a video, F11 on a normal page)', () => {
+    expect(resolveExternalFullscreenExit({ focus: false, escapeRecent: false })).toBe('ignore');
+    expect(resolveExternalFullscreenExit({ focus: false, escapeRecent: true })).toBe('ignore');
+    expect(resolveExternalFullscreenExit()).toBe('ignore');
+  });
+});
+
+/* ═══════════════ 117.md §42/§43 — the focus nav drawer ═══════════════ */
+
+describe('the focus nav drawer state', () => {
+  const hidden = { open: false, pinned: false };
+  const open = { open: true, pinned: false };
+  const pinned = { open: true, pinned: true };
+
+  it('names its three states', () => {
+    expect(focusNavState(hidden)).toBe('hidden');
+    expect(focusNavState(open)).toBe('open');
+    expect(focusNavState(pinned)).toBe('pinned');
+    expect(focusNavState(null)).toBe('hidden');
+  });
+
+  it('§42 — the edge dwell reveals it, and the pointer leaving hides it again', () => {
+    expect(focusNavReducer(hidden, 'reveal')).toEqual(open);
+    expect(focusNavReducer(open, 'hide')).toEqual(hidden);
+    // Idempotent from both ends: the dwell can fire while it is already open, and
+    // the auto-hide timer can land after a click already closed it.
+    expect(focusNavReducer(open, 'reveal')).toBe(open);
+    expect(focusNavReducer(hidden, 'hide')).toBe(hidden);
+  });
+
+  it('§42 — a PINNED drawer ignores auto-hide; that is what pinning means', () => {
+    expect(focusNavReducer(pinned, 'hide')).toBe(pinned);
+  });
+
+  it('§43 — the hamburger toggles, and closing an open drawer also unpins', () => {
+    expect(focusNavReducer(hidden, 'toggle')).toEqual(open);
+    expect(focusNavReducer(open, 'toggle')).toEqual(hidden);
+    // Otherwise the hamburger would visibly do nothing on a pinned drawer, which
+    // is worse than unpinning something the user can pin again in one click.
+    expect(focusNavReducer(pinned, 'toggle')).toEqual(hidden);
+    expect(focusNavReducer(pinned, 'dismiss')).toEqual(hidden);
+  });
+
+  it('§43 — unpinning leaves it open; the user is looking at it', () => {
+    expect(focusNavReducer(open, 'pin')).toEqual(pinned);
+    expect(focusNavReducer(pinned, 'pin')).toEqual(open);
+    // Pinning from hidden opens it too — the control only exists inside the drawer
+    // today, but the state must be legal from anywhere.
+    expect(focusNavReducer(hidden, 'pin')).toEqual(pinned);
+  });
+
+  it('closes with Focus Mode but the PIN survives it', () => {
+    // Which is the entire point of persisting the pin: the next focus session
+    // starts the way the researcher left it, without re-hovering the edge.
+    expect(focusNavReducer(pinned, 'focus-off')).toEqual({ open: false, pinned: true });
+    expect(focusNavReducer(open, 'focus-off')).toEqual({ open: false, pinned: false });
+    expect(focusNavReducer({ open: false, pinned: true }, 'focus-on')).toEqual(pinned);
+    expect(focusNavReducer(hidden, 'focus-on')).toBe(hidden);
+  });
+
+  it('never invents a state for an action it does not know', () => {
+    expect(focusNavReducer(open, 'nonsense')).toBe(open);
+  });
+});
+
+describe('the hamburger (117.md §43)', () => {
+  it('names the control the same way every time, and the action honestly', () => {
+    expect(focusNavMenuCopy(false)).toEqual({ aria: 'Navigation', tip: 'Show menu' });
+    expect(focusNavMenuCopy(true)).toEqual({ aria: 'Navigation', tip: 'Hide menu' });
+  });
+
+  it('rides in the workspace focus bar, as a disclosure and not a pressed toggle', () => {
+    const seq = buildWorkflowSequence(CTX);
+    const i = sequenceIndex(seq, '?tab=pico');
+    const { prev, next } = sequenceNeighbours(seq, i);
+    const html = renderToStaticMarkup(
+      <FocusModeProvider initial>
+        <FocusSurface enabled>
+          <FocusNavBar current={seq[i]} prev={prev} next={next} onGo={() => {}} />
+        </FocusSurface>
+      </FocusModeProvider>,
+    );
+    expect(html).toContain('data-testid="focus-nav-menu"');
+    expect(html).toContain('aria-label="Navigation"');
+    // It controls a region that really exists in the DOM ⇒ expanded/collapsed.
+    expect(html).toContain('aria-expanded="false"');
+    expect(html).toContain(`aria-controls="${FOCUS_NAV_DRAWER_ID}"`);
+    // …and NOT aria-pressed, which would announce one fact twice. Scoped to this
+    // button: the exit toggle beside it legitimately reports a pressed state.
+    const end = html.indexOf('data-testid="focus-nav-menu"');
+    const menuButton = html.slice(html.lastIndexOf('<button', end), end);
+    expect(menuButton).toContain('aria-expanded="false"');
+    expect(menuButton).not.toContain('aria-pressed');
+  });
+});
+
+describe('the focus nav drawer in the shell', () => {
+  const props = {
+    focusable: true,
+    breadcrumb: 'Project / PICO & Question',
+    renderPrimaryRail: () => <nav data-testid="primary-rail">rail</nav>,
+    contextRail: <nav data-testid="the-submenu">stepper</nav>,
+    coordinatedNav: true,
+  };
+
+  it('§42/§43 — focused, the navigation is hidden but REACHABLE', () => {
+    const html = shell(props, true);
+    expect(html).toContain('data-testid="focus-edge-zone"');
+    expect(html).toContain('data-testid="focus-nav-drawer"');
+    expect(html).toContain(`id="${FOCUS_NAV_DRAWER_ID}"`);
+    expect(html).toContain('data-testid="focus-nav-menu"');
+    // Closed: translated off-screen AND visibility:hidden, so its links are out of
+    // the tab order rather than merely invisible.
+    expect(html).toContain('data-state="hidden"');
+    expect(html).toContain('translateX(-100%)');
+    expect(html).toContain('visibility:hidden');
+  });
+
+  it('sits BELOW the focus bar, so the hamburger it toggles is never buried', () => {
+    // In Focus Mode that bar is the only chrome there is: a full-height drawer
+    // would cover the hamburger, Previous/Next and the exit with the very panel
+    // they open. FOCUS_BAR_H is the one number both sides do their maths against.
+    const html = shell(props, true);
+    const at = html.indexOf('data-testid="focus-nav-drawer"');
+    const tag = html.slice(html.lastIndexOf('<aside', at), html.indexOf('>', at) + 1);
+    expect(tag).toContain(`top:${FOCUS_BAR_H}px`);
+    expect(tag).toContain('left:0');
+  });
+
+  it('mounts the drawer CONTENT only once it has been revealed', () => {
+    // The rails run live subscriptions — that is why Focus Mode unmounts them in
+    // the first place. A drawer nobody opened must not re-subscribe them.
+    const html = shell(props, true);
+    expect(html).not.toContain('primary-rail');
+    expect(html).not.toContain('the-submenu');
+    // The frame is there all the same, so aria-controls is never dangling and the
+    // pin/close controls exist for a keyboard user the moment it opens.
+    expect(html).toContain('Pin navigation open');
+    expect(html).toContain('Close navigation');
+  });
+
+  it('leaves the normal layout with no edge zone and no drawer at all', () => {
+    const html = shell(props, false);
+    expect(html).not.toContain('focus-edge-zone');
+    expect(html).not.toContain('focus-nav-drawer');
+    expect(html).not.toContain('focus-nav-menu');
+    // The responsive off-canvas nav is a DIFFERENT drawer and is untouched.
+    expect(html).toContain('stitch-drawer-toggle');
+  });
+
+  it('does not appear on a page that never opted into Focus Mode', () => {
+    const html = shell({ ...props, focusable: false }, true);
+    expect(html).not.toContain('focus-edge-zone');
+    expect(html).not.toContain('focus-nav-drawer');
   });
 });
