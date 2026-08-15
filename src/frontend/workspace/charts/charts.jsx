@@ -13,6 +13,10 @@ import { ES_TYPES } from "../../../research-engine/project-model/monolithConstan
 // (svgBuilders.js) and CSV/report export keep their own user-configurable
 // precision; chart ≠ export by construction.
 import { chartNum, chartES, chartI2, chartWeight, chartP, chartAxisTick } from "../../../research-engine/format/chartFormat.js";
+// 117.md §24 — a figure may carry its OWN decimal precision, overriding the
+// project setting for this plot only. normalizePrecision is the single interpreter
+// of the stored object (116.md §29), so the override merges into it, never beside it.
+import { normalizePrecision } from "../../../research-engine/format/precision.js";
 // 116.md §22-§25 (D15) — ALL forest geometry now comes from ONE pure module that
 // the publication builder (svgBuilders.js) shares. This component is a SKIN: it
 // decides colours and fonts, never coordinates. See forestLayout.js's header for
@@ -20,11 +24,20 @@ import { chartNum, chartES, chartI2, chartWeight, chartP, chartAxisTick } from "
 // measure-aware ticks, explicit out-of-scale arrows, de-collided labels).
 import { computeForestLayout } from "../../../research-engine/charts/forestLayout.js";
 
-export function ForestPlot({result,esLabel="",nullLine=null,esType="",showCounts=true,showWeights=true,svgId="forestplot-svg",prec,live=false,theme="night",title="",favLow="",favHigh=""}){
+/**
+ * 117.md §23-§25 — every presentation prop below comes from ONE persisted record
+ * (`resolveForestFigure`), spread by the caller. This component decides colours
+ * and fonts; it never decides WHAT is shown and it never touches a value: the
+ * effect sizes, CIs and weights are rendered straight off `result` (116.md §124).
+ */
+export function ForestPlot({result,esLabel="",nullLine=null,esType="",showCounts=true,showWeights=true,showPI=true,svgId="forestplot-svg",prec,decimals=null,metrics=null,live=false,theme="night",title="",subtitle="",note="",favLow="",favHigh=""}){
   if(!result) return(<div style={{background:C.card,border:`1px solid ${C.brd}`,borderRadius:8,padding:40,textAlign:"center",color:C.muted}}>
     <div style={{fontSize:32,marginBottom:8}}>🌲</div>Enter effect sizes for at least 2 studies to generate a forest plot
   </div>);
   const{I2,Q,Qpval,tau2,k,pval}=result;
+  // 117.md §24 — the per-figure decimal override, resolved once. `null` ⇒ the
+  // project setting is used unchanged, so an unconfigured figure is untouched.
+  const P=decimals==null?prec:{...normalizePrecision(prec),decimals};
   // prompt19 / 56.md §10 — the LIVE on-screen plot follows the app theme TOKENS (C),
   // so it harmonizes with the legacy day/night themes AND the Stitch light/dark
   // themes (incl. a custom admin brand) exactly like the funnel plot — no fixed
@@ -40,19 +53,21 @@ export function ForestPlot({result,esLabel="",nullLine=null,esType="",showCounts
   const isLog=esType&&ES_TYPES[esType]&&ES_TYPES[esType].log;
   const isProp=esType==="PROP";
   const bt=x=>{ if(isLog)return Math.exp(x); if(isProp){const e=Math.exp(x);return e/(1+e);} return x; };
-  const fmtV=(x,pr)=>isProp?chartES(bt(x)*100,pr||prec)+"%":(isLog?chartES(bt(x),pr||prec):chartES(x,pr||prec));
+  const fmtV=(x,pr)=>isProp?chartES(bt(x)*100,pr||P)+"%":(isLog?chartES(bt(x),pr||P):chartES(x,pr||P));
   // 116.md §22 — the heterogeneity/model footer is handed to the layout engine as
   // TEXT so it can wrap it to the content width and size the canvas around it
   // (an unwrapped single line used to run past the right edge on a narrow plot).
-  const hetLine=`Heterogeneity: I² = ${chartI2(I2)}%  ·  τ² = ${chartNum(tau2,prec)}  ·  Q = ${chartNum(Q,prec)} (df = ${k-1}, p ${Qpval<0.001?"< 0.001":"= "+chartNum(Qpval,prec)})  ·  overall p ${pval<0.001?"< 0.001":"= "+chartNum(pval,prec)}`;
-  const modelLine=`Filled diamond: ${result.method==="fixed"?"common / fixed effect":"random effects"}${result.hksj?`  ·  HKSJ 95% CI: ${fmtV(result.hksj.lo,prec)} to ${fmtV(result.hksj.hi,prec)} (t-based)`:""}`;
+  const hetLine=`Heterogeneity: I² = ${chartI2(I2)}%  ·  τ² = ${chartNum(tau2,P)}  ·  Q = ${chartNum(Q,P)} (df = ${k-1}, p ${Qpval<0.001?"< 0.001":"= "+chartNum(Qpval,P)})  ·  overall p ${pval<0.001?"< 0.001":"= "+chartNum(pval,P)}`;
+  const modelLine=`Filled diamond: ${result.method==="fixed"?"common / fixed effect":"random effects"}${result.hksj?`  ·  HKSJ 95% CI: ${fmtV(result.hksj.lo,P)} to ${fmtV(result.hksj.hi,P)} (t-based)`:""}`;
   const L=computeForestLayout(result,{
-    variant:"live",esType,showCounts,showWeights,title,esLabel,favLow,favHigh,nullLine,
+    variant:"live",esType,showCounts,showWeights,showPI,title,subtitle,esLabel,favLow,favHigh,nullLine,metrics,
     // 116.md §22 — the layout builds the "ES [95% CI]" cells with THIS formatter, so
     // the string it measures (and sizes the effect column around) is the string drawn
     // below. A raw-unit mean difference no longer lands on top of the weight columns.
-    formatValue:v=>fmtV(v,prec),
-    footerTexts:[hetLine,modelLine],
+    formatValue:v=>fmtV(v,P),
+    // 117.md §24 — the reviewer's figure note is a THIRD footer line, wrapped and
+    // canvas-sized by the same engine (empty entries are dropped by the layout).
+    footerTexts:[hetLine,modelLine,note],
   });
   if(!L) return(<div style={{background:C.card,border:`1px solid ${C.brd}`,borderRadius:8,padding:40,textAlign:"center",color:C.muted}}>
     <div style={{fontSize:32,marginBottom:8}}>🌲</div>Enter effect sizes for at least 2 studies to generate a forest plot
@@ -60,6 +75,13 @@ export function ForestPlot({result,esLabel="",nullLine=null,esType="",showCounts
   const{columns:CO,rowsGeom:RG,ticks,rows,diamonds,pi,favours,axisLabel,footerLines}=L;
   const W=L.W,H=L.H;
   const colCounts=L.showCounts;
+  /* 117.md §24 — font scaling. The skin owns the ink sizes, so it multiplies its
+     OWN literals by the layout's resolved scale; the layout has already scaled the
+     same metrics for measurement, so the string it measured is still the string
+     printed here. At scale 1 every expression below evaluates to its historical
+     literal (fs(11) === 11), so an unconfigured figure renders byte-identically. */
+  const FS=Number(L.metrics.fontScale)||1;
+  const fs=(n)=>+(n*FS).toFixed(2);
   const tickText=v=>isLog?chartAxisTick(bt(v),{isLog:true}):(isProp?chartAxisTick(bt(v),{isProp:true}):chartAxisTick(v));
   /* 116.md §22 (c) — an interval end outside the visible domain gets an explicit
      truncation arrow (the journal convention); it is NEVER silently clamped onto
@@ -81,17 +103,21 @@ export function ForestPlot({result,esLabel="",nullLine=null,esType="",showCounts
       {L.title.lines.map((ln,i)=>(
         <text key={"t"+i} x={W/2} y={L.title.y+i*L.title.lead} textAnchor="middle" fontSize={L.title.size} fill={FC.txt} fontWeight={700}>{ln}</text>
       ))}
+      {/* 117.md §24 — the optional subtitle, its own smaller centred block. */}
+      {L.subtitle.lines.map((ln,i)=>(
+        <text key={"st"+i} x={W/2} y={L.subtitle.y+i*L.subtitle.lead} textAnchor="middle" fontSize={L.subtitle.size} fill={FC.muted}>{ln}</text>
+      ))}
       {/* Header row */}
-      <text x={CO.xName} y={RG.headBottom-6} fontSize={11} fill={FC.txt} fontWeight={700}>Study</text>
-      {colCounts&&<text x={CO.xExp} y={RG.headBottom-18} fontSize={9} fill={FC.dim} fontWeight={700}>Experimental</text>}
-      {colCounts&&<text x={CO.xExp} y={RG.headBottom-6} fontSize={9} fill={FC.dim}>events / total</text>}
-      {colCounts&&<text x={CO.xCtrl} y={RG.headBottom-18} fontSize={9} fill={FC.dim} fontWeight={700}>Control</text>}
-      {colCounts&&<text x={CO.xCtrl} y={RG.headBottom-6} fontSize={9} fill={FC.dim}>events / total</text>}
-      <text x={CO.xEff} y={RG.headBottom-6} fontSize={10} fill={FC.dim} fontWeight={700}>{isLog||isProp?"Effect [95% CI]":"ES [95% CI]"}</text>
-      {showWeights&&<text x={CO.xW} y={RG.headBottom-18} fontSize={9} fill={FC.dim} fontWeight={700}>Weight</text>}
-      {showWeights&&<text x={CO.xW} y={RG.headBottom-6} fontSize={9} fill={FC.dim}>(common)</text>}
-      {showWeights&&<text x={CO.xW2} y={RG.headBottom-18} fontSize={9} fill={FC.dim} fontWeight={700}>Weight</text>}
-      {showWeights&&<text x={CO.xW2} y={RG.headBottom-6} fontSize={9} fill={FC.dim}>(random)</text>}
+      <text x={CO.xName} y={RG.headBottom-6} fontSize={fs(11)} fill={FC.txt} fontWeight={700}>Study</text>
+      {colCounts&&<text x={CO.xExp} y={RG.headBottom-18} fontSize={fs(9)} fill={FC.dim} fontWeight={700}>Experimental</text>}
+      {colCounts&&<text x={CO.xExp} y={RG.headBottom-6} fontSize={fs(9)} fill={FC.dim}>events / total</text>}
+      {colCounts&&<text x={CO.xCtrl} y={RG.headBottom-18} fontSize={fs(9)} fill={FC.dim} fontWeight={700}>Control</text>}
+      {colCounts&&<text x={CO.xCtrl} y={RG.headBottom-6} fontSize={fs(9)} fill={FC.dim}>events / total</text>}
+      <text x={CO.xEff} y={RG.headBottom-6} fontSize={fs(10)} fill={FC.dim} fontWeight={700}>{isLog||isProp?"Effect [95% CI]":"ES [95% CI]"}</text>
+      {showWeights&&<text x={CO.xW} y={RG.headBottom-18} fontSize={fs(9)} fill={FC.dim} fontWeight={700}>Weight</text>}
+      {showWeights&&<text x={CO.xW} y={RG.headBottom-6} fontSize={fs(9)} fill={FC.dim}>(common)</text>}
+      {showWeights&&<text x={CO.xW2} y={RG.headBottom-18} fontSize={fs(9)} fill={FC.dim} fontWeight={700}>Weight</text>}
+      {showWeights&&<text x={CO.xW2} y={RG.headBottom-6} fontSize={fs(9)} fill={FC.dim}>(random)</text>}
       <line x1={CO.xName} y1={RG.headBottom} x2={W-6} y2={RG.headBottom} stroke={FC.brd}/>
       {/* grid + null line (the layout engine guarantees the null is INSIDE the domain) */}
       {ticks.map(t=><line key={"g"+t.v} x1={t.x} y1={RG.rowsTop} x2={t.x} y2={RG.bandBottom} stroke={t.isNull?nullGrid:FC.brd} strokeWidth={t.isNull?1.5:0.5} strokeDasharray={t.isNull?"none":"3,3"}/>)}
@@ -99,18 +125,18 @@ export function ForestPlot({result,esLabel="",nullLine=null,esType="",showCounts
       {rows.map((r)=>{
         const cy=r.markerY,sq=r.size;
         return(<g key={r.id}>
-          <text x={CO.xName} y={r.y} fontSize={11} fill={FC.txt}>{r.name}</text>
-          {colCounts&&<text x={CO.xExp} y={r.y} fontSize={10} fill={FC.muted}>{r.counts.exp}</text>}
-          {colCounts&&<text x={CO.xCtrl} y={r.y} fontSize={10} fill={FC.muted}>{r.counts.ctrl}</text>}
+          <text x={CO.xName} y={r.y} fontSize={fs(11)} fill={FC.txt}>{r.name}</text>
+          {colCounts&&<text x={CO.xExp} y={r.y} fontSize={fs(10)} fill={FC.muted}>{r.counts.exp}</text>}
+          {colCounts&&<text x={CO.xCtrl} y={r.y} fontSize={fs(10)} fill={FC.muted}>{r.counts.ctrl}</text>}
           <line x1={r.lo.x} y1={cy} x2={r.hi.x} y2={cy} stroke={FC.acc} strokeWidth={1.5}/>
           {endCap(r.lo,cy,FC.acc,"lo")}
           {endCap(r.hi,cy,FC.acc,"hi")}
           {r.es.clamped
             ? <polygon points={r.es.clamped<0?`${r.es.x},${cy} ${r.es.x+sq},${cy-sq/2} ${r.es.x+sq},${cy+sq/2}`:`${r.es.x},${cy} ${r.es.x-sq},${cy-sq/2} ${r.es.x-sq},${cy+sq/2}`} fill={FC.acc}/>
             : <rect x={r.es.x-sq/2} y={cy-sq/2} width={sq} height={sq} fill={FC.acc} rx={1}/>}
-          <text x={CO.xEff} y={r.y} fontSize={10} fill={FC.muted}>{r.esText}</text>
-          {showWeights&&<text x={CO.xW} y={r.y} fontSize={10} fill={FC.dim}>{chartWeight(r.weightFixedPct)}%</text>}
-          {showWeights&&<text x={CO.xW2} y={r.y} fontSize={10} fill={FC.dim}>{chartWeight(r.weightRandomPct)}%</text>}
+          <text x={CO.xEff} y={r.y} fontSize={fs(10)} fill={FC.muted}>{r.esText}</text>
+          {showWeights&&<text x={CO.xW} y={r.y} fontSize={fs(10)} fill={FC.dim}>{chartWeight(r.weightFixedPct)}%</text>}
+          {showWeights&&<text x={CO.xW2} y={r.y} fontSize={fs(10)} fill={FC.dim}>{chartWeight(r.weightRandomPct)}%</text>}
         </g>);
       })}
       <line x1={CO.xName} y1={RG.ySep} x2={W-6} y2={RG.ySep} stroke={FC.brd}/>
@@ -119,11 +145,11 @@ export function ForestPlot({result,esLabel="",nullLine=null,esType="",showCounts
           what the exported file will contain. */}
       {diamonds.map(d=>(
         <g key={d.key}>
-          <text x={CO.xName} y={d.y} fontSize={11} fill={d.strong?FC.grn:FC.muted} fontWeight={d.strong?700:400}>{d.label}</text>
+          <text x={CO.xName} y={d.y} fontSize={fs(11)} fill={d.strong?FC.grn:FC.muted} fontWeight={d.strong?700:400}>{d.label}</text>
           <polygon points={`${d.es.x},${d.markerY-d.height} ${d.hi.x},${d.markerY} ${d.es.x},${d.markerY+d.height} ${d.lo.x},${d.markerY}`}
             fill={d.strong?FC.grn:"none"} stroke={FC.grn} strokeWidth={1.1} opacity={d.strong?0.9:1}/>
-          <text x={CO.xEff} y={d.y} fontSize={10} fill={d.strong?FC.grn:FC.muted} fontWeight={d.strong?700:400}>{d.esText}</text>
-          {showWeights&&<text x={d.key==="fixed"?CO.xW:CO.xW2} y={d.y} fontSize={10} fill={d.strong?FC.grn:FC.dim}>100%</text>}
+          <text x={CO.xEff} y={d.y} fontSize={fs(10)} fill={d.strong?FC.grn:FC.muted} fontWeight={d.strong?700:400}>{d.esText}</text>
+          {showWeights&&<text x={d.key==="fixed"?CO.xW:CO.xW2} y={d.y} fontSize={fs(10)} fill={d.strong?FC.grn:FC.dim}>100%</text>}
         </g>
       ))}
       {/* 116.md §22 (c) — the prediction interval is an interval like any other: the
@@ -133,32 +159,32 @@ export function ForestPlot({result,esLabel="",nullLine=null,esType="",showCounts
           publication builder use. Drawing it flush to the edge with a plain dashed
           line is exactly the silent clamping this stage removed. */}
       {pi&&(<g>
-        <text x={CO.xName} y={pi.y} fontSize={9.5} fill={FC.dim} fontStyle="italic">{pi.label}</text>
+        <text x={CO.xName} y={pi.y} fontSize={fs(9.5)} fill={FC.dim} fontStyle="italic">{pi.label}</text>
         <line x1={pi.lo.x} y1={pi.markerY} x2={pi.hi.x} y2={pi.markerY} stroke={FC.dim} strokeWidth={1.4} strokeDasharray="4,2"/>
         {endCap(pi.lo,pi.markerY,FC.dim,"pilo")}
         {endCap(pi.hi,pi.markerY,FC.dim,"pihi")}
-        <text x={CO.xEff} y={pi.y} fontSize={9.5} fill={FC.dim} fontStyle="italic">{pi.esText}</text>
+        <text x={CO.xEff} y={pi.y} fontSize={fs(9.5)} fill={FC.dim} fontStyle="italic">{pi.esText}</text>
       </g>)}
       {/* x-axis: its own line below the diamond band, then de-collided ticks */}
       <line x1={CO.xPlot} y1={RG.axisY} x2={CO.xPlotEnd} y2={RG.axisY} stroke={FC.muted} strokeWidth={1}/>
       {ticks.map(t=>(<g key={"tk"+t.v}>
         <line x1={t.x} y1={RG.axisY} x2={t.x} y2={RG.axisY+4} stroke={FC.muted} strokeWidth={0.9}/>
-        <text x={t.x} y={RG.tickLabelY} textAnchor="middle" fontSize={10} fill={FC.muted}>{tickText(t.v)}</text>
+        <text x={t.x} y={RG.tickLabelY} textAnchor="middle" fontSize={fs(10)} fill={FC.muted}>{tickText(t.v)}</text>
       </g>))}
       {/* favours labels — 116.md §25: edge-anchored under the two axis halves, on
           their own row, ellipsised so they can never meet or leave the plot band. */}
       {favours.show&&(<g>
         {favTri(favours.low,FC.dim)}
-        <text x={favours.low.x} y={favours.y} textAnchor={favours.low.anchor} fontSize={9} fill={FC.dim}>{favours.low.text}</text>
+        <text x={favours.low.x} y={favours.y} textAnchor={favours.low.anchor} fontSize={fs(9)} fill={FC.dim}>{favours.low.text}</text>
         {favTri(favours.high,FC.dim)}
-        <text x={favours.high.x} y={favours.y} textAnchor={favours.high.anchor} fontSize={9} fill={FC.dim}>{favours.high.text}</text>
+        <text x={favours.high.x} y={favours.y} textAnchor={favours.high.anchor} fontSize={fs(9)} fill={FC.dim}>{favours.high.text}</text>
       </g>)}
       {/* effect-measure label — centered under the plot, on its own row */}
-      <text x={CO.xPlot+CO.plotW/2} y={RG.axisLabelY} textAnchor="middle" fontSize={11} fill={FC.txt} fontWeight={700}>{axisLabel}</text>
+      <text x={CO.xPlot+CO.plotW/2} y={RG.axisLabelY} textAnchor="middle" fontSize={fs(11)} fill={FC.txt} fontWeight={700}>{axisLabel}</text>
       {/* heterogeneity / model footer — prompt50 WS4: every number goes through the
           CHART formatter (bounded, edge-case safe, never `full`). */}
       {footerLines.map((ln,i)=>(
-        <text key={"f"+i} x={CO.xName} y={ln.y} fontSize={10} fill={FC.dim}>{ln.text}</text>
+        <text key={"f"+i} x={CO.xName} y={ln.y} fontSize={fs(10)} fill={FC.dim}>{ln.text}</text>
       ))}
     </svg>
   </div>);

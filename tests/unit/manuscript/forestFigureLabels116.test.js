@@ -37,7 +37,7 @@ vi.mock('../../../src/features/manuscript/export/figures.js', async (orig) => {
 });
 
 // Imported AFTER the mock so the exporters bind the fakes; forestSvg stays REAL.
-import { forestPng, forestSvg } from '../../../src/features/manuscript/export/figures.js';
+import { forestPng, forestSvg, FOREST_PRESENTATION_OPT_KEYS } from '../../../src/features/manuscript/export/figures.js';
 import { buildManuscriptDocx } from '../../../src/features/manuscript/export/manuscriptDocx.js';
 import { buildReproPackage } from '../../../src/features/manuscript/export/manuscriptRepro.js';
 
@@ -64,17 +64,25 @@ function project({ labels = LABELS } = {}) {
 const draft = () => normalizeDraft(makeManuscriptDraft({ title: 'T' }));
 
 describe('116.md §26/§32 — persisted figure labels ride on the analysis entry', () => {
+  /* 117.md §24/§81 — DELIBERATE RE-PIN: the entry now carries the whole PRESENTATION
+     record (subtitle/note/columns/decimals/bounded geometry), not just the three labels,
+     so a control a reviewer set on the Forest tab reaches the submitted Word file too. */
   it('primaryAnalysis and allAnalyses resolve them for their pair', () => {
     const p = project();
     expect(primaryAnalysis(p).figure).toEqual({
       esLabel: LABELS.esLabel, favLow: LABELS.favLow, favHigh: LABELS.favHigh,
+      subtitle: '', note: '', showCounts: true, showWeights: true, showPI: true,
+      decimals: null, metrics: {},
     });
     expect(allAnalyses(p)[0].figure).toEqual(primaryAnalysis(p).figure);
   });
 
   it('a project with no persisted labels resolves to empty strings, never an invented default', () => {
     const fig = primaryAnalysis(project({ labels: null })).figure;
-    expect(fig).toEqual({ esLabel: '', favLow: '', favHigh: '' });
+    expect(fig).toEqual({
+      esLabel: '', favLow: '', favHigh: '', subtitle: '', note: '',
+      showCounts: true, showWeights: true, showPI: true, decimals: null, metrics: {},
+    });
   });
 
   it('the FIGURE TITLE deliberately stays off the entry — Word numbers and captions the image', () => {
@@ -124,5 +132,71 @@ describe('116.md §26/§32 — every manuscript figure surface carries them', ()
     const svg = forestSvg(a.result, { esType: a.pair.esType, ...a.figure, title: a.pair.label });
     expect(svg).toContain(LABELS.esLabel);
     expect(svg).toContain(LABELS.favHigh);
+  });
+});
+
+/* ── 117.md §24/§81 — the PRESENTATION half of the same seam ─────────────────
+   The labels above were the first half of the D15 drift class; the controls a
+   reviewer sets on the Forest tab are the second. A hidden weight column, a
+   figure note or a per-figure decimal setting that stops at the Forest tab is
+   exactly the defect this file exists for, one field later. */
+
+const PRESENTATION = {
+  ...LABELS,
+  subtitle: 'Intention-to-treat population',
+  note: 'Two trials reported adjudicated events only.',
+  showWeights: false,
+  decimals: 2,
+  metrics: { plotW: 420 },
+};
+
+describe('117.md §24/§81 — the persisted presentation reaches the manuscript too', () => {
+  it('rides on the analysis entry beside the labels (still without the title)', () => {
+    const fig = primaryAnalysis(project({ labels: PRESENTATION })).figure;
+    expect(fig.subtitle).toBe(PRESENTATION.subtitle);
+    expect(fig.note).toBe(PRESENTATION.note);
+    expect(fig.showWeights).toBe(false);
+    expect(fig.decimals).toBe(2);
+    expect(fig.metrics).toEqual({ plotW: 420 });
+    expect('title' in fig).toBe(false);
+  });
+
+  it('the Word export forwards every one of them through the forestOpts whitelist', async () => {
+    forestPng.mockClear();
+    const d = draft();
+    d.sections.results.content = 'Effects are shown in [[figure:forest-primary]].';
+    await buildManuscriptDocx(project({ labels: PRESENTATION }), d, {});
+    expect(forestPng).toHaveBeenCalled();
+    const opts = forestPng.mock.calls[0][1];
+    expect(opts.subtitle).toBe(PRESENTATION.subtitle);
+    expect(opts.note).toBe(PRESENTATION.note);
+    expect(opts.showWeights).toBe(false);
+    expect(opts.decimals).toBe(2);
+    expect(opts.metrics).toEqual({ plotW: 420 });
+    // the title still belongs to Word's own caption, not to the image
+    expect(opts.title).toBe('');
+  });
+
+  it('the whitelist is not a second opinion — it admits exactly what the resolver emits', () => {
+    Object.keys(primaryAnalysis(project({ labels: PRESENTATION })).figure).forEach((k) => {
+      expect(FOREST_PRESENTATION_OPT_KEYS).toContain(k);
+    });
+  });
+
+  it('the reproducibility bundle draws the same figure the Forest tab shows', async () => {
+    const blob = await buildReproPackage(project({ labels: PRESENTATION }), draft(), { appVersion: 'test' });
+    const zip = await JSZip.loadAsync(Buffer.from(await blob.arrayBuffer()));
+    const svg = await zip.file('figures/forest_plot.svg').async('string');
+    expect(svg).toContain(PRESENTATION.subtitle);
+    expect(svg).toContain('adjudicated events only');
+    expect(svg).not.toContain('>Weight<');
+  });
+
+  it('a project that configured nothing still produces the historical figure', async () => {
+    const blob = await buildReproPackage(project({ labels: null }), draft(), { appVersion: 'test' });
+    const zip = await JSZip.loadAsync(Buffer.from(await blob.arrayBuffer()));
+    const svg = await zip.file('figures/forest_plot.svg').async('string');
+    expect(svg).toContain('>Weight<');
+    expect(svg).toContain('Prediction interval');
   });
 });

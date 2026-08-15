@@ -45,7 +45,13 @@ import * as MonolithStats from "../../../research-engine/statistics/monolithStat
 import { openExportDialog } from "../exportDialogBridge.js";
 import { SVG_XML_HEADER, presetTag, liveSvgToString, buildPubForestSVG, esMeasureName } from "../charts/svgBuilders.js";
 // 116.md §26/§32 — ONE resolver for every forest surface's text + no-effect authority.
-import { resolveForestFigure } from "../../../research-engine/charts/forestFigureConfig.js";
+// 117.md §23-§25/§81 — the same resolver now returns the whole PRESENTATION record
+// (subtitle/note/column visibility/decimals/bounded geometry), and owns the ONE bounds
+// table those geometry overrides are clamped through, at write AND at resolve.
+import {
+  resolveForestFigure, EMPTY_FOREST_FIGURE, normalizeFigurePresentation,
+  clampForestMetric, FOREST_PRESENTATION_BOUNDS, FOREST_METRIC_NAMES, FIGURE_PRESENTATION_KEYS,
+} from "../../../research-engine/charts/forestFigureConfig.js";
 import { ForestPlot, FunnelPlot } from "../charts/charts.jsx";
 import { BubblePlot, buildBubbleSVG } from "../BubblePlot.jsx";
 import { C, btnS, inp, th, tagS } from "../ui/styles.js";
@@ -164,7 +170,9 @@ export function pairProportionOverride(project,pair){
   return (pair&&m&&m[pair.key])||null;
 }
 /** 116.md §26 — the persisted FIGURE-LOCAL labels for one outcome pair
- *  (analysisSettings.figureLabels[pairKey] = {title?, favLow?, favHigh?, esLabel?}).
+ *  (analysisSettings.figureLabels[pairKey] = {title?, subtitle?, favLow?, favHigh?,
+ *  esLabel?, note?} — the 117.md §24 presentation keys share the same entry and are
+ *  read through `resolveForestFigure`, never from here).
  *  Absent ⇒ `{}` ⇒ every label falls back to its measure-derived default. These are
  *  figure text ONLY: renaming an outcome is a PROJECT edit (renameOutcome, D4). */
 export function pairFigureLabels(project,pair){
@@ -172,8 +180,10 @@ export function pairFigureLabels(project,pair){
   return (pair&&m&&m[pair.key])||EMPTY_FIGURE_LABELS;
 }
 const EMPTY_FIGURE_LABELS=Object.freeze({});
-/** Resolved-figure default for surfaces rendered without a project (tests, storybooks). */
-const EMPTY_FIGURE_CONFIG=Object.freeze({title:"",esLabel:"",favLow:"",favHigh:""});
+/** Resolved-figure default for surfaces rendered without a project (tests, storybooks).
+ *  117.md §24 — ONE shape, produced by the resolver itself, so a default-prop figure and
+ *  a resolved one can never carry different keys. */
+const EMPTY_FIGURE_CONFIG=EMPTY_FOREST_FIGURE;
 const EMPTY_COLUMNS=Object.freeze([]);
 /** 116.md §54 — the OPTIONAL contributions columns chosen for one outcome pair
  *  (analysisSettings.contributionColumns[pairKey] = ['country','xf_ab12cd34']). Scope is
@@ -366,6 +376,38 @@ export function writeFigureLabels(project,outcomeKey,patch){
 }
 
 /**
+ * 117.md §23/§24/§81 — write (or clear) the PRESENTATION half of one figure's record:
+ * column visibility, per-figure decimals and the bounded geometry overrides. It shares
+ * the `figureLabels[pairKey]` entry with the text labels above deliberately — a figure
+ * has ONE configuration record, which is what `renameOutcome` migrates and what
+ * `resolveForestFigure` reads — but the two writers touch disjoint key sets, so editing
+ * a label can never disturb a column toggle and vice versa.
+ *
+ * `record` is the WHOLE presentation (one undo step per user action, and
+ * "Reset to defaults" is simply `null`). Everything is clamped and defaulted by
+ * `normalizeFigurePresentation`, the same function the resolver reads through, so a
+ * value can never be stored that the resolver would then refuse. Booleans are stored
+ * only when FALSE and out-of-range metrics are dropped, so a project that never opened
+ * the panel — or one that reset it — serialises byte-identically to a pre-117 blob.
+ *
+ * 117.md §25 — there is no branch here that can write an effect size, a confidence
+ * limit or a weight. Those stay engine-derived; this record cannot reach them.
+ */
+export function writeFigurePresentation(project,outcomeKey,record){
+  const as={...((project&&project.analysisSettings)||{})};
+  const fl={...(as.figureLabels||{})};
+  const cur={...(fl[outcomeKey]||{})};
+  FIGURE_PRESENTATION_KEYS.forEach(k=>{ delete cur[k]; });
+  const rec=normalizeFigurePresentation(record);
+  if(rec) FIGURE_PRESENTATION_KEYS.forEach(k=>{ if(rec[k]!==undefined) cur[k]=rec[k]; });
+  if(Object.keys(cur).length) fl[outcomeKey]=cur; else delete fl[outcomeKey];
+  if(Object.keys(fl).length) as.figureLabels=fl; else delete as.figureLabels;
+  const out={...project};
+  if(Object.keys(as).length) out.analysisSettings=as; else delete out.analysisSettings;
+  return out;
+}
+
+/**
  * 116.md §54/§55 — write (or clear) the optional contributions columns of one outcome
  * pair. Same discipline as writeFigureLabels: pure, no ids/timestamps minted inside, and
  * an emptied selection/entry/container is DELETED, so "Restore defaults" leaves a
@@ -430,6 +472,11 @@ export const ANALYSIS_CONFIG_TARGETS=Object.freeze({
   PROP_OVERRIDE:"proportionOverride",
   // 116.md §26/§124 — two more undoable configuration writes on the same rails.
   FIGURE_LABELS:"figureLabels",
+  // 117.md §24/§81 — the figure's PRESENTATION record (column visibility, decimals,
+  // bounded geometry). A separate target from FIGURE_LABELS because its value is the
+  // whole record rather than one field: a slider drag or a "Reset to defaults" is then
+  // ONE undo step, not N.
+  FIGURE_PRESENTATION:"figurePresentation",
   MODEL:"model",
   // 116.md §54/§55 — the per-pair optional contributions columns, same rails again.
   CONTRIB_COLUMNS:"contributionColumns",
@@ -469,6 +516,12 @@ export function readAnalysisConfig(project,op){
     const v=cur[op.field];
     return v==null||v===""?null:v;
   }
+  // 117.md §24 — the whole presentation record for one pair, normalized so an
+  // all-default figure reads as null (= "nothing persisted") no matter how the entry
+  // got there (hand-edited blob, older build, a field left at its default).
+  if(t===ANALYSIS_CONFIG_TARGETS.FIGURE_PRESENTATION){
+    return normalizeFigurePresentation((as.figureLabels||{})[op.outcomeKey]||null);
+  }
   if(t===ANALYSIS_CONFIG_TARGETS.MODEL) return as.model==="fixed"?"fixed":null;
   // 116.md §54 — the whole ordered id list for one pair ('' / missing ⇒ null = defaults).
   if(t===ANALYSIS_CONFIG_TARGETS.CONTRIB_COLUMNS){
@@ -492,6 +545,7 @@ export function applyAnalysisConfig(project,op){
   // changed underneath it.
   if(t===ANALYSIS_CONFIG_TARGETS.PROP_OVERRIDE) return writeProportionOverride(project,op.outcomeKey,op.record||null);
   if(t===ANALYSIS_CONFIG_TARGETS.FIGURE_LABELS) return writeFigureLabels(project,op.outcomeKey,{[op.field]:op.value});
+  if(t===ANALYSIS_CONFIG_TARGETS.FIGURE_PRESENTATION) return writeFigurePresentation(project,op.outcomeKey,op.value||null);
   if(t===ANALYSIS_CONFIG_TARGETS.MODEL) return writeAnalysisModel(project,op.value);
   if(t===ANALYSIS_CONFIG_TARGETS.CONTRIB_COLUMNS) return writeContributionColumns(project,op.outcomeKey,op.value||[]);
   return project;
@@ -523,17 +577,39 @@ export function analysisConfigLabel(op){
   if(t===ANALYSIS_CONFIG_TARGETS.PROP_FILTER) return "Proportion filter change";
   if(t===ANALYSIS_CONFIG_TARGETS.PROP_OVERRIDE) return "Compatibility override change";
   if(t===ANALYSIS_CONFIG_TARGETS.FIGURE_LABELS) return FIGURE_LABEL_FIELDS[op.field]?`${FIGURE_LABEL_FIELDS[op.field]} change`:"Figure label change";
+  if(t===ANALYSIS_CONFIG_TARGETS.FIGURE_PRESENTATION) return FIGURE_PRESENTATION_LABELS[op&&op.field]||"Plot options change";
   if(t===ANALYSIS_CONFIG_TARGETS.MODEL) return "Synthesis model change";
   if(t===ANALYSIS_CONFIG_TARGETS.CONTRIB_COLUMNS) return "Contributions columns change";
   return "Analysis setting change";
 }
 
-/** 116.md §26 — the four editable figure-local labels and their human names. */
+/** 116.md §26 + 117.md §24 — the editable figure-local TEXT and their human names.
+ *  `note` is the figure's footer line (§24 "notes"/"footnotes"); `subtitle` is the
+ *  second, smaller line under the title. Both are figure-local like the rest: editing
+ *  them never renames the outcome (renameOutcome is the only path that does). */
 export const FIGURE_LABEL_FIELDS=Object.freeze({
   title:"Figure title",
+  subtitle:"Figure subtitle",
   esLabel:"X-axis label",
   favLow:"Left favours label",
   favHigh:"Right favours label",
+  note:"Figure note",
+});
+
+/** 117.md §24/§81 — undo-snackbar wording for each Plot-options control. The `field`
+ *  on a FIGURE_PRESENTATION op is carried for THIS purpose only: the op's value is
+ *  always the whole record, so the label is what tells a reviewer what they undid. */
+export const FIGURE_PRESENTATION_LABELS=Object.freeze({
+  showCounts:"Events/total column change",
+  showWeights:"Weight columns change",
+  showPI:"Prediction interval change",
+  decimals:"Figure decimals change",
+  plotW:"Plot width change",
+  nameW:"Study column width change",
+  rowGap:"Row spacing change",
+  diamondH:"Diamond size change",
+  fontScale:"Font scale change",
+  reset:"Plot options reset",
 });
 
 /* ── 116.md §30 — the shared analysis-config plumbing ─────────────────────────
@@ -625,7 +701,23 @@ export function useAnalysisConfigOps(project,updateProject,opts={}){
     const next=(Array.isArray(list)?list:[]).map(v=>String(v==null?"":v).trim()).filter(Boolean);
     return setConfigValue({target:ANALYSIS_CONFIG_TARGETS.CONTRIB_COLUMNS,outcomeKey},next.length?next:null);
   },[setConfigValue]);
-  return {history,projectRef,recordConfig,setConfigValue,setAnalysisPrecision,setAnalysisModel,setFigureLabel,setContributionColumns,renameProjectOutcome};
+  /* 117.md §24/§81 — one Plot-options change. `patch` is merged into the CURRENT record
+     (read off the live ref, never a closure) and the merged whole becomes the op value,
+     so a toggle, a slider and "Reset to defaults" (patch === null) are all one undo step
+     each. `field` names the control for the snackbar only. A patch value of null/'' for
+     a metric clears that single override — normalizeFigurePresentation drops it. */
+  const setFigurePresentation=useCallback((outcomeKey,patch,field)=>{
+    if(!outcomeKey) return false;
+    const addr={target:ANALYSIS_CONFIG_TARGETS.FIGURE_PRESENTATION,outcomeKey,field:field||""};
+    let next=null;
+    if(patch){
+      const cur=readAnalysisConfig(projectRef.current,addr)||{};
+      const metrics=patch.metrics?{...(cur.metrics||{}),...patch.metrics}:cur.metrics;
+      next=normalizeFigurePresentation({...cur,...patch,metrics});
+    }
+    return setConfigValue(addr,next);
+  },[setConfigValue]);
+  return {history,projectRef,recordConfig,setConfigValue,setAnalysisPrecision,setAnalysisModel,setFigureLabel,setFigurePresentation,setContributionColumns,renameProjectOutcome};
 }
 
 /** 116.md §29/§30 — the decimal-precision control. ONE component, rendered on every
@@ -673,6 +765,113 @@ export function InlineLabelEdit({label,value,placeholder,onCommit,width=190,hint
       </button>
     )}
     {!editing&&value&&<button onClick={()=>onCommit&&onCommit("")} title="Reset to the automatic label" style={{...btnS("ghost"),fontSize:10,padding:"2px 6px"}}>reset</button>}
+  </div>);
+}
+
+/* ════════════ 117.md §23-§25 / §81 — FOREST PRESENTATION CONTROLS ════════════
+   §23 is explicit that "analysis values" and "visual presentation overrides" must be
+   separate, because "the user should not accidentally alter a meta-analysis result
+   merely because they moved a label". Everything in this panel is presentation: it
+   changes what the figure SHOWS and how big it is, and there is deliberately no
+   control here — and no field in the persisted record — that could move an effect
+   size, a confidence limit or a weight (§25: statistical data stays engine-linked).
+
+   §24 lists more candidates than a usable panel can carry. The ones that are ALREADY
+   derived correctly and would regress if handed to a slider (x-axis range, tick
+   spacing, effect-column width, subgroup/summary placement) stay with the engine; see
+   FOREST_PRESENTATION_BOUNDS' header for that reasoning. */
+
+/**
+ * One bounded numeric control. Holds a DRAFT while typing and commits on blur/Enter,
+ * so a five-keystroke edit is one persisted write and one undo entry, not five.
+ * Escape reverts. An emptied field clears that single override (back to the default).
+ */
+export function PlotSizeInput({name,value,onCommit}){
+  const b=FOREST_PRESENTATION_BOUNDS[name];
+  const[draft,setDraft]=useState(null);
+  if(!b) return null;
+  const shown=draft==null?(value==null?"":String(value)):draft;
+  const commit=()=>{
+    const raw=draft;
+    setDraft(null);
+    if(raw==null) return;
+    const trimmed=String(raw).trim();
+    const next=trimmed===""?null:clampForestMetric(name,trimmed);
+    if(next===value) return;
+    onCommit(name,next);
+  };
+  return(<label style={{display:"flex",alignItems:"center",gap:6,fontSize:11,color:C.muted}}>
+    <span style={{whiteSpace:"nowrap",minWidth:118}}>{b.label}</span>
+    <input type="number" value={shown} min={b.min} max={b.max} step={b.step}
+      placeholder={String(b.defaultLive)} aria-label={`${b.label} (${b.min}–${b.max} ${b.unit})`}
+      onChange={e=>setDraft(e.target.value)}
+      onKeyDown={e=>{ if(e.key==="Enter"){e.preventDefault();e.currentTarget.blur();} else if(e.key==="Escape"){e.preventDefault();setDraft(null);} }}
+      onBlur={commit}
+      style={{...inp,width:76,fontSize:11,padding:"3px 6px"}}/>
+    <span style={{color:C.dim,whiteSpace:"nowrap"}}>{b.min}–{b.max} {b.unit}</span>
+  </label>);
+}
+
+/** Header for one group of controls inside the panel. */
+function PlotOptionsGroup({title,children}){
+  return(<div style={{display:"flex",flexDirection:"column",gap:8}}>
+    <div style={{fontSize:10,fontWeight:700,color:C.muted,letterSpacing:1}}>{title}</div>
+    <div style={{display:"flex",gap:16,flexWrap:"wrap"}}>{children}</div>
+  </div>);
+}
+
+/**
+ * The "Plot options" disclosure. `figure` is the RESOLVED presentation record and
+ * `onChange(patch, field)` merges a patch into it through the undo rails — so this
+ * component holds no state of its own beyond in-flight keystrokes, and what it shows
+ * is always what the plot beside it is drawing.
+ */
+export function PlotOptionsPanel({figure,onChange}){
+  const fig=figure||EMPTY_FIGURE_CONFIG;
+  const metricValue=(name)=>{
+    const v=fig.metrics&&fig.metrics[FOREST_PRESENTATION_BOUNDS[name].metric];
+    return v==null?null:v;
+  };
+  const anyOverride=FIGURE_PRESENTATION_KEYS.some(k=>k==="metrics"
+    ? Object.keys(fig.metrics||{}).length>0
+    : (k==="decimals"?fig.decimals!=null:fig[k]===false));
+  const toggle=(field,label)=>(
+    <label key={field} style={{display:"flex",alignItems:"center",gap:5,fontSize:11,color:C.muted,cursor:"pointer"}}>
+      <input type="checkbox" checked={fig[field]!==false} onChange={e=>onChange({[field]:e.target.checked},field)} style={{accentColor:C.acc}}/>{label}
+    </label>
+  );
+  return(<div style={{background:C.card,border:`1px solid ${C.brd}`,borderRadius:8,padding:"12px 14px",marginBottom:14,display:"flex",flexDirection:"column",gap:12}}>
+    <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",flexWrap:"wrap",gap:8}}>
+      <div style={{fontSize:11,fontWeight:700,color:C.acc,letterSpacing:1}}>PLOT OPTIONS — THIS FIGURE ONLY</div>
+      <button onClick={()=>onChange(null,"reset")} disabled={!anyOverride}
+        title="Clear every plot option on this figure and go back to the defaults"
+        style={{...btnS("ghost"),fontSize:10,padding:"3px 8px",opacity:anyOverride?1:0.5}}>Reset to defaults</button>
+    </div>
+    <PlotOptionsGroup title="COLUMNS">
+      {toggle("showCounts","events/total")}
+      {toggle("showWeights","weights")}
+      {toggle("showPI","prediction interval")}
+    </PlotOptionsGroup>
+    <PlotOptionsGroup title="PRECISION">
+      <label style={{display:"flex",alignItems:"center",gap:6,fontSize:11,color:C.muted}}>
+        <span style={{whiteSpace:"nowrap",minWidth:118}}>Decimal places</span>
+        <select value={fig.decimals==null?"":String(fig.decimals)} aria-label="Decimal places for this figure"
+          onChange={e=>onChange({decimals:e.target.value===""?null:Number(e.target.value)},"decimals")}
+          style={{...inp,width:"auto",fontSize:11,padding:"3px 6px"}}>
+          <option value="">Project default</option>
+          {DECIMAL_OPTIONS.map(d=><option key={d} value={d}>{d}</option>)}
+        </select>
+      </label>
+    </PlotOptionsGroup>
+    <PlotOptionsGroup title="SIZE">
+      {FOREST_METRIC_NAMES.map(name=>(
+        <PlotSizeInput key={name} name={name} value={metricValue(name)}
+          onCommit={(n,v)=>onChange({metrics:{[n]:v}},n)}/>
+      ))}
+    </PlotOptionsGroup>
+    <div style={{fontSize:10.5,color:C.dim,lineHeight:1.5}}>
+      These options are saved with the figure and apply to the plot on screen and to every export of it — the publication figure, the report, the journal ZIP and the manuscript. They change presentation only: the pooled estimate, the confidence intervals and the weights stay linked to the analysis engine and are never edited here.
+    </div>
   </div>);
 }
 
@@ -1748,9 +1947,11 @@ export function proportionClassCell(study,field){
 
 /* ════════════ RESEARCH-READY EXPORT ════════════ */
 /* Builds study-level + pooled + heterogeneity tables and offers copy / CSV / Excel(.xls) / publication table */
-/** 116.md §26/§32 — `figure` is the RESOLVED per-figure configuration
- *  (resolveForestFigure): title/axis-name/favours text as the reviewer persisted them,
- *  empty meaning "auto". It carries NO no-effect override — the registry owns that. */
+/** 116.md §26/§32 + 117.md §24 — `figure` is the RESOLVED per-figure configuration
+ *  (resolveForestFigure): title/subtitle/note, axis-name and favours text as the reviewer
+ *  persisted them (empty meaning "auto"), plus column visibility, the per-figure decimal
+ *  override and the bounded geometry. It carries NO no-effect override — the registry
+ *  owns that — and NO statistical value (117.md §25). */
 export function ResearchExport({result,esType,method,studies,prec,proportionFilters,proportionOverride,figure=EMPTY_FIGURE_CONFIG}){
   const[copied,setCopied]=useState("");
   const[showTable,setShowTable]=useState(false);
@@ -1874,7 +2075,12 @@ export function ResearchExport({result,esType,method,studies,prec,proportionFilt
                percent axis "logit (%)" — while the same figure on screen said
                "Odds Ratio" / "Proportion (%)". An empty esLabel means "auto" and the
                layout derives ONE name for every surface. */
-        const pubOpts={esType,...figure,showCounts:anyCounts,showWeights:true,prec};
+        /* 117.md §81 — the reviewer's persisted column choices apply HERE too. The two
+           hard-coded flags this line used to carry made the Meta-Analysis-tab download a
+           different figure from the Forest tab's; `showCounts:anyCounts` was also
+           redundant, because the layout already suppresses the counts columns when no
+           row carries events/totals (forestLayout: `showCounts && (anyExp || anyCtrl)`). */
+        const pubOpts={esType,...figure,prec};
         openExportDialog({
           id:"analysis-forest",
           title:"Forest plot (publication, white background)",
@@ -2008,16 +2214,19 @@ export function ForestTab({project,updateProject,onApplyPrecisionToAll}){
   // rails: model, decimals and the per-figure labels are all undoable writes
   // through the ONE updateProject choke point (which this tab never had before).
   const cfg=useAnalysisConfigOps(project,updateProject);
-  const{setAnalysisPrecision,setAnalysisModel,setFigureLabel,renameProjectOutcome}=cfg;
+  const{setAnalysisPrecision,setAnalysisModel,setFigureLabel,setFigurePresentation,renameProjectOutcome}=cfg;
   const method=projectModel(project);
   const setMethod=(m)=>setAnalysisModel(m);
   // RoadMap/2.md recs — use the project-wide τ² estimator so the exported forest
   // diamond matches the Meta-Analysis headline (they must never disagree).
   const tau2Method=(project&&project.analysisSettings&&project.analysisSettings.tau2Method)||"DL";
-  const[showCounts,setShowCounts]=useState(true);
-  const[showWeights,setShowWeights]=useState(true);
+  /* 117.md §81 — the two column toggles used to be `useState`, so a reviewer who hid
+     the weight columns got them back on every reload and the exports never knew. They
+     are now read from the persisted figure record like everything else; the ONLY local
+     state left on this tab is which disclosure panel is open. */
   const[showPubPreview,setShowPubPreview]=useState(false);
   const[showLabelEditor,setShowLabelEditor]=useState(false);
+  const[showPlotOptions,setShowPlotOptions]=useState(false);
 
   // ── Outcome / time-point selector (shared helper — same rows as AnalysisTab) ──
   const outcomePairs=useMemo(()=>enumerateOutcomePairs(studies),[studies]);
@@ -2049,10 +2258,14 @@ export function ForestTab({project,updateProject,onApplyPrecisionToAll}){
      project-level; the outcome rename below is a separate, explicitly labelled act. */
   const labels=pairFigureLabels(project,activeOutcome);
   const autoTitle=`${project.name||""}${activeOutcome?.outcome?` — ${activeOutcome.outcome}`:""}${activeOutcome?.timepoint?` (${activeOutcome.timepoint})`:""}`.trim();
-  const figTitle=labels.title||autoTitle;
-  const esLabel=labels.esLabel||"";
-  const favLow=labels.favLow||"";
-  const favHigh=labels.favHigh||"";
+  /* 117.md §23/§24/§81 — ONE resolved presentation record. Every forest surface on this
+     tab spreads THIS object: the live plot, the hidden dark render that the "Dark
+     (screen)" download serializes, the publication preview and both export paths. That
+     is the D15 drift class closed structurally — a control added to the resolver reaches
+     all of them without a call-site edit, and none of them can hold a different opinion. */
+  const figure=useMemo(()=>resolveForestFigure(project,activeOutcome,{defaultTitle:autoTitle}),
+    [project,activeOutcome,autoTitle]);
+  const figTitle=figure.title;
   const outcomeKey=activeOutcome?activeOutcome.key:"";
   const result=useMemo(()=>runMeta(filteredStudies,method,{tau2Method}),[filteredStudies,method,tau2Method]);
   const isLog=esType&&ES_TYPES[esType]?.log;
@@ -2128,16 +2341,19 @@ export function ForestTab({project,updateProject,onApplyPrecisionToAll}){
         <button key={m} onClick={()=>setMethod(m)} style={btnS(method===m?"primary":"ghost")}>{label}</button>
       ))}
       <div style={{display:"flex",gap:8,marginLeft:"auto",alignItems:"center",flexWrap:"wrap"}}>
-        <label style={{display:"flex",alignItems:"center",gap:5,fontSize:11,color:C.muted,cursor:"pointer"}}>
-          <input type="checkbox" checked={showCounts} onChange={e=>setShowCounts(e.target.checked)} style={{accentColor:C.acc}}/>events/total</label>
-        <label style={{display:"flex",alignItems:"center",gap:5,fontSize:11,color:C.muted,cursor:"pointer"}}>
-          <input type="checkbox" checked={showWeights} onChange={e=>setShowWeights(e.target.checked)} style={{accentColor:C.acc}}/>weights</label>
-        {/* 116.md §28 — one compact affordance; the plot itself carries no editing chrome. */}
+        {/* 116.md §28 / 117.md §24 — two compact affordances; the plot itself still
+            carries no editing chrome. The column toggles moved INTO Plot options, where
+            they sit with everything else that is saved with the figure (117.md §81). */}
         {updateProject&&outcomeKey&&<button onClick={()=>setShowLabelEditor(v=>!v)} style={{...btnS("ghost"),fontSize:11}}>{showLabelEditor?"▲ Done editing labels":"✎ Edit labels"}</button>}
+        {updateProject&&outcomeKey&&<button onClick={()=>setShowPlotOptions(v=>!v)} style={{...btnS("ghost"),fontSize:11}}>{showPlotOptions?"▲ Done with plot options":"⚙ Plot options"}</button>}
         {/* 116.md §29/§30 — the SAME project-level decimal setting, on this page too. */}
         <PrecisionControl prec={prec} onChange={updateProject?setAnalysisPrecision:undefined} onApplyAll={onApplyPrecisionToAll}/>
       </div>
     </div>
+    {/* ── 117.md §23-§25/§81 — presentation controls, persisted per figure ── */}
+    {showPlotOptions&&updateProject&&outcomeKey&&(
+      <PlotOptionsPanel figure={figure} onChange={(patch,field)=>setFigurePresentation(outcomeKey,patch,field)}/>
+    )}
     {/* ── 116.md §26-§28 — figure-local labels + the project-level outcome rename ── */}
     {showLabelEditor&&updateProject&&outcomeKey&&(
       <div style={{background:C.card,border:`1px solid ${C.brd}`,borderRadius:8,padding:"12px 14px",marginBottom:14,display:"flex",flexDirection:"column",gap:10}}>
@@ -2153,6 +2369,13 @@ export function ForestTab({project,updateProject,onApplyPrecisionToAll}){
             onCommit={v=>setFigureLabel(outcomeKey,"favLow",v)} hint="e.g. Favours intervention — state the direction yourself; it is never inferred"/>
           <InlineLabelEdit label="Right favours" value={labels.favHigh||""} placeholder="favours higher" width={190}
             onCommit={v=>setFigureLabel(outcomeKey,"favHigh",v)} hint="e.g. Favours control — for a harm outcome the clinical direction inverts"/>
+        </div>
+        {/* 117.md §24 — subtitle + footer note: figure-local TEXT, same writer, same undo. */}
+        <div style={{display:"flex",gap:16,flexWrap:"wrap"}}>
+          <InlineLabelEdit label="Subtitle" value={labels.subtitle||""} placeholder="none" width={260}
+            onCommit={v=>setFigureLabel(outcomeKey,"subtitle",v)} hint="A second, smaller line under the title — e.g. the population or the model"/>
+          <InlineLabelEdit label="Note" value={labels.note||""} placeholder="none" width={260}
+            onCommit={v=>setFigureLabel(outcomeKey,"note",v)} hint="Printed under the heterogeneity line, in the figure itself and in every export"/>
         </div>
         <div style={{fontSize:10.5,color:C.dim,lineHeight:1.5}}>
           These labels belong to this figure and are saved with the project. The default favours text states the axis direction only — PecanLab never infers which side is clinically better, because a harm outcome reverses it.
@@ -2171,16 +2394,20 @@ export function ForestTab({project,updateProject,onApplyPrecisionToAll}){
     {esType&&<div style={{marginBottom:12,fontSize:11,color:C.muted}}>
       Detected measure: <strong style={{color:C.acc}}>{ES_TYPES[esType]?.label}</strong>. {isLog?"Pooled on the log scale; the no-effect line sits at 1 on the ratio axis, and ticks and the ES column show back-transformed values.":esType==="PROP"?"Pooled on the logit scale and shown as percentages. A single-arm proportion has no no-effect value, so no null line or favours labels are drawn.":measureNull==null?"This measure has no no-effect value, so no null line is drawn.":`No-effect line at ${measureNull}.`}
     </div>}
-    {/* prompt19 — LIVE plot follows the theme + scales to the column width. */}
-    <ForestPlot result={result} esLabel={esLabel} esType={esType} showCounts={showCounts} showWeights={showWeights} svgId="forestplot-live" prec={prec} live theme={theme} title={figTitle} favLow={favLow} favHigh={favHigh}/>
+    {/* prompt19 — LIVE plot follows the theme + scales to the column width.
+        117.md §81 — {...figure} is the WHOLE persisted presentation. */}
+    <ForestPlot result={result} {...figure} esType={esType} svgId="forestplot-live" prec={prec} live theme={theme}/>
     {/* Hidden dark render kept in the DOM as the "Dark (screen)" PNG export source
-        (serialized by id) — so the live theme switch never changes that download. */}
+        (serialized by id) — so the live theme switch never changes that download.
+        It gets the SAME record: a hidden render that quietly ignored a control would
+        make the dark download a different figure from the one on screen. */}
     <div aria-hidden="true" style={{position:"absolute",width:0,height:0,overflow:"hidden",left:-99999,top:0,pointerEvents:"none"}}>
-      <ForestPlot result={result} esLabel={esLabel} esType={esType} showCounts={showCounts} showWeights={showWeights} svgId="forestplot-svg" prec={prec} title={figTitle} favLow={favLow} favHigh={favHigh}/>
+      <ForestPlot result={result} {...figure} esType={esType} svgId="forestplot-svg" prec={prec}/>
     </div>
     {result&&(()=>{
-      // 116.md §32 — the SAME resolved labels the live plot uses reach every export.
-      const pubOpts={esType,esLabel,showCounts,showWeights,title:figTitle,favLow,favHigh,prec};
+      // 116.md §32 / 117.md §81 — the SAME resolved record the live plot uses reaches
+      // every export path below (dialog SVG, dialog PNG and the on-page preview).
+      const pubOpts={esType,...figure,prec};
       const exportName=`${safeName}_${outcomeSafeName}_forest_publication`;
       return(<div style={{marginTop:14,background:C.card,border:`1px solid ${themeAlpha(C.grn,'55')}`,borderRadius:8,padding:14}}>
         <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",flexWrap:"wrap",gap:10,marginBottom:4}}>

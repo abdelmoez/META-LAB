@@ -51,7 +51,13 @@ export function splitPairKey(key) {
  *
  *   proportionFilters     107.md §12 — persisted per-pair proportion filter
  *   proportionOverrides   107.md §12 — persisted compatibility override record
- *   figureLabels          116.md §26 — per-figure title / favours / axis label
+ *   figureLabels          116.md §26 — per-figure title / favours / axis label, and
+ *                         117.md §24's presentation record (subtitle, note, column
+ *                         visibility, decimals, bounded metrics) in the SAME entry.
+ *                         `migrateMap` moves the entry OBJECT by reference, so any
+ *                         field added to it rides along by construction — but the
+ *                         rename test pins that explicitly, because a future record
+ *                         stored in a SECOND map would need its own registry line.
  *   contributionColumns   116.md §37 — per-pair contributions column selection
  *   modelOverrides        reserved — per-pair model override
  */

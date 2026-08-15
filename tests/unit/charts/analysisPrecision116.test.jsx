@@ -170,10 +170,14 @@ describe('116.md §26-§28 — figure label editing is an intentional affordance
     expect(html).not.toContain('Left favours');       // the editor is collapsed by default
   });
 
-  it('the four editable fields are figure-local text, named for the undo snackbar', () => {
-    expect(Object.keys(FIGURE_LABEL_FIELDS)).toEqual(['title', 'esLabel', 'favLow', 'favHigh']);
+  /* 117.md §24 — DELIBERATE RE-PIN: `subtitle` and `note` join the same field-keyed
+     writer (they are figure-local TEXT, edited the same way and undone the same way). */
+  it('the editable fields are figure-local text, named for the undo snackbar', () => {
+    expect(Object.keys(FIGURE_LABEL_FIELDS)).toEqual(['title', 'subtitle', 'esLabel', 'favLow', 'favHigh', 'note']);
     expect(analysisConfigLabel({ target: ANALYSIS_CONFIG_TARGETS.FIGURE_LABELS, field: 'favLow' }))
       .toBe('Left favours label change');
+    expect(analysisConfigLabel({ target: ANALYSIS_CONFIG_TARGETS.FIGURE_LABELS, field: 'note' }))
+      .toBe('Figure note change');
     expect(analysisConfigLabel({ target: ANALYSIS_CONFIG_TARGETS.MODEL })).toBe('Synthesis model change');
   });
 

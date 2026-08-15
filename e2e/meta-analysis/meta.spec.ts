@@ -70,6 +70,60 @@ test.describe('@smoke meta-analysis — Analyze workflow', () => {
     await expect(page.getByRole('heading', { level: 1, name: 'Forest Plot', exact: true })).toBeVisible();
     await expect(page.getByText(/No studies with an effect size yet/i)).toBeVisible();
   });
+
+  /* ── 117.md §23-§25 / §81 — forest presentation controls ─────────────────────
+     §81 asks for "saved preferences" and "resetting controls" to be tested. Both are
+     pinned deterministically at the unit level (tests/unit/charts/forestPresentation117
+     covers the persisted record, the bounds, the reset and the §25 value-invariance;
+     tests/unit/manuscript/forestFigureLabels116 covers the export threading). What
+     only a browser can prove is the RELOAD: that the toggle survives a real page load
+     rather than a re-render. That needs an outcome with an effect size on the Forest
+     tab, which the current API helpers cannot seed (same gap as the NMA tests below),
+     so it is written out and skipped rather than faked. */
+  test('a plot option survives a full page reload (saved preference, not component state)', async ({ page, tmpProject }) => {
+    test.skip(true, 'TODO: requires extracted effect sizes on an outcome so the Forest tab renders its controls. Current API helpers only seed screening RIS records — deferred to the analysis-data fixture that also unblocks the NMA run tests below.');
+
+    // Intended assertions once an outcome with effect sizes can be seeded:
+    const nav = new ShellNav(page);
+    await nav.goto(`/app/project/${tmpProject.id}?tab=forest`);
+
+    // The panel is an opt-in disclosure sitting beside the label editor.
+    await expect(page.getByRole('button', { name: '✎ Edit labels' })).toBeVisible();
+    await page.getByRole('button', { name: '⚙ Plot options' }).click();
+    await expect(page.getByText('PLOT OPTIONS — THIS FIGURE ONLY')).toBeVisible();
+
+    // Hide the weight columns and widen the plot.
+    await page.getByRole('checkbox', { name: 'weights' }).uncheck();
+    await page.getByRole('spinbutton', { name: /^Plot width/ }).fill('420');
+    await page.getByRole('spinbutton', { name: /^Plot width/ }).blur();
+    await expect(page.locator('#forestplot-live')).not.toContainText('Weight');
+
+    // The whole point of §81: it is persisted, so a real reload keeps it.
+    await page.reload();
+    await page.getByRole('button', { name: '⚙ Plot options' }).click();
+    await expect(page.getByRole('checkbox', { name: 'weights' })).not.toBeChecked();
+    await expect(page.getByRole('spinbutton', { name: /^Plot width/ })).toHaveValue('420');
+    await expect(page.locator('#forestplot-live')).not.toContainText('Weight');
+
+    // …and "Reset to defaults" puts every control back in one step.
+    await page.getByRole('button', { name: 'Reset to defaults' }).click();
+    await expect(page.getByRole('checkbox', { name: 'weights' })).toBeChecked();
+    await expect(page.getByRole('spinbutton', { name: /^Plot width/ })).toHaveValue('');
+    await expect(page.locator('#forestplot-live')).toContainText('Weight');
+  });
+
+  test('an out-of-range size is clamped to the documented bounds, never stored raw', async ({ page, tmpProject }) => {
+    test.skip(true, 'TODO: same analysis-data fixture as the reload test above.');
+
+    const nav = new ShellNav(page);
+    await nav.goto(`/app/project/${tmpProject.id}?tab=forest`);
+    await page.getByRole('button', { name: '⚙ Plot options' }).click();
+    const width = page.getByRole('spinbutton', { name: /^Plot width/ });
+    await width.fill('9999');
+    await width.blur();
+    // FOREST_PRESENTATION_BOUNDS.plotW.max — the figure can never be laid out wider.
+    await expect(width).toHaveValue('720');
+  });
 });
 
 test.describe('@smoke meta-analysis — Network Meta-Analysis (flag ON)', () => {

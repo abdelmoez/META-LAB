@@ -16,8 +16,15 @@
  *              Needs: studies[{_es,_lo,_hi,_wFixedPct,_wRandomPct,_pct,…}],
  *              fixed{es,lo,hi}, random{es,lo,hi}, optional predInt{lo,hi}, method.
  *     opts     { variant:'live'|'pub', esType, showCounts, showWeights, showPI,
- *                title, esLabel, favLow, favHigh, nullLine, logScale,
+ *                title, subtitle, esLabel, favLow, favHigh, nullLine, logScale,
+ *                metrics:{plotW,nameW,ROW,diamondH,fontScale},  // 117.md §24, BOUNDED
  *                formatValue:(storedValue)=>string, footerTexts:string[] }
+ *
+ *   117.md §24/§25 — `metrics` is the ONLY presentation input that touches
+ *   geometry and it is clamped through forestFigureConfig's bounds table before
+ *   anything reads it. NOTHING in opts can change a value: `es`/`lo`/`hi` and the
+ *   weights are read verbatim off `result` (116.md §124), so presentation and
+ *   analysis cannot be confused for one another.
  *
  *   The layout is PURE data: numbers, strings and small records. It contains no
  *   colours, no fonts, no markup — the two renderers are thin skins that decide
@@ -52,6 +59,11 @@
  */
 
 import { ES_TYPES } from '../project-model/monolithConstants.js';
+// 117.md §24 — the ONE bounds table for the reviewer-settable geometry. The
+// layout does not decide what is settable or how far; it only refuses to lay out
+// a figure with an out-of-range metric (an unbounded plotW/fontScale produces a
+// canvas no renderer can honour). Config module → geometry module: one way, no cycle.
+import { clampForestMetrics, FOREST_BOUNDED_METRIC_KEYS } from './forestFigureConfig.js';
 
 /* ════════════ measure metadata ════════════ */
 
@@ -198,6 +210,10 @@ export const FOREST_METRICS = Object.freeze({
     tickLabelGap: 15, favGap: 16, axisLabelGap: 18, footGap: 24, footPad: 6,
     markerMin: 5, markerMax: 13, markerF: 2.2, diamondH: 7,
     tickMinGap: 8, favMinPlotW: 130, favArrowW: 6, nameCap: 26, effPad: 8,
+    // 117.md §24 — 1 = the historical figure exactly. Both skins read it off the
+    // returned layout and multiply their own ink sizes by it, so the string the
+    // layout MEASURES stays the string the renderer PRINTS at any scale.
+    fontScale: 1,
   }),
   pub: Object.freeze({
     charW: 0.52,                                  // Georgia
@@ -209,8 +225,58 @@ export const FOREST_METRICS = Object.freeze({
     tickLabelGap: 15, favGap: 16, axisLabelGap: 18, footGap: 24, footPad: 18,
     markerMin: 5, markerMax: 13, markerF: 2.2, diamondH: 6.5,
     tickMinGap: 8, favMinPlotW: 130, favArrowW: 6, nameCap: 26, effPad: 8,
+    fontScale: 1,
   }),
 });
+
+/**
+ * Every metric that is a TEXT SIZE, so `fontScale` can move all of them together
+ * (117.md §24 "font scaling"). Gaps and column widths are deliberately NOT here:
+ * they have their own bounded controls, and scaling them too would make one
+ * slider silently resize the whole canvas.
+ */
+export const FOREST_FONT_METRIC_KEYS = Object.freeze([
+  'titleSize', 'nameSize', 'cellSize', 'headSize', 'headMainSize',
+  'tickSize', 'favSize', 'axisLabelSize', 'footSize', 'footLead',
+]);
+
+const BOUNDED_METRIC_KEY_SET = new Set(FOREST_BOUNDED_METRIC_KEYS);
+
+/**
+ * Merge a caller's `opts.metrics` onto a variant pack.
+ *
+ * 117.md §24 — the FIVE reviewer-settable metrics go through the bounds table,
+ * always, whatever the caller claims: an out-of-range (or non-numeric) value is
+ * dropped back to the pack default rather than producing a canvas no renderer
+ * can lay out. Any OTHER metric key is an engine-internal seam (a pack detail
+ * such as `favMinPlotW` or `countW`) and passes through untouched — no persisted
+ * record can ever carry one, because `resolveForestPresentation` emits only the
+ * five. Exported so the validation itself is unit-testable.
+ */
+export function mergeForestMetrics(base, raw) {
+  if (!raw || typeof raw !== 'object') return base;
+  const out = { ...base };
+  for (const k of Object.keys(raw)) {
+    if (!BOUNDED_METRIC_KEY_SET.has(k)) out[k] = raw[k];
+  }
+  return { ...out, ...clampForestMetrics(raw) };
+}
+
+/**
+ * Apply `M.fontScale` to every text size. Returns the SAME object when the scale
+ * is 1 (or absent), so an unconfigured figure is byte-identical to the pre-117
+ * geometry — the multiplication never runs.
+ */
+export function applyForestFontScale(M) {
+  const fs = Number(M && M.fontScale);
+  if (!Number.isFinite(fs) || fs === 1) return M;
+  const out = { ...M };
+  FOREST_FONT_METRIC_KEYS.forEach((k) => {
+    const v = Number(out[k]);
+    if (Number.isFinite(v)) out[k] = Math.round(v * fs * 100) / 100;
+  });
+  return out;
+}
 
 /* ════════════ domain ════════════ */
 
@@ -384,7 +450,10 @@ export function studyDisplayName(s) {
 export function computeForestLayout(result, opts = {}) {
   if (!result || !Array.isArray(result.studies) || !result.studies.length) return null;
   const variant = opts.variant === 'pub' ? 'pub' : 'live';
-  const M = { ...FOREST_METRICS[variant], ...(opts.metrics || {}) };
+  // 117.md §24 — an override reaches the geometry ONLY through the bounds table.
+  // `clampForestMetrics` returns a shared frozen `{}` for an unconfigured figure,
+  // so the historical metric pack survives spread-for-spread.
+  const M = applyForestFontScale(mergeForestMetrics(FOREST_METRICS[variant], opts.metrics));
   const studies = result.studies;
   const k = studies.length;
 
@@ -442,7 +511,7 @@ export function computeForestLayout(result, opts = {}) {
   // can never bleed into the counts column at either font size.
   const maxNameChars = Math.min(M.nameCap, fitChars(M.nameW - 8, M.nameSize, M.charW));
 
-  /* ── title (own block above the header) ──────────────────────────────── */
+  /* ── title + subtitle (own block above the header) ───────────────────── */
   const rawTitle = String(opts.title || '').trim();
   let titleSize = M.titleSize;
   let titleLines = [];
@@ -450,7 +519,16 @@ export function computeForestLayout(result, opts = {}) {
     titleLines = wrapText(rawTitle, contentW, titleSize, M.charW, 2);
     if (titleLines.length === 2 && variant === 'pub') titleSize = M.titleSize - 2;
   }
-  const titleBlockH = titleLines.length ? titleLines.length * (titleSize + 5) + 10 : 0;
+  // 117.md §24 — the optional subtitle is a SECOND, smaller centred block under
+  // the title, wrapped and measured like everything else. Additive by
+  // construction: with no subtitle every number below is what it was pre-117.
+  const rawSubtitle = String(opts.subtitle || '').trim();
+  const subtitleSize = Math.max(8, Math.round((M.titleSize - 3) * 100) / 100);
+  const subtitleLines = rawSubtitle ? wrapText(rawSubtitle, contentW, subtitleSize, M.charW, 2) : [];
+  const subtitleLead = subtitleSize + 4;
+  const titleH = titleLines.length * (titleSize + 5);
+  const subtitleH = subtitleLines.length * subtitleLead;
+  const titleBlockH = (titleH || subtitleH) ? titleH + subtitleH + 10 : 0;
 
   /* ── rows ────────────────────────────────────────────────────────────── */
   const headTop = M.marginT + titleBlockH;
@@ -601,6 +679,10 @@ export function computeForestLayout(result, opts = {}) {
       W, contentW, maxNameChars,
     },
     title: { text: rawTitle, lines: titleLines, size: titleSize, blockH: titleBlockH, y: M.marginT + titleSize, lead: titleSize + 5 },
+    subtitle: {
+      text: rawSubtitle, lines: subtitleLines, size: subtitleSize,
+      y: M.marginT + titleH + subtitleSize, lead: subtitleLead,
+    },
     rowsGeom: {
       headTop, headH, headBottom, rowsTop, ROW, bandBottom, ySep,
       yFixed, yRandom, yPI, axisY, tickLabelY, favY, axisLabelY, footerTop, H,
@@ -632,7 +714,10 @@ export default {
   approxTextWidth,
   fitChars,
   esMeasureName,
+  applyForestFontScale,
+  mergeForestMetrics,
   RATIO_TICK_CANDIDATES,
   PROP_TICK_CANDIDATES,
   FOREST_METRICS,
+  FOREST_FONT_METRIC_KEYS,
 };

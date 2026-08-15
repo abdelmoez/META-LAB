@@ -24,6 +24,7 @@ import {
   computeForestLayout, measureScale, buildDomain, buildTicks, decollideTicks,
   approxTextWidth, truncateLabel, countsFor, RATIO_TICK_CANDIDATES, RATIO_TICK_CANDIDATES_FINE,
 } from '../../../src/research-engine/charts/forestLayout.js';
+import { FOREST_PRESENTATION_BOUNDS } from '../../../src/research-engine/charts/forestFigureConfig.js';
 import { runMeta } from '../../../src/research-engine/statistics/monolithStats.js';
 
 /* ── fixtures ─────────────────────────────────────────────────────────────── */
@@ -367,8 +368,22 @@ describe('116.md §25 — favours labels', () => {
     expect(L.favours.high.text.endsWith('…')).toBe(true);
   });
 
-  it('are suppressed when the plot band is too narrow to hold two of them', () => {
+  /* 117.md §24 — DELIBERATE RE-PIN. This used to drive the narrow-band guard with
+     `metrics:{plotW:60}`, which is no longer reachable: plotW is now a reviewer-settable
+     control and every such metric is clamped through FOREST_PRESENTATION_BOUNDS, whose
+     floor (180) sits above the guard's threshold. That is the stronger guarantee — a
+     reviewer can no longer shrink a figure until its favours labels silently vanish —
+     so the two halves are now pinned separately: the clamp, and the guard itself. */
+  it('a reviewer-settable plot width is clamped UP to the bounds floor, so the labels survive', () => {
     const L = layoutOf(orStudies(3), 'OR', { metrics: { plotW: 60 } });
+    expect(L.columns.plotW).toBe(FOREST_PRESENTATION_BOUNDS.plotW.min);
+    expect(L.favours.show).toBe(true);
+  });
+
+  it('are still suppressed when the plot band cannot hold two of them (the engine guard)', () => {
+    // favMinPlotW is an engine-internal pack metric — no persisted record can carry it.
+    const L = layoutOf(orStudies(3), 'OR', { metrics: { favMinPlotW: 400 } });
+    expect(L.columns.plotW).toBeLessThan(400);
     expect(L.favours.show).toBe(false);
   });
 });

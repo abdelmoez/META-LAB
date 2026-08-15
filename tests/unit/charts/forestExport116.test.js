@@ -141,12 +141,20 @@ describe('116.md §22 (c) — the live plot never clamps the prediction interval
 /* ── 2. §24 — ES_TYPES is the only no-effect authority at every call site ──── */
 
 describe('116.md §24 — the registry is the ONLY source of the no-effect value', () => {
+  /* 117.md §24 — DELIBERATE RE-PIN: the resolver now returns the whole PRESENTATION
+     record, not just the four labels. What must never change is the ASYMMETRY this
+     test exists for — `nullLine` is still absent, and no key here can move a value. */
   it('the shared resolver never emits a no-effect override', () => {
     const project = { analysisSettings: { figureLabels: { 'MACE|||': { esLabel: 'X', favLow: 'L', favHigh: 'R', title: 'T' } } } };
     const fig = resolveForestFigure(project, { key: 'MACE|||' });
-    expect(Object.keys(fig).sort()).toEqual(['esLabel', 'favHigh', 'favLow', 'title']);
+    expect(Object.keys(fig).sort()).toEqual([
+      'decimals', 'esLabel', 'favHigh', 'favLow', 'metrics', 'note',
+      'showCounts', 'showPI', 'showWeights', 'subtitle', 'title',
+    ]);
     expect('nullLine' in fig).toBe(false);
     expect('nullLine' in forestFigureLabels(project, { key: 'MACE|||' })).toBe(false);
+    // 117.md §25 — and no statistical value can ride in on the presentation record.
+    ['es', 'lo', 'hi', 'weight', 'pooled', 'tau2'].forEach((k) => expect(k in fig).toBe(false));
   });
 
   it('no forest export call site passes a no-effect override any more', () => {
@@ -187,7 +195,10 @@ describe('116.md §24 — the registry is the ONLY source of the no-effect value
 
 describe('116.md §32 — preview and export name the axis the same way', () => {
   it('an unset label resolves to "" (= auto), so the layout derives the one measure name', () => {
-    expect(resolveForestFigure({}, { key: 'k' })).toEqual({ title: '', esLabel: '', favLow: '', favHigh: '' });
+    expect(resolveForestFigure({}, { key: 'k' })).toEqual({
+      title: '', subtitle: '', note: '', esLabel: '', favLow: '', favHigh: '',
+      showCounts: true, showWeights: true, showPI: true, decimals: null, metrics: {},
+    });
     expect(figureLabelsFor(null, null)).toEqual({});
     const res = runMeta(heteroOr(), 'random');
     const auto = computeForestLayout(res, { esType: 'OR', ...resolveForestFigure({}, { key: 'k' }) });
@@ -227,7 +238,7 @@ describe('116.md §32 — preview and export name the axis the same way', () => 
       },
     };
     const fig = resolveForestFigure(project, { key: 'MACE|||30d' }, { defaultTitle: 'ignored' });
-    expect(fig).toEqual({
+    expect(fig).toMatchObject({
       title: 'Primary outcome', esLabel: 'Odds ratio (adjusted)',
       favLow: 'Favours intervention', favHigh: 'Favours control',
     });

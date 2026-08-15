@@ -5,7 +5,7 @@
    forest plot) plus the helpers that serialize a live on-screen SVG and tag
    PNG-preset filenames. No React / JSX here. */
 import { ES_TYPES } from "../../../research-engine/project-model/monolithConstants.js";
-import { fmtNum, fmtES, fmtPct, fmtI2, fmtWeight, fmtP } from "../../../research-engine/format/precision.js";
+import { fmtNum, fmtES, fmtPct, fmtI2, fmtWeight, fmtP, normalizePrecision } from "../../../research-engine/format/precision.js";
 // 116.md §22-§25 (D15) — the SHARED forest geometry. buildPubForestSVG and the
 // live React ForestPlot are now two skins over this one layout module, so the
 // preview and every export agree on ticks, the null position, truncation, the
@@ -160,8 +160,13 @@ export const esMeasureName = layoutMeasureName;
  * truncation, canvas height — comes from the shared layout, which the live on-screen
  * plot consumes too.
  *
- * opts: { esType, esLabel, title, favLow, favHigh, showCounts, showWeights, showPI,
+ * opts: { esType, esLabel, title, subtitle, note, favLow, favHigh,
+ *         showCounts, showWeights, showPI, decimals, metrics,
  *         nullLine (linear measures only), logScale, prec, noBg }
+ *
+ * 117.md §23-§25 — the presentation half of that list is ONE persisted record
+ * (`resolveForestFigure`) that every caller spreads; nothing here can move a
+ * statistical value, which is exactly the separation §23 asks for.
  */
 export function buildPubForestSVG(result,opts){
   if(!result) return null;
@@ -175,7 +180,10 @@ export function buildPubForestSVG(result,opts){
   const ratioAbbr = esType==="OR"?"OR":esType==="RR"?"RR":esType==="HR"?"HR":"";
   // back-transform a stored (log/logit) value to display units
   const bt=x=>{ if(isLog)return Math.exp(x); if(isProp){const e=Math.exp(x);return e/(1+e);} return x; };
-  const prec=o.prec;
+  // 117.md §24 — a per-figure decimal override merges INTO the resolved project
+  // precision (normalizePrecision is the single interpreter, 116.md §29); `null`
+  // leaves the caller's object exactly as it was.
+  const prec=o.decimals==null?o.prec:{...normalizePrecision(o.prec),decimals:o.decimals};
   // value formatting for the right-hand ES column
   const fmt=x=>{
     if(isProp) return fmtPct(bt(x),prec);
@@ -201,6 +209,9 @@ export function buildPubForestSVG(result,opts){
     showWeights:o.showWeights!==false,
     showPI:o.showPI!==false,
     title:o.title||"",
+    // 117.md §24 — subtitle + bounded geometry overrides, both persisted per figure.
+    subtitle:o.subtitle||"",
+    metrics:o.metrics||null,
     // 116.md §26/§32 — the reviewer's edited axis label reaches EVERY export. It
     // used to be built, threaded and then silently dropped here.
     esLabel:o.esLabel||"",
@@ -212,12 +223,20 @@ export function buildPubForestSVG(result,opts){
     // formatter, so it can widen the effect column when a raw-unit value would
     // otherwise reach back across the plot band.
     formatValue:fmt,
-    footerTexts:[het,line2],
+    // 117.md §24 — the reviewer's figure note becomes a third footer line, wrapped
+    // and canvas-sized by the layout like the other two (empty entries are dropped).
+    footerTexts:[het,line2,String(o.note==null?"":o.note).trim()],
   });
   if(!L) return null;
   const{columns:CO,rowsGeom:RG,ticks,rows,diamonds,pi,favours,axisLabel,footerLines}=L;
   const W=L.W,H=L.H;
   const showWeights=L.showWeights, colCounts=L.showCounts;
+  /* 117.md §24 — font scaling: this skin owns Georgia's ink sizes, so it scales its
+     own literals by the layout's resolved factor (the layout has already scaled the
+     matching metrics for measurement). fs(10.5) === 10.5 at scale 1, so an
+     unconfigured figure emits byte-identical markup. */
+  const FS=Number(L.metrics.fontScale)||1;
+  const fs=(n)=>+(n*FS).toFixed(2);
   const xName=CO.xName,xExp=CO.xExp,cExp=CO.cExp,xCtrl=CO.xCtrl,cCtrl=CO.cCtrl;
   const xPlot=CO.xPlot,plotW=CO.plotW,xPlotEnd=CO.xPlotEnd,xEff=CO.xEff,cEff=CO.cEff;
   const xW=CO.xW,cW=CO.cW,xW2=CO.xW2,cW2=CO.cW2;
@@ -243,23 +262,25 @@ export function buildPubForestSVG(result,opts){
 
   // ---- title (wrapped / shrunk, centered, never clipped) ----
   L.title.lines.forEach((ln,i)=>{ svg+=txt(W/2, L.title.y+i*L.title.lead, ln, L.title.size, {anchor:"middle",bold:true}); });
+  // ---- 117.md §24 subtitle (own smaller block under the title) ----
+  L.subtitle.lines.forEach((ln,i)=>{ svg+=txt(W/2, L.subtitle.y+i*L.subtitle.lead, ln, L.subtitle.size, {anchor:"middle",fill:GREY}); });
 
   // ---- header row ----
   const headBottom=RG.headBottom, hMid=headBottom-6;
-  svg+=txt(xName,hMid,"Study",11.5,{bold:true});
+  svg+=txt(xName,hMid,"Study",fs(11.5),{bold:true});
   if(colCounts){
-    svg+=txt(xExp+cExp/2,headBottom-18,"Experimental",10,{anchor:"middle",bold:true,fill:GREY});
-    svg+=txt(xExp+cExp/2,headBottom-6,"Events / Total",9.5,{anchor:"middle",fill:GREY});
-    svg+=txt(xCtrl+cCtrl/2,headBottom-18,"Control",10,{anchor:"middle",bold:true,fill:GREY});
-    svg+=txt(xCtrl+cCtrl/2,headBottom-6,"Events / Total",9.5,{anchor:"middle",fill:GREY});
+    svg+=txt(xExp+cExp/2,headBottom-18,"Experimental",fs(10),{anchor:"middle",bold:true,fill:GREY});
+    svg+=txt(xExp+cExp/2,headBottom-6,"Events / Total",fs(9.5),{anchor:"middle",fill:GREY});
+    svg+=txt(xCtrl+cCtrl/2,headBottom-18,"Control",fs(10),{anchor:"middle",bold:true,fill:GREY});
+    svg+=txt(xCtrl+cCtrl/2,headBottom-6,"Events / Total",fs(9.5),{anchor:"middle",fill:GREY});
   }
-  svg+=txt(xPlot+plotW/2,headBottom-6,"",10,{anchor:"middle"}); // plot header intentionally empty
-  svg+=txt(xEff+cEff,hMid,(ratioScale?`${ratioAbbr} [95% CI]`:isProp?"% [95% CI]":isLog&&logOut?`log ${ratioAbbr} [95% CI]`:"Effect [95% CI]"),10.5,{anchor:"end",bold:true});
+  svg+=txt(xPlot+plotW/2,headBottom-6,"",fs(10),{anchor:"middle"}); // plot header intentionally empty
+  svg+=txt(xEff+cEff,hMid,(ratioScale?`${ratioAbbr} [95% CI]`:isProp?"% [95% CI]":isLog&&logOut?`log ${ratioAbbr} [95% CI]`:"Effect [95% CI]"),fs(10.5),{anchor:"end",bold:true});
   if(showWeights){
-    svg+=txt(xW+cW-4,headBottom-18,"Weight",9.5,{anchor:"end",bold:true,fill:GREY});
-    svg+=txt(xW+cW-4,headBottom-6,"common",9.5,{anchor:"end",fill:GREY});
-    svg+=txt(xW2+cW2-4,headBottom-18,"Weight",9.5,{anchor:"end",bold:true,fill:GREY});
-    svg+=txt(xW2+cW2-4,headBottom-6,"random",9.5,{anchor:"end",fill:GREY});
+    svg+=txt(xW+cW-4,headBottom-18,"Weight",fs(9.5),{anchor:"end",bold:true,fill:GREY});
+    svg+=txt(xW+cW-4,headBottom-6,"common",fs(9.5),{anchor:"end",fill:GREY});
+    svg+=txt(xW2+cW2-4,headBottom-18,"Weight",fs(9.5),{anchor:"end",bold:true,fill:GREY});
+    svg+=txt(xW2+cW2-4,headBottom-6,"random",fs(9.5),{anchor:"end",fill:GREY});
   }
   svg+=line(MLEFT,headBottom,W-MRIGHT,headBottom,LINE,1);
 
@@ -273,10 +294,10 @@ export function buildPubForestSVG(result,opts){
   // ---- study rows ----
   rows.forEach((r)=>{
     const y=r.y;
-    svg+=txt(xName,y,r.name,10.5,{});
+    svg+=txt(xName,y,r.name,fs(10.5),{});
     if(colCounts){
-      svg+=txt(xExp+cExp/2, y, r.counts.exp, 10, {anchor:"middle"});
-      svg+=txt(xCtrl+cCtrl/2, y, r.counts.ctrl, 10, {anchor:"middle"});
+      svg+=txt(xExp+cExp/2, y, r.counts.exp, fs(10), {anchor:"middle"});
+      svg+=txt(xCtrl+cCtrl/2, y, r.counts.ctrl, fs(10), {anchor:"middle"});
     }
     const cy=r.markerY, sq=r.size;
     svg+=line(r.lo.x,cy,r.hi.x,cy,INK,1.1);
@@ -287,10 +308,10 @@ export function buildPubForestSVG(result,opts){
     } else {
       svg+=`<rect x="${(r.es.x-sq/2).toFixed(1)}" y="${(cy-sq/2).toFixed(1)}" width="${sq.toFixed(1)}" height="${sq.toFixed(1)}" fill="${BOX}"/>`;
     }
-    svg+=txt(xEff+cEff, y, r.esText, 10, {anchor:"end"});
+    svg+=txt(xEff+cEff, y, r.esText, fs(10), {anchor:"end"});
     if(showWeights){
-      svg+=txt(xW+cW-4, y, fmtWeight(r.weightFixedPct,prec)+"%", 9.5, {anchor:"end",fill:GREY});
-      svg+=txt(xW2+cW2-4, y, fmtWeight(r.weightRandomPct,prec)+"%", 9.5, {anchor:"end",fill:GREY});
+      svg+=txt(xW+cW-4, y, fmtWeight(r.weightFixedPct,prec)+"%", fs(9.5), {anchor:"end",fill:GREY});
+      svg+=txt(xW2+cW2-4, y, fmtWeight(r.weightRandomPct,prec)+"%", fs(9.5), {anchor:"end",fill:GREY});
     }
   });
 
@@ -298,27 +319,27 @@ export function buildPubForestSVG(result,opts){
 
   // ---- pooled diamonds ----
   diamonds.forEach(d=>{
-    svg+=txt(xName,d.y,d.label,10.5,{bold:true});
+    svg+=txt(xName,d.y,d.label,fs(10.5),{bold:true});
     svg+=`<polygon points="${d.es.x.toFixed(1)},${(d.markerY-d.height).toFixed(1)} ${d.hi.x.toFixed(1)},${d.markerY.toFixed(1)} ${d.es.x.toFixed(1)},${(d.markerY+d.height).toFixed(1)} ${d.lo.x.toFixed(1)},${d.markerY.toFixed(1)}" fill="${d.strong?"#000000":"#ffffff"}" stroke="#000000" stroke-width="1.1"/>`;
-    svg+=txt(xEff+cEff,d.y,d.esText,10,{anchor:"end",bold:d.strong});
-    if(showWeights){ svg+=txt((d.key==="fixed"?xW+cW:xW2+cW2)-4,d.y,"100%",9.5,{anchor:"end",fill:GREY}); }
+    svg+=txt(xEff+cEff,d.y,d.esText,fs(10),{anchor:"end",bold:d.strong});
+    if(showWeights){ svg+=txt((d.key==="fixed"?xW+cW:xW2+cW2)-4,d.y,"100%",fs(9.5),{anchor:"end",fill:GREY}); }
   });
 
   // ---- prediction interval (dashed bar, journal-standard) ----
   if(pi){
-    svg+=txt(xName,pi.y,pi.label,9.5,{italic:true,fill:GREY});
+    svg+=txt(xName,pi.y,pi.label,fs(9.5),{italic:true,fill:GREY});
     svg+=line(pi.lo.x,pi.markerY,pi.hi.x,pi.markerY,GREY,1.4,"4,2");
     svg+=endCap(pi.lo,pi.markerY,GREY,1.4);
     svg+=endCap(pi.hi,pi.markerY,GREY,1.4);
     svg+=`<rect x="${(pi.centre.x-3).toFixed(1)}" y="${(pi.markerY-3).toFixed(1)}" width="6" height="6" fill="none" stroke="${GREY}" stroke-width="1"/>`;
-    svg+=txt(xEff+cEff,pi.y,pi.esText,9.5,{anchor:"end",italic:true,fill:GREY});
+    svg+=txt(xEff+cEff,pi.y,pi.esText,fs(9.5),{anchor:"end",italic:true,fill:GREY});
   }
 
   // ---- x-axis ----
   svg+=line(xPlot,RG.axisY,xPlotEnd,RG.axisY,INK,1);
   ticks.forEach(tk=>{
     svg+=line(tk.x,RG.axisY,tk.x,RG.axisY+4,INK,0.9);
-    svg+=txt(tk.x,RG.tickLabelY,tk.label,9.5,{anchor:"middle"});
+    svg+=txt(tk.x,RG.tickLabelY,tk.label,fs(9.5),{anchor:"middle"});
   });
 
   // ---- favours labels (own line, anchored to plot edges → no overlap) ----
@@ -331,16 +352,16 @@ export function buildPubForestSVG(result,opts){
   if(favours.show){
     const favTri=(f)=>`<path d="M${(f.arrowX+f.dir*6).toFixed(1)},${(favours.y-6.5).toFixed(1)} L${f.arrowX.toFixed(1)},${(favours.y-3).toFixed(1)} L${(f.arrowX+f.dir*6).toFixed(1)},${(favours.y+0.5).toFixed(1)} Z" fill="${GREY}"/>`;
     svg+=favTri(favours.low);
-    svg+=txt(favours.low.x, favours.y, favours.low.text, 9, {anchor:favours.low.anchor,fill:GREY,italic:true});
+    svg+=txt(favours.low.x, favours.y, favours.low.text, fs(9), {anchor:favours.low.anchor,fill:GREY,italic:true});
     svg+=favTri(favours.high);
-    svg+=txt(favours.high.x, favours.y, favours.high.text, 9, {anchor:favours.high.anchor,fill:GREY,italic:true});
+    svg+=txt(favours.high.x, favours.y, favours.high.text, fs(9), {anchor:favours.high.anchor,fill:GREY,italic:true});
   }
 
   // ---- axis label (configured label, else the clean measure name) ----
-  svg+=txt((xPlot+xPlotEnd)/2, RG.axisLabelY, axisLabel, 11, {anchor:"middle",bold:true});
+  svg+=txt((xPlot+xPlotEnd)/2, RG.axisLabelY, axisLabel, fs(11), {anchor:"middle",bold:true});
 
-  // ---- heterogeneity + model line (wrapped by the layout, well spaced) ----
-  footerLines.forEach((ln,i)=>{ svg+=txt(MLEFT,ln.y,ln.text,i===0?9.5:9,{italic:i===0,fill:i===0?INK:GREY}); });
+  // ---- heterogeneity + model line (+ the optional figure note), wrapped by the layout ----
+  footerLines.forEach((ln,i)=>{ svg+=txt(MLEFT,ln.y,ln.text,i===0?fs(9.5):fs(9),{italic:i===0,fill:i===0?INK:GREY}); });
 
   const full=`<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">${svg}</svg>`;
   return {svg:full,W,H};
