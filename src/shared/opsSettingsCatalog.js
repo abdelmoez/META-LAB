@@ -161,8 +161,15 @@ export const OPS_FLAGS = Object.freeze([
     description: 'Random-effects meta-regression + bubble plots: explore whether a study-level covariate explains heterogeneity, with coefficients, tau² before/after, an R² analog and statistical guardrails.' },
   { key: 'gradeCertainty', label: 'GRADE Certainty Workspace (P12)', default: false, group: 'analysis',
     description: 'The per-outcome GRADE certainty-of-evidence workspace: domain suggestions prefilled from data the app already computes, a human-confirmed final rating, an audit trail, lockable judgments and a Summary-of-Findings table.' },
-  { key: 'manuscriptEditor', label: 'Manuscript Editor (P3)', default: false, group: 'reporting',
-    description: 'The full manuscript authoring workspace: structured IMRAD drafting, data-linked tables, a citation engine, an inline PRISMA 2020 diagram, one-click .docx export and a reproducibility archive. All artifacts are generated in the browser from live project data.' },
+  // 117.md §K.2 — DEFAULT ON. The manuscript editor stopped being a rollout
+  // experiment: 117.md §4-11 (table objects + one numbering sequence), §12-22
+  // (the synchronized PRISMA view), §23-25 (forest presentation) and §26-41 (the
+  // reference manager) all live behind this key, and it is now the platform's
+  // center of gravity. Like every other default-ON flag it is an operator KILL
+  // SWITCH, not a rollout gate: turning it off restores the legacy textarea
+  // drafter (ManuscriptTab's fallback path) and never deletes a draft.
+  { key: 'manuscriptEditor', label: 'Manuscript Editor (P3)', default: true, group: 'reporting',
+    description: 'The full manuscript authoring workspace: structured IMRAD drafting, data-linked tables with one document-order numbering sequence, an integrated reference manager and citation engine, a PRISMA 2020 diagram synchronized with the record-derived flow, one-click .docx export and a reproducibility archive. All artifacts are generated in the browser from live project data. Turning this off restores the legacy plain-text drafter; drafts are preserved either way.' },
   { key: 'researchProvenance', label: 'Research Provenance Ledger', default: false, group: 'reporting',
     description: 'The append-only, project-wide event ledger (search, screening, extraction, RoB, analysis, manuscript) with deterministic significance classification and a Project History tab. Off means /api/provenance does not exist and no events are captured. This ledger is IMMUTABLE and entirely separate from the Undo/Redo history (§50).' },
   { key: 'publicSynthesis', label: 'Public Synthesis Pages (P8)', default: false, group: 'reporting',

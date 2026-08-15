@@ -58,6 +58,33 @@ describe('flag registry — drift gate', () => {
     }
   });
 
+  /**
+   * 117.md §K.2 — the manuscript editor stopped being a rollout experiment: 117's
+   * table objects (§4-11), PRISMA synchronization (§12-22), forest presentation
+   * (§23-25) and the reference manager (§26-41) all live behind this one key.
+   * It is now an operator KILL SWITCH like the 107/108 four, so the default has to
+   * be ON on BOTH sides of the catalogue/server drift gate — and, unlike a rollout
+   * gate, the OFF path must remain a supported degrade (the legacy drafter), which
+   * is why nothing here asserts the fallback was deleted.
+   */
+  it('manuscriptEditor defaults ON (117.md §K.2) on both sides of the drift gate', () => {
+    const e = flagEntry('manuscriptEditor');
+    expect(e).toBeTruthy();
+    expect(e.default).toBe(true);
+    expect(e.deprecated).toBeUndefined();
+    expect(flagDefaults().manuscriptEditor).toBe(true);
+    expect(defaultFeatureFlags().manuscriptEditor).toBe(true);
+    // It gates nothing else and is gated by nothing — flipping it can never make
+    // another flag inert (that is what `requires` would mean).
+    expect(FEATURE_DEPS.manuscriptEditor).toBeUndefined();
+    expect(Object.values(FEATURE_DEPS).flat()).not.toContain('manuscriptEditor');
+    // An operator turning it OFF is honoured, and the key is a real Ops row.
+    const off = coerceFlagPatch({ manuscriptEditor: false }, flagDefaults());
+    expect(off.next.manuscriptEditor).toBe(false);
+    expect(off.changed).toContain('manuscriptEditor');
+    expect(VISIBLE_FLAGS.some((f) => f.key === 'manuscriptEditor')).toBe(true);
+  });
+
   it('previously UI-invisible flags now have catalogue rows (the FLAG_META drift)', () => {
     for (const key of ['relationalProjectStore', 'researchProvenance', 'aiExtraction']) {
       const e = flagEntry(key);

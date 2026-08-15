@@ -176,14 +176,20 @@ const DEFAULTS = {
     // on user-supplied arm/contrast data (no project data leaves the server).
     networkMetaAnalysis: false,
     // 64.md (P3) — Manuscript Editor + one-click Word export + auto-PRISMA +
-    // updatable tables. Default OFF: the project "Manuscript" tab keeps rendering
-    // the legacy textarea drafter. When ON, the tab renders the full manuscript
-    // workspace (structured IMRAD editor, data-linked tables, citation engine,
-    // inline PRISMA 2020 diagram, .docx export, PRISMA/PRISMA-S checklists and a
-    // reproducibility .zip). All artifacts are generated client-side from the
-    // project's live data — no manuscript content leaves the browser and no heavy
-    // export work runs on the server. Surfaces in Ops › Flags automatically.
-    manuscriptEditor: false,
+    // updatable tables. 117.md §K.2 flipped this to DEFAULT ON: the tab renders the
+    // full manuscript workspace (structured IMRAD editor, data-linked table objects
+    // with one document-order numbering sequence, the integrated reference manager,
+    // a PRISMA 2020 diagram synchronized with the record-derived flow, .docx export,
+    // PRISMA/PRISMA-S checklists and a reproducibility .zip). All artifacts are
+    // generated client-side from the project's live data — no manuscript content
+    // leaves the browser and no heavy export work runs on the server. Turning it OFF
+    // is an operator kill switch that restores the legacy textarea drafter; the flag
+    // OFF path is still live and still tested. Surfaces in Ops › Flags automatically.
+    // NOTE: this default only reaches an install that has no stored `featureFlags`
+    // row value for the key — initDefaultSettings never overwrites an existing row,
+    // so an EXISTING deployment keeps whatever it stored and an operator flips it in
+    // Ops › Flags. (Same for every other default in this table.)
+    manuscriptEditor: true,
     // 66.md (P5) — structured data extraction: element forms, dual extraction with
     // adjudication, provenance-first values, AI extraction ASSIST (suggestions only —
     // human review is mandatory, nothing auto-commits). Default OFF: the Extraction

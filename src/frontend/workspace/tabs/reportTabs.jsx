@@ -440,12 +440,16 @@ Output ONLY the section text — no labels, no preamble, no markdown headers. Us
 
 /* 64.md (P3) — Manuscript tab dispatcher. Both shells (legacy Workspace.jsx and
    Stitch StitchProjectWorkspace.jsx) import THIS ManuscriptTab, so gating here is
-   the single rollout switch. When the `manuscriptEditor` flag is ON, render the
+   the single switch. When the `manuscriptEditor` flag is ON, render the
    full structured manuscript workspace (editor + data-linked tables + citations +
    inline PRISMA 2020 + .docx/.zip export); otherwise fall back to the legacy
    textarea drafter so the flag-OFF path is 100% unchanged. The heavy workspace
    (and the docx library it pulls) is lazy-loaded so it never enters the main
-   bundle while the flag is off. */
+   bundle until the flag actually resolves ON.
+   117.md §K.2 — the flag now defaults ON, which makes this an operator KILL SWITCH
+   rather than a rollout gate. LegacyManuscriptTab below is therefore a supported
+   degrade path, not dead code: it must keep working, and it is still pinned by the
+   flag-OFF e2e case in e2e/manuscript/manuscript.spec.ts. */
 const ManuscriptWorkspaceLazy = lazy(() =>
   import("../../../features/manuscript/ManuscriptWorkspace.jsx").then((m) => ({ default: m.ManuscriptWorkspace })));
 

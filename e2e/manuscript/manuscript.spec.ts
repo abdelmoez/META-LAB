@@ -1,9 +1,13 @@
 /**
  * manuscript.spec.ts — the WYSIWYG manuscript editor (65.md Major Upgrade 2).
  *
- * The `manuscriptEditor` flag is OFF by default; every test here flips it ON via
- * the setFlags fixture (auto-restored on teardown) and drives the Stitch
- * workspace at `/app/project/:id?tab=manuscript`.
+ * 117.md §K.2 flipped the `manuscriptEditor` flag to default ON; every test here
+ * still sets it EXPLICITLY via the setFlags fixture (auto-restored on teardown)
+ * rather than relying on the default, because the e2e seed pins its own flag map
+ * and a spec that depends on an ambient default breaks the day the default moves.
+ * The last case pins the opposite direction — flag OFF is a supported degrade path
+ * (the legacy drafter), not a deleted one. Drives the Stitch workspace at
+ * `/app/project/:id?tab=manuscript`.
  *
  * Core contract under test: the editor is Word-like — the user NEVER sees raw
  * markdown tokens (#, **, [[cite:), formatting is real DOM (strong/headings),
@@ -206,7 +210,10 @@ test.describe('Manuscript editor (flag ON)', () => {
     expect(download.suggestedFilename()).toMatch(/\.docx$/);
   });
 
-  test('flag OFF keeps the legacy drafter (rollout gate intact)', async ({ page, tmpProject, setFlags }) => {
+  // 117.md §K.2 — the flag now defaults ON, so this is the KILL-SWITCH degrade
+  // path, not a rollout gate. It has to keep working: turning the editor off must
+  // land on the legacy drafter, never on a broken tab.
+  test('flag OFF keeps the legacy drafter (kill-switch degrade path)', async ({ page, tmpProject, setFlags }) => {
     await setFlags({ manuscriptEditor: false });
     await page.goto(`/app/project/${tmpProject.id}?tab=manuscript`);
     // The structured workspace must NOT mount; the legacy drafter renders instead.

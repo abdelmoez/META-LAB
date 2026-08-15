@@ -15,6 +15,11 @@ import { C } from '../ui/styles.js';
 import { fmtNum, fmtInt, normalizePrecision } from '../../../research-engine/format/precision.js';
 import { validateNetwork, SUPPORTED_MEASURES } from '../../../research-engine/statistics/nma/index.js';
 import { isLogScale } from '../../../research-engine/statistics/nma/contrasts.js';
+// 117.md §J.11 / §K.7 (closes 116.md §10.4) — the mini forest below is a SKIN over
+// THE shared geometry engine, exactly like the live plot and the publication
+// builder. It decides colours and compactness; it never decides a coordinate, a
+// tick value or where "no effect" is. See forestLayout.js for the contract.
+import { computeForestLayout, measureScale } from '../../../research-engine/charts/forestLayout.js';
 
 const MEASURE_LABEL = { OR: 'Odds ratio', RR: 'Risk ratio', RD: 'Risk difference', MD: 'Mean difference', GENERIC: 'Generic (logHR/log-effect + SE)' };
 const ARM_MEASURES = ['OR', 'RR', 'RD', 'MD'];
@@ -109,7 +114,7 @@ export function NmaTab({ project, updateProject, activeId }) {
       {view === 'overview' && result && <Overview result={result} prec={prec} />}
       {view === 'network' && result && <NetworkPlot geometry={result.geometry} />}
       {view === 'league' && result && <League result={result} prec={prec} />}
-      {view === 'forest' && result && <Forest result={result} prec={prec} />}
+      {view === 'forest' && result && <NmaForest result={result} prec={prec} />}
       {view === 'ranking' && result && <Ranking result={result} prec={prec} />}
       {view === 'consistency' && result && <Consistency result={result} prec={prec} />}
       {view === 'contribution' && result && <Contribution result={result} prec={prec} />}
@@ -407,28 +412,138 @@ function League({ result, prec }) {
   );
 }
 
-function Forest({ result, prec }) {
-  const isLog = result.isLog; const rows = result.forest;
-  const lo = Math.min(...rows.map((r) => r.lo), 0), hi = Math.max(...rows.map((r) => r.hi), 0);
-  const span = (hi - lo) || 1; const W = 520, padL = 140, plotW = W - padL - 20;
-  const x = (v) => padL + ((v - lo) / span) * plotW;
-  const nullVal = isLog ? 0 : 0;
+/**
+ * 117.md §J.11 / §K.7 — the NMA measure code → the ES_TYPES key whose `nullVal`,
+ * stored scale and back-transform the shared geometry engine reads.
+ *
+ * The two registries are deliberately separate (NMA supports five measures; the
+ * pairwise engine supports fourteen), so the mapping is stated once, here, instead
+ * of each renderer re-deciding what "log scale" means. NMA's `GENERIC` is a
+ * LOG-scale generic effect (contrasts.js `isLogScale` returns true for it), which
+ * in ES_TYPES is `GENERIC_LOG` — `GENERIC` there is the log-FREE one, so mapping
+ * by name would have silently produced a linear axis for pre-computed log hazard
+ * ratios. Anything unrecognised falls through to the code itself, so a measure the
+ * ES_TYPES registry already knows keeps its own null value rather than defaulting.
+ */
+const NMA_ES_TYPE = Object.freeze({ OR: 'OR', RR: 'RR', RD: 'RD', MD: 'MD', GENERIC: 'GENERIC_LOG' });
+export function nmaEsType(sm) {
+  const key = String(sm == null ? '' : sm).trim().toUpperCase();
+  return NMA_ES_TYPE[key] || key;
+}
+
+/**
+ * A COMPACT metric pack for the mini forest (117.md §J.11).
+ *
+ * `opts.metrics` rather than a third FOREST_METRICS variant: only the four column
+ * widths differ from the live plot, every one of them is already a bounded,
+ * engine-validated control, and a new variant key would have to be kept in sync
+ * with the live pack forever for no gain. The engine clamps these through the same
+ * bounds table any persisted override goes through.
+ */
+const NMA_FOREST_METRICS = Object.freeze({ nameW: 140, plotW: 260, ROW: 26 });
+
+/**
+ * buildNmaForestLayout(result) — the per-treatment-vs-reference rows through the
+ * ONE shared geometry engine (116.md §22-§25, closing §10.4).
+ *
+ * Each row is its own network contrast, so there is deliberately NO pooled
+ * diamond and no prediction interval: `fixed`/`random` are null and the domain is
+ * anchored by the measure's no-effect value plus the rows themselves. Exported for
+ * tests.
+ */
+export function buildNmaForestLayout(result, prec) {
+  const rows = Array.isArray(result && result.forest) ? result.forest.filter(Boolean) : [];
+  const esType = nmaEsType(result && result.sm);
+  const scale = measureScale(esType);
+  const studies = rows.map((r, i) => ({
+    id: r.t2 == null ? i : r.t2,
+    author: String(r.t2 == null ? '' : r.t2) || 'Treatment',
+    year: '',
+    _es: Number(r.est), _lo: Number(r.lo), _hi: Number(r.hi),
+    // A network contrast has no study weight; the marker is a fixed dot.
+    _pct: 0, _wFixedPct: 0, _wRandomPct: 0,
+  }));
+  const layout = computeForestLayout({ studies, fixed: null, random: null, method: 'random' }, {
+    variant: 'live',
+    esType,
+    showCounts: false,
+    showWeights: false,
+    showPI: false,
+    metrics: NMA_FOREST_METRICS,
+    // The same formatter that PRINTS, so the effect column sizes itself to the
+    // strings actually drawn (forestLayout invariant 5). Back-transformed through
+    // the MEASURE's own transform rather than a local `isLog ? exp : identity`,
+    // so a measure whose stored scale is neither log nor raw cannot print a
+    // stored-scale number as if it were a displayed one.
+    formatValue: (v) => fmtNum(scale.backTransform(v), prec),
+  });
+  return { layout, scale };
+}
+
+/** Exported so the unified geometry can be pinned without mounting the whole tab. */
+export function NmaForest({ result, prec }) {
+  const { layout: L, scale } = buildNmaForestLayout(result, prec);
+  if (!L) return <Card title={`Per-treatment forest (vs ${result.reference})`}><Banner tone="info">No treatment contrasts to plot.</Banner></Card>;
+  const { columns: CO, rowsGeom: RG, metrics: M, ticks, favours, axisLabel } = L;
+  const W = L.W;
+  /* 116.md §22 (c) — an interval end outside the visible domain gets the
+     conventional truncation arrow instead of being squashed onto the frame. The
+     hand-rolled geometry this replaced could not express "off scale" at all: it
+     built its domain from min(lo,0)/max(hi,0), which also pinned the no-effect
+     line to an EDGE whenever every treatment sat on one side of the reference. */
+  const endCap = (p, cy, key) => (p.off ? null : (p.clamped
+    ? <polygon key={key} fill={C.acc}
+      points={p.clamped < 0
+        ? `${p.x},${cy} ${p.x + 6},${cy - 3.5} ${p.x + 6},${cy + 3.5}`
+        : `${p.x},${cy} ${p.x - 6},${cy - 3.5} ${p.x - 6},${cy + 3.5}`} />
+    : <line key={key} x1={p.x} y1={cy - 3.5} x2={p.x} y2={cy + 3.5} stroke={C.acc} strokeWidth={1.5} />));
   return (
     <Card title={`Per-treatment forest (vs ${result.reference})`}>
-      <svg viewBox={`0 0 ${W} ${24 + rows.length * 30}`} width="100%" role="img" aria-label="Forest plot" style={{ maxWidth: 640 }}>
-        <line x1={x(nullVal)} y1={10} x2={x(nullVal)} y2={14 + rows.length * 30} stroke={C.brd} strokeDasharray="4 3" />
-        {rows.map((r, i) => {
-          const y = 24 + i * 30;
+      <svg viewBox={`0 0 ${W} ${L.H}`} width="100%" role="img" aria-label="Forest plot" style={{ maxWidth: 640 }}>
+        {/* No-effect line — from the measure registry, never assumed at 0, and
+            guaranteed by the engine to sit inside the frame with a margin. */}
+        {L.nullLine.show && (
+          <line x1={L.nullLine.x} y1={RG.rowsTop} x2={L.nullLine.x} y2={RG.bandBottom} stroke={C.brd} strokeDasharray="4 3" />
+        )}
+        {L.rows.map((r) => {
+          const cy = r.markerY;
           return (
-            <g key={r.t2}>
-              <text x={4} y={y + 4} fontSize="12" fontWeight="600" fill={C.text}>{r.t2}</text>
-              <line x1={x(r.lo)} y1={y} x2={x(r.hi)} y2={y} stroke={C.acc} strokeWidth={2} />
-              <circle cx={x(r.est)} cy={y} r={4} fill={C.acc} />
-              <text x={W - 16} y={y + 4} textAnchor="end" fontSize="11" fill={C.sub}>{fx(r.est, r.lo, r.hi, isLog, prec)}</text>
+            <g key={r.id}>
+              <text x={CO.xName} y={r.y} fontSize={M.nameSize} fontWeight="600" fill={C.text}>{r.name}</text>
+              {!r.lo.off && !r.hi.off && <line x1={r.lo.x} y1={cy} x2={r.hi.x} y2={cy} stroke={C.acc} strokeWidth={2} />}
+              {endCap(r.lo, cy, 'lo')}
+              {endCap(r.hi, cy, 'hi')}
+              {!r.es.off && (r.es.clamped
+                ? <polygon fill={C.acc}
+                  points={r.es.clamped < 0
+                    ? `${r.es.x},${cy} ${r.es.x + 8},${cy - 4} ${r.es.x + 8},${cy + 4}`
+                    : `${r.es.x},${cy} ${r.es.x - 8},${cy - 4} ${r.es.x - 8},${cy + 4}`} />
+                : <circle cx={r.es.x} cy={cy} r={4} fill={C.acc} />)}
+              <text x={CO.xEff} y={r.y} fontSize={M.cellSize} fill={C.sub}>{r.esText}</text>
             </g>
           );
         })}
+        {/* Measure-aware axis (clinical ratio ticks / a 1-2-5 nice step), de-collided
+            against real label widths — the mini forest previously had no axis at all. */}
+        <line x1={CO.xPlot} y1={RG.axisY} x2={CO.xPlotEnd} y2={RG.axisY} stroke={C.sub} strokeWidth={1} />
+        {ticks.map((t) => (
+          <g key={`tk${t.v}`}>
+            <line x1={t.x} y1={RG.axisY} x2={t.x} y2={RG.axisY + 4} stroke={C.sub} strokeWidth={0.9} />
+            <text x={t.x} y={RG.tickLabelY} textAnchor="middle" fontSize={M.tickSize} fill={C.sub}>{t.label}</text>
+          </g>
+        ))}
+        {favours.show && (
+          <g>
+            <text x={favours.low.x} y={favours.y} textAnchor={favours.low.anchor} fontSize={M.favSize} fill={C.sub}>{favours.low.text}</text>
+            <text x={favours.high.x} y={favours.y} textAnchor={favours.high.anchor} fontSize={M.favSize} fill={C.sub}>{favours.high.text}</text>
+          </g>
+        )}
+        <text x={CO.xPlot + CO.plotW / 2} y={RG.axisLabelY} textAnchor="middle" fontSize={M.axisLabelSize} fontWeight={700} fill={C.text}>{axisLabel}</text>
       </svg>
+      <div style={{ fontSize: 12, color: C.sub, marginTop: 8 }}>
+        Each row is the network estimate of that treatment versus {result.reference}
+        {scale.isLog ? ' (pooled on the log scale; displayed values are back-transformed)' : ''}.
+      </div>
     </Card>
   );
 }

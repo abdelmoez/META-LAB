@@ -10,6 +10,16 @@
  * a gridline every 0.5 stored units (0.61 / 1.65 / 2.72 back-transformed "ticks")
  * and let the favours labels overflow into the neighbouring columns.
  *
+ * 116.md migrated the first two; 117.md §J.11 / §K.7 migrated the remaining two
+ * (closing 116.md §10.4), so ALL FOUR are now skins over this module. The last two
+ * are the reason `hasNull` is not a boolean convenience: both of them drew a
+ * dashed "null" line at stored 0 unconditionally, which is logit 0 (= 50%) for a
+ * single-arm PROPORTION — a measure with no no-effect value at all — and 0.0 for
+ * AUC, whose no-effect value is 0.5 and which cannot even reach 0.
+ * Neither renderer takes an `opts.metrics` pack from persisted project config:
+ * the public page is a frozen snapshot and the NMA mini forest is a fixed
+ * compact figure, so each passes a small literal pack and nothing else.
+ *
  * ── Contract ───────────────────────────────────────────────────────────────
  *   computeForestLayout(result, opts) -> layout | null
  *     result   a runMeta() result — RENDERED, never recomputed (116.md §124).
