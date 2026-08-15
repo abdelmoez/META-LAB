@@ -88,6 +88,62 @@ test.describe('Manuscript editor (flag ON)', () => {
     await expect(page.getByTestId('stitch-manuscript-save-status').first()).toContainText(/Saved/i, { timeout: 15_000 });
   });
 
+  /**
+   * 117.md §J.19 — leaving the page must not lose an edit that is still inside the
+   * two stacked debounces (600 ms editor field-patch queue → 800 ms shell blob
+   * autosave). Before this, an F5 within ~1.4 s of typing silently dropped it.
+   *
+   * The unload sequence is driven through a dispatched `beforeunload` rather than
+   * `page.reload()` ON PURPOSE: Playwright's navigation bypasses browser
+   * beforeunload dialogs by design (verified), so a real reload here would only ever
+   * exercise the racy tail of the fix, never the guard. Dispatching the event runs
+   * the SAME handler the browser runs, on a live page, against the real API — which
+   * is what this test can honestly prove: that the guard reports "pending", that it
+   * drains BOTH tiers, and that the text is on the server without waiting out either
+   * debounce. That the browser itself fires beforeunload is the browser's contract;
+   * the tier ordering and the trigger set are unit-tested (tests/unit/unloadFlush117).
+   */
+  test('117.md §J.19: an edit inside the autosave debounce is flushed on unload, and the browser is asked first', async ({ page, request, tmpProject }) => {
+    await openManuscript(page, tmpProject.id);
+    await page.getByTestId('stitch-manuscript-subtab-editor').click();
+    await page.getByTestId('stitch-manuscript-section-introduction').click();
+    const editor = page.getByTestId('stitch-manuscript-rich-editor');
+    await expect(editor).toBeVisible();
+
+    await editor.click();
+    const marker = `Unload flush marker ${Date.now()}`;
+    await page.keyboard.type(marker);
+
+    const fireBeforeUnload = () => page.evaluate(() => {
+      const e = new Event('beforeunload', { cancelable: true });
+      window.dispatchEvent(e);
+      return e.defaultPrevented;
+    });
+
+    // NO wait — both debounces are still armed. A save is genuinely pending, so the
+    // guard cancels the unload: in a real browser that IS the "Reload site?" prompt.
+    expect(await fireBeforeUnload()).toBe(true);
+
+    // …and the same handler drained the editor buffer into `upd` and then the shell's
+    // blob PUT, so the text is on the server without either debounce elapsing.
+    await expect(async () => {
+      const proj = await (await request.get(`/api/projects/${tmpProject.id}`)).json();
+      expect(JSON.stringify(proj.manuscripts || [])).toContain(marker);
+    }).toPass({ timeout: 15_000 });
+
+    // Nothing pending any more → an idle page must reload with no prompt at all.
+    await expect(async () => {
+      expect(await fireBeforeUnload()).toBe(false);
+    }).toPass({ timeout: 10_000 });
+
+    // And what was flushed is what the editor shows after a real reload.
+    await page.reload();
+    await expect(page.getByTestId('stitch-manuscript-workspace')).toBeVisible({ timeout: 20_000 });
+    await page.getByTestId('stitch-manuscript-subtab-editor').click();
+    await page.getByTestId('stitch-manuscript-section-introduction').click();
+    await expect(page.getByTestId('stitch-manuscript-rich-editor')).toContainText(marker, { timeout: 15_000 });
+  });
+
   test('Generate all drafts sections as formatted content — headings render as headings, not # tokens', async ({ page, tmpProject }) => {
     await openManuscript(page, tmpProject.id);
     await page.getByTestId('stitch-manuscript-subtab-editor').click();

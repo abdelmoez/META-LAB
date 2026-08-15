@@ -17,6 +17,8 @@ import {
   ASSET_KINDS, ASSET_KIND_IDS, ASSET_TOKEN_RE, PLAIN_MENTION_RE, assetKindLabel, assetKindOf,
   TABLE_CAPTION_LINE_RE, tableCaptionLine, findTableCaptions, collectManualTables,
   mintManualTableId, remintDuplicateCaptions, countAssetMentions,
+  // 117.md §J.15 — duplicate caption ids that only a non-editor writer can create.
+  collectDuplicateManualTableIds, sectionLabelOf,
   CAPTION_FORMATS, captionFormatFor, formatAssetLabel, formatCaptionPrefix, formatAssetCaption,
   resolveNumbering, renderAssetMarkers,
   computeManuscriptAssets, computePlacements, validateExport,
@@ -120,6 +122,49 @@ describe('117.md §4 — the manual-table caption grammar', () => {
     // a duplicate id resolves to its FIRST occurrence rather than numbering twice
     draft.sections.discussion.content = `${tableCaptionLine('ta', 'Copy')}\n\n${TBL}`;
     expect(collectManualTables(draft).map((t) => t.id)).toEqual(['ta', 'tb']);
+  });
+
+  /* 117.md §J.15 — the SAME first-wins rule, but SAID OUT LOUD. Unreachable from the
+     editor (paste re-mints, see §4d below); reachable from a hand-edited or imported
+     blob, which is exactly the population this collector describes. */
+  it('117.md §J.15: duplicate ids are collected with their count and DISTINCT sections', () => {
+    const draft = normalizeDraft(makeManuscriptDraft({}));
+    draft.sections.methods.content = `${tableCaptionLine('ta', 'First')}\n\n${TBL}`;
+    draft.sections.results.content = `${tableCaptionLine('tb', 'Unique')}\n\n${TBL}`;
+    // clean draft → nothing to report
+    expect(collectDuplicateManualTableIds(draft)).toEqual([]);
+
+    draft.sections.discussion.content = `${tableCaptionLine('ta', 'Copy')}\n\n${TBL}`;
+    expect(collectDuplicateManualTableIds(draft)).toEqual([
+      { id: 'ta', count: 2, sectionIds: ['methods', 'discussion'], sectionLabels: ['Methods', 'Discussion'] },
+    ]);
+
+    // three copies, two of them in one section → the section is named ONCE
+    draft.sections.results.content = `${tableCaptionLine('tb', 'A')}\n\n${TBL}\n\n${tableCaptionLine('tb', 'B')}\n\n${TBL}`;
+    const dup = collectDuplicateManualTableIds(draft);
+    expect(dup.map((d) => [d.id, d.count])).toEqual([['ta', 2], ['tb', 2]]);
+    expect(dup.find((d) => d.id === 'tb').sectionIds).toEqual(['results']);
+  });
+
+  it('117.md §J.15: reported in FIRST-OCCURRENCE document order, and the first copy is the one that numbers', () => {
+    const draft = normalizeDraft(makeManuscriptDraft({}));
+    draft.sections.discussion.content = `${tableCaptionLine('zz', 'Late')}\n\n${TBL}\n\n${tableCaptionLine('zz', 'Later')}\n\n${TBL}`;
+    draft.sections.introduction.content = `${tableCaptionLine('aa', 'Early')}\n\n${TBL}`;
+    draft.sections.methods.content = `${tableCaptionLine('aa', 'Again')}\n\n${TBL}`;
+    expect(collectDuplicateManualTableIds(draft).map((d) => d.id)).toEqual(['aa', 'zz']);
+    // and the registry still resolves each id to its first occurrence
+    expect(collectManualTables(draft).map((t) => t.title)).toEqual(['Early', 'Late']);
+  });
+
+  it('117.md §J.15: section labels fall back to the raw id for an unknown section', () => {
+    expect(sectionLabelOf('methods')).toBe('Methods');
+    expect(sectionLabelOf('conclusion')).toBe('Conclusions');
+    expect(sectionLabelOf('not-a-section')).toBe('not-a-section');
+    expect(sectionLabelOf(null)).toBe('');
+    // an ordered-sections array (the other accepted input shape) works too
+    expect(collectDuplicateManualTableIds([
+      { id: 'custom', content: `${tableCaptionLine('q1', 'A')}\n\n${TBL}\n\n${tableCaptionLine('q1', 'B')}\n\n${TBL}` },
+    ])).toEqual([{ id: 'q1', count: 2, sectionIds: ['custom'], sectionLabels: ['custom'] }]);
   });
 
   it('mints ids that satisfy the token grammar and avoid what is already used', () => {
@@ -381,6 +426,41 @@ describe('117.md §4 — normalizeDraft keeps tableMeta additive (snapshots patt
     expect(once).toBe(JSON.stringify(normalizeDraft(legacy)));
     expect(once).toBe(JSON.stringify(normalizeDraft(normalizeDraft(legacy))));
     expect(once).not.toContain('tableMeta');
+  });
+
+  /* 117.md §J.6 — ORPHAN ENTRIES, EVALUATED. Deleting a table as plain prose leaves
+     its side-metadata entry behind, and that orphan is the mechanism that lets ONE
+     native Ctrl+Z restore the table WITH its created/modified stamps. The narrow GC
+     that was proposed (strip orphans from prepareExport's exportDraft copy) is dead
+     code, and this is the evidence: the export model is byte-identical with and
+     without the orphan, because every reader iterates the LIVE caption markers and
+     looks each id up — an entry with no marker is never read. See the decision note
+     on useManuscript.setTableMeta. */
+  it('117.md §J.6: an ORPHAN tableMeta entry cannot change the export model', () => {
+    const base = normalizeDraft(makeManuscriptDraft({}));
+    base.sections.results.content = `${tableCaptionLine('live', 'Baseline characteristics')}\n\n${TBL}`;
+    base.tableMeta = { live: { createdAt: '2026-01-01T00:00:00.000Z' } };
+
+    const orphaned = normalizeDraft({
+      ...base,
+      // 'ghost' was deleted from the prose; its stamps survive for undo.
+      tableMeta: { ...base.tableMeta, ghost: { createdAt: '2020-01-01T00:00:00.000Z', notes: 'gone' } },
+    });
+
+    const model = (d) => {
+      const assets = computeManuscriptAssets(tinyProject(), d);
+      const numbering = resolveNumbering({ sections: d, assets });
+      const placements = computePlacements({ sections: d, numbering, assets });
+      return JSON.stringify({
+        assets,
+        byId: numbering.byId,
+        orderTables: numbering.orderTables,
+        validation: validateExport({ project: tinyProject(), draft: d, assets, numbering, placements }),
+      });
+    };
+    expect(model(orphaned)).toBe(model(base));
+    // …and the orphan is genuinely still there to be restored by undo.
+    expect(orphaned.tableMeta.ghost).toEqual({ createdAt: '2020-01-01T00:00:00.000Z', notes: 'gone' });
   });
 });
 

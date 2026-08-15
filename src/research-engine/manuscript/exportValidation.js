@@ -19,6 +19,8 @@
 
 import {
   orderedSections, TABLE_CAPTION_LINE_RE, assetKindLabel, ASSET_KIND_IDS,
+  // 117.md §J.15 — duplicate caption ids the editor could not have produced.
+  collectDuplicateManualTableIds,
 } from './refTokens.js';
 import { sectionBlocks } from './placement.js';
 // 117.md §39 — citation integrity reads the SAME usage scan the numbering and the
@@ -291,6 +293,18 @@ export function validateExport(args = {}) {
     }
   }
 
+  /* 117.md §J.15 — the SAME caption id used by two tables.
+     Only reachable from markdown assembled outside the editor (hand-edited blob,
+     import, API copy) — the editor re-mints on paste. First-wins is stated out loud
+     because that is what the researcher will otherwise experience as "one of my
+     tables lost its number and every reference to it points at the wrong table". */
+  for (const d of collectDuplicateManualTableIds(draft || [])) {
+    const where = d.sectionLabels.filter(Boolean).join(', ');
+    push(warnings, 'duplicate-table-id',
+      `Table id "${d.id}" is used by ${d.count} tables${where ? ` (${where})` : ''} — only the first one is numbered and cross-referenced; the others export as unnumbered tables.`,
+      'Delete the repeated caption line and re-add it with “+ Caption” in the editor, which mints a fresh id.');
+  }
+
   // Overall generated-content freshness (84.md computeFreshness rollup).
   if (freshness && (freshness.status === 'critical' || freshness.status === 'updates')) {
     push(warnings, 'stale-content',
@@ -299,12 +313,21 @@ export function validateExport(args = {}) {
   }
 
   // Manuscript save not settled → the exported file may miss the last edits' server copy.
+  // 117.md §J.13 — `saveState` is now the COMPOSED state (the editor's own ∘ the
+  // shell's real autosave), so 'conflict' can reach here: the server REFUSED this
+  // client's write and holds a different, newer copy. Exporting then produces a
+  // document that matches nothing on the server, which is a different warning from
+  // "still saving" and has a different fix.
   if (saveState != null && saveState !== 'saved') {
     push(warnings, 'pending-save',
-      saveState === 'error'
-        ? 'The last manuscript save FAILED — the server copy is behind your editor.'
-        : 'A manuscript save is still in progress.',
-      'Wait for the save indicator to show "Saved" (or retry the save) before exporting.');
+      saveState === 'conflict'
+        ? 'This manuscript was updated elsewhere and your last change was refused — the server copy differs from your editor.'
+        : saveState === 'error'
+          ? 'The last manuscript save FAILED — the server copy is behind your editor.'
+          : 'A manuscript save is still in progress.',
+      saveState === 'conflict'
+        ? 'Load the latest version before exporting, then re-apply anything that is missing.'
+        : 'Wait for the save indicator to show "Saved" (or retry the save) before exporting.');
   }
 
   // Live sources still loading → availability/numbers may change once settled.

@@ -56,6 +56,10 @@ import {
 // 108.md §§2-3, §22 — the project-wide interaction layer (history stacks + the ONE
 // shortcut router + the undo-feedback snackbar) and its header Undo/Redo pair.
 import ProjectInteractionProvider, { HistorySaveStatusWatch } from '../../history/ProjectInteractionProvider.jsx';
+// 117.md §J.13 — the doc's REAL autosave state, published to every engine below so a
+// tool's own save pill can never say "Saved" while this shell's blob PUT is still in
+// flight, has failed, or was refused by the CAS. Read seam only (shellSaveStatus.jsx).
+import { ShellSaveStatusProvider } from '../../storage/shellSaveStatus.jsx';
 import StitchHistoryControls from '../shell/StitchHistoryControls.jsx';
 import { historyScopeForStage } from '../../../research-engine/interaction/projectScopes.js';
 // 77.md §9 — isolate a stage/engine crash to its own card instead of blanking the whole
@@ -484,7 +488,10 @@ function DeepToolPage({ stage }) {
       : { background: S.card, borderRadius: 16, border: `1px solid ${salpha(S.outlineVariant, 0.45)}`, padding: 20, minHeight: 400 };
 
   return (
-    <>
+    /* 117.md §J.13 — one wrapper, every engine. The header badge a few lines above
+       reads the SAME `doc.saveStatus`, so a tool's own pill and this shell's chip are
+       now structurally incapable of disagreeing about whether the blob landed. */
+    <ShellSaveStatusProvider status={doc.saveStatus}>
     {/* 108.md §15 — `saveStatus === 'conflict'` means the blob CAS refused our write
         and this page reloaded the server's copy, which invalidates every blob-backed
         stack. The provider itself lives above this page (see StitchProjectWorkspace),
@@ -517,6 +524,6 @@ function DeepToolPage({ stage }) {
           precision={(project && project.analysisPrecision) || undefined} />
       </Suspense>
     </StitchAppShell>
-    </>
+    </ShellSaveStatusProvider>
   );
 }

@@ -194,6 +194,48 @@ export function collectManualTables(draftOrSections) {
   return out;
 }
 
+/** The human label for a canonical section id ('methods' → 'Methods'). Pure. */
+export function sectionLabelOf(sectionId) {
+  const s = SECTION_TYPES.find((x) => x.id === sectionId);
+  return s ? s.label : String(sectionId == null ? '' : sectionId);
+}
+
+/**
+ * 117.md §J.15 — caption ids that appear MORE THAN ONCE in a draft.
+ *
+ * `collectManualTables` resolves a duplicate id first-wins and says nothing, which is
+ * right for the registry (silently numbering one id twice would be worse) but leaves
+ * the researcher with a table that has no number and no working cross-reference, and
+ * no explanation. Inside the editor this is unreachable — a paste re-mints colliding
+ * ids (`remintDuplicateCaptions`, §4d). It becomes reachable when markdown is
+ * assembled OUTSIDE the editor: a hand-edited project blob, an import, a script, or a
+ * draft copied between projects through the API. That is exactly the population this
+ * scan exists for, so it reports rather than repairs: rewriting ids in a blob the
+ * researcher hand-authored would silently break whatever cross-references they wrote.
+ *
+ * @param {object|Array} draftOrSections a draft, or ordered [{id,content}]
+ * @returns {Array<{id:string, count:number, sectionIds:string[], sectionLabels:string[]}>}
+ *          duplicated ids only, in first-occurrence document order. Pure.
+ */
+export function collectDuplicateManualTableIds(draftOrSections) {
+  const order = [];
+  const byId = new Map();
+  for (const sec of orderedSections(draftOrSections || [])) {
+    const sid = (sec && sec.id) || '';
+    for (const c of findTableCaptions(sec && sec.content)) {
+      let e = byId.get(c.id);
+      if (!e) { e = { id: c.id, count: 0, sectionIds: [] }; byId.set(c.id, e); order.push(e); }
+      e.count += 1;
+      // Section list is DISTINCT and in document order: two copies in one section is
+      // a real case (a duplicated block), and "Methods, Methods" reads as a bug.
+      if (!e.sectionIds.includes(sid)) e.sectionIds.push(sid);
+    }
+  }
+  return order
+    .filter((e) => e.count > 1)
+    .map((e) => ({ ...e, sectionLabels: e.sectionIds.map(sectionLabelOf) }));
+}
+
 /* Monotonic within a process run — combined with a hash of the counter so ids look
    opaque, and always verified against the ids already in the document. */
 let _mintSeq = 0;

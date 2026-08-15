@@ -2216,8 +2216,28 @@ function ToolsGroup({ id, title, defaultOpen = false, children }) {
   );
 }
 
-/** UX-6: honest save pill — 'error' shows the failure and offers a retry. */
+/**
+ * UX-6: honest save pill — 'error' shows the failure and offers a retry.
+ *
+ * 117.md §J.13 — 'conflict' is the fourth state, and it arrives from the SHELL: the
+ * autosave compare-and-set refused this client's write because another tab or a
+ * collaborator saved first. Deliberately NO Retry — re-sending the divergent copy
+ * would 409 again (Stitch) or clobber the newer server copy (legacy). The action is
+ * to load the latest, which is what the shell's own banner/badge offers, so the pill
+ * says which way to go instead of growing a second, competing affordance.
+ */
 export function SaveStatusPill({ saveState, lastError, onRetry }) {
+  if (saveState === 'conflict') {
+    return (
+      <span
+        data-testid="stitch-manuscript-save-status"
+        title="Another tab or collaborator saved first, so this change was refused. Load the latest version before editing further."
+        style={tagS('red')}
+      >
+        Updated elsewhere — not saved
+      </span>
+    );
+  }
   if (saveState === 'error') {
     return (
       <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>

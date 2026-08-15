@@ -122,6 +122,19 @@ describe('validateExport — warnings', () => {
     expect(codes(run(assets, secs, { saveState: 'saved' }).warnings)).not.toContain('pending-save');
   });
 
+  // 117.md §J.13 — `saveState` is the COMPOSED state now (editor ∘ shell), so the
+  // fourth value reaches this validator. A refused write is not "still saving": the
+  // server holds a DIFFERENT copy, and the fix is to load it, not to wait.
+  it('117.md §J.13: conflict → pending-save warning that names the refusal, not a wait', () => {
+    const assets = [A('table:study', 'table')];
+    const v = run(assets, [sec('results', '[[table:study]]')], { saveState: 'conflict' });
+    const w = v.warnings.find((x) => x.code === 'pending-save');
+    expect(w).toBeTruthy();
+    expect(w.message).toBe('This manuscript was updated elsewhere and your last change was refused — the server copy differs from your editor.');
+    expect(w.action).toBe('Load the latest version before exporting, then re-apply anything that is missing.');
+    expect(w.message).not.toContain('still in progress');
+  });
+
   it('sources not settled → warning; settled → none', () => {
     const assets = [A('table:study', 'table')];
     const secs = [sec('results', '[[table:study]]')];
@@ -192,6 +205,40 @@ describe('validateExport — info', () => {
     // empty NMA dataset stays silent
     const quiet = run(assets, [sec('results', 'x')], { project: { nma: { sm: 'OR', studies: [] } } });
     expect(codes(quiet.info)).not.toContain('unsupported-figure-kinds');
+  });
+
+  /* ── 117.md §J.15 — duplicate [[tblcap:id]] ids from OUTSIDE the editor ────────
+     The editor re-mints on paste, so these blobs come from hand edits, imports or an
+     API copy. First-wins numbering is correct but silent, which reads to the
+     researcher as "one of my tables lost its number". The warning states the id, how
+     many tables share it, which sections they are in, and that the first one wins. */
+  it('117.md §J.15: one caption id on two tables → duplicate-table-id warning naming id, count, sections', () => {
+    const assets = [A('table:study', 'table')];
+    const v = run(assets, [
+      sec('methods', '[[tblcap:t1]] Search terms\n\n| a |\n| --- |\n| 1 |'),
+      sec('results', 'text\n\n[[tblcap:t1]] Baseline characteristics\n\n| b |\n| --- |\n| 2 |'),
+    ]);
+    const w = v.warnings.find((x) => x.code === 'duplicate-table-id');
+    expect(w).toBeTruthy();
+    expect(w.message).toBe('Table id "t1" is used by 2 tables (Methods, Results) — only the first one is numbered and cross-referenced; the others export as unnumbered tables.');
+    expect(w.action).toBe('Delete the repeated caption line and re-add it with “+ Caption” in the editor, which mints a fresh id.');
+  });
+
+  it('117.md §J.15: two copies inside ONE section name that section once, and count all copies', () => {
+    const v = run([A('table:study', 'table')], [
+      sec('results', '[[tblcap:t9]] A\n\n| a |\n| --- |\n| 1 |\n\n[[tblcap:t9]] B\n\n| b |\n| --- |\n| 2 |\n\n[[tblcap:t9]] C\n\n| c |\n| --- |\n| 3 |'),
+    ]);
+    const w = v.warnings.find((x) => x.code === 'duplicate-table-id');
+    expect(w.message).toContain('used by 3 tables (Results)');
+    expect(w.message).not.toContain('Results, Results');
+  });
+
+  it('117.md §J.15: distinct ids stay silent (the editor-minted normal case)', () => {
+    const v = run([A('table:study', 'table')], [
+      sec('methods', '[[tblcap:t1]] A\n\n| a |\n| --- |\n| 1 |'),
+      sec('results', '[[tblcap:t2]] B\n\n| b |\n| --- |\n| 2 |'),
+    ]);
+    expect(codes(v.warnings)).not.toContain('duplicate-table-id');
   });
 
   it('every entry carries {code, message, action}', () => {

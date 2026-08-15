@@ -19,6 +19,10 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { api } from '../../api-client/apiClient.js';
 import { useRealtime } from '../../hooks/useRealtime.js';
+// 117.md §J.19 — the shared page-lifecycle flush registry. This hook joins it at the
+// SHELL tier: editor buffers (tier BUFFER) drain into `upd` first, then this one
+// sends the blob they just re-armed. See unloadFlush.js for the full rationale.
+import { useUnloadFlush, FLUSH_TIER } from '../../storage/unloadFlush.js';
 
 const DEBOUNCE_MS = 800;
 
@@ -77,7 +81,15 @@ export function useStitchProjectDoc(projectId) {
   // this client with itself. The chain guarantees each PUT sees the baseline the
   // previous response established (same discipline as useModuleState).
   const sendChainRef = useRef(Promise.resolve());
+  // 117.md §J.19 — how many PUTs are outstanding. A scheduled debounce is not the
+  // only unsaved state: a request in flight is not durable either, so both count as
+  // "pending" for the unload guard (the same semantics serverStorage's
+  // `hasPendingSave` has always had in the legacy shell). Counted from ENQUEUE, not
+  // from the moment `run` starts, so a send waiting its turn on the serialization
+  // chain can never read as "nothing outstanding" in the gap between two links.
+  const inFlightRef = useRef(0);
   const persist = useCallback((blob) => {
+    inFlightRef.current += 1;
     const run = async () => {
       setSaveStatus('saving');
       try {
@@ -94,6 +106,8 @@ export function useStitchProjectDoc(projectId) {
           return;
         }
         setSaveStatus('error');
+      } finally {
+        inFlightRef.current = Math.max(0, inFlightRef.current - 1);
       }
     };
     const next = sendChainRef.current.then(run, run);
@@ -113,6 +127,17 @@ export function useStitchProjectDoc(projectId) {
 
   // Flush any pending write on unmount so navigation never drops an edit.
   useEffect(() => () => { if (timerRef.current) { clearTimeout(timerRef.current); if (projectRef.current) api.projects.autosave(projectId, { ...projectRef.current, _baseRev: baselineRef.current != null ? baselineRef.current : undefined }).catch(() => {}); } }, [projectId]);
+
+  /* 117.md §J.19 — …and the case unmount can never cover: a RELOAD or a tab switch.
+     An F5 tears the document down without unmounting a single component, so the
+     effect above never runs and the armed 800 ms debounce died with the page. The
+     shared registry hangs this flush on beforeunload / pagehide / visibilitychange,
+     and (only when something really is pending) lets the browser ask before the
+     page goes. `hasPending` counts the debounce AND the in-flight PUT. */
+  const hasPendingWrite = useCallback(() => timerRef.current != null || inFlightRef.current > 0, []);
+  useUnloadFlush({
+    id: 'stitch-project-doc', tier: FLUSH_TIER.SHELL, hasPending: hasPendingWrite, flush,
+  });
 
   // The canonical write choke point — the native equivalent of the legacy
   // workspace's `updateProject(id, updater)` (Workspace.jsx). The monolith tab

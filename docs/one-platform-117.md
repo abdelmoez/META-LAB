@@ -233,10 +233,14 @@ that broke author-format idempotence for PubMed-form names).
 5. The reference-library overlay writes whole-value via `upd` — last-writer-wins between
    collaborators (matches every other blob field today; a per-op endpoint is the upgrade).
 6. `draft.tableMeta` entries orphan when a table is deleted by plain text deletion (inert;
-   enables undo restore; only the confirm-dialog path GC's them).
+   enables undo restore; only the confirm-dialog path GC's them). **Evaluated in v4.24.0
+   and deliberately KEPT — see §K3.**
 7. Manual-table titles lag ~600ms in the picker/panel (prose is immediate); the caption
-   title is a nested contenteditable island — its native-undo semantics need the (written,
-   unexecuted) e2e pass.
+   title is a nested contenteditable island, ~~whose native-undo semantics need the
+   (written, unexecuted) e2e pass~~. **The caveat is STALE as of v4.24.0: the
+   table-objects e2e has since run green in-browser (§78 create → renumber → cite →
+   delete → undo, 3/3 chromium), so the nested-title undo semantics ARE verified.
+   Only the ~600ms picker/panel lag remains.**
 8. Override-vs-diagram divergence is by design: the flow figure always draws records; the
    counts table/narrative honour the override, with an explicit warning naming the split.
    The journal ZIP is consistently override-free (no draft context).
@@ -248,12 +252,14 @@ that broke author-format idempotence for PubMed-form names).
     (116 §10.4 carry-over) — presentation controls do not reach them.
 12. Forest §81 reload-persistence e2e is skipped pending an analysis-data fixture (the
     file's own documented gap); unit + SSR cover the persistence path.
-13. Manuscript save-status honesty seam (pre-existing): `upd` returns synchronously, so a
-    failed blob PUT can briefly show "Saved" (documented in useManuscript's header).
+13. ~~Manuscript save-status honesty seam (pre-existing): `upd` returns synchronously, so a
+    failed blob PUT can briefly show "Saved" (documented in useManuscript's header).~~
+    **CLOSED in v4.24.0 — see §K3.**
 14. §51 fields kept (see §A.7) — the Definition-of-Done items "Denominator Population /
     Action Status removed cleanly" are deliberately NOT checked, with the evidence above.
-15. Duplicate `[[tblcap]]` ids created OUTSIDE the editor (hand-edited blobs) resolve
-    first-wins with no warning.
+15. ~~Duplicate `[[tblcap]]` ids created OUTSIDE the editor (hand-edited blobs) resolve
+    first-wins with no warning.~~ **CLOSED in v4.24.0 — still first-wins (correct), but no
+    longer silent: an exportValidation WARNING names it. See §K3.**
 16. A merged-away DERIVED reference still appears in the "hidden references" card with a
     Restore button; restoring it resurrects it beside its survivor (the alias stops
     applying once the id is back). Found during e2e debugging; not yet fixed.
@@ -263,8 +269,11 @@ that broke author-format idempotence for PubMed-form names).
 18. Firefox @smoke PDF spec cannot pass on THIS machine (environmental binary-MIME stall in
     Playwright-Firefox, proven pre-117); `e2e/extraction/pecan-engine.spec.ts:315` fails on
     chromium at HEAD and at the pre-117 baseline alike — pre-existing, out of 117's scope.
-19. Reload can outrun the 800ms shell autosave debounce (unload-time fetch may be
-    cancelled) — an immediate F5 after an edit can lose it; pre-existing shell seam.
+19. ~~Reload can outrun the 800ms shell autosave debounce (unload-time fetch may be
+    cancelled) — an immediate F5 after an edit can lose it; pre-existing shell seam.~~
+    **CLOSED in v4.24.0 (both shells; the loss was ~1.4 s, not 800 ms — see §K3), with a
+    documented residual window: a user who answers the new prompt with "Leave" can still
+    outrun the in-flight PUT by one RTT.**
 
 ## K2. v4.23.0 addendum — limitations solved after the first push
 
@@ -286,6 +295,100 @@ meta-analysis e2e 5 passed/4 skipped; two pre-existing environmental e2e failure
 re-verified at baseline (public-synthesis flag-gate on the stale server; screening
 end-key flake passes isolated). New visible copy: both rebased renderers print the
 platform-standard `0.80 [0.64, 1.01]` effect cell (engine measures what it prints).
+
+## K3. v4.24.0 addendum — the save/persistence honesty pass
+
+Closed: **§J.13**, **§J.19**, **§J.15**. Evaluated and deliberately NOT changed: **§J.6**.
+Retired as stale: **§J.7**'s "unverified outside e2e" caveat. Two new modules
+(`src/frontend/storage/shellSaveStatus.jsx`, `src/frontend/storage/unloadFlush.js`); neither
+shell's own save logic was modified.
+
+**§J.13 — the manuscript could say "Saved" when nothing had been saved.** `upd(field,value)`
+is synchronous and returns `undefined`, so `useManuscript.persist` could only ever report
+that the SHELL had accepted the write, never that the server had it: a failed or
+CAS-refused blob PUT surfaced ~800 ms later in the shell's own indicator, while the
+manuscript pill still read "Saved" (and in Focus Mode the shell's indicator is not even on
+screen). The fix is a READ seam, not a second save path. `useShellSaveStatus()` resolves
+whichever channel the hosting shell publishes — Stitch's `useStitchProjectDoc.saveStatus`
+(now threaded through a one-line `<ShellSaveStatusProvider>` in StitchProjectWorkspace, the
+same value its header chip renders) or, with no provider, serverStorage's
+`subscribeToSaveStatus` + the `metalab:autosave-conflict` window event (so the legacy
+monolith needed no edit at all; the hook only reaches for serverStorage when
+`window.storage` proves the bridge is installed). `composeSaveState(local, shell)` is the
+whole policy and it is pure: **conflict > error > saving > saved** — a refused write can
+never be dressed as retryable or as saved; a local failure is not masked by a later shell
+success; 'saving' fires when EITHER the editor's 600 ms field-patch queue or the shell's
+blob write is outstanding; and `composeSaveState(x, null) === x`, so a surface with no
+shell channel (SSR, unit tests, a future shell) behaves exactly as it did before. The
+composed value also feeds `saveStateRef`, so `prepareExport`'s validation sees the real
+state instead of the optimistic one. **New visible copy:** the pill's fourth state
+`Updated elsewhere — not saved` (title: "Another tab or collaborator saved first, so this
+change was refused. Load the latest version before editing further.") — deliberately with
+NO Retry, because re-sending a divergent copy either 409s again or clobbers the newer
+server copy; and exportValidation's `pending-save` warning gains a conflict wording ("…your
+last change was refused — the server copy differs from your editor" / "Load the latest
+version before exporting…"). Retry itself became honest: when the failure was the SHELL's
+there is no `lastFailed` list, so it now re-persists the committed manuscripts list rather
+than merely clearing the pill.
+
+**§J.19 — the loss window was ~1.4 s, not 800 ms.** Two debounces stack: the editor's
+600 ms field-patch queue feeds `upd`, which arms the shell's 800 ms blob autosave. Both
+flushed on UNMOUNT, and a reload unmounts nothing — so an F5 shortly after typing dropped
+the edit in both shells. `fetch(keepalive)` was considered and REJECTED on measurement: its
+body cap is 64 KB per origin and the payload is the entire project blob (studies, records,
+every draft, plus each `draft.snapshots` full-section copy). The dev database (n = 8 328
+projects) gives median 789 B / max 13.4 KB / none over 64 KB — but every row there is a
+synthetic fixture, so that measurement cannot rule the cap out for a real review, and a
+transport that silently drops the write once a project grows is a worse failure than the
+one being fixed. No blocking sync XHR either. Instead `unloadFlush.js` hangs three triggers
+off ONE registry: `visibilitychange`→hidden (tab switch / minimise / phone lock — the page
+stays alive, so this flush is a completely ordinary request and is the trigger that fires
+most), `pagehide` (bfcache / Safari, the same event SearchBuilderTab already uses), and
+`beforeunload` — which, ONLY when a save is genuinely pending, flushes AND calls
+`preventDefault()` so the browser shows its own "Reload site?" prompt; the flush runs while
+that dialog stands, which is what gives an uncapped normal fetch time to land. Participants
+register by TIER because ordering is load-bearing: the manuscript's patch queue (BUFFER)
+must drain into `upd` BEFORE the shell (SHELL) sends the blob it just re-armed — two plain
+listeners would have run in mount order and flushed an empty shell queue. `hasPending`
+counts the debounce AND the in-flight PUT in both shells. **Residual window, stated in
+code:** answering the prompt with "Leave" tears the tab down and can cancel the in-flight
+PUT (~1 RTT — no longer SILENT, which was the actual defect); a programmatic navigation
+skips the dialog by design (Playwright's `page.reload()` does — verified — which is why the
+e2e drives a dispatched `beforeunload` instead of a reload); a crash fires nothing.
+
+**§J.15 — duplicate `[[tblcap:id]]` ids are no longer silent.** First-wins stays (it is the
+right resolution), but `collectDuplicateManualTableIds` now feeds an exportValidation
+WARNING `duplicate-table-id` naming the id, the number of tables sharing it, the sections
+they sit in, and the consequence: *only the first one is numbered and cross-referenced; the
+others export as unnumbered tables*, with the fix being to re-add the caption via "+ Caption"
+(which mints a fresh id). Unreachable from the editor — paste re-mints — so this covers
+hand-edited blobs, imports and API copies only.
+
+**§J.6 — evaluated, and the orphan STAYS.** `draft.tableMeta` entries survive when a table
+is deleted as plain prose, and that is the mechanism, not a leak: identity lives in the
+prose precisely so ONE native Ctrl+Z restores the table WITH its created/modified stamps,
+which the surviving entry is what supplies. Any GC of the working draft breaks undo. The
+narrow alternative — GC only inside `prepareExport`'s `exportDraft` copy — was rejected as
+DEAD CODE rather than as unsafe: `computeManuscriptAssets` iterates
+`collectManualTables(draft)` (live caption markers) and looks each id up, so an orphan is
+never read; the .docx builder never touches `tableMeta`; and the reproducibility ZIP
+carries no draft JSON. A regression test pins the evidence — the whole export model
+(assets, numbering, placements, validation) is byte-identical with and without an orphan.
+The decision is recorded at the seam (`useManuscript.setTableMeta`) so it is not
+re-litigated.
+
+Verification: unit **556 files / 10 949 tests** green (554/10 905 before; +2 files,
++44 tests); manuscript e2e **21/21 chromium** (20/20 before, +1 for §J.19); focus + rob +
+smoke re-run green (36 passed / 2 skipped, one rob JBI flake that passed on retry) to
+confirm the new beforeunload guard changes no existing navigation. NOT green, and NOT
+caused by this work: the nine `e2e/projects/projects.spec.ts` cases now fail on an
+ENVIRONMENTAL condition — this machine's dev database has accumulated **8 328** projects
+(overwhelmingly leftover `E2E Tmp …` fixtures), so `GET /api/projects` returns **21.8 MB in
+~6 s** and the Stitch dashboard needs **~32 s** (measured) to paint its KPI cards against
+the spec's 10 s expect. StitchDashboard imports none of the modules touched here, and the
+failure snapshot is a stuck "Loading your workspace…" state. Also still failing at
+baseline: `projects/public-synthesis.spec.ts` flag-gate against the stale pre-117 server
+(§J.1, already recorded in §K2).
 
 ## K. Recommended Follow-up Improvements
 

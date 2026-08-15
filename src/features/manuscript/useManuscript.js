@@ -109,6 +109,15 @@ import { screeningApi } from '../../frontend/screening/api-client/screeningApi.j
 // 117.md §22 (r2) — audit actors come from the signed-in user, not a phantom
 // `project._me` key nothing ever wrote. Optional: SSR tests have no provider.
 import { useOptionalAuth } from '../../frontend/context/AuthContext.jsx';
+// 117.md §J.13 — the shell's REAL save channel (Stitch context / legacy serverStorage
+// pub-sub + conflict event) and the pure precedence rule that composes it with this
+// hook's own state. Both resolve to "no opinion" outside a shell, so SSR and the unit
+// suites keep the pre-117 behaviour byte for byte.
+import { useShellSaveStatus, composeSaveState } from '../../frontend/storage/shellSaveStatus.jsx';
+// 117.md §J.19 — this hook joins the page-lifecycle flush registry at the BUFFER
+// tier: its 600 ms field-patch queue must drain into `upd` BEFORE the shell sends the
+// blob, which is exactly what the tier ordering guarantees.
+import { useUnloadFlush, FLUSH_TIER } from '../../frontend/storage/unloadFlush.js';
 import { shouldReloadForRecordPoke } from '../prisma/inspectorModel.js';
 import * as MS from './manuscriptState.js';
 import {
@@ -129,8 +138,35 @@ export function useManuscript(project, upd) {
   const [localSeed, setLocalSeed] = useState(null); // read-only fallback (upd is a no-op)
   const [saveState, setSaveState] = useState('saved'); // 'saved' | 'saving' | 'error' (UX-6)
   const [lastError, setLastError] = useState(null);
-  const saveStateRef = useRef(saveState);
-  useEffect(() => { saveStateRef.current = saveState; });
+
+  /* ══════════ 117.md §J.13 — THE SAVE-STATUS HONESTY SEAM ══════════
+   *
+   * `upd` is synchronous and returns undefined, so `persist` below can only report
+   * that the write was ACCEPTED by the shell, never that it LANDED. The pill was
+   * therefore able to read "Saved" while the shell's debounced blob PUT was still in
+   * flight, had failed, or had been refused by the autosave compare-and-set — the
+   * failure existed, but only in the shell's own separate indicator.
+   *
+   * The fix is a subscription, not a new save path: `useShellSaveStatus` resolves
+   * whichever channel this shell publishes and `composeSaveState` is the pure
+   * precedence rule (conflict > error > saving > saved). Local 'saving' from typing
+   * is KEPT as-is — a flush really is pending, so it was never the dishonest half.
+   *
+   * `saveStateRef` now carries the COMPOSED state, because that is what the export
+   * validator must see: exporting on top of a refused/failed save is precisely the
+   * "your .docx is ahead of the server" case its `pending-save` warning is for.
+   */
+  const shellSave = useShellSaveStatus();
+  const shellSaveStatus = shellSave.status;
+  const effectiveSaveState = composeSaveState(saveState, shellSaveStatus);
+  const effectiveLastError = lastError
+    || (shellSaveStatus === 'error' && effectiveSaveState === 'error'
+      ? 'The project autosave failed — your last manuscript change is not on the server.'
+      : null);
+  // Render-assigned (the repo's ref convention): prepareExport is user-triggered and
+  // must read the state as of the render the user was looking at, not one behind.
+  const saveStateRef = useRef(effectiveSaveState);
+  saveStateRef.current = effectiveSaveState;
 
   // Refs to the freshest committed values (avoid stale-closure writes).
   const projectRef = useRef(project);
@@ -201,9 +237,22 @@ export function useManuscript(project, upd) {
     }
   }, [upd]);
 
+  /* 117.md §J.13 — Retry has to be a real write attempt now that the pill can show a
+     failure the manuscript never saw. When `upd` itself threw there is a `lastFailed`
+     list to replay; when the SHELL's blob PUT failed there is not — the manuscript's
+     own write was accepted — so we re-persist what is committed right now, which
+     re-arms the shell's debounce and sends the blob again. (Retry is deliberately NOT
+     offered for 'conflict': the local copy lost the compare-and-set, and re-sending it
+     would either 409 again or clobber the newer server copy.) */
   const retry = useCallback(() => {
-    const list = lastFailed.current;
-    if (!list) { setSaveState('saved'); setLastError(null); return; }
+    const list = lastFailed.current || readManuscripts(projectRef.current);
+    // Nothing this hook has ever written → there is nothing to re-send, and writing
+    // `manuscripts: []` into a project that never had the key would break the
+    // byte-stability rule for a button press. (A DELIBERATELY emptied list is a real
+    // write and still retries — that is why `lastFailed` is checked, not `length`.)
+    if (!lastFailed.current && (!Array.isArray(list) || !list.length)) {
+      setSaveState('saved'); setLastError(null); return;
+    }
     setSaveState('saving');
     persist(list);
   }, [persist]);
@@ -250,6 +299,17 @@ export function useManuscript(project, upd) {
 
   // Flush exactly once on real unmount.
   useEffect(() => () => { flushRef.current(); }, []);
+
+  /* 117.md §J.19 — and once more on the paths that are NOT an unmount: a reload, a
+     tab switch, a phone locking. The unmount effect above never runs for any of them,
+     so up to 600 ms of typing used to die before it even reached `upd`. BUFFER tier:
+     this flush WRITES INTO the shell, so the registry runs it before the shell's own
+     (whose debounce it has just re-armed). See storage/unloadFlush.js. */
+  const hasPendingEdits = useCallback(() => pending.current != null, []);
+  const flushOnUnload = useCallback(() => { flushRef.current(); }, []);
+  useUnloadFlush({
+    id: 'manuscript-edits', tier: FLUSH_TIER.BUFFER, hasPending: hasPendingEdits, flush: flushOnUnload,
+  });
 
   const queueEdit = useCallback((draftId, kind, key, value) => {
     if (!draftId) return;
@@ -1344,6 +1404,26 @@ export function useManuscript(project, upd) {
    * Additive and self-cleaning: an entry whose fields are all empty is deleted, and
    * the container disappears with the last entry, so a draft that never had a
    * manual table normalizes byte-identically to before this feature existed.
+   *
+   * ── 117.md §J.6 — ORPHAN ENTRIES: EVALUATED, DELIBERATELY NOT COLLECTED ──
+   * Deleting a table as plain prose (select the caption line + the pipe rows, Delete)
+   * removes the marker but not this entry. That orphan is not a leak, it is the
+   * mechanism: the caption marker lives in the prose precisely so ONE native Ctrl+Z
+   * restores the table WITH its identity, and the entry surviving in the meantime is
+   * what lets the restored table come back with its created/modified stamps intact.
+   * Any GC of the WORKING draft therefore breaks undo, which is the whole reason §4
+   * put identity in the prose.
+   *
+   * The narrow alternative — GC only inside `prepareExport`'s `exportDraft` copy —
+   * was evaluated and rejected as dead code, not as unsafe: nothing on the export
+   * path can observe an orphan. `computeManuscriptAssets` iterates
+   * `collectManualTables(draft)` (live caption markers only) and looks each id up in
+   * this map, so an entry with no marker is never read; the .docx builder never
+   * touches `tableMeta`; and the reproducibility ZIP carries no draft JSON at all
+   * (manuscriptRepro.js emits .docx + CSV/SVG/PNG + manifest). A GC pass there would
+   * produce a byte-identical export while adding a code path a future reader has to
+   * re-derive the harmlessness of. The honest cost of the orphan is a few dozen bytes
+   * of blob per hand-deleted table; the honest benefit is that undo keeps working.
    */
   const setTableMeta = useCallback((tableId, patch) => {
     if (!tableId || !patch) return;
@@ -1896,7 +1976,11 @@ export function useManuscript(project, upd) {
 
   return {
     drafts: effectiveDrafts, activeDraft, activeId, setActiveId,
-    saveState, lastError, retry,
+    /* 117.md §J.13 — the COMPOSED state (this hook ∘ the shell's real one) is what
+       the pill renders; `shellSaveStatus` is exposed beside it so a panel can name
+       the channel without re-deriving the rule. */
+    saveState: effectiveSaveState, lastError: effectiveLastError, retry,
+    shellSaveStatus,
     runMeta,
     gradeByOutcome,
     prismaCounts, primary, tables, references, readiness, insights, staleness,

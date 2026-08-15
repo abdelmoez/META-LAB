@@ -8,7 +8,11 @@
 
 import { useState, useEffect, useCallback } from 'react';
 import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
-import { subscribeToSaveStatus } from '../storage/serverStorage.js';
+import { subscribeToSaveStatus, hasPendingSave, flushStorage } from '../storage/serverStorage.js';
+// 117.md §J.19 — the legacy monolith's half of the page-lifecycle flush. The
+// debounce lives in serverStorage (so `flushStorage` can drain it); all this shell
+// has to do is join the shared registry at the SHELL tier. See unloadFlush.js.
+import { useUnloadFlush, FLUSH_TIER } from '../storage/unloadFlush.js';
 import MetaLab from '../workspace/Workspace.jsx';
 import { C, MONO } from '../theme/tokens.js';
 
@@ -52,6 +56,14 @@ export default function AppWorkspace() {
 
   // Subscribe to autosave events from serverStorage
   useEffect(() => subscribeToSaveStatus(setSaveStatus), []);
+
+  // 117.md §J.19 — reload/tab-switch flush. `hasPendingSave()` already reports the
+  // debounce AND the in-flight batch, and `flushStorage()` is already the "send it
+  // now" path used before logout — so this is pure wiring, with no change to the
+  // monolith's own save logic.
+  useUnloadFlush({
+    id: 'legacy-server-storage', tier: FLUSH_TIER.SHELL, hasPending: hasPendingSave, flush: flushStorage,
+  });
 
   return (
     <>
