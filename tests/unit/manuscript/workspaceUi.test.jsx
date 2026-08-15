@@ -122,57 +122,14 @@ describe('OverviewPanel — per-section status grid', () => {
   });
 });
 
-describe('OverviewPanel — data sources card', () => {
-  it('reports honest availability per source', () => {
-    const m = mockM(fiveStateDraft(), {
-      dataStatus: { screening: 'ok', search: 'off', rob: 'error', grade: 'ok', pecan: 'ok' },
-      robAssessments: null,
-      gradeByOutcome: { 'MACE|||': 'Moderate' },
-      perSource: { pubmed: { records: 120 } },
-    });
-    const html = renderToStaticMarkup(<OverviewPanel m={m} exporters={mockExporters} onOpenSection={noop} />);
-    expect(html).toContain('data-testid="stitch-manuscript-data-sources"');
-    expect(html).toContain('Linked — live PRISMA counts');
-    expect(html).toContain('Not enabled — the search table uses the Search tab entries.');
-    expect(html).toContain('Could not load assessments');
-    expect(html).toContain('1 outcome rating');
-    expect(html).toContain('latest completed run');
-    noAI(html);
-  });
-
-  it('unlinked screening explains the manual fallback', () => {
-    const html = renderToStaticMarkup(
-      <OverviewPanel m={mockM(fiveStateDraft())} exporters={mockExporters} onOpenSection={noop} />,
-    );
-    expect(html).toContain('Not linked — counts fall back to manual PRISMA entries.');
-  });
-});
-
-describe('OverviewPanel — consistency card', () => {
-  it('lists findings with severity words and per-finding Open buttons', () => {
-    const m = mockM(fiveStateDraft(), {
-      consistency: [
-        { id: 'estimator-mismatch', severity: 'warn', section: 'methods', message: 'Methods mentions a different estimator.' },
-        { id: 'references-empty', severity: 'info', section: 'references', message: 'Reference list is empty.' },
-      ],
-    });
-    const html = renderToStaticMarkup(<OverviewPanel m={m} exporters={mockExporters} onOpenSection={noop} />);
-    expect(html).toContain('data-testid="stitch-manuscript-consistency"');
-    expect(html).toContain('Check');
-    expect(html).toContain('Note');
-    expect(html).toContain('Methods mentions a different estimator.');
-    expect(html).toContain('data-testid="stitch-manuscript-consistency-open-estimator-mismatch"');
-    expect(html).toContain('data-testid="stitch-manuscript-consistency-open-references-empty"');
-    noAI(html);
-  });
-
-  it('renders a calm all-clear when there are no findings', () => {
-    const html = renderToStaticMarkup(
-      <OverviewPanel m={mockM(fiveStateDraft())} exporters={mockExporters} onOpenSection={noop} />,
-    );
-    expect(html).toContain('No inconsistencies detected');
-  });
-});
+/* 118.md §28-§40 — the Overview's data-sources and consistency surfaces were
+   REDESIGNED (and extracted to ManuscriptOverview.jsx): the availability card is now
+   the "Connected project data" row group, and consistency findings live inside
+   "Needs attention" with their jump-to-section actions intact. Their contracts —
+   honest fallback copy, failed sources, the jump buttons — are covered in
+   tests/unit/manuscript/overview118.test.jsx. What stays here is what this file has
+   always pinned: that the panel mounts, that the hero replaces the structure summary
+   when nothing is drafted, and that the row statuses are correct. */
 
 describe('EditorPanel — lock, provenance, outdated, tools groups', () => {
   it('locked title section: Locked chip, aria-pressed toggle, disabled input + generation', () => {
