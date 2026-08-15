@@ -19,13 +19,17 @@ import {
   explainKeys, SECTION_DEPENDENCIES,
   // 85.md B2 — structured asset references (tokens ↔ live numbering).
   assetToken,
+  // 117.md §4-§11 — cross-reference counting + the ONE caption/label formatter.
+  countAssetMentions, formatAssetLabel, assetKindLabel,
   // 101.md §34 — locate the section that states a given project fact.
   factToken,
   // 117.md §21/§22 — the ONE registry of overridable PRISMA boxes + its labels, so
   // the panel, the counts adapter and the audit log cannot list different fields.
   PRISMA_OVERRIDE_FIELDS, prismaOverrideLabel,
 } from '../../research-engine/manuscript/index.js';
-import { RichSectionEditor, RichToolbar, RICH_EDITOR_CSS } from './richEditor/RichSectionEditor.jsx';
+import {
+  RichSectionEditor, RichToolbar, RICH_EDITOR_CSS, CrossRefPicker, CrossRefList,
+} from './richEditor/RichSectionEditor.jsx';
 // 101.md §34 — the optional "recent manuscript updates" panel paired with Show Changes.
 import { ChangeTrackingPanel } from './ChangeTrackingPanel.jsx';
 // 102.md §2/§5 — the manual-field counter, prev/next controls and section list.
@@ -908,7 +912,7 @@ const TABLE_CTL_OPS = [
   { op: 'deleteTable', glyph: '✕ Table', aria: 'Delete table', danger: true },
 ];
 
-export function TableContextBar({ ctx, pageEl, getApi }) {
+export function TableContextBar({ ctx, pageEl, getApi, onDeleteTable, onAddCaption }) {
   if (!ctx || !ctx.rect || !pageEl || typeof pageEl.getBoundingClientRect !== 'function') return null;
   const pr = pageEl.getBoundingClientRect();
   // Anchor above the table's top-right corner; clamp inside the page so a table
@@ -916,6 +920,10 @@ export function TableContextBar({ ctx, pageEl, getApi }) {
   const top = Math.max(ctx.rect.top - pr.top - 34, 2);
   const right = Math.max(pr.right - ctx.rect.right, 8);
   const run = (op) => {
+    // 117.md §11 — deleting a table is the one op that can break other people's
+    // sentences, so it is routed to the parent, which counts the cross-references
+    // first and asks. Every other op is immediate, as before.
+    if (op === 'deleteTable' && onDeleteTable) { onDeleteTable(ctx); return; }
     const api = getApi && getApi();
     if (api && api.tableOp) api.tableOp(op);
   };
@@ -927,6 +935,25 @@ export function TableContextBar({ ctx, pageEl, getApi }) {
         background: C.card, border: `1px solid ${C.brd}`, borderRadius: 8,
         boxShadow: '0 4px 14px rgba(15,23,42,0.14)', whiteSpace: 'nowrap',
       }}>
+      {/* 117.md §4 — an older, anonymous pipe table can be promoted to a numbered
+          object in one click. Without this the export notice ("add a caption to
+          number it") would be advice with no control behind it. */}
+      {!ctx.tableId && (
+        <button type="button" aria-label="Add table caption" title="Give this table a number and a title"
+          data-testid="stitch-manuscript-table-op-addCaption"
+          onMouseDown={(e) => e.preventDefault()}
+          onClick={() => {
+            const api = getApi && getApi();
+            const id = api && api.addTableCaption && api.addTableCaption();
+            if (id && onAddCaption) onAddCaption(id);
+          }}
+          style={{
+            ...btnS('ghost'), padding: '3px 7px', fontSize: 10.5,
+            border: '1px solid transparent', background: 'transparent', color: C.acc, fontWeight: 700,
+          }}>
+          + Caption
+        </button>
+      )}
       {TABLE_CTL_OPS.map((b) => (
         <button key={b.op} type="button" aria-label={b.aria} title={b.aria}
           data-testid={`stitch-manuscript-table-op-${b.op}`}
@@ -946,7 +973,154 @@ export function TableContextBar({ ctx, pageEl, getApi }) {
   );
 }
 
-export function EditorPanel({ m, exporters, sectionRequest }) {
+/* ════════════ 117.md §10/§11 — cross-reference chip surfaces ════════════
+ *
+ * The chip lives inside a contentEditable; its popovers cannot. Both of these are
+ * rendered by the PANEL, absolutely positioned inside the paper page (which is
+ * position:relative), anchored to the rect the editor reported. Nothing here
+ * touches the document — actions call back into the editor's imperative API, which
+ * mutates through the same execCommand path as typing, so native undo still owns
+ * the history.
+ */
+const popoverBox = {
+  position: 'absolute', zIndex: 6, background: C.card, border: `1px solid ${C.brd}`,
+  borderRadius: 8, boxShadow: '0 8px 22px rgba(15,23,42,0.18)',
+};
+
+/** Anchor a popover under a chip rect, clamped inside the page. */
+function anchorUnder(rect, pageEl, width) {
+  if (!rect || !pageEl || typeof pageEl.getBoundingClientRect !== 'function') return null;
+  const pr = pageEl.getBoundingClientRect();
+  const top = (rect.bottom == null ? rect.top : rect.bottom) - pr.top + 6;
+  const maxLeft = Math.max(4, (pr.width || 0) - width - 8);
+  const left = Math.max(4, Math.min((rect.left || 0) - pr.left, maxLeft));
+  return { top, left };
+}
+
+export function fmtWhen(iso) {
+  if (!iso) return '';
+  try { return new Date(iso).toLocaleString(); } catch { return ''; }
+}
+
+/** §10 — hover preview: number, title, origin, last modified when known. */
+export function AssetRefHoverCard({ info, asset, pageEl }) {
+  const pos = info && anchorUnder(info.rect, pageEl, 260);
+  if (!info || !pos) return null;
+  const when = asset && (asset.updatedAt || asset.createdAt);
+  return (
+    <div data-testid="stitch-manuscript-xref-hover" role="tooltip"
+      style={{ ...popoverBox, top: pos.top, left: pos.left, width: 260, padding: '8px 10px', pointerEvents: 'none' }}>
+      <div style={{ fontSize: 11, fontWeight: 700, color: info.broken ? C.red : C.acc, marginBottom: 2 }}>
+        {info.label}
+      </div>
+      <div style={{ fontSize: 11.5, color: C.txt, lineHeight: 1.45 }}>
+        {info.broken
+          ? 'This table or figure no longer exists in the manuscript.'
+          : ((asset && (asset.title || asset.defaultCaption)) || info.id)}
+      </div>
+      {!info.broken && (
+        <div style={{ marginTop: 5, display: 'flex', gap: 8, flexWrap: 'wrap', fontSize: 10, color: C.muted }}>
+          <span>{asset && asset.origin === 'manual' ? 'Manual table' : 'Generated from project data'}</span>
+          {when && <span>Last modified {fmtWhen(when)}</span>}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** §10/§11 — the chip action menu (and the §11 relink picker it can open). */
+export function AssetRefMenu({
+  info, asset, pageEl, relinkItems, relinking,
+  onGo, onEdit, onRemove, onStartRelink, onRelink, onClose,
+}) {
+  const pos = info && anchorUnder(info.rect, pageEl, relinking ? 288 : 210);
+  if (!info || !pos) return null;
+  const btn = {
+    ...btnS('ghost'), width: '100%', justifyContent: 'flex-start', fontSize: 11.5,
+    padding: '5px 8px', border: '1px solid transparent', background: 'transparent',
+  };
+  return (
+    <>
+      <div onMouseDown={(e) => { e.preventDefault(); onClose && onClose(); }}
+        style={{ position: 'fixed', inset: 0, zIndex: 5, background: 'transparent' }} />
+      <div role="dialog" aria-label="Cross-reference actions"
+        data-testid="stitch-manuscript-xref-menu"
+        onMouseDown={(e) => e.preventDefault()}
+        style={{ ...popoverBox, top: pos.top, left: pos.left, width: relinking ? 288 : 210, padding: 8 }}>
+        <div style={{ fontSize: 10, letterSpacing: 0.4, textTransform: 'uppercase', color: C.muted, padding: '0 4px 5px' }}>
+          {info.broken ? 'Broken reference' : info.label}
+        </div>
+        {relinking ? (
+          <CrossRefList items={relinkItems || []} onPick={onRelink}
+            testIdPrefix="stitch-manuscript-xref-relink" autoFocus />
+        ) : (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
+            {!info.broken && (
+              <button type="button" style={btn} data-testid="stitch-manuscript-xref-goto"
+                onClick={onGo}>Go to {assetKindLabel(info.id).toLowerCase()}</button>
+            )}
+            {!info.broken && (
+              <button type="button" style={btn} data-testid="stitch-manuscript-xref-edit"
+                onClick={onEdit}>Edit {assetKindLabel(info.id).toLowerCase()}</button>
+            )}
+            <button type="button" style={btn} data-testid="stitch-manuscript-xref-relink-open"
+              onClick={onStartRelink}>Relink to another object…</button>
+            <button type="button" style={{ ...btn, color: C.red }}
+              data-testid="stitch-manuscript-xref-remove"
+              onClick={onRemove}>Remove cross-reference</button>
+            <div style={{ fontSize: 10, color: C.muted, padding: '4px 6px 1px', lineHeight: 1.45 }}>
+              Removing the reference leaves the {assetKindLabel(info.id).toLowerCase()} itself untouched.
+            </div>
+          </div>
+        )}
+      </div>
+    </>
+  );
+}
+
+/**
+ * 117.md §11 — the delete confirmation for a table that is cited.
+ *
+ * It states the exact count (the sentence §11 asks for), and it says out loud that
+ * Ctrl+Z brings everything back — which is TRUE here precisely because the table,
+ * its caption and its identity are all one stretch of prose on the native undo
+ * stack. Deleting is still allowed: the researcher is warned, not blocked.
+ */
+export const TABLE_DELETE_UNDO_NOTE = 'Press Ctrl+Z (Cmd+Z) right after deleting to restore the table, its caption and its references.';
+
+export function TableDeleteDialog({ info, onConfirm, onCancel }) {
+  if (!info) return null;
+  const n = info.count || 0;
+  return (
+    <div role="dialog" aria-modal="true" aria-label="Delete table"
+      data-testid="stitch-manuscript-table-delete-confirm"
+      style={{
+        position: 'fixed', inset: 0, zIndex: 60, display: 'flex', alignItems: 'center',
+        justifyContent: 'center', background: 'rgba(15,23,42,0.35)', padding: 16,
+      }}>
+      <div style={{ background: C.card, border: `1px solid ${C.brd}`, borderRadius: 12, padding: 18, maxWidth: 420, width: '100%' }}>
+        <h3 style={{ margin: '0 0 8px', fontSize: 14, fontWeight: 700, color: C.txt }}>
+          Delete {info.label || 'this table'}?
+        </h3>
+        <p style={{ margin: '0 0 6px', fontSize: 12.5, color: C.txt2, lineHeight: 1.55 }}>
+          This table is referenced {n} time{n === 1 ? '' : 's'} in the manuscript.
+          {' '}Those references will show as broken until you relink or remove them.
+        </p>
+        <p style={{ margin: '0 0 14px', fontSize: 11.5, color: C.muted, lineHeight: 1.5 }}>
+          {TABLE_DELETE_UNDO_NOTE}
+        </p>
+        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+          <button onClick={onCancel} data-testid="stitch-manuscript-table-delete-cancel"
+            style={{ ...btnS('ghost'), fontSize: 11.5 }}>Keep table</button>
+          <button onClick={onConfirm} data-testid="stitch-manuscript-table-delete-confirm-btn"
+            style={{ ...btnS('danger'), fontSize: 11.5 }}>Delete anyway</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+export function EditorPanel({ m, exporters, sectionRequest, onOpenAssetPanel }) {
   const [sel, setSel] = useState('title');
   const [genNotice, setGenNotice] = useState(null); // { only:null|[id], skipped:[...], skippedLocked:[...] }
   const [toolsOpen, setToolsOpen] = useState(true);
@@ -1005,10 +1179,56 @@ export function EditorPanel({ m, exporters, sectionRequest }) {
   // until the live sources resolve, availability (and therefore numbers) may
   // still change, so chips read 'Table …' instead of flickering through numbers.
   const pendingAssetNumbers = useMemo(() => ({ get: () => '…' }), []);
-  const assetNumbers = m.sourcesSettled === false
-    ? pendingAssetNumbers
-    : ((m.assetNumbering && m.assetNumbering.byId) || null);
+  const settled = m.sourcesSettled !== false;
+  const assetNumbers = settled
+    ? ((m.assetNumbering && m.assetNumbering.byId) || null)
+    : pendingAssetNumbers;
   const availableAssets = (m.assets || []).filter((a) => a.available);
+
+  /* ══════════ 117.md §9/§10/§11 — the cross-reference surface ══════════ */
+  // The registry id set is passed to the editor ONLY once the live sources settle:
+  // before that, availability (and therefore the registry) can still change, and
+  // accusing an honest reference of being deleted for one frame would be worse
+  // than showing it unnumbered for one frame.
+  const knownAssetIds = settled ? (m.knownAssetIds || null) : null;
+  const assetById = useMemo(() => {
+    const map = new Map();
+    for (const a of (m.assets || [])) {
+      map.set(a.id, a);
+      for (const al of (a.aliasIds || [])) if (!map.has(al)) map.set(al, a);
+    }
+    return map;
+  }, [m.assets]);
+  // Every object a researcher can reference, labelled the way they see it.
+  const crossRefItems = useMemo(() => (m.assets || [])
+    .filter((a) => a.available)
+    .map((a) => ({
+      id: a.id,
+      kind: a.kind,
+      origin: a.origin || 'auto',
+      title: a.title || a.defaultCaption || a.id,
+      label: assetNumberLabel(m, a),
+    })), [m.assets, m.assetNumbering, m.sourcesSettled]); // eslint-disable-line react-hooks/exhaustive-deps
+  // Manual-table ids from EVERY section, so a table pasted from another section
+  // still mints a fresh id instead of colliding (§4d).
+  const existingTableIds = useMemo(
+    () => (m.manualTables || []).map((a) => a.manualId).filter(Boolean),
+    [m.manualTables],
+  );
+
+  const [chipMenu, setChipMenu] = useState(null);   // {id,label,broken,rect}
+  const [chipHover, setChipHover] = useState(null);
+  const [relinking, setRelinking] = useState(false);
+  const [tableDelete, setTableDelete] = useState(null); // {tableId,label,count}
+  // A section switch invalidates every anchored popover (the rects are gone).
+  useEffect(() => { setChipMenu(null); setChipHover(null); setRelinking(false); setTableDelete(null); }, [sel, m.activeId, lastGen]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const closeChipMenu = () => {
+    const api = getApi();
+    if (api && api.clearActiveCrossRef) api.clearActiveCrossRef();
+    setChipMenu(null);
+    setRelinking(false);
+  };
 
   // MS-11: derive sub-entries from headings at render time — no model change.
   const outline = useMemo(() => {
@@ -1037,6 +1257,28 @@ export function EditorPanel({ m, exporters, sectionRequest }) {
    * id we stamped would not survive.
    */
   const pendingRevealRef = useRef(null);
+  // 117.md §10 — the same across-remount carrier for "Go to table" / "Edit table"
+  // when the target lives in another section.
+  const pendingTableRevealRef = useRef(null);
+  useEffect(() => {
+    const t = pendingTableRevealRef.current;
+    if (!t || t.sectionId !== sel) return undefined;
+    let tries = 0;
+    let timer = null;
+    const attempt = () => {
+      if (pendingTableRevealRef.current !== t) return;
+      const api = mainApi.current;
+      const done = api && (t.edit
+        ? (api.editManualTable && api.editManualTable(t.id))
+        : (api.focusManualTable && api.focusManualTable(t.id)));
+      if (done) { pendingTableRevealRef.current = null; return; }
+      tries += 1;
+      if (tries < 10) timer = setTimeout(attempt, 24);
+      else pendingTableRevealRef.current = null; // give up quietly
+    };
+    timer = setTimeout(attempt, 0);
+    return () => { if (timer) clearTimeout(timer); };
+  }, [sel]);
 
   const revealInCurrentSection = (p) => {
     const api = mainApi.current;
@@ -1156,11 +1398,79 @@ export function EditorPanel({ m, exporters, sectionRequest }) {
     const api = getApi();
     if (api) api.insertMarkdown(studySelectionParagraph(m.prismaCounts, { assetRefs: !!m.draftUsesTokens }));
   };
-  // 85.md B2 — insert a live [[table:…]]/[[figure:…]] reference at the caret.
+  // 85.md B2 / 117.md §9 — insert a live [[table:…]]/[[figure:…]] reference AT THE
+  // CARET as an inline chip (insertMarkdown would splice a block and split the
+  // sentence being written).
   const insertAssetRef = (assetId) => {
     if (locked || !assetId) return;
     const api = getApi();
-    if (api) api.insertMarkdown(assetToken(assetId));
+    if (!api) return;
+    if (api.insertAssetRef) api.insertAssetRef(assetId);
+    else api.insertMarkdown(assetToken(assetId)); // abstract subfields, older handles
+  };
+
+  /* ── 117.md §10/§11 — chip menu actions ── */
+  const chipAsset = chipMenu ? (assetById.get(chipMenu.id) || null) : null;
+  const hoverAsset = chipHover ? (assetById.get(chipHover.id) || null) : null;
+
+  const goToAsset = (assetId) => {
+    const a = assetById.get(assetId) || null;
+    if (a && a.origin === 'manual') {
+      const api = mainApi.current;
+      // Same section → scroll + highlight. Different section → switch, then the
+      // effect below retries once the new editor's handle exists.
+      if (api && api.focusManualTable && api.focusManualTable(a.manualId)) return;
+      if (a.sectionId && a.sectionId !== sel) { pendingTableRevealRef.current = { id: a.manualId, sectionId: a.sectionId, edit: false }; switchTo(a.sectionId); }
+      return;
+    }
+    // A generated object has no place in the prose — its panel IS the object.
+    if (onOpenAssetPanel) onOpenAssetPanel(a && a.kind === 'figure' ? 'figures' : 'tables');
+  };
+
+  const editAsset = (assetId) => {
+    const a = assetById.get(assetId) || null;
+    if (a && a.origin === 'manual') {
+      const api = mainApi.current;
+      if (api && api.editManualTable && api.editManualTable(a.manualId)) return;
+      if (a.sectionId && a.sectionId !== sel) { pendingTableRevealRef.current = { id: a.manualId, sectionId: a.sectionId, edit: true }; switchTo(a.sectionId); }
+      return;
+    }
+    if (onOpenAssetPanel) onOpenAssetPanel(a && a.kind === 'figure' ? 'figures' : 'tables');
+  };
+
+  const removeChipRef = () => {
+    const api = getApi();
+    if (api && api.removeCrossRef) api.removeCrossRef();
+    setChipMenu(null);
+    setRelinking(false);
+  };
+
+  const relinkChipRef = (assetId) => {
+    const api = getApi();
+    if (api && api.relinkCrossRef) api.relinkCrossRef(assetId);
+    setChipMenu(null);
+    setRelinking(false);
+  };
+
+  /* ── 117.md §11 — delete a table that other sentences point at ── */
+  const askDeleteTable = (ctx) => {
+    const tableId = ctx && ctx.tableId;
+    const api = getApi();
+    if (!tableId) { if (api && api.tableOp) api.tableOp('deleteTable'); return; }
+    const count = countAssetMentions(m.activeDraft, `table:${tableId}`);
+    if (!count) { if (api && api.tableOp) api.tableOp('deleteTable'); return; }
+    const a = assetById.get(`table:${tableId}`) || null;
+    setTableDelete({ tableId, count, label: a ? assetNumberLabel(m, a) : 'this table' });
+  };
+
+  const confirmDeleteTable = () => {
+    const api = getApi();
+    if (api && api.tableOp) api.tableOp('deleteTable');
+    // The prose is the source of truth: the caption goes with the table, so the
+    // side-metadata entry must go too (undo restores the prose; a stale stamp for
+    // a table that no longer exists would just be noise).
+    if (tableDelete && m.setTableMeta) m.setTableMeta(tableDelete.tableId, { createdAt: null, updatedAt: null, origin: null });
+    setTableDelete(null);
   };
 
   const status = sectionStatus(section);
@@ -1179,6 +1489,8 @@ export function EditorPanel({ m, exporters, sectionRequest }) {
   return (
     <div data-testid="stitch-manuscript-editor" style={{ display: 'flex', gap: 18, alignItems: 'flex-start', flexWrap: 'wrap' }}>
       <style>{RICH_EDITOR_CSS}</style>
+      {/* 117.md §11 — deleting a cited table warns first, then allows it. */}
+      <TableDeleteDialog info={tableDelete} onConfirm={confirmDeleteTable} onCancel={() => setTableDelete(null)} />
 
       {/* ── left: outline ── */}
       <div style={{ width: 216, flexShrink: 0, minWidth: 180, flex: '0 1 216px' }}>
@@ -1351,7 +1663,11 @@ export function EditorPanel({ m, exporters, sectionRequest }) {
             />
           </div>
         ) : null}
-        {!isTitle && <RichToolbar getApi={getApi} citeRefs={citeRefs} refLabel={refLabel} disabled={locked} />}
+        {!isTitle && (
+          <RichToolbar getApi={getApi} citeRefs={citeRefs} refLabel={refLabel} disabled={locked}
+            /* 117.md §9 — Insert → Cross-reference, at the caret, with search. */
+            crossRefs={crossRefItems} onInsertCrossRef={insertAssetRef} />
+        )}
 
         <div style={{ display: 'flex', justifyContent: 'center' }}>
           {/* position:relative anchors the 116.md §61 floating table controls */}
@@ -1384,6 +1700,8 @@ export function EditorPanel({ m, exporters, sectionRequest }) {
             ) : isAbstract ? (
               <AbstractEditor value={pageValue} templateId={m.activeDraft.templateId} orderMap={orderMap}
                 assetNumbers={assetNumbers}
+                // 117.md §8/§11 — same registry + caption template as the body sections.
+                knownAssetIds={knownAssetIds} captionTemplateId={m.activeDraft.templateId}
                 resetKey={resetKey} onChange={onType} onActivate={setActive} readOnly={locked} />
             ) : (
               <RichSectionEditor key={resetKey} ref={mainApi} value={pageValue} orderMap={orderMap}
@@ -1409,12 +1727,35 @@ export function EditorPanel({ m, exporters, sectionRequest }) {
                 // 116.md §61 — report the caret's table context for the floating
                 // table controls (never while locked: no edits are possible).
                 onTableFocus={locked ? null : setTableCtx}
+                // 117.md §4/§8/§10/§11 — the manuscript-object layer.
+                knownAssetIds={knownAssetIds}
+                templateId={m.activeDraft.templateId}
+                existingTableIds={existingTableIds}
+                onAssetChipMenu={(info) => { setChipHover(null); setRelinking(false); setChipMenu(info); }}
+                onAssetChipHover={setChipHover}
+                onTableMeta={m.setTableMeta}
                 ariaLabel={(SECTION_TYPES.find((s) => s.id === sel) || {}).label || 'Section'}
                 placeholder="Write this section here, or generate it from your project data. Use the toolbar for headings, lists and citations." />
             )}
             {/* 116.md §61/§62 — floating row/col/table ops while the caret is in a table */}
             {!isTitle && !isAbstract && !locked && tableCtx && (
-              <TableContextBar ctx={tableCtx} pageEl={pageRef.current} getApi={getApi} />
+              <TableContextBar ctx={tableCtx} pageEl={pageRef.current} getApi={getApi}
+                onDeleteTable={askDeleteTable} />
+            )}
+            {/* 117.md §10 — hover preview, suppressed while the action menu is open */}
+            {!isTitle && !chipMenu && chipHover && (
+              <AssetRefHoverCard info={chipHover} asset={hoverAsset} pageEl={pageRef.current} />
+            )}
+            {/* 117.md §10/§11 — the chip action menu (and its relink picker) */}
+            {!isTitle && chipMenu && (
+              <AssetRefMenu info={chipMenu} asset={chipAsset} pageEl={pageRef.current}
+                relinking={relinking} relinkItems={crossRefItems}
+                onGo={() => { const id = chipMenu.id; closeChipMenu(); goToAsset(id); }}
+                onEdit={() => { const id = chipMenu.id; closeChipMenu(); editAsset(id); }}
+                onStartRelink={() => setRelinking(true)}
+                onRelink={relinkChipRef}
+                onRemove={removeChipRef}
+                onClose={closeChipMenu} />
             )}
           </div>
         </div>
@@ -1478,18 +1819,15 @@ export function EditorPanel({ m, exporters, sectionRequest }) {
                 style={{ ...btnS('ghost'), justifyContent: 'center', opacity: (isTitle || locked) ? 0.5 : 1 }}>
                 <Icon name="flow" size={12} /> Insert PRISMA summary
               </button>
+              {/* 117.md §9 — the Tools entry point to the SAME picker the toolbar
+                  uses (search + number + origin, inserted at the caret). It
+                  replaces the old bare <select>, which had no search, could not
+                  show a number, and spliced a block into the sentence. */}
               {availableAssets.length > 0 && (
-                <select value="" disabled={isTitle || locked}
-                  aria-label="Insert table or figure reference"
-                  title="Insert a live reference to a table or figure at the cursor"
-                  data-testid="stitch-manuscript-tools-insert-asset"
-                  onChange={(e) => { insertAssetRef(e.target.value); e.target.value = ''; }}
-                  style={{ ...inp, cursor: (isTitle || locked) ? 'default' : 'pointer', fontSize: 11, paddingRight: 22, opacity: (isTitle || locked) ? 0.5 : 1 }}>
-                  <option value="">+ Reference a table/figure…</option>
-                  {availableAssets.map((a) => (
-                    <option key={a.id} value={a.id}>{assetNumberLabel(m, a)} — {a.title || a.id}</option>
-                  ))}
-                </select>
+                <CrossRefPicker items={crossRefItems} disabled={isTitle || locked} block
+                  testIdPrefix="stitch-manuscript-tools-crossref"
+                  label="⧉ Reference a table/figure…"
+                  onPick={insertAssetRef} />
               )}
             </div>
           </ToolsGroup>
@@ -1692,13 +2030,16 @@ function fmtTime(iso) { try { return iso ? new Date(iso).toLocaleString() : 'Not
 
 const assetTestSlug = (id) => String(id).replace(/:/g, '-');
 
-/** Live number chip text — gated on sourcesSettled so numbers never flicker. */
+/** Live number chip text — gated on sourcesSettled so numbers never flicker.
+    117.md §8 — the visible label comes from the caption formatter seam, so the
+    panel, the editor chip and the Word caption can never word a number differently. */
 export function assetNumberLabel(m, asset) {
-  const word = asset.kind === 'figure' ? 'Figure' : 'Table';
+  const word = assetKindLabel(asset.kind);
   if (m.sourcesSettled === false) return `${word} …`;
   const byId = (m.assetNumbering && m.assetNumbering.byId) || {};
   const n = byId[asset.id];
-  return n == null ? 'Not in export' : `${word} ${n}`;
+  if (n == null) return 'Not in export';
+  return formatAssetLabel(asset.kind, n, { templateId: (m.activeDraft && m.activeDraft.templateId) || null });
 }
 
 /** One asset's controls: number, editable title/caption(/legend), include toggle,
@@ -1708,6 +2049,9 @@ function AssetControls({ m, asset, buf, commit, onInsertNotice }) {
   const slug = assetTestSlug(asset.id);
   const ov = (buf && buf[asset.id]) || {};
   const numbering = m.assetNumbering || {};
+  // 117.md §4 — a MANUAL table is prose. It cannot be "excluded" (that would mean
+  // deleting text), and its title is not an override — see the Title field below.
+  const isManual = asset.origin === 'manual';
   const mentioned = !!(numbering.mentioned && numbering.mentioned.has && numbering.mentioned.has(asset.id));
   const autoIncluded = !!(numbering.autoIncluded && numbering.autoIncluded.has && numbering.autoIncluded.has(asset.id));
   // Optimistic: the buffered override wins so the toggle responds instantly
@@ -1730,16 +2074,18 @@ function AssetControls({ m, asset, buf, commit, onInsertNotice }) {
         <span data-testid={`stitch-manuscript-asset-number-${slug}`}
           style={tagS(numLabel.startsWith('Not') ? 'gray' : 'blue')}>{numLabel}</span>
         <span style={tagS(asset.available ? 'green' : 'gray')}>{asset.available ? 'Available' : 'No data'}</span>
+        {isManual && <span style={tagS('purple')} title="Typed in the manuscript, not generated from project data">In the text</span>}
         {asset.stale && <span style={tagS('yellow')}>Stale</span>}
         {mentioned
           ? <span style={tagS('purple')} title={autoIncluded ? 'Included because the text references it' : 'Referenced in the text'}>Referenced in text</span>
           : <span style={{ fontSize: 10.5, color: C.muted }}>Not referenced in the text</span>}
         <span style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 10 }}>
-          <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 11.5, color: C.txt2, cursor: asset.available ? 'pointer' : 'not-allowed' }}
-            title={!asset.available ? 'No data yet — nothing to include'
-              : mentioned ? 'Referenced in the text — remove the reference to exclude it' : 'Include this in the Word export'}>
+          <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 11.5, color: C.txt2, cursor: (asset.available && !isManual) ? 'pointer' : 'not-allowed' }}
+            title={isManual ? 'This table is part of the manuscript text — delete it in the Editor to remove it'
+              : !asset.available ? 'No data yet — nothing to include'
+                : mentioned ? 'Referenced in the text — remove the reference to exclude it' : 'Include this in the Word export'}>
             <input type="checkbox" checked={includedNow}
-              disabled={!asset.available || mentioned}
+              disabled={!asset.available || mentioned || isManual}
               data-testid={`stitch-manuscript-asset-include-${slug}`}
               onChange={(e) => patch({ included: e.target.checked })}
               aria-label={`Include ${asset.title || asset.id} in the export`} />
@@ -1756,12 +2102,28 @@ function AssetControls({ m, asset, buf, commit, onInsertNotice }) {
       <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
         {/* Title = the "{Table|Figure} N. Title" caption line; Caption = its own
             paragraph exported UNDER that line (it is never merged into the title). */}
-        <Labeled label="Title" style={{ flex: '1 1 220px' }}>
-          <input value={ov.title || ''} placeholder={asset.title || 'Title…'}
-            onChange={(e) => patch({ title: e.target.value })}
-            aria-label={`${asset.title || asset.id} title override`}
-            data-testid={`stitch-manuscript-asset-title-${slug}`} style={inp} />
-        </Labeled>
+        {isManual ? (
+          // 117.md §4 — a manual table's title IS its caption line in the page, and
+          // the page is the source of truth. Offering a second title field here
+          // would create two answers to one question, so this states where the
+          // title lives instead of quietly shadowing it.
+          <Labeled label="Title" style={{ flex: '1 1 220px' }}>
+            <div data-testid={`stitch-manuscript-asset-title-prose-${slug}`}
+              style={{ fontSize: 11.5, color: C.txt2, lineHeight: 1.5 }}>
+              {asset.title || <span style={{ color: C.muted }}>Untitled</span>}
+              <div style={{ fontSize: 10.5, color: C.muted, marginTop: 2 }}>
+                Edit this table&rsquo;s title in its caption, in the Editor.
+              </div>
+            </div>
+          </Labeled>
+        ) : (
+          <Labeled label="Title" style={{ flex: '1 1 220px' }}>
+            <input value={ov.title || ''} placeholder={asset.title || 'Title…'}
+              onChange={(e) => patch({ title: e.target.value })}
+              aria-label={`${asset.title || asset.id} title override`}
+              data-testid={`stitch-manuscript-asset-title-${slug}`} style={inp} />
+          </Labeled>
+        )}
         <Labeled label="Caption" style={{ flex: '2 1 260px' }}>
           <textarea value={ov.caption || ''}
             placeholder={`Optional caption exported under the “${asset.kind === 'figure' ? 'Figure' : 'Table'} N. Title” line…`}
@@ -1819,12 +2181,15 @@ export function TablesPanel({ m }) {
         </button>
       </div>
       {tableAssets.map((asset) => {
-        const t = m.tables[asset.builderId];
+        const isManual = asset.origin === 'manual';
+        const t = isManual ? null : m.tables[asset.builderId];
         const st = (t && m.staleness[t.id]) || {};
         return (
           <Card key={asset.id} style={{ marginBottom: 16 }}>
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, marginBottom: 10, flexWrap: 'wrap' }}>
-              <h3 style={{ margin: 0, fontSize: 13.5, fontWeight: 700, color: C.txt }}>{asset.title || (t && t.title)}</h3>
+              <h3 style={{ margin: 0, fontSize: 13.5, fontWeight: 700, color: C.txt }}>
+                {asset.title || (t && t.title) || 'Untitled table'}
+              </h3>
               {t && (
                 <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
                   <span style={{ fontSize: 10.5, color: C.muted }}>Last refreshed: {fmtTime(st.lastRefreshedAt)}</span>
@@ -1836,7 +2201,16 @@ export function TablesPanel({ m }) {
             </div>
             <AssetControls m={m} asset={asset} buf={buf} commit={commit} onInsertNotice={setNotice} />
             <div style={{ marginTop: 10 }}>
-              <DataTable table={t} />
+              {/* 117.md §4 — a manual table's CONTENT lives in the manuscript text.
+                  Rendering a second, editable copy here would create a second place
+                  to change it; this panel owns its metadata, the Editor owns it. */}
+              {isManual ? (
+                <div data-testid={`stitch-manuscript-asset-manual-${assetTestSlug(asset.id)}`}
+                  style={{ fontSize: 11.5, color: C.muted, lineHeight: 1.6 }}>
+                  Typed in the {(SECTION_TYPES.find((s) => s.id === asset.sectionId) || {}).label || 'manuscript'} section —
+                  edit its rows and its title there. It is numbered with the generated tables and exports with a caption.
+                </div>
+              ) : <DataTable table={t} />}
             </div>
             {((t && t.warnings) || []).map((w, i) => <InfoBox key={i} color={C.yel}>{w}</InfoBox>)}
           </Card>
@@ -2142,6 +2516,9 @@ export function PrismaPanel({ m, exporters }) {
               <thead>
                 <tr>
                   <th style={cellTh}>When</th>
+                  {/* 117.md §22 (r2) — the mandated actor column; '—' for entries
+                      written before an authenticated session was available. */}
+                  <th style={cellTh}>By</th>
                   <th style={cellTh}>Field</th>
                   <th style={cellTh}>Automated</th>
                   <th style={cellTh}>Change</th>
@@ -2151,6 +2528,7 @@ export function PrismaPanel({ m, exporters }) {
                 {log.map((e, i) => (
                   <tr key={i}>
                     <td style={cellTd}>{fmtLogTime(e.at)}</td>
+                    <td style={cellTd}>{e.by || '—'}</td>
                     <td style={cellTd}>{prismaOverrideLabel(e.field)}</td>
                     <td style={cellTd}>{e.auto == null ? '—' : String(e.auto)}</td>
                     <td style={cellTd}>

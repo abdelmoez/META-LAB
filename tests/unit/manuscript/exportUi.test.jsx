@@ -171,13 +171,18 @@ describe('RichSectionEditor — asset chips carry live numbers', () => {
 });
 
 describe('EditorPanel — insert-reference tool lists available assets', () => {
-  it('renders the asset picker with numbered labels', () => {
+  // 117.md §9 re-pin — the bare <select> became a searchable cross-reference
+  // PICKER (number + title + origin, inserted at the caret). Its popover only
+  // exists after a click, so the first paint carries the opener, not the list.
+  it('renders the cross-reference picker opener in the Tools panel', () => {
     const m = assetsMockM();
     const html = renderToStaticMarkup(<EditorPanel m={m} exporters={{
       onExportWord: noop, onExportRepro: noop, onPrismaChecklist: noop, onPrismaSChecklist: noop, exporting: null, exportError: '',
     }} />);
-    expect(html).toContain('data-testid="stitch-manuscript-tools-insert-asset"');
+    expect(html).toContain('data-testid="stitch-manuscript-tools-crossref-open"');
     expect(html).toContain('Reference a table/figure');
+    expect(html).toContain('aria-haspopup="dialog"');
+    expect(html).not.toContain('stitch-manuscript-tools-crossref-popover');
   });
 });
 

@@ -81,3 +81,12 @@ export function useAuth() {
   if (!ctx) throw new Error('useAuth must be used within <AuthProvider>');
   return ctx;
 }
+
+/**
+ * 117.md §22 (r2) — same context, but absence is an answer rather than a crash.
+ * For hooks that RECORD an actor when one is signed in (audit entries, snapshot
+ * authors) and must still work in SSR tests and shells without the provider.
+ */
+export function useOptionalAuth() {
+  return useContext(AuthContext) || null;
+}

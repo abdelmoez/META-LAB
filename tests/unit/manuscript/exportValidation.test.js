@@ -157,13 +157,30 @@ describe('validateExport — warnings', () => {
 });
 
 describe('validateExport — info', () => {
-  it('user pipe tables → count info (unnumbered by design)', () => {
+  // 117.md §4/§11 re-pin — the notice now covers ONLY tables that are still
+  // anonymous prose. A table carrying a `[[tblcap:…]]` caption is a numbered,
+  // cross-referenceable object, so the "by design, no numbers" line is retired
+  // for it (that would be a false statement about what the export does).
+  it('UNCAPTIONED pipe tables → count info; captioned ones are objects, not a notice', () => {
     const assets = [A('table:study', 'table')];
     const v = run(assets, [
       sec('results', '| a | b |\n| --- | --- |\n| 1 | 2 |\n\ntext\n\n| c |\n| --- |\n| 3 |'),
     ]);
     const i = v.info.find((x) => x.code === 'user-tables');
-    expect(i.message).toContain('2 user-authored tables');
+    expect(i.message).toContain('2 tables without a caption');
+    expect(i.action).toContain('+ Caption');
+
+    // one of the two now carries a caption marker → only the other is counted
+    const half = run(assets, [
+      sec('results', '[[tblcap:t1]] Baseline characteristics\n\n| a | b |\n| --- | --- |\n| 1 | 2 |\n\ntext\n\n| c |\n| --- |\n| 3 |'),
+    ]);
+    expect(half.info.find((x) => x.code === 'user-tables').message).toContain('1 table without a caption');
+
+    // both captioned → the notice disappears entirely
+    const none = run(assets, [
+      sec('results', '[[tblcap:t1]] One\n\n| a |\n| --- |\n| 1 |\n\n[[tblcap:t2]] Two\n\n| c |\n| --- |\n| 3 |'),
+    ]);
+    expect(none.info.find((x) => x.code === 'user-tables')).toBeUndefined();
   });
 
   it('NMA data present → unsupported-figure-kinds info', () => {

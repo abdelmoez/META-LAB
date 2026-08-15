@@ -253,7 +253,12 @@ export function ManuscriptWorkspace({ project, upd }) {
       {/* panels */}
       {tab === 'overview' && <OverviewPanel m={m} exporters={exporters} onOpenSection={openSection} />}
       {tab === 'updates' && <UpdatesPanel m={m} />}
-      {tab === 'editor' && <EditorPanel m={m} exporters={exporters} sectionRequest={sectionRequest} />}
+      {/* 117.md §10 — "Edit table" on a GENERATED object opens the panel that owns
+          it (a builder table has no prose to jump to). */}
+      {tab === 'editor' && (
+        <EditorPanel m={m} exporters={exporters} sectionRequest={sectionRequest}
+          onOpenAssetPanel={(which) => setTab(which === 'figures' ? 'figures' : 'tables')} />
+      )}
       {tab === 'tables' && <TablesPanel m={m} />}
       {tab === 'figures' && <FiguresPanel m={m} />}
       {tab === 'references' && <ReferencesPanel m={m} />}

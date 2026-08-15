@@ -5,18 +5,21 @@
  * { errors, warnings, info } report the export dialog renders.
  *
  * Severity contract:
- *   ERRORS block the export (broken references, internal numbering invariant,
+ *   ERRORS block the export (broken references — including a reference to a manual
+ *   table that has since been deleted, 117.md §11 — internal numbering invariant,
  *   unrenderable asset kinds). WARNINGS allow "Export anyway" (unavailable
  *   references, unplaced/unlabelled assets, staleness, pending saves, legacy
  *   plain-text mention drift, mixed reference modes). INFO is awareness only
- *   (user pipe tables are unnumbered by design; out-of-scope figure kinds).
+ *   (pipe tables that carry NO caption are still unnumbered; out-of-scope figures).
  *
  * Every entry is { code, message, action }. Pure, deterministic and CHEAP —
  * B2 calls this per editor render, so everything expensive (assets, numbering,
  * placements) is taken as INPUT, never recomputed here.
  */
 
-import { orderedSections } from './refTokens.js';
+import {
+  orderedSections, TABLE_CAPTION_LINE_RE, assetKindLabel, ASSET_KIND_IDS,
+} from './refTokens.js';
 import { sectionBlocks } from './placement.js';
 
 /* Small bounded Levenshtein for closest-id suggestions on typo'd references. */
@@ -101,7 +104,7 @@ export function validateExport(args = {}) {
       if (seenUnavailable.has(u.id)) continue;
       seenUnavailable.add(u.id);
       const a = assetById.get(u.id);
-      const kindLabel = u.kind === 'figure' ? 'Figure ?' : 'Table ?';
+      const kindLabel = `${assetKindLabel(u.kind)} ?`;
       push(warnings, 'ref-unavailable',
         `${u.token} refers to "${(a && (a.title || a.id)) || u.id}", which has no data yet — it will export as plain "${kindLabel}" and the ${u.kind} will be skipped.`,
         'Provide the underlying data (or remove the reference) before exporting.');
@@ -109,7 +112,8 @@ export function validateExport(args = {}) {
   }
 
   // Duplicate numbering — internal invariant; should be impossible.
-  for (const kind of ['table', 'figure']) {
+  // 117.md §69 — driven by the kind registry, so a new kind is checked for free.
+  for (const kind of ASSET_KIND_IDS) {
     const seen = new Map();
     for (const id of Object.keys(byId)) {
       const n = byId[id];
@@ -127,7 +131,7 @@ export function validateExport(args = {}) {
 
   // Included asset of a kind the export cannot render.
   for (const a of list) {
-    if (a && a.included && a.kind !== 'table' && a.kind !== 'figure') {
+    if (a && a.included && !ASSET_KIND_IDS.includes(a.kind)) {
       push(errors, 'unsupported-asset-kind',
         `"${a.title || a.id}" has kind "${a.kind}", which the Word export cannot render.`,
         'Exclude this item from the export.');
@@ -151,7 +155,7 @@ export function validateExport(args = {}) {
       || ((fa && fa.aliasIds) || []).map((al) => assetOverrides[al]).find((x) => x && x.included === true);
     if (!(ov && ov.included === true)) continue;
     const a = fa;
-    const kindLabel = a && a.kind === 'figure' ? 'Figure' : 'Table';
+    const kindLabel = assetKindLabel(a ? a.kind : 'table');
     push(warnings, 'included-not-mentioned',
       `${kindLabel} "${(a && (a.title || a.id)) || id}" is included but never referenced in the text — it will be placed at the end of the document.`,
       'Insert a reference where it belongs, or exclude it from the export.');
@@ -162,8 +166,12 @@ export function validateExport(args = {}) {
     if (!a || byId[a.id] == null) continue; // only assets that will be emitted
     if (!String(a.title || '').trim() && !String(a.defaultCaption || '').trim()) {
       push(warnings, 'missing-caption',
-        `${a.kind === 'figure' ? 'Figure' : 'Table'} "${a.id}" has no title or caption.`,
-        'Add a title or caption in the Tables & Figures panel.');
+        `${assetKindLabel(a.kind)} "${a.id}" has no title or caption.`,
+        a.origin === 'manual'
+          // 117.md §4 — a manual table's title IS its caption line in the page, so
+          // the fix is in the editor, not in the Tables & Figures panel.
+          ? 'Give the table a title in its caption line in the manuscript text.'
+          : 'Add a title or caption in the Tables & Figures panel.');
     }
     if (a.stale === true) {
       push(warnings, 'stale-asset',
@@ -221,15 +229,26 @@ export function validateExport(args = {}) {
 
   /* ── INFO ── */
 
-  // User-authored pipe tables — unnumbered by design (85.md v1 scope).
-  let userTables = 0;
+  // 117.md §4/§11 — user-authored pipe tables. A table that carries a caption
+  // marker is a first-class manuscript object: it is numbered, referenceable and
+  // exported with a caption + bookmark like any other, so the old "by design, no
+  // numbers" notice is RETIRED for it. Only tables that are still anonymous prose
+  // are counted here — and the fix is now a real action in the editor, not a
+  // suggestion to patch the Word file by hand.
+  let uncaptionedTables = 0;
   for (const sec of orderedSections(draft || [])) {
-    for (const b of sectionBlocks(sec.content)) if (b.type === 'table') userTables += 1;
+    const blocks = sectionBlocks(sec.content);
+    for (let i = 0; i < blocks.length; i += 1) {
+      if (blocks[i].type !== 'table') continue;
+      const prev = i > 0 ? blocks[i - 1] : null;
+      const captioned = !!(prev && prev.type === 'paragraph' && TABLE_CAPTION_LINE_RE.test(prev.text));
+      if (!captioned) uncaptionedTables += 1;
+    }
   }
-  if (userTables) {
+  if (uncaptionedTables) {
     push(info, 'user-tables',
-      `The text contains ${userTables} user-authored table${userTables === 1 ? '' : 's'} — these export as-is, without numbers or captions (by design).`,
-      'Add captions manually in Word, or keep key data in the numbered data-linked tables.');
+      `The text contains ${uncaptionedTables} table${uncaptionedTables === 1 ? '' : 's'} without a caption — ${uncaptionedTables === 1 ? 'it exports' : 'they export'} as-is, without a number, and cannot be cross-referenced.`,
+      'Put the cursor in the table and choose “+ Caption” to number it, or leave it as plain prose.');
   }
 
   // Out-of-v1-scope figure kinds, only when the project data suggests they matter.

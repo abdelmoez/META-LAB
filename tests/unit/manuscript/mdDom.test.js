@@ -488,9 +488,17 @@ describe('asset chips (85.md B1)', () => {
     const html = mdToHtml('See [[table:study]] and [[figure:prisma]].', {
       assetNumbers: { 'table:study': 2, 'figure:prisma': 1 },
     });
-    expect(html).toContain('<span class="ms-asset" data-asset="table:study" contenteditable="false">Table 2</span>');
-    expect(html).toContain('<span class="ms-asset" data-asset="figure:prisma" contenteditable="false">Figure 1</span>');
+    // 117.md §10 re-pin — the chip became INTERACTIVE (button role + a11y label so
+    // the hover preview / action menu are keyboard-reachable). Still one atomic,
+    // non-editable island carrying its stable id and the derived label.
+    expect(html).toContain('<span class="ms-asset" data-asset="table:study" role="button" tabindex="0"'
+      + ' aria-label="Cross-reference: Table 2. Activate for cross-reference actions."'
+      + ' contenteditable="false">Table 2</span>');
+    expect(html).toContain('data-asset="figure:prisma"');
+    expect(html).toContain('>Figure 1</span>');
     expect(html).not.toContain('[[table:');
+    // a chip is NOT broken unless the caller says which ids exist (117.md §11)
+    expect(html).not.toContain('data-asset-broken');
   });
 
   it('accepts a Map for assetNumbers; unknown number → label ?', () => {

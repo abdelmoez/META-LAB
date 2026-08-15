@@ -17,6 +17,7 @@
  */
 
 import { parsePipeTable, serializePipeTable } from './mdDom.js';
+import { tableCaptionLine } from '../../../research-engine/manuscript/refTokens.js';
 
 /** Parse a markdown table block (only its `|` lines) into the model. */
 export function parseTableModel(md) {
@@ -69,6 +70,16 @@ export function makeTableMd(rows, cols) {
     rows: Array.from({ length: r - 1 }, empty),
     align: null,
   });
+}
+
+/**
+ * 117.md §4 — a fresh manual table WITH its identity: the caption marker line, a
+ * blank line, then the pipe table. The blank line is the canonical separation
+ * htmlToMd produces (blocks join with '\n\n'), so what the editor inserts and what
+ * a later round trip serializes are byte-identical from the first keystroke.
+ */
+export function makeCaptionedTableMd(id, title, rows, cols) {
+  return `${tableCaptionLine(id, title)}\n\n${makeTableMd(rows, cols)}`;
 }
 
 /** gridRow → body index; -1 when the gridRow addresses the header row. */
@@ -173,5 +184,5 @@ export function applyTableOp(opId, md, ctx = {}) {
 
 export default {
   parseTableModel, serializeTableModel, normalizeTableMd, makeTableMd,
-  applyTableOp, TABLE_OPS,
+  makeCaptionedTableMd, applyTableOp, TABLE_OPS,
 };

@@ -30,6 +30,15 @@
  * default to EXCLUDED and are auto-included when a token references them
  * (numbering resolves that — see refTokens.resolveNumbering).
  *
+ * 117.md §4/§5 — MANUAL tables join the SAME registry. A hand-authored pipe table
+ * carrying a `[[tblcap:<id>]]` caption line becomes a first-class asset
+ * (`origin:'manual'`, id `table:<id>`), so it participates in one numbering
+ * sequence with the builder tables, is cross-referenceable by the same
+ * `[[table:…]]` token, and is validated/exported by the same code paths. It is
+ * DERIVED from the prose on every call — nothing about a manual table is stored
+ * except the marker itself and the optional `draft.tableMeta[<id>]` side-map
+ * (created/modified stamps + extra caption/notes/source, never formatting).
+ *
  * Pure — no DOM/React/network, deterministic.
  */
 
@@ -39,6 +48,7 @@ import {
 } from './tables.js';
 import { computePrismaCounts } from './prismaCounts.js';
 import { allAnalyses } from './draft.js';
+import { collectManualTables } from './refTokens.js';
 
 const clean = (s) => String(s == null ? '' : s).trim();
 
@@ -80,10 +90,12 @@ function staleFlag(stale, id) {
  *   staleAssets   {[assetId]:true} map or Set — stamps `stale:true`
  *
  * @returns Array of ordered asset descriptors:
- *   { id, kind:'table'|'figure', builderId, title, defaultCaption, caption?,
- *     legend?, available, stale?, includedDefault, included, note?, source,
+ *   { id, kind:'table'|'figure', origin:'auto'|'manual', builderId, title,
+ *     defaultCaption, caption?, legend?, available, stale?, includedDefault,
+ *     included, note?, source,
  *     aliasIds?,                  // legacy role ids resolving to this asset
- *     pairKey?, outcomeLabel? }   // forest/funnel figures only
+ *     pairKey?, outcomeLabel?,    // forest/funnel figures only
+ *     manualId?, sectionId?, createdAt?, updatedAt? }  // manual tables only
  */
 export function computeManuscriptAssets(project, draft, opts = {}) {
   const o = opts || {};
@@ -103,7 +115,10 @@ export function computeManuscriptAssets(project, draft, opts = {}) {
 
   const out = [];
   const push = (base) => {
-    const a = { ...base };
+    // 117.md §69 — every registry asset is machine-generated; `origin` is what the
+    // cross-reference picker badges and what numbering uses to decide whether an
+    // asset anchors at its own block (manual) or at its first mention (auto).
+    const a = { origin: 'auto', ...base };
     // Alias overrides read through (legacy role-keyed draft.assets entries), but
     // the pair-keyed id always wins — new overrides are written under it only.
     for (const key of [...(base.aliasIds || []), base.id]) {
@@ -144,6 +159,44 @@ export function computeManuscriptAssets(project, draft, opts = {}) {
       note: (tbl && tbl.note) || '',
       source: (tbl && tbl.generatedFrom) || '',
     });
+  }
+
+  /* ── 117.md §4/§5 — MANUAL tables (derived from the prose caption markers) ──
+     They sit directly after the builder tables in REGISTRY order, which only
+     decides the Tables-panel listing and the never-anchored fallback: their actual
+     number comes from their block position (refTokens.resolveNumbering).
+     A manual table is always "available" — it is literally in the document — and
+     always included, because excluding it would mean deleting prose. */
+  const tableMeta = (draft && draft.tableMeta && typeof draft.tableMeta === 'object') ? draft.tableMeta : {};
+  for (const t of collectManualTables(draft || [])) {
+    const meta = (tableMeta[t.id] && typeof tableMeta[t.id] === 'object') ? tableMeta[t.id] : {};
+    const ov = (overrides[`table:${t.id}`] && typeof overrides[`table:${t.id}`] === 'object')
+      ? overrides[`table:${t.id}`] : {};
+    // The TITLE is prose (the caption line) — a draft.assets title override would
+    // silently win over what the researcher can see and edit in the page, so it is
+    // deliberately not read here. Caption/notes ARE side-metadata and merge.
+    const a = {
+      id: t.assetId,
+      kind: 'table',
+      origin: 'manual',
+      builderId: null,
+      manualId: t.id,
+      sectionId: t.sectionId,
+      title: t.title,
+      defaultCaption: t.title,
+      available: true,
+      includedDefault: true,
+      included: true,
+      source: 'manuscript',
+    };
+    const caption = clean(ov.caption) || clean(meta.caption);
+    const note = clean(ov.note) || clean(meta.notes) || clean(meta.note);
+    if (caption) a.caption = caption;
+    if (note) a.note = note;
+    if (clean(meta.source)) a.sourceNote = clean(meta.source);
+    if (meta.createdAt) a.createdAt = meta.createdAt;
+    if (meta.updatedAt) a.updatedAt = meta.updatedAt;
+    out.push(a);
   }
 
   /* ── Figures ── */

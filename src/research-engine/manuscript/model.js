@@ -311,6 +311,19 @@ export function normalizeDraft(raw, nowIso = null) {
       for (const k of ids) out.assets[k] = { ...raw.assets[k] };
     } else delete out.assets;
   } else delete out.assets;
+  // 117.md §4 — side-metadata for MANUAL tables, keyed by the caption-marker id
+  // ({caption, notes, source, origin, createdAt, updatedAt}). The table's identity
+  // and TITLE live in the prose (that is what makes native undo restore a table and
+  // its identity atomically); everything here is the non-prose remainder. Same
+  // materialize-only-when-non-empty rule as snapshots/assets, so every legacy blob
+  // normalizes byte-identically and no migration exists.
+  if (raw.tableMeta && typeof raw.tableMeta === 'object' && !Array.isArray(raw.tableMeta)) {
+    const ids = Object.keys(raw.tableMeta).filter((k) => raw.tableMeta[k] && typeof raw.tableMeta[k] === 'object');
+    if (ids.length) {
+      out.tableMeta = {};
+      for (const k of ids) out.tableMeta[k] = { ...raw.tableMeta[k] };
+    } else delete out.tableMeta;
+  } else delete out.tableMeta;
   return out;
 }
 

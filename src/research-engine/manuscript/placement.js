@@ -22,12 +22,14 @@
  * Pure — no DOM/React/network, deterministic, single pass per section.
  */
 
-import { ASSET_TOKEN_RE, BODY_SECTION_IDS, orderedSections } from './refTokens.js';
+import {
+  ASSET_TOKEN_RE, BODY_SECTION_IDS, orderedSections,
+  PLAIN_MENTION_RE, TABLE_CAPTION_LINE_RE, assetKindLabel,
+} from './refTokens.js';
 
 const TABLE_LINE_RE = /^\s*\|/;
 const HEADING_RE = /^#{1,3}\s+/;
 const LIST_RE = /^(?:[-*]\s+|\d+\.\s+)/;
-const PLAIN_MENTION_RE = /\b(Table|Figure)\s+(\d+)\b/g;
 
 /**
  * Decompose a markdown section into ordered blocks. Line ranges are 0-based
@@ -73,6 +75,10 @@ function collectPlainMentions(md, sectionId, out) {
   for (let i = 0; i < lines.length; i += 1) {
     const line = lines[i];
     if (TABLE_LINE_RE.test(line)) continue; // inside a pipe-table block
+    // 117.md §4 — a structured caption marker line is the OBJECT's own caption, not
+    // prose drift: its "Table N" text is derived, so it must never be counted as a
+    // stale plain-text mention.
+    if (TABLE_CAPTION_LINE_RE.test(line)) continue;
     const re = new RegExp(PLAIN_MENTION_RE.source, 'g');
     let m;
     while ((m = re.exec(line)) !== null) {
@@ -109,8 +115,13 @@ export function computePlacements({ sections, numbering, assets } = {}) {
   // Alias token ids place their CANONICAL asset (the docx emitter is keyed by
   // canonical ids only — an alias assetId would silently emit nothing).
   const aliasTo = new Map();
+  // 117.md §4 — MANUAL tables are ALREADY at their position: they are prose blocks
+  // the exporter walks through anyway. Placing them would emit the same table
+  // twice, so they are excluded from both `bySection` and `fallback`.
+  const manualIds = new Set();
   for (const a of (Array.isArray(assets) ? assets : [])) {
     for (const al of (a.aliasIds || [])) if (!aliasTo.has(al)) aliasTo.set(al, a.id);
+    if (a && a.origin === 'manual') manualIds.add(a.id);
   }
 
   const bySection = {};
@@ -127,6 +138,7 @@ export function computePlacements({ sections, numbering, assets } = {}) {
         while ((m = re.exec(blocks[bi].text)) !== null) {
           const raw = `${m[1]}:${m[2]}`;
           const id = aliasTo.get(raw) || raw;
+          if (manualIds.has(id)) continue;                  // already inline (117.md §4)
           if (!emitted.has(id) || placed.has(id)) continue; // later mentions never re-insert
           placed.add(id);
           if (!bySection[sec.id]) bySection[sec.id] = [];
@@ -140,7 +152,7 @@ export function computePlacements({ sections, numbering, assets } = {}) {
   // Emitted but never mentioned in a body section → end-of-document sections,
   // in numbering order (tables first, then figures).
   const orderAll = [...(num.orderTables || []), ...(num.orderFigures || [])];
-  const fallback = orderAll.filter((id) => emitted.has(id) && !placed.has(id));
+  const fallback = orderAll.filter((id) => emitted.has(id) && !placed.has(id) && !manualIds.has(id));
 
   // Numbering-mismatch warnings from plain-text mentions (legacy drafts, or
   // prose typed around tokens). Only the provable case: N exceeds what exports.
@@ -148,7 +160,7 @@ export function computePlacements({ sections, numbering, assets } = {}) {
   const counts = { table: (num.orderTables || []).length, figure: (num.orderFigures || []).length };
   for (const pm of plainMentions) {
     if (pm.number > (counts[pm.kind] || 0)) {
-      const label = pm.kind === 'figure' ? 'Figure' : 'Table';
+      const label = assetKindLabel(pm.kind);
       warnings.push({
         code: 'plain-mention-out-of-range',
         sectionId: pm.sectionId,

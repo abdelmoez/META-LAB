@@ -44,6 +44,13 @@ import {
   sectionBlocks,
 } from '../../../research-engine/manuscript/index.js';
 import { SECTION_TYPES, STATEMENT_TYPES } from '../../../research-engine/manuscript/model.js';
+// 117.md §69 — the kind set, the caption grammar and the caption FORMATTER all come
+// from the one registry, so the Word file and the editor can never disagree about
+// what a construct is or how a caption reads.
+import {
+  ASSET_KIND_ALTERNATION, TABLE_CAPTION_LINE_RE, TABLE_CAPTION_TOKEN_RE,
+  formatAssetLabel, formatAssetCaption,
+} from '../../../research-engine/manuscript/refTokens.js';
 import { parsePipeTable } from '../richEditor/mdDom.js';
 import { forestPng, prismaPng, funnelPng, robPng } from './figures.js';
 
@@ -96,7 +103,7 @@ function parseInline(text, D, base = {}, ictx = null) {
   const assetRef = (kind, suffix, extra = {}) => {
     const id = `${kind}:${suffix}`;
     const n = ictx && ictx.numbers ? ictx.numbers[id] : null;
-    const label = `${kind === 'figure' ? 'Figure' : 'Table'} ${n == null ? '?' : n}`;
+    const label = formatAssetLabel(kind, n, { templateId: ictx && ictx.templateId });
     const anchor = (n != null && ictx && ictx.anchors) ? ictx.anchors[id] : null;
     if (anchor && InternalHyperlink) {
       runs.push(new InternalHyperlink({ anchor, children: [new TextRun({ text: label, ...base, ...extra })] }));
@@ -106,8 +113,10 @@ function parseInline(text, D, base = {}, ictx = null) {
   // **bold** / *italic* / `code` still resolves (the outer alternation consumes
   // the whole emphasis span before the token alternative can match).
   const emit = (t, extra = {}) => {
-    const str = String(t == null ? '' : t);
-    const tre = /\[\[(table|figure):([a-z0-9:-]+)\]\]/g;
+    // A caption marker is a BLOCK grammar (markdownToParagraphs owns it); one that
+    // reaches an inline run is malformed, so it drops rather than leaking `[[…]]`.
+    const str = String(t == null ? '' : t).replace(new RegExp(TABLE_CAPTION_TOKEN_RE.source, 'g'), '');
+    const tre = new RegExp(`\\[\\[(${ASSET_KIND_ALTERNATION}):([a-z0-9:-]+)\\]\\]`, 'g');
     let l = 0;
     let tm;
     while ((tm = tre.exec(str)) !== null) {
@@ -118,15 +127,17 @@ function parseInline(text, D, base = {}, ictx = null) {
     if (l < str.length) plain(str.slice(l), extra);
   };
   // Asset tokens FIRST in the alternation so they can never be re-parsed as links.
-  const re = /(\[\[(?:table|figure):[a-z0-9:-]+\]\]|\*\*\*[^*]+\*\*\*|\*\*(?:[^*]|\*(?!\*))+?\*\*|\*[^*]+\*|`[^`]+`|\[[^\]]*\]\((?:https?:\/\/|mailto:)[^)\s]+\))/g;
+  const re = new RegExp(`(\\[\\[(?:${ASSET_KIND_ALTERNATION}):[a-z0-9:-]+\\]\\]`
+    + '|\\*\\*\\*[^*]+\\*\\*\\*|\\*\\*(?:[^*]|\\*(?!\\*))+?\\*\\*|\\*[^*]+\\*|`[^`]+`'
+    + '|\\[[^\\]]*\\]\\((?:https?:\\/\\/|mailto:)[^)\\s]+\\))', 'g');
   let last = 0;
   let m;
-  const s = String(text == null ? '' : text);
+  const s = String(text == null ? '' : text).replace(new RegExp(TABLE_CAPTION_TOKEN_RE.source, 'g'), '');
   while ((m = re.exec(s)) !== null) {
     if (m.index > last) plain(s.slice(last, m.index));
     const tok = m[0];
     if (tok.startsWith('[[')) {
-      const am = tok.match(/^\[\[(table|figure):([a-z0-9:-]+)\]\]$/);
+      const am = tok.match(new RegExp(`^\\[\\[(${ASSET_KIND_ALTERNATION}):([a-z0-9:-]+)\\]\\]$`));
       assetRef(am[1], am[2]);
     } else if (tok.startsWith('***')) emit(tok.slice(3, -3), { bold: true, italics: true });
     else if (tok.startsWith('**')) {
@@ -206,13 +217,43 @@ export function markdownToParagraphs(md, D, ctx) {
   const lines = String(md == null ? '' : md).split('\n');
   let tableBuf = null;
   let inOl = false;
-  const flushTable = () => { if (tableBuf) { out.push(mdTableToDocx(tableBuf, D, ictx)); tableBuf = null; } };
+  const flushTable = () => {
+    if (!tableBuf) return;
+    out.push(mdTableToDocx(tableBuf, D, ictx));
+    tableBuf = null;
+    // 117.md §4 — the manual table's notes belong UNDER its table, but the caption
+    // (which carries them) is emitted before it — and, on the placement path, in a
+    // different call. The pending note therefore rides the SHARED document context.
+    if (c.pendingTableNote) { out.push(note(c.pendingTableNote, D)); c.pendingTableNote = null; }
+  };
   for (const raw of lines) {
     const line = raw.replace(/\s+$/, '');
     const isTable = /^\s*\|/.test(line);
     if (tableBuf && !isTable) flushTable();
     if (isTable) { inOl = false; if (!tableBuf) tableBuf = []; tableBuf.push(line); continue; }
+    // 117.md §4/§92 — a MANUAL table's caption: the same treatment a registry asset
+    // gets (numbered caption paragraph + Bookmark anchor + optional caption body),
+    // emitted in place because the table itself is already inline prose.
+    const cap = line.match(TABLE_CAPTION_LINE_RE);
+    if (cap) {
+      inOl = false;
+      const capId = `table:${cap[1]}`;
+      const capAsset = (ictx && ictx.manualById && ictx.manualById[capId]) || null;
+      const capNum = (ictx && ictx.numbers) ? ictx.numbers[capId] : null;
+      const capTitle = (capAsset && (capAsset.title || capAsset.defaultCaption)) || cap[2].trim();
+      out.push(caption(
+        formatAssetCaption('table', capNum, capTitle, { templateId: ictx && ictx.templateId }),
+        D,
+        { bookmark: (ictx && ictx.anchors) ? ictx.anchors[capId] : null, keepNext: true },
+      ));
+      if (capAsset && capAsset.caption) out.push(captionBody(capAsset.caption, D, { keepNext: true }));
+      c.pendingTableNote = (capAsset && capAsset.note) ? capAsset.note : null;
+      continue;
+    }
     if (!line.trim()) { inOl = false; continue; }
+    // Any other content between a caption and a table breaks the pairing, so the
+    // note must not drift onto an unrelated table further down.
+    c.pendingTableNote = null;
     if (/^###\s+/.test(line)) { inOl = false; out.push(new Paragraph({ heading: HeadingLevel.HEADING_4, children: parseInline(line.replace(/^###\s+/, ''), D, {}, ictx), spacing: { before: 120, after: 60 } })); continue; }
     if (/^##\s+/.test(line)) { inOl = false; out.push(new Paragraph({ heading: HeadingLevel.HEADING_3, children: parseInline(line.replace(/^##\s+/, ''), D, {}, ictx), spacing: { before: 140, after: 70 } })); continue; }
     if (/^#\s+/.test(line)) { inOl = false; out.push(new Paragraph({ heading: HeadingLevel.HEADING_2, children: parseInline(line.replace(/^#\s+/, ''), D, {}, ictx), spacing: { before: 160, after: 80 } })); continue; }
@@ -402,9 +443,19 @@ export async function buildManuscriptDocx(project, draft, opts = {}) {
   // matches [[cite:…]]) and are resolved inside parseInline via mdCtx.inline.
   const { orderMap } = collectCitationOrder(draftSectionTexts(draft));
   const secMd = (id) => renderInlineMarkers((draft.sections[id] && draft.sections[id].content) || '', orderMap, draft.citationStyle);
+  // 117.md §4 — manual tables are emitted INLINE by markdownToParagraphs (they are
+  // prose blocks), so the inline context carries their registry entries: caption
+  // text, extra caption paragraph and notes all come from the same derived asset
+  // the editor and the validation see.
+  const manualById = {};
+  for (const a of assets) if (a && a.origin === 'manual') manualById[a.id] = a;
   // One shared markdown context per document → every ordered list gets a unique
   // numbering instance (each restarts at 1 in Word).
-  const mdCtx = { listInstance: 0, inline: { numbers: numbering.byId, anchors } };
+  const mdCtx = {
+    listInstance: 0,
+    pendingTableNote: null,
+    inline: { numbers: numbering.byId, anchors, manualById, templateId: draft.templateId },
+  };
 
   /* ── asset emitters ── */
   const assetTitle = (a) => (a.title || a.defaultCaption || a.id);
@@ -412,7 +463,8 @@ export async function buildManuscriptDocx(project, draft, opts = {}) {
   const emitTableAsset = (a, out) => {
     const n = numbering.byId[a.id];
     const tbl = tables[a.builderId];
-    out.push(caption(`Table ${n}. ${assetTitle(a)}`, D, { bookmark: anchors[a.id], keepNext: true }));
+    out.push(caption(formatAssetCaption('table', n, assetTitle(a), { templateId: draft.templateId }), D,
+      { bookmark: anchors[a.id], keepNext: true }));
     // User caption override — its OWN paragraph under the title line (it used to
     // be silently dropped: assetTitle only read it when the title was empty,
     // which builder titles never are).
@@ -467,7 +519,8 @@ export async function buildManuscriptDocx(project, draft, opts = {}) {
     if (onProgress) onProgress(figStep, figTotal, title);
     // Caption first (carries the bookmark) so cross-reference hyperlinks stay
     // valid even when rasterization fails and we fall back to an honest note.
-    out.push(caption(`Figure ${n}. ${title}`, D, { bookmark: anchors[a.id], keepNext: true }));
+    out.push(caption(formatAssetCaption('figure', n, title, { templateId: draft.templateId }), D,
+      { bookmark: anchors[a.id], keepNext: true }));
     // User caption override — its own paragraph under the title line.
     if (a.caption) out.push(captionBody(a.caption, D, { keepNext: true }));
     try {
@@ -498,6 +551,9 @@ export async function buildManuscriptDocx(project, draft, opts = {}) {
   const emitAsset = async (assetId, out) => {
     const a = assetById.get(assetId);
     if (!a || numbering.byId[assetId] == null) return;
+    // 117.md §4 — a manual table is ALREADY in the prose stream; emitting it here
+    // would duplicate it. computePlacements never yields one, this is the guard.
+    if (a.origin === 'manual') return;
     if (a.kind === 'table') emitTableAsset(a, out);
     else if (a.kind === 'figure' && includeFigures) await emitFigureAsset(a, out);
   };

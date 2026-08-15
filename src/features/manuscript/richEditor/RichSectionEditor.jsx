@@ -28,12 +28,18 @@ import { useRef, useState, useEffect, useMemo, useCallback, useImperativeHandle,
 import { C, btnS, inp } from '../../../frontend/workspace/ui/styles.js';
 import { alpha } from '../../../frontend/theme/tokens.js';
 import {
-  mdToHtml, htmlToMd, citeChipHtml, factChipText, factOf,
+  mdToHtml, htmlToMd, citeChipHtml, assetChipHtml, assetChipLabel, assetChipAria,
+  factChipText, factOf,
   CITE_CHIP_CLASS, ASSET_CHIP_CLASS, FACT_CHIP_CLASS, INPUT_CHIP_CLASS,
+  TABLE_CAPTION_CLASS, TABLE_CAPTION_NUM_CLASS, TABLE_CAPTION_TITLE_CLASS,
 } from './mdDom.js';
 // 116.md §59-§66 — pure structural table ops; the editor only ever applies them
 // by whole-table replacement through the execCommand/insertHtml path below.
-import { makeTableMd, applyTableOp } from './tableOps.js';
+// 117.md §4 — a new table is inserted WITH its caption marker (identity + title).
+import { makeCaptionedTableMd, applyTableOp } from './tableOps.js';
+import {
+  mintManualTableId, remintDuplicateCaptions, formatCaptionPrefix, tableCaptionLine,
+} from '../../../research-engine/manuscript/refTokens.js';
 import { SHOW_CHANGES_CSS, indexFactChanges, factChipTitle } from '../showChanges.js';
 
 /* Page-scoped CSS: the paper is LITERAL white in both themes (a printed page),
@@ -61,7 +67,33 @@ export const RICH_EDITOR_CSS = `
   vertical-align:baseline;cursor:default;white-space:nowrap;}
 .ms-page-body .${ASSET_CHIP_CLASS}{display:inline-block;background:#eaf6ef;color:#1e7a46;border:1px solid #bfe3cd;
   border-radius:10px;padding:0 6px;margin:0 1px;font:600 10.5px/1.7 'IBM Plex Sans',sans-serif;
-  vertical-align:baseline;cursor:default;white-space:nowrap;}
+  vertical-align:baseline;cursor:pointer;white-space:nowrap;}
+.ms-page-body .${ASSET_CHIP_CLASS}:hover{background:#dcefe4;}
+.ms-page-body .${ASSET_CHIP_CLASS}:focus-visible{outline:2px solid #1e7a46;outline-offset:1px;}
+/* 117.md §11 — a reference whose target no longer exists. It must be impossible to
+   mistake for a working one, and the signal cannot be colour alone (print, high
+   contrast, colour blindness): the label itself says "(deleted)" and the border is
+   dashed. Clicking it opens Relink / Remove — the fix is one action away. */
+.ms-page-body .${ASSET_CHIP_CLASS}[data-asset-broken="true"]{background:#fdecec;color:#a32020;
+  border:1px dashed #dda0a0;}
+.ms-page-body .${ASSET_CHIP_CLASS}[data-asset-broken="true"]:hover{background:#fadada;}
+.ms-page-body .${ASSET_CHIP_CLASS}[data-asset-broken="true"]:focus-visible{outline-color:#a32020;}
+
+/* 117.md §4/§8 — the manual-table caption. A caption is NOT prose: it uses the UI
+   sans face, sits tight above its table, and its number is derived (never typed).
+   Only the title region is editable, so the researcher edits meaning and the
+   template owns the rest. */
+.ms-page-body .${TABLE_CAPTION_CLASS}{font:500 12.5px/1.55 'IBM Plex Sans',sans-serif;color:#1c2330;
+  margin:0 0 5px;}
+.ms-page-body .${TABLE_CAPTION_NUM_CLASS}{font-weight:700;color:#1e7a46;margin-right:6px;white-space:nowrap;
+  user-select:none;}
+.ms-page-body .${TABLE_CAPTION_TITLE_CLASS}{outline:none;display:inline;border-radius:3px;padding:0 2px;}
+.ms-page-body .${TABLE_CAPTION_TITLE_CLASS}:empty::before{content:attr(data-placeholder);color:#98a1b3;
+  font-style:italic;}
+.ms-page-body .${TABLE_CAPTION_TITLE_CLASS}:hover{background:rgba(30,122,70,0.07);}
+.ms-page-body .${TABLE_CAPTION_TITLE_CLASS}:focus{background:rgba(30,122,70,0.12);}
+.ms-page-body .${TABLE_CAPTION_CLASS}[data-tblcap-current="true"]{box-shadow:0 0 0 2px rgba(30,122,70,0.40);
+  border-radius:4px;}
 /* 101.md §6 — the fact chip is deliberately NOT a chip to look at. It is an element
    only so a project-derived value stays atomic and caret-safe; visually it must be
    indistinguishable from the prose around it, or "turn Show Changes off → completely
@@ -131,6 +163,23 @@ export const RichSectionEditor = forwardRef(function RichSectionEditor({
   // can show the floating table controls. Called with {gridRow, col, rows, cols,
   // rect} while inside a table, null on leaving; never called during SSR.
   onTableFocus = null,
+  // 117.md §11 — the live registry id set. A token outside it renders BROKEN.
+  // Omitted (null) means "the registry is not known here", and every reference is
+  // assumed valid — an editor that has not resolved its assets must never accuse
+  // an honest reference of being deleted.
+  knownAssetIds = null,
+  // 117.md §8 — the draft's journal template drives the caption/label formatter.
+  templateId = null,
+  // 117.md §4(d) — ids used by OTHER sections, so a table pasted across sections
+  // still mints a fresh id instead of colliding.
+  existingTableIds = null,
+  // 117.md §10 — chip interaction. The editor owns the DOM (and the caret); the
+  // parent owns the popovers, because rendering React into a contentEditable is
+  // how carets get destroyed. Both callbacks are pure notifications.
+  onAssetChipMenu = null,     // ({id, label, broken, rect}) on click/Enter
+  onAssetChipHover = null,    // ({id, label, broken, rect}) on hover, null on leave
+  // 117.md §4 — created/modified stamps for the draft-side table metadata map.
+  onTableMeta = null,         // (tableId, patch)
 }, ref) {
   const rootRef = useRef(null);
   const savedRange = useRef(null);
@@ -140,6 +189,20 @@ export const RichSectionEditor = forwardRef(function RichSectionEditor({
   useEffect(() => { orderMapRef.current = orderMap; });
   useEffect(() => { assetNumbersRef.current = assetNumbers; });
   useEffect(() => { onChangeRef.current = onChange; });
+  // 117.md — render-context refs so the memoized api closures never go stale.
+  const refOptsRef = useRef(null);
+  refOptsRef.current = { knownAssetIds, templateId };
+  const onAssetChipMenuRef = useRef(onAssetChipMenu);
+  const onAssetChipHoverRef = useRef(onAssetChipHover);
+  const onTableMetaRef = useRef(onTableMeta);
+  const existingTableIdsRef = useRef(existingTableIds);
+  useEffect(() => { onAssetChipMenuRef.current = onAssetChipMenu; });
+  useEffect(() => { onAssetChipHoverRef.current = onAssetChipHover; });
+  useEffect(() => { onTableMetaRef.current = onTableMeta; });
+  useEffect(() => { existingTableIdsRef.current = existingTableIds; });
+  /** The chip the action menu is currently bound to (never rendered — DOM only). */
+  const activeChipRef = useRef(null);
+  const hoverChipRef = useRef(null);
   // One bundle so insertMarkdown()/paste render fact tokens against the SAME
   // snapshot the rest of the section is showing (§16).
   const factOptsRef = useRef(null);
@@ -149,7 +212,10 @@ export const RichSectionEditor = forwardRef(function RichSectionEditor({
   // __html string on every re-render and never touches the live DOM again.
   const html0 = useRef(null);
   if (html0.current == null) {
-    html0.current = mdToHtml(value || '', { orderMap, assetNumbers, facts, factOverrides, factChanges, showChanges });
+    html0.current = mdToHtml(value || '', {
+      orderMap, assetNumbers, facts, factOverrides, factChanges, showChanges,
+      knownAssetIds, templateId,
+    });
   }
 
   // Chips renumber in place when the order of first appearance changes; chips
@@ -166,18 +232,36 @@ export const RichSectionEditor = forwardRef(function RichSectionEditor({
 
   // Asset chips renumber the same way ('Table 2' ⇄ 'Table ?') when numbering or
   // availability changes — atomic islands, caret-safe.
+  //
+  // 117.md §5-§7/§11 — this is now the WHOLE renumbering seam: because numbering is
+  // derived per render and applied in place, deleting a table, moving one, or
+  // regenerating a section renumbers every chip AND every manual-table caption
+  // without remounting the editor or touching a single character of prose. A chip
+  // whose target has disappeared flips to the broken state here too, so a deleted
+  // table can never leave a confidently-wrong "Table 2" behind.
   useEffect(() => {
     const el = rootRef.current;
-    if (!el || !assetNumbers || typeof el.querySelectorAll !== 'function') return;
-    const lookup = typeof assetNumbers.get === 'function'
-      ? (id) => assetNumbers.get(id) : (id) => assetNumbers[id];
+    if (!el || typeof el.querySelectorAll !== 'function') return;
+    if (!assetNumbers && !knownAssetIds) return;
     el.querySelectorAll(`span.${ASSET_CHIP_CLASS}[data-asset]`).forEach((chip) => {
       const id = chip.getAttribute('data-asset') || '';
-      const n = lookup(id);
-      const label = `${id.startsWith('figure:') ? 'Figure' : 'Table'} ${n == null ? '?' : n}`;
+      const { label, broken } = assetChipLabel(id, assetNumbers, knownAssetIds, templateId);
       if (chip.textContent !== label) chip.textContent = label;
+      setAttr(chip, 'data-asset-broken', broken ? 'true' : '');
+      setAttr(chip, 'aria-label', assetChipAria(label, broken));
     });
-  }, [assetNumbers]);
+    // 117.md §4 — the caption's number is derived exactly like a chip's.
+    el.querySelectorAll(`div.${TABLE_CAPTION_CLASS}[data-tblcap]`).forEach((cap) => {
+      const num = cap.querySelector(`span.${TABLE_CAPTION_NUM_CLASS}`);
+      if (!num) return;
+      const id = `table:${cap.getAttribute('data-tblcap') || ''}`;
+      const n = assetNumbers
+        ? (typeof assetNumbers.get === 'function' ? assetNumbers.get(id) : assetNumbers[id])
+        : null;
+      const prefix = formatCaptionPrefix('table', n == null ? null : n, { templateId });
+      if (num.textContent !== prefix) num.textContent = prefix;
+    });
+  }, [assetNumbers, knownAssetIds, templateId]);
 
   // 101.md §4/§33 — THE live-synchronization seam. When the project changes, the
   // engine re-resolves the facts and this effect writes the new values into the
@@ -260,6 +344,63 @@ export const RichSectionEditor = forwardRef(function RichSectionEditor({
     return true;
   };
 
+  /* ══════════ 117.md §10/§11 — cross-reference chip interaction ══════════
+   *
+   * Delegated, DOM-only and caret-neutral. A chip is a contenteditable=false
+   * island, so a mousedown on it would otherwise drop a collapsed caret beside it;
+   * preventDefault keeps the researcher's caret exactly where it was while the
+   * action menu opens. Nothing here mutates the document — the ACTIONS do, and
+   * they go through the same execCommand/insertHtml path as every other edit, so
+   * native undo and the input→autosave emit still own the history.
+   */
+  const chipInfo = (chip) => ({
+    id: chip.getAttribute('data-asset') || '',
+    label: chip.textContent || '',
+    broken: chip.getAttribute('data-asset-broken') === 'true',
+    rect: typeof chip.getBoundingClientRect === 'function' ? chip.getBoundingClientRect() : null,
+  });
+
+  const assetChipFrom = (target) => {
+    if (!target || typeof target.closest !== 'function') return null;
+    const el = target.closest(`span.${ASSET_CHIP_CLASS}[data-asset]`);
+    return el && rootRef.current && rootRef.current.contains(el) ? el : null;
+  };
+
+  const openChipMenu = (chip) => {
+    activeChipRef.current = chip;
+    const cb = onAssetChipMenuRef.current;
+    if (cb) cb(chipInfo(chip));
+  };
+
+  const onChipMouseOver = (e) => {
+    const cb = onAssetChipHoverRef.current;
+    if (!cb) return;
+    const chip = assetChipFrom(e.target);
+    if (!chip) {
+      if (hoverChipRef.current) { hoverChipRef.current = null; cb(null); }
+      return;
+    }
+    if (hoverChipRef.current === chip) return;
+    hoverChipRef.current = chip;
+    cb(chipInfo(chip));
+  };
+
+  const onChipMouseLeave = () => {
+    const cb = onAssetChipHoverRef.current;
+    if (cb && hoverChipRef.current) { hoverChipRef.current = null; cb(null); }
+  };
+
+  /** Every manual-table id currently visible here, plus the rest of the draft. */
+  const usedTableIds = () => {
+    const out = new Set();
+    for (const id of (existingTableIdsRef.current || [])) out.add(String(id).replace(/^table:/, ''));
+    const el = rootRef.current;
+    if (el && typeof el.querySelectorAll === 'function') {
+      el.querySelectorAll('[data-tblcap]').forEach((n) => out.add(n.getAttribute('data-tblcap') || ''));
+    }
+    return out;
+  };
+
   const onPlaceholderMouseDown = (e) => {
     const chip = placeholderFrom(e.target);
     if (!chip) return;
@@ -269,6 +410,17 @@ export const RichSectionEditor = forwardRef(function RichSectionEditor({
     selectPlaceholderNode(chip);
     if (!readOnlyRef.current) rootRef.current && rootRef.current.focus();
     onPlaceholderFocusRef.current && onPlaceholderFocusRef.current(chip.getAttribute('data-input') || '');
+  };
+
+  /** One mousedown entry point: cross-reference chips first, then placeholders. */
+  const onEditorMouseDown = (e) => {
+    const chip = assetChipFrom(e.target);
+    if (chip) {
+      e.preventDefault();  // §10 — "never disturb the caret"
+      openChipMenu(chip);
+      return;
+    }
+    if (!readOnly) onPlaceholderMouseDown(e);
   };
 
   const readOnlyRef = useRef(readOnly);
@@ -341,6 +493,12 @@ export const RichSectionEditor = forwardRef(function RichSectionEditor({
     selectCellContents(cell);
   };
 
+  /** 117.md §4 — the caption element bound to a table (its previous sibling). */
+  const captionForTable = (table) => {
+    const prev = table && table.previousElementSibling;
+    return (prev && prev.classList && prev.classList.contains(TABLE_CAPTION_CLASS)) ? prev : null;
+  };
+
   // Notify the parent when the caret enters/moves within/leaves a table. Only
   // the leave transition sends null (once), so a caret outside any table costs
   // nothing per keystroke.
@@ -354,11 +512,15 @@ export const RichSectionEditor = forwardRef(function RichSectionEditor({
       return;
     }
     wasInTable.current = true;
+    const cap = captionForTable(ctx.table);
     cb({
       gridRow: ctx.gridRow,
       col: ctx.col,
       rows: ctx.rows,
       cols: ctx.cols,
+      // 117.md §11 — the table's stable id, so the parent can count the
+      // cross-references that would break BEFORE it is deleted.
+      tableId: cap ? (cap.getAttribute('data-tblcap') || null) : null,
       rect: typeof ctx.table.getBoundingClientRect === 'function' ? ctx.table.getBoundingClientRect() : null,
     });
   };
@@ -460,8 +622,15 @@ export const RichSectionEditor = forwardRef(function RichSectionEditor({
     if (!res) return false;
     const sel = window.getSelection();
     if (!sel) return false;
+    const cap = captionForTable(ctx.table);
+    const tableId = cap ? (cap.getAttribute('data-tblcap') || '') : '';
     const r = document.createRange();
-    r.selectNode(ctx.table);
+    // 117.md §4 — a table and its caption are ONE object. Deleting the table
+    // selects the caption too, so the id disappears with the data instead of
+    // leaving an orphan caption that would keep numbering an empty slot. One
+    // native undo restores both, which is exactly why identity lives in the prose.
+    if (res.md == null && cap) r.setStartBefore(cap); else r.setStartBefore(ctx.table);
+    r.setEndAfter(ctx.table);
     sel.removeAllRanges();
     sel.addRange(r);
     savedRange.current = r.cloneRange();
@@ -473,7 +642,8 @@ export const RichSectionEditor = forwardRef(function RichSectionEditor({
       return true;
     }
     const html = mdToHtml(res.md, {
-      orderMap: orderMapRef.current, assetNumbers: assetNumbersRef.current, ...factOptsRef.current,
+      orderMap: orderMapRef.current, assetNumbers: assetNumbersRef.current,
+      ...factOptsRef.current, ...refOptsRef.current,
     }).replace('<table>', '<table data-ms-new="1">');
     insertHtml(html);
     const nt = rootRef.current && rootRef.current.querySelector('table[data-ms-new="1"]');
@@ -483,7 +653,37 @@ export const RichSectionEditor = forwardRef(function RichSectionEditor({
       nt.removeAttribute('data-ms-new');
       if (res.caret) focusCellAt(nt, res.caret.gridRow, res.caret.col);
     }
+    // 117.md §4 — a STRUCTURAL change stamps the table's last-modified time (prose
+    // typing does not: the draft's own updatedAt already covers that, and stamping
+    // per keystroke would be write amplification for a hover tooltip).
+    if (tableId && onTableMetaRef.current) onTableMetaRef.current(tableId, { updatedAt: new Date().toISOString() });
     notifyTableFocus();
+    return true;
+  };
+
+  /**
+   * 117.md §10 — replace or delete ONE node through the editor's normal mutation
+   * path (selection → execCommand), so native undo records it and the resulting
+   * input event autosaves it. Returns false when the node is no longer ours.
+   */
+  const replaceNode = (node, html) => {
+    const el = rootRef.current;
+    if (readOnlyRef.current || !el || !node || !el.contains(node)) return false;
+    if (typeof window === 'undefined' || !window.getSelection) return false;
+    el.focus();
+    const sel = window.getSelection();
+    if (!sel) return false;
+    const r = document.createRange();
+    r.selectNode(node);
+    sel.removeAllRanges();
+    sel.addRange(r);
+    savedRange.current = r.cloneRange();
+    if (html) { insertHtml(html); return true; }
+    let ok = false;
+    try { ok = document.execCommand('delete'); } catch { ok = false; }
+    if (!ok) r.deleteContents();
+    rememberSelection();
+    emit();
     return true;
   };
 
@@ -492,30 +692,147 @@ export const RichSectionEditor = forwardRef(function RichSectionEditor({
     focus: () => rootRef.current && rootRef.current.focus(),
     /** Insert subset markdown at the caret as normal editable content (MS-8). */
     insertMarkdown: (md) => insertHtml(mdToHtml(md, {
-      orderMap: orderMapRef.current, assetNumbers: assetNumbersRef.current, ...factOptsRef.current,
+      orderMap: orderMapRef.current, assetNumbers: assetNumbersRef.current,
+      ...factOptsRef.current, ...refOptsRef.current,
     })),
-    /** 116.md §60 — insert a fresh rows × cols table at the caret and land in
-        its first cell. Goes through insertHtml → native undo + autosave emit. */
-    insertTable: (rows, cols) => {
-      if (readOnlyRef.current) return;
-      const html = mdToHtml(makeTableMd(rows, cols), {
-        orderMap: orderMapRef.current, assetNumbers: assetNumbersRef.current, ...factOptsRef.current,
+    /**
+     * 116.md §60 + 117.md §4 — insert a fresh rows × cols table at the caret,
+     * WITH its caption marker so it is a first-class manuscript object from the
+     * first keystroke (numbered, referenceable, exportable). Goes through
+     * insertHtml → native undo + autosave emit; returns the new table's id.
+     *
+     * The caret lands in the TITLE region rather than the first cell: §4 is
+     * "automatic numbering AND naming", the number is already filled in, and the
+     * one thing only the researcher can supply is what the table is called.
+     */
+    insertTable: (rows, cols, tblOpts = {}) => {
+      if (readOnlyRef.current) return null;
+      const id = mintManualTableId(usedTableIds());
+      const md = makeCaptionedTableMd(id, tblOpts.title || '', rows, cols);
+      const html = mdToHtml(md, {
+        orderMap: orderMapRef.current, assetNumbers: assetNumbersRef.current,
+        ...factOptsRef.current, ...refOptsRef.current,
       }).replace('<table>', '<table data-ms-new="1">');
       // the trailing empty paragraph gives a caret target below a table inserted
       // at the section end; htmlToMd drops it, so the markdown stays clean
       insertHtml(`${html}<p><br></p>`);
-      const nt = rootRef.current && rootRef.current.querySelector('table[data-ms-new="1"]');
-      if (nt) { nt.removeAttribute('data-ms-new'); focusCellAt(nt, 0, 0); }
+      const root = rootRef.current;
+      const nt = root && root.querySelector('table[data-ms-new="1"]');
+      if (nt) nt.removeAttribute('data-ms-new');
+      const cap = root && root.querySelector(`div.${TABLE_CAPTION_CLASS}[data-tblcap="${id}"]`);
+      const titleEl = cap && cap.querySelector(`span.${TABLE_CAPTION_TITLE_CLASS}`);
+      if (titleEl) {
+        titleEl.focus();
+        selectCellContents(titleEl);
+      } else if (nt) focusCellAt(nt, 0, 0);
+      if (onTableMetaRef.current) {
+        onTableMetaRef.current(id, { origin: 'manual', createdAt: new Date().toISOString() });
+      }
       notifyTableFocus();
+      return id;
     },
     /** 116.md §61 — structural op ('rowAbove'|'rowBelow'|'colLeft'|'colRight'|
         'deleteRow'|'deleteCol'|'deleteTable') on the table holding the caret. */
     tableOp: (opId, ctxOverride) => runTableOp(opId, ctxOverride),
+    /**
+     * 117.md §4 — promote the ANONYMOUS pipe table under the caret to a numbered
+     * manuscript object by giving it a caption marker. This is what makes the
+     * export notice ("add a caption to number it") an action rather than advice,
+     * and it is how every table typed before this feature existed joins the
+     * numbering sequence. Returns the new id, or null when there is nothing to do.
+     */
+    addTableCaption: (title = '') => {
+      if (readOnlyRef.current) return null;
+      const ctx = tableDomContext();
+      if (!ctx || captionForTable(ctx.table)) return null;
+      const id = mintManualTableId(usedTableIds());
+      const md = `${tableCaptionLine(id, title)}\n\n${htmlToMd(ctx.table.outerHTML)}`;
+      const html = mdToHtml(md, {
+        orderMap: orderMapRef.current, assetNumbers: assetNumbersRef.current,
+        ...factOptsRef.current, ...refOptsRef.current,
+      });
+      if (!replaceNode(ctx.table, html)) return null;
+      const root = rootRef.current;
+      const cap = root && root.querySelector(`div.${TABLE_CAPTION_CLASS}[data-tblcap="${id}"]`);
+      const titleEl = cap && cap.querySelector(`span.${TABLE_CAPTION_TITLE_CLASS}`);
+      if (titleEl) { titleEl.focus(); selectCellContents(titleEl); }
+      if (onTableMetaRef.current) {
+        onTableMetaRef.current(id, { origin: 'manual', createdAt: new Date().toISOString() });
+      }
+      notifyTableFocus();
+      return id;
+    },
     /** Insert an atomic citation chip at the caret. */
     insertCitation: (refId) => {
       if (!refId) return;
       const n = orderMapRef.current && orderMapRef.current.get(refId);
       insertHtml(`${citeChipHtml(refId, n)}&nbsp;`);
+    },
+    /**
+     * 117.md §9 — insert a cross-reference chip AT THE CARET.
+     *
+     * Deliberately not `insertMarkdown(assetToken(id))`: mdToHtml wraps a bare
+     * token in a <p>, and inserting a block mid-sentence splits the paragraph the
+     * researcher is writing. The chip is inline, so it lands inside the sentence,
+     * which is the only place a cross-reference belongs.
+     */
+    insertAssetRef: (assetId) => {
+      if (!assetId || readOnlyRef.current) return;
+      const ro = refOptsRef.current || {};
+      const { label, broken } = assetChipLabel(assetId, assetNumbersRef.current, ro.knownAssetIds, ro.templateId);
+      insertHtml(`${assetChipHtml(assetId, label, { broken })}&nbsp;`);
+    },
+    /** 117.md §10 — "Remove cross-reference": the CHIP goes, the table stays. */
+    removeCrossRef: () => {
+      const chip = activeChipRef.current;
+      activeChipRef.current = null;
+      return replaceNode(chip, null);
+    },
+    /** 117.md §11 — "Relink": rebind the chip in place to another object. */
+    relinkCrossRef: (assetId) => {
+      const chip = activeChipRef.current;
+      activeChipRef.current = null;
+      if (!chip || !assetId) return false;
+      const ro = refOptsRef.current || {};
+      const { label, broken } = assetChipLabel(assetId, assetNumbersRef.current, ro.knownAssetIds, ro.templateId);
+      return replaceNode(chip, assetChipHtml(assetId, label, { broken }));
+    },
+    /** Forget the chip the menu was bound to (menu dismissed without an action). */
+    clearActiveCrossRef: () => { activeChipRef.current = null; },
+    /**
+     * 117.md §10 — "Go to table": scroll a manual table's caption into view and
+     * mark it, so the jump is visible rather than a silent scroll. Returns false
+     * when this section does not hold that table (the parent then switches
+     * section and retries — same pattern as placeholder navigation).
+     */
+    focusManualTable: (tableId) => {
+      const el = rootRef.current;
+      if (!el || !tableId || typeof el.querySelector !== 'function') return false;
+      const cap = el.querySelector(`div.${TABLE_CAPTION_CLASS}[data-tblcap="${String(tableId).replace(/"/g, '')}"]`);
+      if (!cap) return false;
+      if (typeof cap.scrollIntoView === 'function') cap.scrollIntoView({ block: 'center', inline: 'nearest' });
+      el.querySelectorAll(`div.${TABLE_CAPTION_CLASS}[data-tblcap-current="true"]`)
+        .forEach((n) => n.removeAttribute('data-tblcap-current'));
+      cap.setAttribute('data-tblcap-current', 'true');
+      return true;
+    },
+    /** Focus a manual table's TITLE region ("Edit table" on a manual object). */
+    editManualTable: (tableId) => {
+      const el = rootRef.current;
+      if (!el || !tableId || typeof el.querySelector !== 'function') return false;
+      const cap = el.querySelector(`div.${TABLE_CAPTION_CLASS}[data-tblcap="${String(tableId).replace(/"/g, '')}"]`);
+      const titleEl = cap && cap.querySelector(`span.${TABLE_CAPTION_TITLE_CLASS}`);
+      if (!titleEl) return false;
+      if (typeof cap.scrollIntoView === 'function') cap.scrollIntoView({ block: 'center', inline: 'nearest' });
+      titleEl.focus();
+      selectCellContents(titleEl);
+      return true;
+    },
+    /** Every manual-table id this section currently renders (document order). */
+    manualTableIds: () => {
+      const el = rootRef.current;
+      if (!el || typeof el.querySelectorAll !== 'function') return [];
+      return Array.from(el.querySelectorAll('[data-tblcap]')).map((n) => n.getAttribute('data-tblcap') || '');
     },
     /**
      * 102.md §2/§27 — reveal the Nth placeholder in THIS section: scroll it into
@@ -602,7 +919,29 @@ export const RichSectionEditor = forwardRef(function RichSectionEditor({
     return true;
   };
 
+  /**
+   * 117.md §10/§71 — keyboard parity for the chip menu. The chip carries
+   * role="button" + tabindex=0, so Tab reaches it; Enter/Space opens the same
+   * action menu a click opens. Modified chords fall through untouched, for exactly
+   * the reason the placeholder handler documents (a preventDefault on a modified
+   * key would steal it from the 108.md §23 shortcut router).
+   */
+  const onChipKeyDown = (e) => {
+    if (e.key !== 'Enter' && e.key !== ' ' && e.key !== 'Spacebar') return false;
+    if (e.ctrlKey || e.metaKey || e.altKey) return false;
+    const chip = assetChipFrom(e.target);
+    if (!chip) return false;
+    e.preventDefault();
+    openChipMenu(chip);
+    return true;
+  };
+
   const onKeyDown = (e) => {
+    // 117.md §10 — Enter/Space on a focused cross-reference opens its menu. This
+    // runs even in a LOCKED section: "Go to table" is a read-only action, and the
+    // mutating ones re-check readOnly before touching the document.
+    if (onChipKeyDown(e)) return;
+    if (readOnlyRef.current) return;
     // 102.md §3 — Enter/Space on a focused placeholder selects the whole field.
     if (onPlaceholderKeyDown(e)) return;
     // 116.md §61 — Tab moves between table cells (and never leaves the editor
@@ -624,8 +963,14 @@ export const RichSectionEditor = forwardRef(function RichSectionEditor({
     if (!html) return; // plain-text paste → browser default (inserted as text)
     e.preventDefault();
     // Word/Docs HTML → markdown subset → clean HTML (everything else drops to text)
-    insertHtml(mdToHtml(htmlToMd(html), {
-      orderMap: orderMapRef.current, assetNumbers: assetNumbersRef.current, ...factOptsRef.current,
+    // 117.md §4(c)/(d) — the caption marker survives sanitization (htmlToMd knows
+    // data-tblcap), and a DUPLICATE id is re-minted: copying a table produces a new
+    // table, never a second claimant to the original's identity. Moving a table
+    // (cut → paste) keeps its id, so its cross-references survive the move.
+    const { md } = remintDuplicateCaptions(htmlToMd(html), usedTableIds());
+    insertHtml(mdToHtml(md, {
+      orderMap: orderMapRef.current, assetNumbers: assetNumbersRef.current,
+      ...factOptsRef.current, ...refOptsRef.current,
     }));
   };
 
@@ -648,12 +993,16 @@ export const RichSectionEditor = forwardRef(function RichSectionEditor({
       data-placeholder={placeholder || 'Write this section, or generate it from your project data.'}
       spellCheck
       onInput={() => { rememberSelection(); emit(); }}
-      onKeyDown={readOnly ? undefined : onKeyDown}
+      onKeyDown={onKeyDown}
       onKeyUp={rememberSelection}
       onMouseUp={rememberSelection}
       /* 102.md §3 — click anywhere in a placeholder and the WHOLE field (both
-         brackets included) is selected, ready to be typed over. */
-      onMouseDown={readOnly ? undefined : onPlaceholderMouseDown}
+         brackets included) is selected, ready to be typed over.
+         117.md §10 — a click on a cross-reference opens its action menu instead,
+         WITHOUT moving the caret. */
+      onMouseDown={onEditorMouseDown}
+      onMouseOver={onAssetChipHover ? onChipMouseOver : undefined}
+      onMouseLeave={onAssetChipHover ? onChipMouseLeave : undefined}
       onFocus={rememberSelection}
       onPaste={onPaste}
       dangerouslySetInnerHTML={{ __html: html0.current }}
@@ -681,14 +1030,18 @@ const TB_BUTTONS = [
  * insertHtml (native undo + autosave emit).
  */
 const TABLE_GRID_MAX = 6;
-export function TableGridPicker({ getApi, disabled }) {
+export function TableGridPicker({ getApi, disabled, onInserted }) {
   const [open, setOpen] = useState(false);
   const [hover, setHover] = useState({ r: 0, c: 0 });
   const insert = (r, c) => {
     setOpen(false);
     setHover({ r: 0, c: 0 });
     const api = getApi && getApi();
-    if (api && api.insertTable) api.insertTable(r, c);
+    if (!(api && api.insertTable)) return;
+    // 117.md §4 — insertTable returns the new object's stable id so the parent can
+    // record its creation stamp / focus it.
+    const id = api.insertTable(r, c);
+    if (onInserted) onInserted(id);
   };
   return (
     <span style={{ position: 'relative', display: 'inline-flex' }}>
@@ -746,12 +1099,124 @@ export function TableGridPicker({ getApi, disabled }) {
   );
 }
 
+/* ══════════ 117.md §9 — Insert → Cross-reference ══════════
+ *
+ * The old control was a bare <select> of asset titles. That is wrong for three
+ * reasons: a native select has no search (§9 explicitly asks for it when there are
+ * many tables), it cannot show a number and an origin next to a title, and it
+ * inserted a BLOCK at the caret. This is a real picker: type-to-filter over every
+ * table AND figure, each row showing what the researcher actually recognises — the
+ * live number, the title and where the object came from — and picking one inserts
+ * an inline chip exactly where the caret is.
+ *
+ * `items` are precomputed by the caller: { id, kind, label, title, origin }.
+ */
+export const CROSSREF_EMPTY_TEXT = 'No tables or figures to reference yet.';
+export const CROSSREF_NO_MATCH_TEXT = 'Nothing matches that search.';
+
+const originBadge = (origin) => (origin === 'manual' ? 'Manual' : 'Auto');
+
+export function CrossRefList({ items, onPick, testIdPrefix, autoFocus = false, emptyText }) {
+  const [q, setQ] = useState('');
+  const list = Array.isArray(items) ? items : [];
+  const needle = q.trim().toLowerCase();
+  const shown = needle
+    ? list.filter((it) => `${it.label} ${it.title} ${originBadge(it.origin)} ${it.id}`.toLowerCase().includes(needle))
+    : list;
+  return (
+    <div>
+      <input
+        value={q}
+        autoFocus={autoFocus}
+        onChange={(e) => setQ(e.target.value)}
+        placeholder="Search tables and figures…"
+        aria-label="Search tables and figures"
+        data-testid={`${testIdPrefix}-search`}
+        style={{ ...inp, fontSize: 11.5, marginBottom: 6 }} />
+      <div role="listbox" aria-label="Tables and figures"
+        style={{ maxHeight: 236, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 2 }}>
+        {shown.map((it) => (
+          <button key={it.id} type="button" role="option" aria-selected="false"
+            data-testid={`${testIdPrefix}-item-${String(it.id).replace(/:/g, '-')}`}
+            onMouseDown={(e) => e.preventDefault()}
+            onClick={() => onPick && onPick(it.id)}
+            title={`${it.label} — ${it.title || it.id}`}
+            style={{
+              display: 'flex', alignItems: 'center', gap: 7, textAlign: 'left', width: '100%',
+              padding: '5px 7px', borderRadius: 6, cursor: 'pointer', fontFamily: 'inherit',
+              border: '1px solid transparent', background: 'transparent', color: C.txt2, fontSize: 11.5,
+            }}>
+            <span style={{
+              flexShrink: 0, fontWeight: 700, fontSize: 10, color: C.acc,
+              background: alpha(C.acc, '14'), borderRadius: 99, padding: '1px 7px', whiteSpace: 'nowrap',
+            }}>{it.label}</span>
+            <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+              {it.title || it.id}
+            </span>
+            <span style={{
+              flexShrink: 0, fontSize: 9, letterSpacing: 0.4, textTransform: 'uppercase',
+              color: C.muted, border: `1px solid ${C.brd2}`, borderRadius: 99, padding: '0 6px',
+            }}>{originBadge(it.origin)}</span>
+          </button>
+        ))}
+        {!shown.length && (
+          <div data-testid={`${testIdPrefix}-empty`} style={{ fontSize: 11, color: C.muted, padding: '6px 4px' }}>
+            {list.length ? CROSSREF_NO_MATCH_TEXT : (emptyText || CROSSREF_EMPTY_TEXT)}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/** The popover form of the picker: one button that opens CrossRefList. */
+export function CrossRefPicker({
+  items, onPick, disabled, testIdPrefix = 'stitch-manuscript-crossref',
+  label = '⧉ Cross-reference', title = 'Insert a reference to a table or figure at the cursor',
+  block = false,
+}) {
+  const [open, setOpen] = useState(false);
+  const pick = (id) => { setOpen(false); if (onPick) onPick(id); };
+  return (
+    <span style={{ position: 'relative', display: block ? 'block' : 'inline-flex' }}>
+      <button type="button" aria-label="Insert cross-reference" title={title}
+        disabled={disabled} aria-haspopup="dialog" aria-expanded={open}
+        data-testid={`${testIdPrefix}-open`}
+        onMouseDown={(e) => e.preventDefault()}
+        onClick={() => setOpen((v) => !v)}
+        style={{
+          ...btnS('ghost'), padding: '5px 9px', fontSize: 11.5, border: '1px solid transparent',
+          background: 'transparent', color: C.txt2, opacity: disabled ? 0.5 : 1,
+          ...(block ? { width: '100%', justifyContent: 'center' } : {}),
+        }}>
+        {label}
+      </button>
+      {open && !disabled && (
+        <>
+          <div onMouseDown={(e) => { e.preventDefault(); setOpen(false); }}
+            style={{ position: 'fixed', inset: 0, zIndex: 40, background: 'transparent' }} />
+          <div role="dialog" aria-label="Insert cross-reference"
+            data-testid={`${testIdPrefix}-popover`}
+            onMouseDown={(e) => e.preventDefault()}
+            style={{
+              position: 'absolute', top: '100%', left: 0, marginTop: 4, zIndex: 41, width: 288,
+              background: C.card, border: `1px solid ${C.brd}`, borderRadius: 10,
+              padding: 10, boxShadow: '0 10px 26px rgba(15,23,42,0.18)',
+            }}>
+            <CrossRefList items={items} onPick={pick} testIdPrefix={testIdPrefix} autoFocus />
+          </div>
+        </>
+      )}
+    </span>
+  );
+}
+
 /**
  * Formatting toolbar. `getApi()` returns the imperative handle of the editor that
  * last had the caret (one toolbar serves the abstract's multiple fields too).
  * onMouseDown preventDefault keeps the editor selection alive through the click.
  */
-export function RichToolbar({ getApi, citeRefs, refLabel, disabled }) {
+export function RichToolbar({ getApi, citeRefs, refLabel, disabled, crossRefs, onInsertCrossRef }) {
   const run = (cmd) => {
     const api = getApi && getApi();
     if (api && api.exec) api.exec(cmd[0], cmd[1]);
@@ -777,6 +1242,13 @@ export function RichToolbar({ getApi, citeRefs, refLabel, disabled }) {
       ))}
       {/* 116.md §60 — Insert → Table grid selector */}
       <TableGridPicker getApi={getApi} disabled={disabled} />
+      {/* 117.md §9 — Insert → Cross-reference, at the caret */}
+      <CrossRefPicker items={crossRefs || []} disabled={disabled}
+        onPick={(id) => {
+          if (onInsertCrossRef) { onInsertCrossRef(id); return; }
+          const api = getApi && getApi();
+          if (api && api.insertAssetRef) api.insertAssetRef(id);
+        }} />
       {!disabled && citeRefs && citeRefs.length > 0 && (
         <>
           <span style={{ width: 1, alignSelf: 'stretch', background: C.brd, margin: '0 4px' }} />

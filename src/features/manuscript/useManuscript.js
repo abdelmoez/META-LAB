@@ -45,6 +45,9 @@ import {
   // 85.md B1/B2 — asset registry, token numbering/placement + pre-export validation.
   computeManuscriptAssets, resolveNumbering, computePlacements, validateExport,
   assetToken,
+  // 117.md §5 — the canonical section id list, for the live structural signature
+  // that decides when the derived object registry must be rebuilt.
+  SECTION_IDS,
   // 101.md §4/§5/§8/§9/§10 — the live fact layer: resolve project-derived facts
   // at render time, notice when one changes, and let a researcher pin a previous
   // wording without falsifying the project record.
@@ -70,6 +73,9 @@ import { useProjectHistory } from '../../frontend/history/HistoryContext.jsx';
 // screening record set, so it subscribes to the SAME pokes the PRISMA diagram does
 // and re-fetches through the authorized endpoints (events are never trusted as data).
 import { useRealtime } from '../../frontend/hooks/useRealtime.js';
+// 117.md §22 (r2) — audit actors come from the signed-in user, not a phantom
+// `project._me` key nothing ever wrote. Optional: SSR tests have no provider.
+import { useOptionalAuth } from '../../frontend/context/AuthContext.jsx';
 import { shouldReloadForRecordPoke } from '../prisma/inspectorModel.js';
 import * as MS from './manuscriptState.js';
 import {
@@ -98,6 +104,20 @@ export function useManuscript(project, upd) {
   const activeIdRef = useRef(activeId);
   useEffect(() => { projectRef.current = project; });
   useEffect(() => { activeIdRef.current = activeId; });
+
+  // 117.md §22 (r2) — the signed-in user IS the audit actor. The old read
+  // (`project._me`) was a dead seam: nothing anywhere sets `_me` on a project,
+  // so snapshot authors and override-log actors were silently null forever.
+  // The auth context is the one honest source; absent (SSR tests, no provider)
+  // the entries simply carry no actor, which normalize/materialize rules allow.
+  const auth = useOptionalAuth();
+  const actorNameRef = useRef(null);
+  actorNameRef.current = (() => {
+    const u = auth && auth.user;
+    if (!u || typeof u !== 'object') return null;
+    const n = String(u.name || u.displayName || u.fullName || u.email || '').trim();
+    return n || null;
+  })();
 
   // 108.md §§2/§6 — the page-scoped history. Read through a render-assigned ref so
   // the mutation callbacks below stay referentially stable (they are dependencies of
@@ -279,7 +299,7 @@ export function useManuscript(project, upd) {
           ? setPrismaOverride(cur, op.field, op.value, {
             auto: op.auto,
             // 117.md §22 (r2 integration) — undo/redo rows name their actor too.
-            by: (projectRef.current && projectRef.current._me && projectRef.current._me.name) || undefined,
+            by: actorNameRef.current || undefined,
             nowIso: new Date().toISOString(),
             via: (ctx && ctx.direction) === 'redo' ? 'redo' : 'undo',
           })
@@ -513,6 +533,68 @@ export function useManuscript(project, upd) {
     [project, activeDraft],
   );
 
+  /* ══════════ 102.md — the live (pre-autosave) view of the draft ══════════
+   *
+   * §58 wants counters to update "immediately without requiring refresh". The
+   * stored draft only catches up after the 600 ms autosave debounce plus the
+   * project round trip, so the text the researcher is typing RIGHT NOW is held
+   * here and overlaid on top of the draft.
+   *
+   * Re-rendering on every keystroke is safe precisely because the editor is
+   * uncontrolled: RichSectionEditor renders its HTML once per mount key and React
+   * sees an identical string afterwards, so a parent re-render never touches the
+   * live DOM or the caret.
+   *
+   * 117.md §5 — this now also feeds the asset registry. "Create a fourth table →
+   * it becomes Table 4" has to be true the instant the table exists, not 600 ms
+   * later, and the numbering is derived, so the only way to get that is to derive
+   * it from what is on screen.
+   */
+  const [liveSections, setLiveSections] = useState(null);
+  const [liveStatements, setLiveStatements] = useState(null);
+
+  /** The draft as the researcher currently sees it, pending edits included. */
+  const liveDraft = useMemo(() => {
+    if (!activeDraft) return null;
+    if (!liveSections && !liveStatements) return activeDraft;
+    const out = { ...activeDraft };
+    if (liveSections) {
+      const sections = { ...activeDraft.sections };
+      for (const id of Object.keys(liveSections)) {
+        sections[id] = { ...(sections[id] || {}), content: liveSections[id] };
+      }
+      out.sections = sections;
+    }
+    if (liveStatements) out.statements = { ...activeDraft.statements, ...liveStatements };
+    return out;
+  }, [activeDraft, liveSections, liveStatements]);
+
+  /**
+   * 117.md §5-§7 — the STRUCTURAL signature of the live draft: every caption marker
+   * and every cross-reference token, in order. Ordinary typing does not change it,
+   * so the registry (and therefore every chip and caption in the page) is rebuilt
+   * only when the set or ORDER of manuscript objects actually moves — one cheap
+   * regex pass per keystroke instead of a full re-derivation, and no per-character
+   * churn through the editor's in-place renumbering effect.
+   */
+  const refSignature = useMemo(() => {
+    if (!liveDraft) return '';
+    const re = /\[\[(?:tblcap|table|figure):[a-z0-9:-]+\]\]/g;
+    let sig = '';
+    for (const s of SECTION_IDS) {
+      const c = (liveDraft.sections && liveDraft.sections[s] && liveDraft.sections[s].content) || '';
+      if (c.indexOf('[[') === -1) continue;
+      sig += `${s}:${(c.match(re) || []).join(',')};`;
+    }
+    return sig;
+  }, [liveDraft]);
+
+  // The draft the registry derives from: the LIVE one, re-taken only when the
+  // object structure changes or the stored draft commits (which is when titles,
+  // overrides and metadata catch up).
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const registryDraft = useMemo(() => liveDraft, [refSignature, activeDraft]);
+
   /* ── 85.md B2 — asset registry + live numbering/placement for editor + export ── */
   // Per-outcome analyses (primary first) — the SAME list the export renders
   // per-outcome forest figures from, so editor chips and the .docx agree.
@@ -542,25 +624,41 @@ export function useManuscript(project, upd) {
   }, [staleness]);
 
   const assets = useMemo(() => {
-    if (!activeDraft) return [];
+    if (!registryDraft) return [];
     try {
-      return computeManuscriptAssets(project, activeDraft, {
+      return computeManuscriptAssets(project, registryDraft, {
         tables, prismaCounts, analyses, primary,
         robByStudyId: sources.robByStudyId || undefined,
         robAssessments: sources.robAssessments || undefined,
         staleAssets,
       });
     } catch { return []; }
-  }, [project, activeDraft, tables, prismaCounts, analyses, primary, sources, staleAssets]);
+  }, [project, registryDraft, tables, prismaCounts, analyses, primary, sources, staleAssets]);
 
   const assetNumbering = useMemo(
-    () => resolveNumbering({ sections: activeDraft || [], assets }),
-    [activeDraft, assets],
+    () => resolveNumbering({ sections: registryDraft || [], assets }),
+    [registryDraft, assets],
   );
   const assetPlacements = useMemo(
-    () => computePlacements({ sections: activeDraft || [], numbering: assetNumbering, assets }),
-    [activeDraft, assetNumbering, assets],
+    () => computePlacements({ sections: registryDraft || [], numbering: assetNumbering, assets }),
+    [registryDraft, assetNumbering, assets],
   );
+  // 117.md §11 — every id a cross-reference may legitimately point at (canonical
+  // ids + legacy aliases). The editor renders a token OUTSIDE this set as a broken
+  // chip, so deleting a table turns its references visibly broken on the next
+  // render instead of leaving them silently pointing at nothing.
+  const knownAssetIds = useMemo(() => {
+    const s = new Set();
+    for (const a of assets) {
+      s.add(a.id);
+      for (const al of (a.aliasIds || [])) s.add(al);
+    }
+    return s;
+  }, [assets]);
+
+  /** 117.md §4 — the manual (in-prose) subset of the registry, in document order. */
+  const manualTables = useMemo(() => assets.filter((a) => a && a.origin === 'manual'), [assets]);
+
   // True when the draft carries ANY structured asset token (known or not) — the
   // Insert-PRISMA button uses this to avoid silently mixing reference modes.
   const draftUsesTokens = useMemo(
@@ -845,7 +943,9 @@ export function useManuscript(project, upd) {
   /* 84.md Part 6 — version snapshots (stored on the draft). */
   const createSnapshotNow = useCallback(({ label, frozen } = {}) => {
     mutateActive((draft) => draftOf(createSnapshot(draft, project, {
-      label: label || '', frozen: !!frozen, author: (project && project._me && project._me.name) || null,
+      // 117.md §22 (r2) — `project._me` was never set by anything; the auth
+      // context is the real seam, so snapshot authors stop being silently null.
+      label: label || '', frozen: !!frozen, author: actorNameRef.current,
       appVersion: (typeof window !== 'undefined' && window.__APP_VERSION__) || null,
       nowIso: new Date().toISOString(), genOpts: { ...genOpts, prismaCounts, primary },
     })));
@@ -919,10 +1019,9 @@ export function useManuscript(project, upd) {
     const auto = ovInfo ? ovInfo.auto : ((pc && pc.counts && pc.counts[field]) ?? null);
     const next = mutateActive((d) => {
       if (!d || d.id !== draftId) return null;
-      // 117.md §22 (r2 integration) — the audit entry names its actor. Same seam
-      // the snapshot author uses; absent identity degrades to an entry without `by`.
-      const p = projectRef.current;
-      const by = (p && p._me && p._me.name) || undefined;
+      // 117.md §22 (r2 integration) — the audit entry names its actor from the
+      // auth context; absent identity degrades to an entry without `by`.
+      const by = actorNameRef.current || undefined;
       const out = setPrismaOverride(d, field, value, { auto, by, nowIso: new Date().toISOString(), ...meta });
       // A no-op returns the SAME draft: skip the write entirely rather than
       // autosaving an identical blob (and never record an entry for nothing).
@@ -977,6 +1076,43 @@ export function useManuscript(project, upd) {
     if (!activeDraft || !assetId || !patch) return;
     queueEdit(activeDraft.id, 'assetPatch', assetId, patch);
   }, [activeDraft, queueEdit]);
+
+  /**
+   * 117.md §4 — the manual-table side-metadata map (`draft.tableMeta[<id>]`).
+   *
+   * Identity and title live in the PROSE (that is what makes one Ctrl+Z restore a
+   * table together with its id); everything that is not prose — created/modified
+   * stamps, an extra caption paragraph, notes, a source note — lives here. Written
+   * only on real events (creation, a structural table op, a panel edit), never per
+   * keystroke: this map exists to answer "when was this last changed?", not to
+   * shadow the prose.
+   *
+   * Additive and self-cleaning: an entry whose fields are all empty is deleted, and
+   * the container disappears with the last entry, so a draft that never had a
+   * manual table normalizes byte-identically to before this feature existed.
+   */
+  const setTableMeta = useCallback((tableId, patch) => {
+    if (!tableId || !patch) return;
+    mutateActive((d) => {
+      const cur = (d.tableMeta && typeof d.tableMeta === 'object') ? d.tableMeta : {};
+      const prev = (cur[tableId] && typeof cur[tableId] === 'object') ? cur[tableId] : {};
+      const next = { ...prev };
+      for (const k of Object.keys(patch)) {
+        const v = patch[k];
+        if (v == null || v === '') delete next[k];
+        else next[k] = v;
+      }
+      const map = { ...cur };
+      if (Object.keys(next).length) map[tableId] = next; else delete map[tableId];
+      // No-op guard: never autosave an identical blob.
+      const same = Object.keys(map).length === Object.keys(cur).length
+        && Object.keys(map).every((k) => JSON.stringify(map[k]) === JSON.stringify(cur[k]));
+      if (same) return null;
+      const out = MS.setMeta(d, {});
+      if (Object.keys(map).length) out.tableMeta = map; else delete out.tableMeta;
+      return out;
+    });
+  }, [mutateActive]);
 
   // 85.md B2 — "Insert reference" from the Tables/Figures panels: no editor is
   // mounted there, so the token is appended to the END of Results (the caller
@@ -1144,21 +1280,6 @@ export function useManuscript(project, upd) {
     return () => clearTimeout(t);
   }, [sourcesSettled, resolvedFacts, usedFactKeys]);
 
-  /* ══════════ 102.md — manual-input placeholders ══════════
-   *
-   * §58 wants the counter to update "immediately without requiring refresh". The
-   * stored draft only catches up after the 600 ms autosave debounce plus the
-   * project round trip, so the text the researcher is typing RIGHT NOW is held
-   * here and overlaid on top of the draft when placeholders are counted.
-   *
-   * Re-rendering on every keystroke is safe precisely because the editor is
-   * uncontrolled: RichSectionEditor renders its HTML once per mount key and React
-   * sees an identical string afterwards, so a parent re-render never touches the
-   * live DOM or the caret.
-   */
-  const [liveSections, setLiveSections] = useState(null);
-  const [liveStatements, setLiveStatements] = useState(null);
-
   // Once the stored draft catches up with what was typed, drop the overlay so the
   // two can never drift apart.
   useEffect(() => {
@@ -1176,22 +1297,6 @@ export function useManuscript(project, upd) {
     const stillAhead = Object.keys(liveStatements).some((id) => st[id] !== liveStatements[id]);
     if (!stillAhead) setLiveStatements(null);
   }, [activeDraft, liveStatements]);
-
-  /** The draft as the researcher currently sees it, pending edits included. */
-  const liveDraft = useMemo(() => {
-    if (!activeDraft) return null;
-    if (!liveSections && !liveStatements) return activeDraft;
-    const out = { ...activeDraft };
-    if (liveSections) {
-      const sections = { ...activeDraft.sections };
-      for (const id of Object.keys(liveSections)) {
-        sections[id] = { ...(sections[id] || {}), content: liveSections[id] };
-      }
-      out.sections = sections;
-    }
-    if (liveStatements) out.statements = { ...activeDraft.statements, ...liveStatements };
-    return out;
-  }, [activeDraft, liveSections, liveStatements]);
 
   /** Every unresolved placeholder, in manuscript order (§1, §2). */
   const placeholders = useMemo(() => collectPlaceholders(liveDraft), [liveDraft]);
@@ -1355,6 +1460,10 @@ export function useManuscript(project, upd) {
     // 85.md B2 — asset registry + numbering/placement + export preparation.
     analyses, assets, assetNumbering, assetPlacements, draftUsesTokens,
     setAssetOverride, queueAssetPatch, insertAssetReference, prepareExport,
+    // 117.md §4-§11 — the manual-table object surface: the live registry id set the
+    // editor needs to tell a working cross-reference from a broken one, the
+    // manual-table subset, and the side-metadata writer.
+    knownAssetIds, manualTables, setTableMeta,
     dataStatus: sources.dataStatus,
     screening: sources.screening,
     // 117.md §12 — the canonical record-derived flow itself, so the export paths can

@@ -14,7 +14,13 @@
  *                                 contenteditable="false">[n]</span> (n from orderMap)
  *   [[table:id]]/[[figure:id]]  → atomic chip <span class="ms-asset" data-asset=…
  *                                 contenteditable="false">Table 2</span> (85.md B1;
- *                                 number from opts.assetNumbers, unknown → 'Table ?')
+ *                                 number from opts.assetNumbers, unknown → 'Table ?';
+ *                                 117.md §11: an id that is not in opts.knownAssetIds
+ *                                 renders BROKEN — 'Table (deleted)' + data-asset-broken)
+ *   [[tblcap:id]] Title         → the manual-table CAPTION block (117.md §4):
+ *                                 <div class="ms-tblcap" data-tblcap=id
+ *                                 contenteditable="false"> holding an auto-derived
+ *                                 number chip and a contenteditable title region.
  *   [[fact:key]]                → atomic chip <span class="ms-fact" data-fact=…
  *                                 contenteditable="false">four</span> (101.md §5/§6;
  *                                 value from opts.facts, unknown → its placeholder)
@@ -35,7 +41,11 @@
  */
 
 import { CITATION_TOKEN_RE } from '../../../research-engine/manuscript/citations.js';
-import { ASSET_TOKEN_RE } from '../../../research-engine/manuscript/refTokens.js';
+// 117.md §69 — one kind registry + one caption formatter for every renderer.
+import {
+  ASSET_TOKEN_RE, TABLE_CAPTION_LINE_RE, TABLE_CAPTION_TOKEN_RE, MANUAL_TABLE_ID_RE,
+  assetKindLabel, formatAssetLabel, formatCaptionPrefix, cleanCaptionTitle, tableCaptionLine,
+} from '../../../research-engine/manuscript/refTokens.js';
 import { FACT_TOKEN_RE, factPlaceholder } from '../../../research-engine/manuscript/factTokens.js';
 // 102.md — one classifier for the whole feature: the editor decorates exactly the
 // spans the pure detector counts, so the badge can never disagree with the page.
@@ -47,6 +57,12 @@ export const ASSET_CHIP_CLASS = 'ms-asset';
 export const FACT_CHIP_CLASS = 'ms-fact';
 /** 102.md — a manual-input placeholder, e.g. `[State the review objective]`. */
 export const INPUT_CHIP_CLASS = 'ms-input';
+/** 117.md §4 — the manual-table caption block and its two regions. */
+export const TABLE_CAPTION_CLASS = 'ms-tblcap';
+export const TABLE_CAPTION_NUM_CLASS = 'ms-tblcap-n';
+export const TABLE_CAPTION_TITLE_CLASS = 'ms-tblcap-t';
+/** Placeholder shown by CSS when a manual table has no title yet. */
+export const TABLE_CAPTION_PLACEHOLDER = 'Add a table title…';
 
 /** The `[[fact:key]]` key grammar, mirrored for the reverse (HTML → md) direction. */
 const FACT_KEY_RE = /^[a-zA-Z][a-zA-Z0-9]*(?:\.[a-zA-Z][a-zA-Z0-9]*)*$/;
@@ -79,10 +95,54 @@ export function citeChipHtml(id, n) {
   return `<span class="${CITE_CHIP_CLASS}" data-cite="${escapeAttr(id)}" contenteditable="false">[${n == null ? '?' : n}]</span>`;
 }
 
-/** The atomic, non-editable asset chip (85.md B1). `id` = full 'table:study';
-    label = 'Table 2' / 'Table ?' when unnumbered. */
-export function assetChipHtml(id, label) {
-  return `<span class="${ASSET_CHIP_CLASS}" data-asset="${escapeAttr(id)}" contenteditable="false">${escapeHtml(label)}</span>`;
+/**
+ * The atomic, non-editable asset chip (85.md B1). `id` = full 'table:study';
+ * label = 'Table 2' / 'Table ?' when unnumbered.
+ *
+ * 117.md §10/§11 — the chip is INTERACTIVE, not decorative: it carries
+ * role="button" + tabindex so the hover preview and the action menu (Go to /
+ * Edit / Remove cross-reference) are reachable by keyboard, and `data-asset-broken`
+ * when its target no longer exists so a deleted table reads as visibly broken
+ * instead of quietly renumbering to something wrong.
+ */
+export function assetChipAria(label, broken) {
+  return broken
+    ? `Broken cross-reference: ${label}. Activate for relink and remove actions.`
+    : `Cross-reference: ${label}. Activate for cross-reference actions.`;
+}
+
+export function assetChipHtml(id, label, opts = {}) {
+  const broken = !!(opts && opts.broken);
+  const aria = assetChipAria(label, broken);
+  return `<span class="${ASSET_CHIP_CLASS}" data-asset="${escapeAttr(id)}"`
+    + (broken ? ' data-asset-broken="true"' : '')
+    + ` role="button" tabindex="0" aria-label="${escapeAttr(aria)}"`
+    + ` contenteditable="false">${escapeHtml(label)}</span>`;
+}
+
+/**
+ * 117.md §4 — the manual-table caption block.
+ *
+ * It is a NON-PROSE element: `contenteditable="false"` on the wrapper means the
+ * caret cannot wander into the structure, the number can never be typed over, and
+ * copying the table copies the caption with it. Exactly ONE region inside is
+ * editable — the title — so the researcher edits the semantic thing (the title)
+ * and nothing else. The number is derived per render (`prefix`, e.g. "Table 3.")
+ * and refreshed in place by the editor, never persisted.
+ *
+ * `id` must satisfy MANUAL_TABLE_ID_RE; an invalid id renders as nothing so a
+ * corrupt marker can never mint a half-valid object.
+ */
+export function tableCaptionHtml(id, title, prefix) {
+  const safeId = String(id == null ? '' : id);
+  if (!MANUAL_TABLE_ID_RE.test(safeId)) return '';
+  const t = cleanCaptionTitle(title);
+  return `<div class="${TABLE_CAPTION_CLASS}" data-tblcap="${escapeAttr(safeId)}" contenteditable="false">`
+    + `<span class="${TABLE_CAPTION_NUM_CLASS}" data-tblcap-num="true">${escapeHtml(prefix)}</span>`
+    + `<span class="${TABLE_CAPTION_TITLE_CLASS}" data-tblcap-title="true" contenteditable="true"`
+    + ` role="textbox" spellcheck="true" aria-label="Table title"`
+    + ` data-placeholder="${escapeAttr(TABLE_CAPTION_PLACEHOLDER)}">${escapeHtml(t)}</span>`
+    + '</div>';
 }
 
 /**
@@ -162,6 +222,21 @@ function assetNumberOf(assetNumbers, id) {
   return n == null ? null : n;
 }
 
+/**
+ * 117.md §11 — is this cross-reference target still in the registry?
+ *
+ * `knownAssetIds` is OPTIONAL and absence means "unknown, assume fine": callers
+ * that have not resolved the registry yet (SSR first paint, exports, previews, the
+ * pre-settle editor) must never paint an honest reference as deleted. Only a
+ * caller that passes the set is claiming to know what exists.
+ */
+export function assetChipLabel(id, assetNumbers, knownAssetIds, templateId) {
+  const known = !knownAssetIds || (typeof knownAssetIds.has === 'function'
+    ? knownAssetIds.has(id) : (Array.isArray(knownAssetIds) ? knownAssetIds.includes(id) : true));
+  if (!known) return { broken: true, label: `${assetKindLabel(id)} (deleted)` };
+  return { broken: false, label: formatAssetLabel(id, assetNumberOf(assetNumbers, id), { templateId }) };
+}
+
 /** Look a resolved fact up in a Map OR plain object (resolveFacts output). */
 export function factOf(facts, key) {
   if (!facts) return null;
@@ -190,8 +265,13 @@ export function factChipText(key, facts, overrides) {
 
 /** Inline transforms over ALREADY-ESCAPED text. Chips first so a chip's [n] can
     never be re-parsed as a link; code before links/emphasis (verbatim spans). */
-function inlineHtml(escText, orderMap, assetNumbers, factOpts) {
+function inlineHtml(escText, orderMap, assetNumbers, factOpts, refOpts) {
   let t = escText;
+  const ro = refOpts || EMPTY_REF_OPTS;
+  // 117.md §4 — a caption marker is a BLOCK grammar (line-initial only). One that
+  // reaches an inline run is therefore not a caption at all, and 65.md forbids a
+  // visible `[[…]]` token, so it drops out. Its trailing text stays as prose.
+  t = t.replace(new RegExp(TABLE_CAPTION_TOKEN_RE.source, 'g'), '');
   // 102.md — placeholders run FIRST, while the text is still literal markdown.
   // After the chip passes below, the HTML contains chip labels like "[1]" and
   // "Table 2"; scanning for brackets then would claim a citation chip's own marker
@@ -204,8 +284,8 @@ function inlineHtml(escText, orderMap, assetNumbers, factOpts) {
   });
   t = t.replace(new RegExp(ASSET_TOKEN_RE.source, 'g'), (_m, kind, suffix) => {
     const id = `${kind}:${suffix}`;
-    const n = assetNumberOf(assetNumbers, id);
-    return assetChipHtml(id, `${kind === 'figure' ? 'Figure' : 'Table'} ${n == null ? '?' : n}`);
+    const { label, broken } = assetChipLabel(id, assetNumbers, ro.knownAssetIds, ro.templateId);
+    return assetChipHtml(id, label, { broken });
   });
   t = t.replace(new RegExp(FACT_TOKEN_RE.source, 'g'), (_m, keyEsc) => {
     const key = unescapeEntities(keyEsc);
@@ -313,7 +393,7 @@ export function serializePipeTable({ header, rows, align }) {
   return lines.join('\n');
 }
 
-function tableHtml(escLines, orderMap, assetNumbers, factOpts) {
+function tableHtml(escLines, orderMap, assetNumbers, factOpts, refOpts) {
   const { header, rows, align } = parsePipeTable(escLines);
   // 116.md §61/§66 — rectangularize so short rows (hand-typed markdown) can never
   // shift columns under their header. This is END-padding, so it is the fix for a
@@ -328,7 +408,7 @@ function tableHtml(escLines, orderMap, assetNumbers, factOpts) {
   // caret target across engines (116.md §60); inlineOf turns the <br> back into
   // '' so the round trip stays clean.
   const cell = (tag, c, i) => {
-    const inner = inlineHtml(c, orderMap, assetNumbers, factOpts);
+    const inner = inlineHtml(c, orderMap, assetNumbers, factOpts, refOpts);
     return `<${tag}${alignAttr(i)}>${inner || '<br>'}</${tag}>`;
   };
   const tr = (cells, tag) => {
@@ -345,6 +425,15 @@ function tableHtml(escLines, orderMap, assetNumbers, factOpts) {
 
 /** Neutral fact options — used whenever a caller passes none (exports, previews). */
 const EMPTY_FACT_OPTS = { facts: null, overrides: null, changes: new Map(), showChanges: false };
+
+/** Neutral cross-reference options — no registry knowledge, default caption format. */
+const EMPTY_REF_OPTS = { knownAssetIds: null, templateId: null };
+
+/** Normalize the cross-reference slice of opts once per render (117.md §8/§11). */
+function refOptsOf(opts) {
+  if (!opts || (!opts.knownAssetIds && !opts.templateId)) return EMPTY_REF_OPTS;
+  return { knownAssetIds: opts.knownAssetIds || null, templateId: opts.templateId || null };
+}
 
 /** Normalize the fact-related slice of opts once per render (101.md §16 — every
     token in one render resolves from ONE snapshot). */
@@ -365,11 +454,15 @@ function factOptsOf(opts) {
  * opts.facts: resolveFacts() output (Map or plain object) for fact-chip values;
  * opts.factOverrides: §10 pinned wordings; opts.factChanges: the change log / key
  * set that marks a chip as recently updated; opts.showChanges: emit chip tooltips.
+ * opts.knownAssetIds: Set/array of live registry ids — a token pointing outside it
+ * renders as a BROKEN chip (117.md §11); omit it and every token is assumed valid.
+ * opts.templateId: draft journal template, for the caption formatter seam (§8).
  */
 export function mdToHtml(md, opts = {}) {
   const orderMap = opts.orderMap || null;
   const assetNumbers = opts.assetNumbers || null;
   const factOpts = factOptsOf(opts);
+  const refOpts = refOptsOf(opts);
   const esc = escapeHtml(md);
   if (!esc.trim()) return '';
   const lines = esc.split(/\r?\n/);
@@ -377,12 +470,23 @@ export function mdToHtml(md, opts = {}) {
   let list = null; // 'ul' | 'ol' | null
   let tableBuf = null;
   const closeList = () => { if (list) { out.push(`</${list}>`); list = null; } };
-  const flushTable = () => { if (tableBuf) { out.push(tableHtml(tableBuf, orderMap, assetNumbers, factOpts)); tableBuf = null; } };
-  const inline = (s) => inlineHtml(s, orderMap, assetNumbers, factOpts);
+  const flushTable = () => { if (tableBuf) { out.push(tableHtml(tableBuf, orderMap, assetNumbers, factOpts, refOpts)); tableBuf = null; } };
+  const inline = (s) => inlineHtml(s, orderMap, assetNumbers, factOpts, refOpts);
   for (const line of lines) {
     const isTable = /^\s*\|/.test(line);
     if (tableBuf && !isTable) flushTable();
     if (isTable) { closeList(); if (!tableBuf) tableBuf = []; tableBuf.push(line); continue; }
+    // 117.md §4 — the manual-table caption marker is a BLOCK, resolved before any
+    // inline pass so its id/title can never be mangled by emphasis or link rules.
+    const cap = line.match(TABLE_CAPTION_LINE_RE);
+    if (cap) {
+      closeList();
+      const prefix = formatCaptionPrefix('table', assetNumberOf(assetNumbers, `table:${cap[1]}`), { templateId: refOpts.templateId });
+      // The title arrives HTML-escaped (the whole source was escaped up front);
+      // tableCaptionHtml escapes again, so decode once to avoid double-escaping.
+      out.push(tableCaptionHtml(cap[1], unescapeEntities(cap[2]), prefix));
+      continue;
+    }
     if (/^###\s+/.test(line)) { closeList(); out.push(`<h4>${inline(line.replace(/^###\s+/, ''))}</h4>`); continue; }
     if (/^##\s+/.test(line)) { closeList(); out.push(`<h3>${inline(line.replace(/^##\s+/, ''))}</h3>`); continue; }
     if (/^#\s+/.test(line)) { closeList(); out.push(`<h2>${inline(line.replace(/^#\s+/, ''))}</h2>`); continue; }
@@ -676,9 +780,52 @@ function emitTable(node, blocks) {
   blocks.push(serializePipeTable({ header, rows: body, align }));
 }
 
+/** First descendant carrying `attr` (the caption's number/title regions). */
+function findByAttr(node, attr) {
+  for (const c of node.children || []) {
+    if (c.text != null) continue;
+    if (c.attrs && c.attrs[attr] != null) return c;
+    const deep = findByAttr(c, attr);
+    if (deep) return deep;
+  }
+  return null;
+}
+
+/**
+ * 117.md §4 — the caption block reverses to its MARKER LINE, never to the rendered
+ * "Table 3. Title" text. That is the same guarantee the fact chip makes: what
+ * persists is identity + semantics, so the number stays derived and a later
+ * insertion above cannot leave a stale number frozen in the prose.
+ *
+ * A corrupt/foreign `data-tblcap` element degrades to its visible text rather than
+ * emitting a broken marker — losing the object is recoverable, silently minting an
+ * invalid id is not.
+ */
+function emitTableCaption(node, blocks) {
+  const id = String((node.attrs && node.attrs['data-tblcap']) || '').trim();
+  if (!MANUAL_TABLE_ID_RE.test(id)) {
+    const t = textOf(node).trim();
+    if (t) blocks.push(t);
+    return;
+  }
+  const titleEl = findByAttr(node, 'data-tblcap-title');
+  let title;
+  if (titleEl) title = textOf(titleEl);
+  else {
+    // Paste/repair path: no title region survived, so strip the derived number
+    // prefix off the visible text instead of persisting it as the title.
+    const numEl = findByAttr(node, 'data-tblcap-num');
+    const numTxt = numEl ? textOf(numEl) : '';
+    const all = textOf(node);
+    title = (numTxt && all.startsWith(numTxt)) ? all.slice(numTxt.length) : all;
+  }
+  blocks.push(tableCaptionLine(id, title));
+}
+
 function emitBlock(node, blocks) {
   const tag = node.tag;
   if (DROP_TAGS.has(tag)) return;
+  if (node.attrs && node.attrs['data-tblcap'] != null) { emitTableCaption(node, blocks); return; }
   if (tag === 'h1' || tag === 'h2') { const t = inlineOf(node.children, { oneLine: true }).trim(); if (t) blocks.push(`# ${t}`); return; }
   if (tag === 'h3') { const t = inlineOf(node.children, { oneLine: true }).trim(); if (t) blocks.push(`## ${t}`); return; }
   if (tag === 'h4' || tag === 'h5' || tag === 'h6') { const t = inlineOf(node.children, { oneLine: true }).trim(); if (t) blocks.push(`### ${t}`); return; }
@@ -730,7 +877,10 @@ export function htmlToMd(html) {
 export function stripInlineMd(s) {
   return String(s == null ? '' : s)
     .replace(new RegExp(CITATION_TOKEN_RE.source, 'g'), '')
-    .replace(new RegExp(ASSET_TOKEN_RE.source, 'g'), (_m, kind) => (kind === 'figure' ? 'Figure ?' : 'Table ?'))
+    // 117.md §4 — a caption marker in a label position drops to its title alone
+    // (the number is derived, and an outline entry has no numbering context).
+    .replace(new RegExp(TABLE_CAPTION_LINE_RE.source, 'gm'), (_m, _id, title) => String(title || ''))
+    .replace(new RegExp(ASSET_TOKEN_RE.source, 'g'), (_m, kind) => `${assetKindLabel(kind)} ?`)
     // 101.md §6 — an outline label has no project snapshot to resolve against, so a
     // fact token drops out entirely rather than leaking its raw syntax into the UI.
     .replace(new RegExp(FACT_TOKEN_RE.source, 'g'), '')
@@ -758,8 +908,11 @@ export function extractOutline(md) {
 }
 
 export default {
-  escapeHtml, mdToHtml, htmlToMd, citeChipHtml, assetChipHtml, factChipHtml,
+  escapeHtml, mdToHtml, htmlToMd, citeChipHtml, assetChipHtml, assetChipLabel,
+  tableCaptionHtml, factChipHtml,
   factChipText, factOf, parsePipeTable, serializePipeTable, escapePipeCell,
   extractOutline, stripInlineMd,
   CITE_CHIP_CLASS, ASSET_CHIP_CLASS, FACT_CHIP_CLASS, INPUT_CHIP_CLASS,
+  TABLE_CAPTION_CLASS, TABLE_CAPTION_NUM_CLASS, TABLE_CAPTION_TITLE_CLASS,
+  TABLE_CAPTION_PLACEHOLDER,
 };
