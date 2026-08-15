@@ -22,12 +22,40 @@ import {
   UpdatesPanel, ExportValidationDialog,
 } from './manuscriptPanels.jsx';
 import {
-  ManuscriptToolbar, ManuscriptToolbarSkeleton, MANUSCRIPT_TAB_IDS, MS_PANEL_ID, msTabDomId,
+  ManuscriptToolbar, ManuscriptToolbarSkeleton, ManuscriptViewSwitcher,
+  MANUSCRIPT_TAB_IDS, MS_PANEL_ID, msTabDomId,
+  normalizeManuscriptView, DEFAULT_MANUSCRIPT_VIEW,
 } from './ManuscriptToolbar.jsx';
+// 118.md §12 — the view preference is a per-USER workspace preference, so it is
+// read from the signed-in user when there is one. Optional on purpose: this
+// workspace renders in SSR contract tests and in shells without the provider.
+import { useOptionalAuth } from '../../frontend/context/AuthContext.jsx';
 
 const safeName = (s) => String(s || 'manuscript').replace(/[^a-z0-9]+/gi, '-').replace(/^-+|-+$/g, '') || 'manuscript';
 
 const normalizeSubtab = (id) => (MANUSCRIPT_TAB_IDS.includes(id) ? id : 'overview');
+
+/* 118.md §12 — "store the user's preferred view where appropriate so refreshing the
+   editor does not unnecessarily reset their workflow". It is a UI preference, never
+   manuscript data, so it goes to localStorage under the established per-user key
+   pattern (`metalab.<x>.${userId}` — the screening prefs precedent) and NEVER into
+   the project blob, which must stay byte-stable. */
+export const viewPrefKey = (userId) => (userId ? `metalab.manuscriptView.${userId}` : null);
+
+export function readStoredView(key) {
+  if (!key || typeof localStorage === 'undefined') return null;
+  try {
+    const raw = localStorage.getItem(key);
+    // An unknown stored value is ignored rather than normalized-and-kept, so a
+    // corrupted preference silently falls back to the default instead of sticking.
+    return raw && normalizeManuscriptView(raw) === raw ? raw : null;
+  } catch { return null; }
+}
+
+function writeStoredView(key, view) {
+  if (!key || typeof localStorage === 'undefined') return;
+  try { localStorage.setItem(key, view); } catch { /* storage full / denied — the URL still carries it */ }
+}
 
 /* 118.md §49 — one constant engine column. The toolbar spans it; only the document
    column inside changes width per destination, so the chrome never resizes. */
@@ -37,12 +65,46 @@ const SHELL_STYLE = { maxWidth: 1440, margin: '0 auto', padding: '4px 2px' };
  * @param {string}   initialSubtab   118.md §47 — the host's URL sub-param (`?ms=`).
  *                   Stitch passes it; the LEGACY shell passes nothing, so the default
  *                   keeps that shell on pure component state (it has no such route).
- * @param {function} onSubtabChange  (id) => void — the router-aware host pushes the
- *                   sub-param. Absent → local state only, exactly as before.
+ * @param {function} onSubtabChange  (id, view) => void — the router-aware host pushes
+ *                   BOTH engine sub-params. 118.md §12/§47: the view is part of the
+ *                   same URL state, so it travels through the same seam rather than
+ *                   a second one that could push a href missing the other param.
+ *                   Absent → local state only, exactly as before.
+ * @param {string}   initialView     118.md §12/§47 — `?msv=`, or null/absent when the
+ *                   URL does not name a view (the legacy shell never does).
  */
-export function ManuscriptWorkspace({ project, upd, initialSubtab, onSubtabChange }) {
+export function ManuscriptWorkspace({ project, upd, initialSubtab, onSubtabChange, initialView }) {
   const m = useManuscript(project, upd);
   const [tab, setTabState] = useState(() => normalizeSubtab(initialSubtab));
+
+  /* ── 118.md §12/§45 — the editing VIEW ───────────────────────────────────────
+     ONE piece of view state and NO manuscript state: both views render the same
+     draft through the same hook (§13). First paint resolves URL → stored per-user
+     preference → 'sections', so a shared `?msv=continuous` link opens the continuous
+     document even for someone whose own preference is Section View, while a plain
+     reload keeps the workflow they chose (§12). */
+  const auth = useOptionalAuth();
+  const userId = (auth && auth.user && auth.user.id) || null;
+  const prefKey = viewPrefKey(userId);
+  const [view, setViewState] = useState(() => (initialView
+    ? normalizeManuscriptView(initialView)
+    : (readStoredView(viewPrefKey(userId)) || DEFAULT_MANUSCRIPT_VIEW)));
+  const viewRef = useRef(view);
+  viewRef.current = view;
+
+  /* The signed-in user arrives ASYNCHRONOUSLY, so the first render can have no
+     storage key and the initializer above then reads nothing. Hydrate once the key
+     exists — never over a choice already made in this session, and never over a view
+     the URL asked for (the ScreeningTab prefs-hydration precedent). */
+  const viewTouched = useRef(false);
+  const hydratedKey = useRef(null);
+  useEffect(() => {
+    if (!prefKey || viewTouched.current || hydratedKey.current === prefKey) return;
+    hydratedKey.current = prefKey;
+    if (initialView) return;
+    const stored = readStoredView(prefKey);
+    if (stored) setViewState(stored);
+  }, [prefKey, initialView]);
 
   /* ── 118.md §46-§48 — ONE navigation seam ────────────────────────────────────
      Every destination change in this workspace goes through `setTab`, so there is
@@ -66,8 +128,39 @@ export function ManuscriptWorkspace({ project, upd, initialSubtab, onSubtabChang
     setTabState(id);
     // 84.md — the Updates destination owns a heavy plan that is computed on entry only.
     if (id === 'updates' && refreshPlanRef.current) refreshPlanRef.current();
-    if (typeof hostNavRef.current === 'function') hostNavRef.current(id);
+    if (typeof hostNavRef.current === 'function') hostNavRef.current(id, viewRef.current);
   }, []);
+
+  /* 118.md §45 — EVERY view toggle FLUSHES first. The two debounces (600 ms field
+     patch → 800 ms blob autosave) are usually still armed when someone types a
+     sentence and immediately switches view, and the continuous document mounts its
+     editors from the COMMITTED draft — so without this the last words typed in
+     Section View would mount as absent. That is the whole of "switching views must
+     never lose work": there is no second copy to reconcile, only a flush. */
+  const setView = useCallback((next) => {
+    const id = normalizeManuscriptView(next);
+    viewTouched.current = true;
+    if (m.flush) m.flush();
+    setViewState(id);
+    writeStoredView(viewPrefKey(userId), id);
+    // The same ONE seam as a destination change, so the pushed href always carries
+    // both engine sub-params instead of dropping whichever one it did not know.
+    if (typeof hostNavRef.current === 'function') hostNavRef.current(tabRef.current, id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [m, userId]);
+
+  /* §47/§48 — once this session has PUT the view in the URL, the URL is
+     authoritative in both directions, so Back/Forward walks view changes exactly
+     (an absent `?msv=` then means Section View, because that is the value the href
+     builder omits). Before the first toggle an absent param means "the URL does not
+     express a view" and the stored preference above stands — otherwise every fresh
+     load would silently overwrite the researcher's saved workflow with the default. */
+  useEffect(() => {
+    if (typeof hostNavRef.current !== 'function') return;
+    if (initialView == null && !viewTouched.current) return;
+    const id = normalizeManuscriptView(initialView || DEFAULT_MANUSCRIPT_VIEW);
+    if (id !== viewRef.current) setViewState(id);
+  }, [initialView]);
 
   /* 118.md §47/§48 — the URL is authoritative wherever the host supplies it. The
      host re-renders on every location change (deep link, white side-menu, browser
@@ -95,6 +188,18 @@ export function ManuscriptWorkspace({ project, upd, initialSubtab, onSubtabChang
     if (id === 'references') { setTab('references'); return; }
     if (!SECTION_IDS.includes(id)) { setTab('editor'); return; }
     setSectionRequest({ id, at: Date.now() });
+    setTab('editor');
+  }, [setTab]);
+
+  /* 118.md §65 — "View in manuscript" from the Tables / Figures managers. The
+     manager and the inline representation are the SAME entity, so this navigates to
+     where that entity already is (the section that holds a manual table, or the
+     first sentence that cross-references a generated one) and never creates a copy.
+     `target` comes from assetManuscriptTarget, which returns null when the object is
+     not in the text — the button does not render then. */
+  const openAsset = useCallback((target) => {
+    if (!target || !target.sectionId) return;
+    setSectionRequest({ ...target, id: target.sectionId, at: Date.now() });
     setTab('editor');
   }, [setTab]);
 
@@ -243,7 +348,13 @@ export function ManuscriptWorkspace({ project, upd, initialSubtab, onSubtabChang
        MS-3, needs the full width; the other destinations keep the calmer 900px
        reading column). */
     <div data-testid="stitch-manuscript-workspace" style={SHELL_STYLE}>
-      <ManuscriptToolbar m={m} tab={tab} onTabChange={setTab} />
+      <ManuscriptToolbar m={m} tab={tab} onTabChange={setTab}
+        /* 118.md §12 — the documented right-hand slot, filled. It renders only on
+           the Editor destination (the toolbar enforces that) and condenses with the
+           rest of Level B. */
+        viewSwitcher={({ condensed }) => (
+          <ManuscriptViewSwitcher view={view} onChange={setView} condensed={condensed} />
+        )} />
 
       {/* 85.md B2 — pre-export validation review. 118.md keeps it mounted ABOVE
           every panel so it is visible from whichever destination started the export. */}
@@ -271,13 +382,18 @@ export function ManuscriptWorkspace({ project, upd, initialSubtab, onSubtabChang
             it (a builder table has no prose to jump to). */}
         {tab === 'editor' && (
           <EditorPanel m={m} exporters={exporters} sectionRequest={sectionRequest}
+            /* 118.md §10-§19 — the ONE Editor destination, in the view the
+               researcher chose. Both views render the same draft through the same
+               hook, so this prop changes the PRESENTATION and nothing else. */
+            view={view}
             onNavigate={setTab}
             onOpenAssetPanel={(which) => setTab(which === 'figures' ? 'figures' : 'tables')}
             /* 117.md §38 — View / Edit / Open PDF / Go to References from a chip. */
             onOpenReference={openReference} />
         )}
-        {tab === 'tables' && <TablesPanel m={m} onNavigate={setTab} />}
-        {tab === 'figures' && <FiguresPanel m={m} onNavigate={setTab} />}
+        {/* 118.md §65 — "View in manuscript" on a table/figure row. */}
+        {tab === 'tables' && <TablesPanel m={m} onNavigate={setTab} onOpenAsset={openAsset} />}
+        {tab === 'figures' && <FiguresPanel m={m} onNavigate={setTab} onOpenAsset={openAsset} />}
         {tab === 'references' && (
           <ReferencesPanel m={m} focusReference={focusReference} onNavigate={setTab}
             /* 117.md §34 — "Cite" from the library inserts at the end of Results when

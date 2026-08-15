@@ -220,7 +220,12 @@ export function searchStageHref(stageId, ctx = {}) {
 export function manuscriptSubHref(subtabId, ctx = {}) {
   const pid = encodeURIComponent(ctx.projectId || '');
   const id = encodeURIComponent(subtabId || 'overview'); // the manuscript workspace home
-  return `/app/project/${pid}?tab=manuscript&ms=${id}`;
+  /* 118.md §12/§47 — the Editor's VIEW is URL state too, but only when it is not
+     the default: `?msv=continuous` makes a continuous-document link shareable and
+     lets Back/Forward walk view changes, while Section View leaves the URL exactly
+     as short as it was before this existed (and every pre-118 link keeps working). */
+  const view = ctx.view === 'continuous' ? '&msv=continuous' : '';
+  return `/app/project/${pid}?tab=manuscript&ms=${id}${view}`;
 }
 
 /* ─── 5. Active-route matching (design2.md "Preserve deep links") ─────────────── */
@@ -328,6 +333,25 @@ export function readManuscriptSubParam(search) {
     return qs.get('ms') || 'overview';
   } catch {
     return 'overview';
+  }
+}
+
+/**
+ * 118.md §12/§47 — parse the Manuscript EDITOR view (`?msv=`).
+ *
+ * Returns null when the parameter is absent, which is a different answer from
+ * "Section View": absent means the URL does not express a view at all, and the
+ * workspace then honours the researcher's stored preference instead of resetting
+ * it on every load. An unknown value is likewise null → the workspace's default.
+ */
+export function readManuscriptViewParam(search) {
+  if (typeof search !== 'string' || !search) return null;
+  try {
+    const qs = new URLSearchParams(search.startsWith('?') ? search.slice(1) : search);
+    const v = qs.get('msv');
+    return (v === 'continuous' || v === 'sections') ? v : null;
+  } catch {
+    return null;
   }
 }
 

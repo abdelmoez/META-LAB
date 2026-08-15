@@ -951,6 +951,23 @@ export const RichSectionEditor = forwardRef(function RichSectionEditor({
       selectCellContents(titleEl);
       return true;
     },
+    /**
+     * 118.md §65 — reveal the SENTENCE that cross-references an object ("View in
+     * manuscript" for a generated table/figure, which has no prose body of its own).
+     * The chip is already focusable (role=button, tabindex=0), so focusing it after
+     * the scroll lands the reader — and a keyboard user — exactly on the reference
+     * without inserting a highlight the document would have to clean up.
+     * Returns false when this section does not carry that reference.
+     */
+    focusAssetRef: (assetId) => {
+      const el = rootRef.current;
+      if (!el || !assetId || typeof el.querySelector !== 'function') return false;
+      const chip = el.querySelector(`span.${ASSET_CHIP_CLASS}[data-asset="${String(assetId).replace(/"/g, '')}"]`);
+      if (!chip) return false;
+      if (typeof chip.scrollIntoView === 'function') chip.scrollIntoView({ block: 'center', inline: 'nearest' });
+      if (typeof chip.focus === 'function') chip.focus();
+      return true;
+    },
     /** Every manual-table id this section currently renders (document order). */
     manualTableIds: () => {
       const el = rootRef.current;

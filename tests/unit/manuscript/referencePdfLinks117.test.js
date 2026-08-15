@@ -180,10 +180,13 @@ describe('117.md §J.3 — the surfaces are wired to the resolver (source pins)'
   it('the chip menu resolves on MENU OPEN, never on hover', () => {
     expect(panels).toContain('const openCiteMenu = (info) => {');
     expect(panels).toContain('m.resolveReferencePdfs(info.ids || [])');
-    expect(panels).toContain('onCiteChipMenu={openCiteMenu}');
-    expect(panels).toContain('onCiteChipHover={setCiteHover}');
+    // 118.md §18 — RE-PINNED: the callbacks are built per MOUNTED section now (the
+    // continuous document mounts ten editors), so the chip reports which section it
+    // belongs to. The resolver still fires from the MENU path only.
+    expect(panels).toContain('onCiteChipMenu: (info) => openCiteMenu({ ...info, sectionId: id })');
+    expect(panels).toContain('onCiteChipHover: (info) => setCiteHover(info ? { ...info, sectionId: id } : null)');
     // the hover path must not touch the resolver
-    expect(panels).not.toContain('onCiteChipHover={(info) => { m.resolveReferencePdfs');
+    expect(panels).not.toContain('setCiteHover(info ? { ...info, sectionId: id } : null); m.resolveReferencePdfs');
   });
 
   it('the menu decorates its references from the resolution map', () => {

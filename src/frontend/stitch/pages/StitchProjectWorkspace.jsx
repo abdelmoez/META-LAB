@@ -50,7 +50,7 @@ import {
   activeProjectStage, projectStageHref, categoryForStage, categoryShowsSubmenu, activeSubmenuKey,
   readSearchStageParam, searchStageHref,
   // 118.md §47 — the Manuscript Editor's engine sub-param (`?ms=<destination>`).
-  readManuscriptSubParam, manuscriptSubHref,
+  readManuscriptSubParam, readManuscriptViewParam, manuscriptSubHref,
 } from '../nav/navConfig.js';
 import {
   StitchLoadingState, StitchErrorState, StitchButton, StitchBadge, S, salpha,
@@ -432,9 +432,13 @@ function DeepToolPage({ stage }) {
     // (initial value read off the URL, changes pushed back through react-router), so
     // deep links, refresh and browser Back/Forward all resolve to the same
     // destination. The LEGACY shell passes neither prop and keeps component state.
+    // 118.md §12 — the Editor's view (`?msv=continuous`) rides the SAME sub-param
+    // contract; the workspace reports both values through one seam, so a pushed
+    // href can never carry a destination without its view (or the other way round).
     body = (<LazyManuscript project={project} upd={doc.upd}
       initialSubtab={readManuscriptSubParam(search)}
-      onSubtabChange={(id) => navigate(manuscriptSubHref(id, { projectId }))} />);
+      initialView={readManuscriptViewParam(search)}
+      onSubtabChange={(id, view) => navigate(manuscriptSubHref(id, { projectId, view }))} />);
   } else if (stage === 'report') {
     body = (<LazyReport project={project} upd={doc.upd} />);
   } else if (stage === 'methods') {

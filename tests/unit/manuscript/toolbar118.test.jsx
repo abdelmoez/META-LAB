@@ -380,9 +380,12 @@ describe('118.md §46/§47 — the workspace wiring', () => {
   it('there is ONE navigation seam, and it owns the Updates sync-plan refresh', () => {
     const s = src();
     expect(s).toContain("if (id === 'updates' && refreshPlanRef.current) refreshPlanRef.current();");
-    expect(s).toContain("if (typeof hostNavRef.current === 'function') hostNavRef.current(id);");
+    // 118.md §12 (Wave 2) — RE-PINNED deliberately: the seam now reports BOTH engine
+    // sub-params, because the view is URL state too and a href that carried only one
+    // of them would drop the other on every push.
+    expect(s).toContain("if (typeof hostNavRef.current === 'function') hostNavRef.current(id, viewRef.current);");
     // the toolbar and every panel change destination through the SAME function
-    expect(s).toContain('<ManuscriptToolbar m={m} tab={tab} onTabChange={setTab} />');
+    expect(s).toContain('<ManuscriptToolbar m={m} tab={tab} onTabChange={setTab}');
     expect(s).toContain('onNavigate={setTab}');
   });
 
@@ -405,7 +408,9 @@ describe('118.md §46/§47 — the workspace wiring', () => {
 
   it('the legacy shell keeps component state — the URL props are optional', () => {
     const s = src();
-    expect(s).toContain('export function ManuscriptWorkspace({ project, upd, initialSubtab, onSubtabChange })');
+    // Re-pinned for 118.md §12: `initialView` joined the optional URL props; the
+    // legacy shell passes none of them and still runs on component state alone.
+    expect(s).toContain('export function ManuscriptWorkspace({ project, upd, initialSubtab, onSubtabChange, initialView })');
     expect(s).toContain("if (typeof hostNavRef.current !== 'function' || initialSubtab == null) return;");
   });
 
@@ -418,7 +423,7 @@ describe('118.md §46/§47 — the workspace wiring', () => {
 
     const page = readSource('src/frontend/stitch/pages/StitchProjectWorkspace.jsx');
     expect(page).toContain('initialSubtab={readManuscriptSubParam(search)}');
-    expect(page).toContain('onSubtabChange={(id) => navigate(manuscriptSubHref(id, { projectId }))}');
+    expect(page).toContain('onSubtabChange={(id, view) => navigate(manuscriptSubHref(id, { projectId, view }))}');
   });
 
   it('§43 — the toolbar adds no modifier chords, so Ctrl/Cmd+Z still reaches the editor', () => {

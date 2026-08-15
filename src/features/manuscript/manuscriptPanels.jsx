@@ -5,7 +5,7 @@
  * `useManuscript` hook + pure engine; this file owns ZERO business logic. Styled with
  * the legacy token system only (Stitch auto-remaps --t-*), so it renders in both shells.
  */
-import { useState, useEffect, useMemo, useRef } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { C, btnS, inp, tagS } from '../../frontend/workspace/ui/styles.js';
 import { InfoBox, ProgressBar } from '../../frontend/workspace/ui/primitives.jsx';
 import { Icon } from '../../frontend/components/icons.jsx';
@@ -21,6 +21,8 @@ import {
   assetToken,
   // 117.md §4-§11 — cross-reference counting + the ONE caption/label formatter.
   countAssetMentions, formatAssetLabel, assetKindLabel,
+  // 118.md §65 — where a table/figure actually sits in the live manuscript text.
+  findAssetTokens, orderedSections,
   // 101.md §34 — locate the section that states a given project fact.
   factToken,
   // 117.md §21/§22 — the ONE registry of overridable PRISMA boxes + its labels, so
@@ -46,7 +48,19 @@ import { ChangeTrackingPanel } from './ChangeTrackingPanel.jsx';
 // 102.md §2/§5 — the manual-field counter, prev/next controls and section list.
 import { ManualFieldsPanel } from './ManualFieldsPanel.jsx';
 import { AbstractEditor } from './richEditor/AbstractEditor.jsx';
+// 118.md §28-§40/§70 — the Overview is its own component family now (readiness,
+// needs-attention, structure, connected data, the submission checklist). This file
+// only mounts it; every Overview concern lives in ManuscriptOverview.jsx.
+import { ManuscriptOverview } from './ManuscriptOverview.jsx';
 import { extractOutline, mdToHtml } from './richEditor/mdDom.js';
+// 118.md §10-§19 — the Continuous Document View and the scroll / active-section
+// mechanics this panel's outline shares with it. The dependency is ONE-WAY
+// (ContinuousView never imports from here), so the editor's shared primitives stay
+// in one place and the document view stays a leaf module.
+import {
+  ContinuousView, scrollToSectionId, scrollSectionIntoView, msSectionSelector, prefersReducedMotion,
+  useStickyBarHeight, useElementWidth, OUTLINE_STICKY_MIN_WIDTH,
+} from './ContinuousView.jsx';
 // 67.md — Word (.docx) export is a Plus-plan feature (server-enforced). This is
 // UX-only, fail-open: only disable the button once we KNOW the plan lacks it.
 import { useEntitlements } from '../../frontend/entitlements';
@@ -325,7 +339,7 @@ function DiffPreview({ current, proposed }) {
 
 const sectionLabel = (id) => (SECTION_TYPES.find((s) => s.id === id) || {}).label || id;
 
-function UpdateCard({ entry, m }) {
+function UpdateCard({ entry, m, onOpenSection }) {
   const id = entry.sectionId;
   const detachConfirm = 'Detach stops this section from auto-updating when the project data changes. You can Relink it later. Continue?';
   const onDetach = () => { if (typeof window === 'undefined' || window.confirm(detachConfirm)) m.decide(id, 'detach'); };
@@ -384,6 +398,17 @@ function UpdateCard({ entry, m }) {
             Detach
           </button>
         )}
+        {/* 118.md §64 — read the section where it lives before deciding. The Editor
+            scrolls to it in Continuous View and opens it in Section View; either
+            way this is the SAME section, not a copy of it. */}
+        {onOpenSection && (
+          <button onClick={() => onOpenSection(id)}
+            data-testid={`stitch-manuscript-update-view-${id}`}
+            title={`Open ${sectionLabel(id)} in the manuscript editor`}
+            style={{ ...btnS('ghost'), fontSize: 11 }}>
+            <Icon name="pencil" size={12} /> View in manuscript
+          </button>
+        )}
       </div>
     </Card>
   );
@@ -426,7 +451,7 @@ function MissingInfoCard({ items }) {
   );
 }
 
-export function UpdatesPanel({ m }) {
+export function UpdatesPanel({ m, onOpenSection }) {
   const plan = m.syncPlan;
   const entries = (plan && plan.entries) || [];
   // Outdated sections need review (this already subsumes edited-conflicts and
@@ -477,7 +502,7 @@ export function UpdatesPanel({ m }) {
 
       {shown.length > 0 ? (
         <Block title="Section updates" desc="Each card shows the current text beside the proposed update, and why it changed.">
-          {shown.map((e) => <UpdateCard key={e.sectionId} entry={e} m={m} />)}
+          {shown.map((e) => <UpdateCard key={e.sectionId} entry={e} m={m} onOpenSection={onOpenSection} />)}
         </Block>
       ) : nothing ? (
         <InfoBox color={C.grn}>Fully synchronized with the project.</InfoBox>
@@ -721,105 +746,16 @@ function SectionGrid({ m, onOpenSection }) {
   );
 }
 
-export function OverviewPanel({ m, exporters, onOpenSection }) {
-  const r = m.readiness;
-  const tpl = JOURNAL_TEMPLATES.find((t) => t.id === m.activeDraft.templateId);
-  const sections = m.activeDraft.sections || {};
-  const allEmpty = SECTION_TYPES.every((s) => sectionStatus(sections[s.id] || {}) === 'empty');
+/**
+ * 118.md §28-§40 — the Overview redesign. This panel is now a MOUNT POINT: the
+ * command-center page (readiness → needs attention → structure → connected project
+ * data → before-submission checklist → authors → export) lives in its own component
+ * family, ManuscriptOverview.jsx (§70). `onNavigate` is the workspace's one
+ * navigation seam, which the Overview's CTAs need (§31/§34/§35).
+ */
+export function OverviewPanel({ m, exporters, onOpenSection, onNavigate }) {
   return (
-    <div>
-      {/* 84.md — at-a-glance sync status against the live project data */}
-      {!allEmpty && m.freshness && (
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', marginBottom: 16 }}>
-          <FreshnessPill freshness={m.freshness} />
-          <span style={{ fontSize: 11.5, color: C.muted }}>
-            Manages how closely the draft matches your project — see the Updates tab to review and apply changes.
-          </span>
-        </div>
-      )}
-      {allEmpty ? (
-        <FirstDraftHero m={m} />
-      ) : (
-        <Block title="Sections" desc="Where each section stands — open it in the editor or regenerate it from project data.">
-          <SectionGrid m={m} onOpenSection={onOpenSection} />
-        </Block>
-      )}
-
-      <Block title="Readiness" desc="A quick checklist of what a submission-ready systematic review needs.">
-        {r ? (
-          <Card>
-            <div style={{ marginBottom: 12 }}>
-              <ProgressBar done={r.score.done} total={r.score.total} />
-            </div>
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(260px,1fr))', gap: 4 }}>
-              {r.items.map((it) => (
-                <div key={it.key} style={{ display: 'flex', gap: 9, alignItems: 'flex-start', padding: '6px 0' }}>
-                  <span style={{ color: it.complete ? C.grn : C.muted, fontWeight: 700, fontSize: 13, lineHeight: '18px', flexShrink: 0 }}>{it.complete ? '✓' : '○'}</span>
-                  <div>
-                    <div style={{ fontSize: 12.5, color: it.complete ? C.txt : C.txt2 }}>{it.label}</div>
-                    {it.detail && <div style={{ fontSize: 11, color: C.muted, marginTop: 1 }}>{it.detail}</div>}
-                  </div>
-                </div>
-              ))}
-            </div>
-          </Card>
-        ) : <InfoBox color={C.muted}>Readiness will appear once the draft is ready.</InfoBox>}
-      </Block>
-
-      <Block title="Data sources" desc="Where the generated draft pulls live numbers from — and what falls back to manual entries.">
-        <DataSourcesCard m={m} />
-      </Block>
-
-      <Block title="Consistency" desc="Cross-checks between the manuscript text and your live project data.">
-        <ConsistencyCard m={m} onOpenSection={onOpenSection} />
-      </Block>
-
-      <Block title="Smart insights" desc="Automatic checks against your project data — verify each before submission.">
-        {m.insights && m.insights.length ? (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 0 }}>
-            {m.insights.map((ins) => (
-              <InfoBox key={ins.key} color={ins.severity === 'warning' ? C.yel : C.acc}>
-                <span style={{ fontWeight: 700, marginRight: 6, color: ins.severity === 'warning' ? C.yel : C.acc }}>
-                  {ins.severity === 'warning' ? 'Check' : 'Note'}
-                </span>{ins.message}
-              </InfoBox>
-            ))}
-          </div>
-        ) : <InfoBox color={C.grn}>No issues detected in the current draft.</InfoBox>}
-      </Block>
-
-      <Block title="Submission setup">
-        <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap' }}>
-          <Labeled label="Journal template">
-            <Select value={m.activeDraft.templateId} onChange={(e) => m.setMeta({ templateId: e.target.value })}>
-              {JOURNAL_TEMPLATES.map((t) => <option key={t.id} value={t.id}>{t.label}</option>)}
-            </Select>
-          </Labeled>
-          <Labeled label="Citation style">
-            <Select value={m.activeDraft.citationStyle} onChange={(e) => m.setMeta({ citationStyle: e.target.value })}>
-              {CITATION_STYLES.map((s) => <option key={s.id} value={s.id}>{s.label}</option>)}
-            </Select>
-          </Labeled>
-          <Labeled label="Status">
-            <Select value={m.activeDraft.status} onChange={(e) => m.setMeta({ status: e.target.value })}>
-              <option value="draft">Draft</option>
-              <option value="reviewing">Reviewing</option>
-              <option value="ready">Ready</option>
-            </Select>
-          </Labeled>
-        </div>
-        {tpl && tpl.note && <InfoBox color={C.acc}>{tpl.note}</InfoBox>}
-      </Block>
-
-      <Block title="Authors & affiliations" desc="Appears on the exported title page. Corresponding author is marked in the Word export.">
-        <AuthorshipCard m={m} />
-      </Block>
-
-      <Block title="Export" desc="Generate a submission-ready Word manuscript, a reproducibility bundle, or reporting checklists.">
-        <ExportButtons exporters={exporters} canonical />
-        {exporters.exportError && <InfoBox color={C.red}>{exporters.exportError}</InfoBox>}
-      </Block>
-    </div>
+    <ManuscriptOverview m={m} exporters={exporters} onOpenSection={onOpenSection} onNavigate={onNavigate} />
   );
 }
 
@@ -1257,48 +1193,123 @@ export function TableDeleteDialog({ info, onConfirm, onCancel }) {
   );
 }
 
-export function EditorPanel({ m, exporters, sectionRequest, onOpenAssetPanel, onOpenReference }) {
+/**
+ * 118.md §10-§19 — the Editor destination hosts BOTH views.
+ *
+ * `view` is the ONLY difference between them. Everything below — the api registry,
+ * the citation/asset numbering, the outline, the popovers, the tools column — is
+ * shared, and both views mount their editors from the SAME `editorProps` factory,
+ * so §13 ("two presentations of the exact same manuscript state") and §18 ("full
+ * editing parity") hold structurally instead of by discipline.
+ *
+ * @param {'sections'|'continuous'} view  118.md §10/§12. Section View shows one
+ *        section at a time (unchanged); Continuous View renders the whole document.
+ */
+export function EditorPanel({ m, exporters, sectionRequest, onOpenAssetPanel, onOpenReference, onNavigate, view = 'sections' }) {
+  const continuous = view === 'continuous';
+  // Live handle for the callbacks that are built ONCE (the per-section api/activate
+  // handles below) and must still know which view is on screen.
+  const continuousRef = useRef(continuous);
+  continuousRef.current = continuous;
+
   const [sel, setSel] = useState('title');
   const [genNotice, setGenNotice] = useState(null); // { only:null|[id], skipped:[...], skippedLocked:[...] }
   const [toolsOpen, setToolsOpen] = useState(true);
   const [whyOpen, setWhyOpen] = useState(false); // 84.md — "Why does this say this?"
 
-  const section = (m.activeDraft.sections && m.activeDraft.sections[sel]) || {};
+  const sections = m.activeDraft.sections || {};
+  const section = sections[sel] || {};
   const lastGen = section.lastGeneratedAt || null;
   // 73.md Part 9 — per-section lock + outdated state.
   const locked = !!section.locked;
   const outdatedMap = m.outdated || {};
   const isOutdated = !!outdatedMap[sel];
-  const [buf, setBuf] = useState(section.content || '');
-  // resync local buffer only when the active section changes OR that section is (re)generated —
-  // typing never touches lastGeneratedAt, so this never fights the cursor.
+
+  /* 118.md §13 — the LIVE draft (pending, pre-autosave edits included) is what the
+     derived views read. It is the hook's own overlay, so Continuous View sees a
+     table typed in Methods the instant it exists, and Section View reads exactly
+     the same object — there is no per-view buffer of manuscript text any more. */
+  const liveDraft = m.liveDraft || m.activeDraft;
+
+  // The TITLE is a plain input, so it needs a controlled buffer; every other
+  // section is an uncontrolled rich editor mounted from the committed draft.
+  const titleContent = (sections.title || {}).content || '';
+  const titleGen = (sections.title || {}).lastGeneratedAt || '';
+  const [titleBuf, setTitleBuf] = useState(titleContent);
   useEffect(() => {
-    setBuf(((m.activeDraft.sections && m.activeDraft.sections[sel]) || {}).content || '');
+    setTitleBuf((((m.activeDraft.sections || {}).title) || {}).content || '');
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sel, m.activeId, lastGen]);
+  }, [m.activeId, titleGen]);
 
   // keywords buffer (comma-separated)
   const [kw, setKw] = useState((m.activeDraft.keywords || []).join(', '));
   useEffect(() => { setKw((m.activeDraft.keywords || []).join(', ')); }, [m.activeId]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const onType = (val) => { if (locked) return; setBuf(val); m.updateSection(sel, val); };
+  /** The ONE write path for prose, from either view. Locked sections never write. */
+  const commitSection = useCallback((id, val) => {
+    if (((m.activeDraft.sections || {})[id] || {}).locked) return;
+    m.updateSection(id, val);
+  }, [m]);
+  const onTitleType = (val) => { if (locked) return; setTitleBuf(val); commitSection('title', val); };
 
-  // The rich editor that last held the caret (main section field OR one of the
-  // abstract subsection fields) — the shared toolbar/tools act on it.
-  const mainApi = useRef(null);
+  /* ══════════ 118.md §18 — one api per MOUNTED section ══════════
+   *
+   * Section View mounts one editor; Continuous View mounts one per body section.
+   * `apis` is therefore a registry rather than a single ref, and `activeApi` stays
+   * what it always was: the editor that last owned the CARET, which is what the
+   * shared toolbar and the Tools column act on. Chip menus and table controls are
+   * routed by the OWNING section id instead (they are anchored to a specific chip),
+   * so an action can never land in the wrong section of a 10-editor document.
+   */
+  const apis = useRef(new Map());
   const activeApi = useRef(null);
+  const activeSectionRef = useRef(null);
+  const handles = useMemo(() => {
+    const out = {};
+    for (const s of SECTION_TYPES) {
+      out[s.id] = {
+        // Stable callback ref: an inline arrow would detach/re-attach the handle on
+        // every render of a document that re-renders on every keystroke.
+        apiRef: (api) => { if (api) apis.current.set(s.id, api); else apis.current.delete(s.id); },
+        activate: (api) => {
+          activeApi.current = api;
+          activeSectionRef.current = s.id;
+          // The abstract's subsection editors have no ref of their own — activating
+          // is how they register, which keeps `apiFor('abstract')` honest.
+          if (api) apis.current.set(s.id, api);
+          // §16 — putting the caret in a section makes it the active section, in the
+          // outline as well. Same value → React bails out, so this is free.
+          if (continuousRef.current) setSel((cur) => (cur === s.id ? cur : s.id));
+        },
+      };
+    }
+    return out;
+  }, []);
+  const apiFor = useCallback((id) => (
+    apis.current.get(id) || (activeSectionRef.current === id ? activeApi.current : null)
+  ), []);
+  const getApi = () => activeApi.current || apis.current.get(sel) || null;
   const setActive = (api) => { activeApi.current = api; };
-  const getApi = () => activeApi.current || mainApi.current;
 
   const pageRef = useRef(null);
   const pendingScroll = useRef(null);
+  /* 118.md §15 — the outline stays on screen in the continuous document. Both
+     measurements are real: how far down the sticky toolbar ends, and whether the
+     three columns still fit side by side (below that they wrap, and a pinned
+     outline would hang over the prose rather than beside it). */
+  const rowRef = useRef(null);
+  const rowWidth = useElementWidth(rowRef);
+  const barH = useStickyBarHeight();
+  const stickyOutline = continuous && barH > 0 && rowWidth >= OUTLINE_STICKY_MIN_WIDTH;
+  /* 118.md §16/§17 — a programmatic scroll owns the active section until it
+     settles, so the sections it flies past cannot steal the indicator. */
+  const suppressActiveRef = useRef(0);
+  const suppressActive = (ms) => { suppressActiveRef.current = Date.now() + ms; };
 
-  // 116.md §61/§62 — the caret's table context (null outside tables), reported
-  // by the main rich editor; drives the floating table controls. Cleared on
-  // section switch / regeneration because the editor remounts and the old rect
-  // is meaningless.
+  // 116.md §61/§62 — the caret's table context (null outside tables), reported by
+  // the editor that owns it (`sectionId` is added here so a 10-editor document
+  // routes the ops back to the right one); drives the floating table controls.
   const [tableCtx, setTableCtx] = useState(null);
-  useEffect(() => { setTableCtx(null); }, [sel, m.activeId, lastGen]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const citeRefs = m.references || [];
   const refLabel = (r) => {
@@ -1306,17 +1317,26 @@ export function EditorPanel({ m, exporters, sectionRequest, onOpenAssetPanel, on
     const fam = a ? (a.family || a.raw) : ((r.ref && r.ref.title) || 'ref');
     return `${fam}${r.ref && r.ref.year ? ` ${r.ref.year}` : ''}`;
   };
-  // inline-citation numbering (includes the unsaved buffer)
+  // inline-citation numbering (the LIVE draft, pending edits included)
   // 117.md §32/§36 — alias-resolved, so a citation of a merged-away reference numbers
   // as its survivor rather than falling out of the sequence.
   const citeAliases = m.referenceAliases || null;
   // 117.md §39 — an unresolvable citation takes no number, so the chips stay in step
   // with the bibliography instead of shifting after a typo.
   const citeKnownIds = m.referenceKnownIds || null;
-  const orderMap = useMemo(() => {
-    const texts = draftSectionTexts(m.activeDraft).map((t, i) => (SECTION_IDS[i] === sel ? buf : t));
-    return collectCitationOrder(texts, { aliases: citeAliases, knownIds: citeKnownIds }).orderMap;
-  }, [m.activeDraft, sel, buf, citeAliases, citeKnownIds]);
+  /* 118.md §13/§19 — numbering comes from the HOOK's citation order: the same
+     derivation over the same live draft, memoized there on the citation SIGNATURE.
+     Two consequences that matter here: the panel can never disagree with the
+     bibliography (§13), and typing a word does not hand every mounted editor a new
+     orderMap to renumber against (§19). The local fallback exists only for hosts
+     that do not expose it; its memo body short-circuits, so it costs nothing. */
+  const orderMapFallback = useMemo(
+    () => (m.citationOrderMap
+      ? null
+      : collectCitationOrder(draftSectionTexts(liveDraft), { aliases: citeAliases, knownIds: citeKnownIds }).orderMap),
+    [m.citationOrderMap, liveDraft, citeAliases, citeKnownIds],
+  );
+  const orderMap = m.citationOrderMap || orderMapFallback;
   // 117.md §34 — the searchable picker items (author/title/DOI/PMID/journal/year/keyword).
   const citeItems = useMemo(() => citeRefs.map((r) => citeItemOf(r, refLabel)), [citeRefs]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -1361,28 +1381,36 @@ export function EditorPanel({ m, exporters, sectionRequest, onOpenAssetPanel, on
     [m.manualTables],
   );
 
-  const [chipMenu, setChipMenu] = useState(null);   // {id,label,broken,rect}
+  const [chipMenu, setChipMenu] = useState(null);   // {id,label,broken,rect,sectionId}
   const [chipHover, setChipHover] = useState(null);
   const [relinking, setRelinking] = useState(false);
   const [tableDelete, setTableDelete] = useState(null); // {tableId,label,count}
-  // 117.md §38 — the citation chip's own popovers ({ids,label,broken,rect}).
+  // 117.md §38 — the citation chip's own popovers ({ids,label,broken,rect,sectionId}).
   const [citeMenu, setCiteMenu] = useState(null);
   const [citeHover, setCiteHover] = useState(null);
-  // A section switch invalidates every anchored popover (the rects are gone).
+  /* Every anchored popover dies when the DOM it is anchored to is remounted. In
+     Section View that is a section switch or a regeneration; in Continuous View
+     nothing remounts on scroll, so the epoch is the generation stamps alone —
+     closing the menus while the reader merely scrolls would be a bug, not safety. */
+  const genSignature = useMemo(
+    () => SECTION_TYPES.map((s) => ((m.activeDraft.sections || {})[s.id] || {}).lastGeneratedAt || '').join('|'),
+    [m.activeDraft],
+  );
+  const mountEpoch = continuous ? genSignature : `${sel}:${lastGen || ''}`;
   useEffect(() => {
     setChipMenu(null); setChipHover(null); setRelinking(false); setTableDelete(null);
-    setCiteMenu(null); setCiteHover(null);
-  }, [sel, m.activeId, lastGen]); // eslint-disable-line react-hooks/exhaustive-deps
+    setCiteMenu(null); setCiteHover(null); setTableCtx(null);
+  }, [m.activeId, mountEpoch]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const closeChipMenu = () => {
-    const api = getApi();
+    const api = apiFor(chipMenu && chipMenu.sectionId) || getApi();
     if (api && api.clearActiveCrossRef) api.clearActiveCrossRef();
     setChipMenu(null);
     setRelinking(false);
   };
 
   const closeCiteMenu = () => {
-    const api = getApi();
+    const api = apiFor(citeMenu && citeMenu.sectionId) || getApi();
     if (api && api.clearActiveCitation) api.clearActiveCitation();
     setCiteMenu(null);
   };
@@ -1413,90 +1441,142 @@ export function EditorPanel({ m, exporters, sectionRequest, onOpenAssetPanel, on
   };
 
   // MS-11: derive sub-entries from headings at render time — no model change.
+  // 118.md §13 — off the LIVE draft, so a heading typed a moment ago is already in
+  // the outline in BOTH views (never a single-section buffer override).
   const outline = useMemo(() => {
     const map = {};
     for (const s of SECTION_TYPES) {
       if (s.id === 'title') continue;
-      const md = s.id === sel ? buf : (((m.activeDraft.sections || {})[s.id] || {}).content || '');
+      const md = ((liveDraft.sections || {})[s.id] || {}).content || '';
       const entries = extractOutline(md).filter((h) => h.level <= 2);
       if (entries.length) map[s.id] = entries;
     }
     return map;
-  }, [m.activeDraft, buf, sel]);
+  }, [liveDraft]);
 
   // flush any pending debounced edit before changing section so resync reads fresh content
   const switchTo = (id) => { if (m.flush) m.flush(); activeApi.current = null; setSel(id); };
 
+  /* 118.md §15/§17 — Continuous View never switches away from the document: the
+     section navigation SCROLLS, with the sticky toolbar's height accounted for. */
+  const scrollToSection = (id, opts) => {
+    suppressActive((opts && opts.instant) ? 250 : 800);
+    return scrollToSectionId(pageRef.current, id, opts);
+  };
+
+  /** The outline's primary action, in whichever view is on screen. */
+  const goToSection = (id) => {
+    if (!continuous) { switchTo(id); return; }
+    setSel(id);
+    scrollToSection(id);
+  };
+
   /* ══════════ 102.md §2 — navigation across the WHOLE manuscript ══════════
    *
-   * The editor shows one section at a time, so "next field" often means: switch
-   * section, wait for that editor to mount, then reveal the field inside it.
-   * `pendingRevealRef` carries the target across the remount; the effect below
-   * fires once the new editor's imperative handle exists.
+   * In SECTION VIEW "next field" often means: switch section, wait for that editor
+   * to mount, then reveal the field inside it — `pendingRevealRef` carries the
+   * target across the remount and the effect below fires once the new editor's
+   * handle exists.
+   *
+   * 118.md §19 — in CONTINUOUS VIEW every section is already mounted, so there is
+   * no remount to wait for and no retry loop: the reveal is a direct call on the
+   * owning editor's handle (which scrolls the field into view itself).
    *
    * Placeholders are addressed by their ORDINAL within a section rather than by a
    * DOM id, because the chips are re-rendered from markdown on every mount and any
    * id we stamped would not survive.
    */
   const pendingRevealRef = useRef(null);
-  // 117.md §10 — the same across-remount carrier for "Go to table" / "Edit table"
-  // when the target lives in another section.
-  const pendingTableRevealRef = useRef(null);
+  // 117.md §10 / 118.md §65 — the same across-remount carrier for "Go to table" /
+  // "Edit table" / "View in manuscript" when the target lives in another section.
+  const pendingAssetRevealRef = useRef(null);
+
+  /** Reveal an asset (manual table or cross-reference chip) inside ONE section. */
+  const revealAssetIn = (secId, req) => {
+    const api = apiFor(secId);
+    if (!api || !req) return false;
+    if (req.manualId) {
+      if (req.edit && api.editManualTable) return !!api.editManualTable(req.manualId);
+      if (api.focusManualTable) return !!api.focusManualTable(req.manualId);
+      return false;
+    }
+    return !!(req.assetId && api.focusAssetRef && api.focusAssetRef(req.assetId));
+  };
+
+  const revealPlaceholderIn = (secId, p) => {
+    const api = apiFor(secId);
+    if (!api || typeof api.focusPlaceholder !== 'function') return false;
+    return api.focusPlaceholder(p.ordinal);
+  };
+
+  /* The freshly switched section's editor mounts asynchronously, so both carriers
+     retry across a few frames rather than assuming one timeout is enough on a slow
+     render. Written twice on purpose: a shared "custom hook" declared inside a
+     component is exactly the shape the rules-of-hooks lint forbids. */
+  const revealRunRef = useRef({ asset: null, placeholder: null });
+  revealRunRef.current = {
+    asset: (t) => revealAssetIn(t.sectionId, t),
+    placeholder: (p) => revealPlaceholderIn(p.sectionId, p),
+  };
   useEffect(() => {
-    const t = pendingTableRevealRef.current;
-    if (!t || t.sectionId !== sel) return undefined;
+    const target = pendingAssetRevealRef.current;
+    if (!target || target.sectionId !== sel) return undefined;
     let tries = 0;
     let timer = null;
     const attempt = () => {
-      if (pendingTableRevealRef.current !== t) return;
-      const api = mainApi.current;
-      const done = api && (t.edit
-        ? (api.editManualTable && api.editManualTable(t.id))
-        : (api.focusManualTable && api.focusManualTable(t.id)));
-      if (done) { pendingTableRevealRef.current = null; return; }
+      if (pendingAssetRevealRef.current !== target) return;
+      if (revealRunRef.current.asset(target)) { pendingAssetRevealRef.current = null; return; }
       tries += 1;
       if (tries < 10) timer = setTimeout(attempt, 24);
-      else pendingTableRevealRef.current = null; // give up quietly
+      else pendingAssetRevealRef.current = null; // give up quietly; never loop forever
+    };
+    timer = setTimeout(attempt, 0);
+    return () => { if (timer) clearTimeout(timer); };
+  }, [sel]);
+  useEffect(() => {
+    const target = pendingRevealRef.current;
+    if (!target || target.sectionId !== sel) return undefined;
+    let tries = 0;
+    let timer = null;
+    const attempt = () => {
+      if (pendingRevealRef.current !== target) return;
+      if (revealRunRef.current.placeholder(target)) { pendingRevealRef.current = null; return; }
+      tries += 1;
+      if (tries < 10) timer = setTimeout(attempt, 24);
+      else pendingRevealRef.current = null;
     };
     timer = setTimeout(attempt, 0);
     return () => { if (timer) clearTimeout(timer); };
   }, [sel]);
 
-  const revealInCurrentSection = (p) => {
-    const api = mainApi.current;
-    if (!api || typeof api.focusPlaceholder !== 'function') return false;
-    return api.focusPlaceholder(p.ordinal);
+  /** 118.md §11 — the declarations are IN the continuous document; scroll to them. */
+  const scrollToStatements = () => {
+    const el = pageRef.current
+      && pageRef.current.querySelector('[data-testid="stitch-manuscript-continuous-statements"]');
+    if (el) { suppressActive(800); scrollSectionIntoView(el); return true; }
+    return false;
   };
 
   const goToPlaceholder = (p) => {
     if (!p) return;
     m.setCurrentPlaceholderId && m.setCurrentPlaceholderId(p.id);
-    // A statement field lives in the Statements editor, not a section page; send
-    // the researcher there rather than failing silently.
-    if (p.group === 'statement') { pendingRevealRef.current = null; setSel('statements'); return; }
-    if (p.sectionId === sel) { revealInCurrentSection(p); return; }
+    // A statement field lives in the Statements editor, not a section page.
+    if (p.group === 'statement') {
+      pendingRevealRef.current = null;
+      if (continuous) { scrollToStatements(); return; }
+      setSel('statements');
+      return;
+    }
+    if (continuous) {
+      setSel(p.sectionId);
+      suppressActive(800);
+      if (!revealPlaceholderIn(p.sectionId, p)) scrollToSection(p.sectionId);
+      return;
+    }
+    if (p.sectionId === sel) { revealPlaceholderIn(sel, p); return; }
     pendingRevealRef.current = p;
     switchTo(p.sectionId);
   };
-
-  useEffect(() => {
-    const p = pendingRevealRef.current;
-    if (!p || p.sectionId !== sel) return undefined;
-    // The editor remounts when the section changes, so its imperative handle is
-    // not attached yet on this tick. Retry across a few frames rather than
-    // assuming a single timeout is enough on a slow render.
-    let tries = 0;
-    let timer = null;
-    const attempt = () => {
-      if (pendingRevealRef.current !== p) return;
-      if (revealInCurrentSection(p)) { pendingRevealRef.current = null; return; }
-      tries += 1;
-      if (tries < 10) timer = setTimeout(attempt, 24);
-      else pendingRevealRef.current = null; // give up quietly; never loop forever
-    };
-    timer = setTimeout(attempt, 0);
-    return () => { if (timer) clearTimeout(timer); };
-  }, [sel]);
 
   const stepToPlaceholder = (direction) => {
     const p = m.nextPlaceholder && m.nextPlaceholder(direction);
@@ -1527,23 +1607,63 @@ export function EditorPanel({ m, exporters, sectionRequest, onOpenAssetPanel, on
     run: (e) => { stepToPlaceholder(e.shiftKey ? -1 : 1); return true; },
   }, []);
 
-  // 73.md Part 9 — the Overview grid / Consistency card can request a section
-  // ({ id, at }); honour every request (`at` changes even for the same id).
+  /* 73.md Part 9 / 118.md §64-§65 — another destination asked for a place in the
+     manuscript ({ id, at, assetId?, manualId?, edit? }); honour every request (`at`
+     changes even for the same id). Section View opens the section; Continuous View
+     scrolls to it — §15's "do not switch out of Continuous View" applies to every
+     caller, not just the outline. */
   useEffect(() => {
-    if (sectionRequest && sectionRequest.id && SECTION_IDS.includes(sectionRequest.id)) {
-      switchTo(sectionRequest.id);
+    if (!sectionRequest || !sectionRequest.id || !SECTION_IDS.includes(sectionRequest.id)) return;
+    const id = sectionRequest.id;
+    const wantsAsset = !!(sectionRequest.assetId || sectionRequest.manualId);
+    if (continuous) {
+      setSel(id);
+      suppressActive(800);
+      // The asset reveal scrolls to the object itself, which is more precise than
+      // scrolling to the section that holds it.
+      if (!(wantsAsset && revealAssetIn(id, sectionRequest))) scrollToSection(id);
+      return;
     }
+    if (wantsAsset) pendingAssetRevealRef.current = { ...sectionRequest, sectionId: id };
+    switchTo(id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sectionRequest]);
 
-  const scrollToHeading = (idx) => {
-    const el = pageRef.current;
-    if (!el || typeof el.querySelectorAll !== 'function') return;
-    const h = el.querySelectorAll('h2,h3,h4')[idx];
-    if (h && h.scrollIntoView) h.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  /* 118.md §12 — switching INTO the continuous document lands on the section the
+     researcher was last in, instantly (an animated flight down a 10-section page on
+     a view toggle would be motion for its own sake — §58). */
+  const selRef = useRef(sel);
+  selRef.current = sel;
+  useEffect(() => {
+    if (!continuous || typeof window === 'undefined') return undefined;
+    const raf = window.requestAnimationFrame
+      ? window.requestAnimationFrame(() => scrollToSection(selRef.current, { instant: true }))
+      : setTimeout(() => scrollToSection(selRef.current, { instant: true }), 0);
+    return () => {
+      if (window.cancelAnimationFrame && window.requestAnimationFrame) window.cancelAnimationFrame(raf);
+      else clearTimeout(raf);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [continuous]);
+
+  /* MS-11 — heading navigation, scoped to the OWNING editor's root. In Continuous
+     View the paper holds ten editors, so an unscoped `h2` query would count every
+     heading in the document and jump to the wrong one. */
+  const headingRoot = (secId) => {
+    const page = pageRef.current;
+    if (!page || typeof page.querySelector !== 'function') return null;
+    return continuous ? page.querySelector(`${msSectionSelector(secId)} .ms-rich`) : page;
+  };
+  const scrollToHeading = (secId, idx) => {
+    const root = headingRoot(secId);
+    if (!root || typeof root.querySelectorAll !== 'function') return;
+    const h = root.querySelectorAll('h2,h3,h4')[idx];
+    // §58 — reduced motion jumps instead of gliding.
+    if (h && h.scrollIntoView) h.scrollIntoView({ behavior: prefersReducedMotion() ? 'auto' : 'smooth', block: 'center' });
   };
   const jumpTo = (secId, headingIndex) => {
-    if (secId === sel) { scrollToHeading(headingIndex); return; }
+    if (continuous) { setSel(secId); suppressActive(800); scrollToHeading(secId, headingIndex); return; }
+    if (secId === sel) { scrollToHeading(secId, headingIndex); return; }
     pendingScroll.current = headingIndex;
     switchTo(secId);
   };
@@ -1551,7 +1671,8 @@ export function EditorPanel({ m, exporters, sectionRequest, onOpenAssetPanel, on
     if (pendingScroll.current == null) return;
     const idx = pendingScroll.current;
     pendingScroll.current = null;
-    scrollToHeading(idx);
+    scrollToHeading(sel, idx);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sel]);
 
   const doGenerate = (only) => {
@@ -1580,7 +1701,7 @@ export function EditorPanel({ m, exporters, sectionRequest, onOpenAssetPanel, on
 
   /** 117.md §38 — remove one id from the active chip (null → the whole chip). */
   const removeCitation = (refId) => {
-    const api = getApi();
+    const api = apiFor(citeMenu && citeMenu.sectionId) || getApi();
     if (api && api.removeCitation) api.removeCitation(refId);
     setCiteMenu(null);
   };
@@ -1608,40 +1729,35 @@ export function EditorPanel({ m, exporters, sectionRequest, onOpenAssetPanel, on
   const chipAsset = chipMenu ? (assetById.get(chipMenu.id) || null) : null;
   const hoverAsset = chipHover ? (assetById.get(chipHover.id) || null) : null;
 
-  const goToAsset = (assetId) => {
+  const goToAsset = (assetId, edit = false) => {
     const a = assetById.get(assetId) || null;
     if (a && a.origin === 'manual') {
-      const api = mainApi.current;
-      // Same section → scroll + highlight. Different section → switch, then the
-      // effect below retries once the new editor's handle exists.
-      if (api && api.focusManualTable && api.focusManualTable(a.manualId)) return;
-      if (a.sectionId && a.sectionId !== sel) { pendingTableRevealRef.current = { id: a.manualId, sectionId: a.sectionId, edit: false }; switchTo(a.sectionId); }
+      const req = { sectionId: a.sectionId, manualId: a.manualId, edit };
+      // Same section (or Continuous View, where every section is mounted) → reveal
+      // now. Otherwise switch and let the retry fire once the editor exists.
+      if (revealAssetIn(continuous ? a.sectionId : sel, req)) return;
+      if (a.sectionId && (continuous || a.sectionId !== sel)) {
+        if (continuous) { setSel(a.sectionId); suppressActive(800); scrollToSection(a.sectionId); return; }
+        pendingAssetRevealRef.current = req;
+        switchTo(a.sectionId);
+      }
       return;
     }
     // A generated object has no place in the prose — its panel IS the object.
     if (onOpenAssetPanel) onOpenAssetPanel(a && a.kind === 'figure' ? 'figures' : 'tables');
   };
 
-  const editAsset = (assetId) => {
-    const a = assetById.get(assetId) || null;
-    if (a && a.origin === 'manual') {
-      const api = mainApi.current;
-      if (api && api.editManualTable && api.editManualTable(a.manualId)) return;
-      if (a.sectionId && a.sectionId !== sel) { pendingTableRevealRef.current = { id: a.manualId, sectionId: a.sectionId, edit: true }; switchTo(a.sectionId); }
-      return;
-    }
-    if (onOpenAssetPanel) onOpenAssetPanel(a && a.kind === 'figure' ? 'figures' : 'tables');
-  };
+  const editAsset = (assetId) => goToAsset(assetId, true);
 
   const removeChipRef = () => {
-    const api = getApi();
+    const api = apiFor(chipMenu && chipMenu.sectionId) || getApi();
     if (api && api.removeCrossRef) api.removeCrossRef();
     setChipMenu(null);
     setRelinking(false);
   };
 
   const relinkChipRef = (assetId) => {
-    const api = getApi();
+    const api = apiFor(chipMenu && chipMenu.sectionId) || getApi();
     if (api && api.relinkCrossRef) api.relinkCrossRef(assetId);
     setChipMenu(null);
     setRelinking(false);
@@ -1650,16 +1766,16 @@ export function EditorPanel({ m, exporters, sectionRequest, onOpenAssetPanel, on
   /* ── 117.md §11 — delete a table that other sentences point at ── */
   const askDeleteTable = (ctx) => {
     const tableId = ctx && ctx.tableId;
-    const api = getApi();
+    const api = apiFor(ctx && ctx.sectionId) || getApi();
     if (!tableId) { if (api && api.tableOp) api.tableOp('deleteTable'); return; }
-    const count = countAssetMentions(m.activeDraft, `table:${tableId}`);
+    const count = countAssetMentions(liveDraft, `table:${tableId}`);
     if (!count) { if (api && api.tableOp) api.tableOp('deleteTable'); return; }
     const a = assetById.get(`table:${tableId}`) || null;
-    setTableDelete({ tableId, count, label: a ? assetNumberLabel(m, a) : 'this table' });
+    setTableDelete({ tableId, count, sectionId: ctx && ctx.sectionId, label: a ? assetNumberLabel(m, a) : 'this table' });
   };
 
   const confirmDeleteTable = () => {
-    const api = getApi();
+    const api = apiFor(tableDelete && tableDelete.sectionId) || getApi();
     if (api && api.tableOp) api.tableOp('deleteTable');
     // The prose is the source of truth: the caption goes with the table, so the
     // side-metadata entry must go too (undo restores the prose; a stale stamp for
@@ -1671,34 +1787,131 @@ export function EditorPanel({ m, exporters, sectionRequest, onOpenAssetPanel, on
   const status = sectionStatus(section);
   const isTitle = sel === 'title';
   const isAbstract = sel === 'abstract';
-  // remount (→ re-render from props) ONLY when the section identity changes or it
-  // is (re)generated — typing never remounts, so the caret is never fought.
-  const resetKey = `${m.activeId}:${sel}:${lastGen || ''}`;
-  // MOUNT value for the one-time-render editors. This must be the DRAFT content
-  // (fresh in the same render as a section switch or a generate), NOT `buf`: the
-  // buf-resync effect runs AFTER the keyed remount, so an editor mounted from buf
-  // would show the PREVIOUS section's (or pre-generation) text forever. `buf`
-  // keeps serving the live views (orderMap, outline, title input).
-  const pageValue = ((m.activeDraft.sections || {})[sel] || {}).content || '';
+  const sectionLabelOf = (id) => (SECTION_TYPES.find((s) => s.id === id) || {}).label || 'Section';
+
+  /* ══════════ 118.md §13/§18 — the ONE editor prop factory ══════════
+   *
+   * Both views mount from this. Section View calls it for the selected section;
+   * Continuous View calls it once per body section. Because the props are built in
+   * one place, "citations / cross-references / tables / placeholders / undo work in
+   * Continuous View" is not a second implementation that could drift — it is the
+   * same one.
+   *
+   * `mountKey` (not `key`) is returned as an ordinary prop and applied by the
+   * caller: the DOM is rendered from props exactly once per key — section identity
+   * + generation stamp — and the mount value is the COMMITTED draft, never a
+   * buffer, so a keyed remount can never resurrect stale text.
+   */
+  const editorProps = (id) => {
+    const sec = sections[id] || {};
+    const secLocked = !!sec.locked;
+    const h = handles[id];
+    return {
+      mountKey: `${m.activeId}:${id}:${sec.lastGeneratedAt || ''}`,
+      apiRef: h ? h.apiRef : undefined,
+      // Section View keeps the historical single test id; the continuous document
+      // needs one per mounted section (ten editors on one page).
+      testId: continuous ? `stitch-manuscript-rich-editor-${id}` : 'stitch-manuscript-rich-editor',
+      value: sec.content || '',
+      orderMap,
+      assetNumbers,
+      // 101.md §4/§5/§6 — the live fact layer. `facts` makes project values resolve
+      // at render (so no refresh action exists), and `showChanges` toggles ONLY the
+      // overlay: the markdown behind the editor is byte-identical in both modes.
+      facts: m.resolvedFacts,
+      factOverrides: m.factOverrides,
+      factChanges: (m.activeDraft && m.activeDraft.factLog) || null,
+      showChanges: m.showChanges,
+      // 102.md §3 — keep the panel's "current field" marker in step when the
+      // researcher reaches a placeholder by clicking rather than by pressing Next.
+      onPlaceholderFocus: (label) => {
+        const hit = (m.placeholders || []).find((x) => x.sectionId === id && x.label === label);
+        if (hit) m.setCurrentPlaceholderId && m.setCurrentPlaceholderId(hit.id);
+      },
+      onChange: (md) => commitSection(id, md),
+      onActivate: h ? h.activate : setActive,
+      readOnly: secLocked,
+      // 116.md §61 — report the caret's table context for the floating table
+      // controls (never while locked: no edits are possible).
+      onTableFocus: secLocked ? null : ((ctx) => setTableCtx(ctx ? { ...ctx, sectionId: id } : null)),
+      // 117.md §4/§8/§10/§11 — the manuscript-object layer.
+      knownAssetIds,
+      templateId: m.activeDraft.templateId,
+      existingTableIds,
+      onAssetChipMenu: (info) => { setChipHover(null); setRelinking(false); setChipMenu({ ...info, sectionId: id }); },
+      onAssetChipHover: (info) => setChipHover(info ? { ...info, sectionId: id } : null),
+      onTableMeta: m.setTableMeta,
+      // 117.md §37/§38/§39 — the citation layer: style-aware chip labels, the
+      // reference metadata behind them, and the two chip callbacks.
+      citationStyle: m.activeDraft.citationStyle,
+      refsById: m.refsById,
+      yearSuffixes: m.citationYearSuffixes,
+      onCiteChipMenu: (info) => openCiteMenu({ ...info, sectionId: id }),
+      onCiteChipHover: (info) => setCiteHover(info ? { ...info, sectionId: id } : null),
+      ariaLabel: sectionLabelOf(id),
+      placeholder: 'Write this section here, or generate it from your project data. Use the toolbar for headings, lists and citations.',
+    };
+  };
+
+  /** The abstract is structured (MS-5), so it gets its own factory — same rules. */
+  const abstractProps = () => {
+    const sec = sections.abstract || {};
+    const key = `${m.activeId}:abstract:${sec.lastGeneratedAt || ''}`;
+    return {
+      value: sec.content || '',
+      templateId: m.activeDraft.templateId,
+      orderMap,
+      assetNumbers,
+      // 117.md §8/§11 — same registry + caption template as the body sections.
+      knownAssetIds,
+      captionTemplateId: m.activeDraft.templateId,
+      resetKey: key,
+      onChange: (md) => commitSection('abstract', md),
+      onActivate: handles.abstract ? handles.abstract.activate : setActive,
+      readOnly: !!sec.locked,
+    };
+  };
+
+  /** 84.md — the provenance card, shared by both views (Continuous renders it per section). */
+  const renderWhy = (sectionId, sec) => <WhySectionPanel section={sec || {}} sectionId={sectionId} />;
+
+  const mainEditor = editorProps(sel);
 
   return (
-    <div data-testid="stitch-manuscript-editor" style={{ display: 'flex', gap: 18, alignItems: 'flex-start', flexWrap: 'wrap' }}>
+    <div ref={rowRef} data-testid="stitch-manuscript-editor" data-view={view}
+      style={{ display: 'flex', gap: 18, alignItems: 'flex-start', flexWrap: 'wrap' }}>
       <style>{RICH_EDITOR_CSS}</style>
       {/* 117.md §11 — deleting a cited table warns first, then allows it. */}
       <TableDeleteDialog info={tableDelete} onConfirm={confirmDeleteTable} onCancel={() => setTableDelete(null)} />
 
-      {/* ── left: outline ── */}
-      <div style={{ width: 216, flexShrink: 0, minWidth: 180, flex: '0 1 216px' }}>
+      {/* ── left: outline (118.md §15 — present in BOTH views) ──
+          In the continuous document it also STAYS present: the page is ten sections
+          long, so a navigator that scrolled away with the prose would satisfy §15
+          only until the reader used it once. It pins below the sticky toolbar (whose
+          height is measured, not assumed) and scrolls internally when the outline is
+          taller than the screen. Section View shows one section at a time, so its
+          outline is already beside what it navigates. */}
+      <div data-testid="stitch-manuscript-outline" data-sticky={stickyOutline ? 'true' : undefined}
+        style={{
+          width: 216, flexShrink: 0, minWidth: 180, flex: '0 1 216px',
+          ...(stickyOutline ? {
+            position: 'sticky', top: barH + 8,
+            maxHeight: `calc(100vh - ${barH + 48}px)`, overflowY: 'auto', overflowX: 'hidden',
+          } : {}),
+        }}>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
           {SECTION_TYPES.map((s) => {
-            const sec = (m.activeDraft.sections && m.activeDraft.sections[s.id]) || {};
+            const sec = sections[s.id] || {};
             const st = sectionStatus(sec);
             const active = s.id === sel;
             const subs = outline[s.id] || [];
             return (
               <div key={s.id}>
-                <button onClick={() => switchTo(s.id)}
+                <button onClick={() => goToSection(s.id)}
                   data-testid={`stitch-manuscript-section-${s.id}`}
+                  data-active={active ? 'true' : undefined}
+                  aria-current={active ? 'true' : undefined}
+                  title={continuous ? `Scroll to ${s.label}` : `Open ${s.label}`}
                   style={{
                     display: 'flex', alignItems: 'center', gap: 9, textAlign: 'left', cursor: 'pointer',
                     width: '100%', padding: '8px 10px', borderRadius: 8, fontSize: 12.5, fontFamily: 'inherit',
@@ -1714,7 +1927,7 @@ export function EditorPanel({ m, exporters, sectionRequest, onOpenAssetPanel, on
                       <Icon name="lock" size={10} />
                     </span>
                   )}
-                  {(m.outdated || {})[s.id] && (
+                  {outdatedMap[s.id] && (
                     <span title="Project data changed since this was generated"
                       data-testid={`stitch-manuscript-outline-outdated-${s.id}`}
                       style={{ fontSize: 8.5, fontWeight: 700, color: C.yel, letterSpacing: 0.4, textTransform: 'uppercase', flexShrink: 0 }}>
@@ -1754,23 +1967,33 @@ export function EditorPanel({ m, exporters, sectionRequest, onOpenAssetPanel, on
       <div style={{ flex: '1 1 460px', minWidth: 300 }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, marginBottom: 10, flexWrap: 'wrap' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-            <h3 style={{ margin: 0, fontSize: 14, fontWeight: 700, color: C.txt }}>{(SECTION_TYPES.find((s) => s.id === sel) || {}).label}</h3>
-            {locked && (
+            {/* 118.md §11 — in the continuous document every section carries its own
+                status row, so the page chrome names the DOCUMENT instead of
+                repeating one section's state above ten sections. */}
+            <h3 style={{ margin: 0, fontSize: 14, fontWeight: 700, color: C.txt }}>
+              {continuous ? 'Full manuscript' : sectionLabelOf(sel)}
+            </h3>
+            {!continuous && locked && (
               <span style={tagS('purple')} data-testid="stitch-manuscript-locked-badge">
                 <Icon name="lock" size={9} /> Locked
               </span>
             )}
-            {status === 'ai-draft' && <span style={tagS('yellow')}>Auto-draft — verify</span>}
-            {status === 'edited' && <span style={tagS('green')}>Edited</span>}
-            {isOutdated && (
+            {!continuous && status === 'ai-draft' && <span style={tagS('yellow')}>Auto-draft — verify</span>}
+            {!continuous && status === 'edited' && <span style={tagS('green')}>Edited</span>}
+            {!continuous && isOutdated && (
               <span style={tagS('yellow')} data-testid="stitch-manuscript-outdated-badge"
                 title="Project data changed since this was generated">
                 Outdated
               </span>
             )}
+            {continuous && (
+              <span style={{ fontSize: 11, color: C.muted }}>
+                Scroll to read and edit the whole document — every section is live.
+              </span>
+            )}
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
-            {isOutdated && !locked && (
+            {!continuous && isOutdated && !locked && (
               <button onClick={() => doGenerate([sel])}
                 title="Regenerate this section from the latest project data"
                 data-testid="stitch-manuscript-regenerate"
@@ -1778,21 +2001,25 @@ export function EditorPanel({ m, exporters, sectionRequest, onOpenAssetPanel, on
                 <Icon name="refresh" size={12} /> Regenerate
               </button>
             )}
-            <button onClick={() => m.setSectionLocked && m.setSectionLocked(sel, !locked)}
-              aria-pressed={locked}
-              aria-label={locked ? `Unlock ${(SECTION_TYPES.find((s) => s.id === sel) || {}).label || 'section'}` : `Lock ${(SECTION_TYPES.find((s) => s.id === sel) || {}).label || 'section'}`}
-              title={locked ? 'Unlock this section — editing and regeneration become available again' : 'Lock this section — read-only, and generation always skips it'}
-              data-testid="stitch-manuscript-lock-toggle"
-              style={{ ...btnS(locked ? 'primary' : 'ghost'), fontSize: 11 }}>
-              <Icon name="lock" size={12} /> {locked ? 'Unlock' : 'Lock'}
-            </button>
-            <button onClick={() => setWhyOpen((v) => !v)} aria-expanded={whyOpen}
-              aria-label="Why does this section say this?"
-              title="Show what this section was generated from and what it depends on"
-              data-testid="stitch-manuscript-why-toggle"
-              style={{ ...btnS(whyOpen ? 'primary' : 'ghost'), fontSize: 11 }}>
-              <Icon name="info" size={12} /> Why?
-            </button>
+            {!continuous && (
+              <button onClick={() => m.setSectionLocked && m.setSectionLocked(sel, !locked)}
+                aria-pressed={locked}
+                aria-label={locked ? `Unlock ${sectionLabelOf(sel)}` : `Lock ${sectionLabelOf(sel)}`}
+                title={locked ? 'Unlock this section — editing and regeneration become available again' : 'Lock this section — read-only, and generation always skips it'}
+                data-testid="stitch-manuscript-lock-toggle"
+                style={{ ...btnS(locked ? 'primary' : 'ghost'), fontSize: 11 }}>
+                <Icon name="lock" size={12} /> {locked ? 'Unlock' : 'Lock'}
+              </button>
+            )}
+            {!continuous && (
+              <button onClick={() => setWhyOpen((v) => !v)} aria-expanded={whyOpen}
+                aria-label="Why does this section say this?"
+                title="Show what this section was generated from and what it depends on"
+                data-testid="stitch-manuscript-why-toggle"
+                style={{ ...btnS(whyOpen ? 'primary' : 'ghost'), fontSize: 11 }}>
+                <Icon name="info" size={12} /> Why?
+              </button>
+            )}
             <button onClick={() => setToolsOpen((v) => !v)} aria-label={toolsOpen ? 'Hide tools panel' : 'Show tools panel'}
               title={toolsOpen ? 'Hide tools panel' : 'Show tools panel'}
               data-testid="stitch-manuscript-tools-toggle"
@@ -1803,14 +2030,14 @@ export function EditorPanel({ m, exporters, sectionRequest, onOpenAssetPanel, on
         </div>
 
         {/* 73.md Part 9 — per-section provenance (stamped at generation time) */}
-        {Array.isArray(section.sources) && section.sources.length > 0 && (
+        {!continuous && Array.isArray(section.sources) && section.sources.length > 0 && (
           <div data-testid="stitch-manuscript-sources"
             style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap', marginBottom: 6 }}>
             <span style={{ fontSize: 10, fontWeight: 700, color: C.muted, letterSpacing: 0.5, textTransform: 'uppercase' }}>Generated from</span>
             {section.sources.map((s) => <span key={s.key} style={tagS('blue')}>{s.label}</span>)}
           </div>
         )}
-        {Array.isArray(section.missing) && section.missing.length > 0 && (
+        {!continuous && Array.isArray(section.missing) && section.missing.length > 0 && (
           <div data-testid="stitch-manuscript-missing" style={{ fontSize: 11, color: C.muted, marginBottom: 8, lineHeight: 1.5 }}>
             Missing: {section.missing.slice(0, 2).map((x) => x.hint).join(' · ')}
           </div>
@@ -1818,7 +2045,7 @@ export function EditorPanel({ m, exporters, sectionRequest, onOpenAssetPanel, on
 
         {/* 84.md — "Why does this say this?" provenance detail (sources / missing /
             last generated / declared dependencies). Compact; keyboard-toggled. */}
-        {whyOpen && (
+        {!continuous && whyOpen && (
           <WhySectionPanel section={section} sectionId={sel} />
         )}
 
@@ -1858,7 +2085,9 @@ export function EditorPanel({ m, exporters, sectionRequest, onOpenAssetPanel, on
             />
           </div>
         ) : null}
-        {!isTitle && (
+        {/* 118.md §18 — the formatting toolbar serves whichever editor last held the
+            caret, which is exactly what a ten-editor document needs. */}
+        {(continuous || !isTitle) && (
           <RichToolbar getApi={getApi} citeRefs={citeRefs} refLabel={refLabel} disabled={locked}
             /* 117.md §9 — Insert → Cross-reference, at the caret, with search. */
             crossRefs={crossRefItems} onInsertCrossRef={insertAssetRef}
@@ -1867,12 +2096,28 @@ export function EditorPanel({ m, exporters, sectionRequest, onOpenAssetPanel, on
         )}
 
         <div style={{ display: 'flex', justifyContent: 'center' }}>
-          {/* position:relative anchors the 116.md §61 floating table controls */}
+          {/* 118.md §11/§14 — ONE page. Continuous View fills it with the whole
+              document; Section View with the selected section. position:relative
+              anchors the 116.md §61 floating table controls and every chip popover,
+              which is why they stay siblings of the content in BOTH views. */}
           <div ref={pageRef} className="ms-paper" data-testid="stitch-manuscript-page"
             style={{ width: '100%', maxWidth: 760, padding: '44px 52px 56px', minHeight: 480, boxSizing: 'border-box', position: 'relative' }}>
-            {isTitle ? (
+            {continuous ? (
+              <ContinuousView
+                m={m}
+                editorProps={editorProps}
+                abstractProps={abstractProps}
+                renderWhy={renderWhy}
+                onActiveSection={setSel}
+                suppressRef={suppressActiveRef}
+                onRegenerate={(id) => doGenerate([id])}
+                onToggleLock={(id, next) => m.setSectionLocked && m.setSectionLocked(id, next)}
+                onOpenReferences={() => onNavigate && onNavigate('references')}
+                stickyOffset={barH}
+              />
+            ) : isTitle ? (
               <div style={{ display: 'flex', flexDirection: 'column', gap: 22 }}>
-                <input value={buf} onChange={(e) => onType(e.target.value)} placeholder="Full manuscript title…"
+                <input value={titleBuf} onChange={(e) => onTitleType(e.target.value)} placeholder="Full manuscript title…"
                   disabled={locked} aria-label="Manuscript title" data-testid="stitch-manuscript-title-input"
                   style={{
                     width: '100%', border: 'none', outline: 'none', background: 'transparent',
@@ -1895,67 +2140,26 @@ export function EditorPanel({ m, exporters, sectionRequest, onOpenAssetPanel, on
                 </div>
               </div>
             ) : isAbstract ? (
-              <AbstractEditor value={pageValue} templateId={m.activeDraft.templateId} orderMap={orderMap}
-                assetNumbers={assetNumbers}
-                // 117.md §8/§11 — same registry + caption template as the body sections.
-                knownAssetIds={knownAssetIds} captionTemplateId={m.activeDraft.templateId}
-                resetKey={resetKey} onChange={onType} onActivate={setActive} readOnly={locked} />
+              <AbstractEditor {...abstractProps()} />
             ) : (
-              <RichSectionEditor key={resetKey} ref={mainApi} value={pageValue} orderMap={orderMap}
-                assetNumbers={assetNumbers}
-                // 101.md §4/§5/§6 — the live fact layer. `facts` makes project
-                // values resolve at render (so no refresh action exists), and
-                // `showChanges` toggles ONLY the overlay: the markdown behind the
-                // editor is byte-identical in both modes.
-                facts={m.resolvedFacts}
-                factOverrides={m.factOverrides}
-                factChanges={(m.activeDraft && m.activeDraft.factLog) || null}
-                showChanges={m.showChanges}
-                // 102.md §3 — keep the panel's "current field" marker in step when
-                // the researcher reaches a placeholder by clicking rather than by
-                // pressing Next.
-                onPlaceholderFocus={(label) => {
-                  const hit = (m.placeholders || []).find(
-                    (x) => x.sectionId === sel && x.label === label,
-                  );
-                  if (hit) m.setCurrentPlaceholderId && m.setCurrentPlaceholderId(hit.id);
-                }}
-                onChange={onType} onActivate={setActive} readOnly={locked}
-                // 116.md §61 — report the caret's table context for the floating
-                // table controls (never while locked: no edits are possible).
-                onTableFocus={locked ? null : setTableCtx}
-                // 117.md §4/§8/§10/§11 — the manuscript-object layer.
-                knownAssetIds={knownAssetIds}
-                templateId={m.activeDraft.templateId}
-                existingTableIds={existingTableIds}
-                onAssetChipMenu={(info) => { setChipHover(null); setRelinking(false); setChipMenu(info); }}
-                onAssetChipHover={setChipHover}
-                onTableMeta={m.setTableMeta}
-                // 117.md §37/§38/§39 — the citation layer: style-aware chip labels,
-                // the reference metadata behind them, and the two chip callbacks.
-                citationStyle={m.activeDraft.citationStyle}
-                refsById={m.refsById}
-                yearSuffixes={m.citationYearSuffixes}
-                onCiteChipMenu={openCiteMenu}
-                onCiteChipHover={setCiteHover}
-                ariaLabel={(SECTION_TYPES.find((s) => s.id === sel) || {}).label || 'Section'}
-                placeholder="Write this section here, or generate it from your project data. Use the toolbar for headings, lists and citations." />
+              <RichSectionEditor key={mainEditor.mountKey} ref={mainEditor.apiRef} {...mainEditor} />
             )}
             {/* 116.md §61/§62 — floating row/col/table ops while the caret is in a table */}
-            {!isTitle && !isAbstract && !locked && tableCtx && (
-              <TableContextBar ctx={tableCtx} pageEl={pageRef.current} getApi={getApi}
+            {tableCtx && (continuous || (!isTitle && !isAbstract && !locked)) && (
+              <TableContextBar ctx={tableCtx} pageEl={pageRef.current}
+                getApi={() => apiFor(tableCtx.sectionId) || getApi()}
                 onDeleteTable={askDeleteTable} />
             )}
             {/* 117.md §10 — hover preview, suppressed while the action menu is open */}
-            {!isTitle && !chipMenu && chipHover && (
+            {(continuous || !isTitle) && !chipMenu && chipHover && (
               <AssetRefHoverCard info={chipHover} asset={hoverAsset} pageEl={pageRef.current} />
             )}
             {/* 117.md §38 — citation hover preview + action menu, same rules */}
-            {!isTitle && !citeMenu && citeHover && (
+            {(continuous || !isTitle) && !citeMenu && citeHover && (
               <CiteHoverCard info={citeHover} refs={refsOf(citeHover)} pageEl={pageRef.current}
                 yearSuffixes={m.citationYearSuffixes} />
             )}
-            {!isTitle && citeMenu && (
+            {(continuous || !isTitle) && citeMenu && (
               <CiteRefMenu info={citeMenu} refs={refsOf(citeMenu)} pageEl={pageRef.current}
                 yearSuffixes={m.citationYearSuffixes}
                 onView={(id) => { closeCiteMenu(); onOpenReference && onOpenReference(id, 'view'); }}
@@ -1966,7 +2170,7 @@ export function EditorPanel({ m, exporters, sectionRequest, onOpenAssetPanel, on
                 onClose={closeCiteMenu} />
             )}
             {/* 117.md §10/§11 — the chip action menu (and its relink picker) */}
-            {!isTitle && chipMenu && (
+            {(continuous || !isTitle) && chipMenu && (
               <AssetRefMenu info={chipMenu} asset={chipAsset} pageEl={pageRef.current}
                 relinking={relinking} relinkItems={crossRefItems}
                 onGo={() => { const id = chipMenu.id; closeChipMenu(); goToAsset(id); }}
@@ -1999,8 +2203,8 @@ export function EditorPanel({ m, exporters, sectionRequest, onOpenAssetPanel, on
             // A change identifies a FACT, not a section — the same fact can appear
             // in several sections. Jump to the first section that states it.
             onNavigate={(change) => {
-              const id = change && sectionStatingFact(m.activeDraft, change.key);
-              if (id) switchTo(id);
+              const id = change && sectionStatingFact(liveDraft, change.key);
+              if (id) goToSection(id);
             }}
           />
 
@@ -2009,7 +2213,7 @@ export function EditorPanel({ m, exporters, sectionRequest, onOpenAssetPanel, on
               <button onClick={() => doGenerate([sel])} disabled={locked}
                 title={locked ? 'This section is locked — unlock it to regenerate.' : 'Generate this section from project data'}
                 style={{ ...btnS('ghost'), justifyContent: 'center', opacity: locked ? 0.5 : 1, cursor: locked ? 'not-allowed' : undefined }}>
-                <Icon name="refresh" size={12} /> Generate this section
+                <Icon name="refresh" size={12} /> Generate {continuous ? sectionLabelOf(sel) : 'this section'}
               </button>
               <button onClick={() => doGenerate(null)} data-testid="stitch-manuscript-generate" style={{ ...btnS('primary'), justifyContent: 'center' }}>
                 <Icon name="sigma" size={13} /> Generate all sections
@@ -2024,17 +2228,17 @@ export function EditorPanel({ m, exporters, sectionRequest, onOpenAssetPanel, on
                   multi-select picker the toolbar uses. It replaces the old bare
                   <select>, which could not search and could not express a
                   multi-reference citation. */}
-              <CiteRefPicker items={citeItems} disabled={isTitle || locked} block
+              <CiteRefPicker items={citeItems} disabled={(!continuous && isTitle) || locked} block
                 testIdPrefix="stitch-manuscript-tools-cite"
                 label="+ Insert citation…" onInsert={insertCitation} />
               {citeRefs.length === 0 && (
                 <div style={{ fontSize: 10.5, color: C.muted }}>References appear here once your project has included studies.</div>
               )}
-              <button onClick={insertPrisma} disabled={isTitle || locked}
+              <button onClick={insertPrisma} disabled={(!continuous && isTitle) || locked}
                 aria-label="Insert PRISMA study-selection summary at the cursor"
                 title="Insert the PRISMA study-selection paragraph (from your live counts) as editable text"
                 data-testid="stitch-manuscript-insert-prisma"
-                style={{ ...btnS('ghost'), justifyContent: 'center', opacity: (isTitle || locked) ? 0.5 : 1 }}>
+                style={{ ...btnS('ghost'), justifyContent: 'center', opacity: ((!continuous && isTitle) || locked) ? 0.5 : 1 }}>
                 <Icon name="flow" size={12} /> Insert PRISMA summary
               </button>
               {/* 117.md §9 — the Tools entry point to the SAME picker the toolbar
@@ -2042,7 +2246,7 @@ export function EditorPanel({ m, exporters, sectionRequest, onOpenAssetPanel, on
                   replaces the old bare <select>, which had no search, could not
                   show a number, and spliced a block into the sentence. */}
               {availableAssets.length > 0 && (
-                <CrossRefPicker items={crossRefItems} disabled={isTitle || locked} block
+                <CrossRefPicker items={crossRefItems} disabled={(!continuous && isTitle) || locked} block
                   testIdPrefix="stitch-manuscript-tools-crossref"
                   label="⧉ Reference a table/figure…"
                   onPick={insertAssetRef} />
@@ -2309,10 +2513,33 @@ export function assetNumberLabel(m, asset) {
   return formatAssetLabel(asset.kind, n, { templateId: (m.activeDraft && m.activeDraft.templateId) || null });
 }
 
+/**
+ * 118.md §65 — where this object actually IS in the manuscript, or null.
+ *
+ * "This should not create duplicate objects": a MANUAL table's body is prose, so
+ * its place is the section that holds it; a GENERATED object has no prose body, so
+ * its place is the first sentence that cross-references it. Nothing is created —
+ * the answer is derived from the live text, and it is honestly absent when the
+ * object is not in the manuscript yet (§69: no control that cannot do anything).
+ */
+export function assetManuscriptTarget(m, asset) {
+  if (!m || !asset) return null;
+  if (asset.origin === 'manual' && asset.sectionId && asset.manualId) {
+    return { sectionId: asset.sectionId, manualId: asset.manualId, assetId: asset.id };
+  }
+  const ids = new Set([asset.id, ...((asset.aliasIds) || [])]);
+  for (const sec of orderedSections(m.liveDraft || m.activeDraft)) {
+    for (const tk of findAssetTokens(sec.content)) {
+      if (ids.has(tk.id)) return { sectionId: sec.id, assetId: tk.id };
+    }
+  }
+  return null;
+}
+
 /** One asset's controls: number, editable title/caption(/legend), include toggle,
     honest badges, Insert-reference. Text edits are BUFFERED per panel and land
     as per-asset patches through queueAssetPatch (merge-at-flush). */
-function AssetControls({ m, asset, buf, commit, onInsertNotice }) {
+function AssetControls({ m, asset, buf, commit, onInsertNotice, onOpenAsset }) {
   const slug = assetTestSlug(asset.id);
   const ov = (buf && buf[asset.id]) || {};
   const numbering = m.assetNumbering || {};
@@ -2326,6 +2553,8 @@ function AssetControls({ m, asset, buf, commit, onInsertNotice }) {
   const includedNow = typeof ov.included === 'boolean' ? ov.included : (!!asset.included || autoIncluded);
   const patch = (p) => commit(asset.id, p);
   const numLabel = assetNumberLabel(m, asset);
+  // 118.md §65 — null when this object is not in the manuscript text yet.
+  const target = onOpenAsset ? assetManuscriptTarget(m, asset) : null;
   const onInsert = () => {
     const ok = m.insertAssetReference && m.insertAssetReference(asset.id);
     if (onInsertNotice) {
@@ -2364,6 +2593,17 @@ function AssetControls({ m, asset, buf, commit, onInsertNotice }) {
             style={{ ...btnS('ghost'), fontSize: 10.5, padding: '3px 10px', opacity: asset.available ? 1 : 0.5 }}>
             Insert reference
           </button>
+          {/* 118.md §65 — jump to this object where it really lives. Rendered only
+              when there IS somewhere to jump to; the specialized manager and the
+              inline representation are the same entity, never two. */}
+          {target && (
+            <button onClick={() => onOpenAsset(target)}
+              data-testid={`stitch-manuscript-asset-view-${slug}`}
+              title={`Show this ${assetKindLabel(asset.id).toLowerCase()} in the manuscript`}
+              style={{ ...btnS('ghost'), fontSize: 10.5, padding: '3px 10px' }}>
+              View in manuscript
+            </button>
+          )}
         </span>
       </div>
       <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
@@ -2434,7 +2674,7 @@ function useAssetOverridesBuffer(m) {
   return [buf, commit];
 }
 
-export function TablesPanel({ m }) {
+export function TablesPanel({ m, onOpenAsset }) {
   const [buf, commit] = useAssetOverridesBuffer(m);
   const [notice, setNotice] = useState('');
   const tableAssets = (m.assets || []).filter((a) => a.kind === 'table');
@@ -2466,7 +2706,7 @@ export function TablesPanel({ m }) {
                 </div>
               )}
             </div>
-            <AssetControls m={m} asset={asset} buf={buf} commit={commit} onInsertNotice={setNotice} />
+            <AssetControls m={m} asset={asset} buf={buf} commit={commit} onInsertNotice={setNotice} onOpenAsset={onOpenAsset} />
             <div style={{ marginTop: 10 }}>
               {/* 117.md §4 — a manual table's CONTENT lives in the manuscript text.
                   Rendering a second, editable copy here would create a second place
@@ -2487,7 +2727,7 @@ export function TablesPanel({ m }) {
   );
 }
 
-export function FiguresPanel({ m }) {
+export function FiguresPanel({ m, onOpenAsset }) {
   const [buf, commit] = useAssetOverridesBuffer(m);
   const [notice, setNotice] = useState('');
   const svgs = useFigureSvgs(m, { forest: true, prisma: true });
@@ -2527,7 +2767,7 @@ export function FiguresPanel({ m }) {
           <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 10, flexWrap: 'wrap' }}>
             <h3 style={{ margin: 0, fontSize: 13.5, fontWeight: 700, color: C.txt }}>{asset.title}</h3>
           </div>
-          <AssetControls m={m} asset={asset} buf={buf} commit={commit} onInsertNotice={setNotice} />
+          <AssetControls m={m} asset={asset} buf={buf} commit={commit} onInsertNotice={setNotice} onOpenAsset={onOpenAsset} />
           <div style={{ marginTop: 10 }}>{preview(asset)}</div>
         </Card>
       ))}

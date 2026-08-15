@@ -1976,6 +1976,13 @@ export function useManuscript(project, upd) {
 
   return {
     drafts: effectiveDrafts, activeDraft, activeId, setActiveId,
+    /* 118.md §13 — the draft AS THE RESEARCHER SEES IT (pending pre-autosave edits
+       overlaid). Already the basis of every derived view inside this hook; exposed
+       so the panels derive from the same object instead of from a per-view text
+       buffer, which is what makes Section View and Continuous View two renderings
+       of ONE state rather than two copies. Read-only: writes still go through
+       updateSection/setStatement. */
+    liveDraft,
     /* 117.md §J.13 — the COMPOSED state (this hook ∘ the shell's real one) is what
        the pill renders; `shellSaveStatus` is exposed beside it so a panel can name
        the channel without re-deriving the rule. */

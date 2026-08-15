@@ -145,6 +145,8 @@ export const MANUSCRIPT_TOOLBAR_CSS = `
 .ms-toolbar .ms-nav-tab:hover{color:var(--t-txt);}
 .ms-toolbar .ms-nav-tab[data-active="true"]:hover{color:var(--t-acc);}
 .ms-toolbar .ms-tb-action:hover{border-color:var(--t-brd2);color:var(--t-txt);background:var(--t-card2);}
+.ms-toolbar .ms-view-btn:hover{color:var(--t-txt);}
+.ms-toolbar .ms-view-btn[data-active="true"]:hover{color:var(--t-acc);}
 `;
 
 /* ── local hooks ────────────────────────────────────────────────────────────── */
@@ -425,6 +427,111 @@ function OverflowMenu({ children }) {
   );
 }
 
+/* ── 118.md §12: the view switcher ───────────────────────────────────────────── */
+
+/**
+ * 118.md §12 — the two editing views, in the words a non-technical researcher
+ * would use ("Section View" / "Continuous View" are the prompt's own preferred
+ * terms). The tooltip says what each one DOES, because the label alone cannot.
+ */
+export const MANUSCRIPT_VIEWS = [
+  {
+    id: 'sections',
+    label: 'Section View',
+    short: 'Sections',
+    icon: 'layers',
+    title: 'Section View — write one section at a time, with its own tools and status',
+  },
+  {
+    id: 'continuous',
+    label: 'Continuous View',
+    short: 'Continuous',
+    icon: 'fileText',
+    title: 'Continuous View — read and edit the whole manuscript as one scrolling document',
+  },
+];
+
+export const MANUSCRIPT_VIEW_IDS = MANUSCRIPT_VIEWS.map((v) => v.id);
+export const DEFAULT_MANUSCRIPT_VIEW = 'sections';
+
+/** 118.md §12/§47 — an unknown stored/URL value resolves to the default view. */
+export function normalizeManuscriptView(id) {
+  return MANUSCRIPT_VIEW_IDS.includes(id) ? id : DEFAULT_MANUSCRIPT_VIEW;
+}
+
+/**
+ * A segmented control, not two toggle buttons: the two views are mutually
+ * exclusive states of ONE setting, which is what `radiogroup`/`radio` means to a
+ * screen reader (a pair of `aria-pressed` buttons would announce two independent
+ * toggles that can both be off). APG's roving tabindex + arrow keys come with that
+ * role, and are implemented here rather than left as a promise — no modifier
+ * chords, so nothing the editor binds is intercepted (§43).
+ */
+export function ManuscriptViewSwitcher({ view, onChange, condensed = false }) {
+  const current = normalizeManuscriptView(view);
+  const btnRefs = useRef({});
+  const onKeyDown = (e) => {
+    if (e.altKey || e.ctrlKey || e.metaKey || e.shiftKey) return;
+    const i = MANUSCRIPT_VIEW_IDS.indexOf(current);
+    let next = -1;
+    if (e.key === 'ArrowRight' || e.key === 'ArrowDown') next = (i + 1) % MANUSCRIPT_VIEW_IDS.length;
+    else if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') next = (i - 1 + MANUSCRIPT_VIEW_IDS.length) % MANUSCRIPT_VIEW_IDS.length;
+    else if (e.key === 'Home') next = 0;
+    else if (e.key === 'End') next = MANUSCRIPT_VIEW_IDS.length - 1;
+    if (next < 0) return;
+    e.preventDefault();
+    const id = MANUSCRIPT_VIEW_IDS[next];
+    onChange(id);
+    const el = btnRefs.current[id];
+    if (el && el.focus) el.focus();
+  };
+  return (
+    <span
+      role="radiogroup"
+      aria-label="Manuscript view"
+      data-testid="stitch-manuscript-view-switcher"
+      onKeyDown={onKeyDown}
+      style={{
+        display: 'inline-flex', alignItems: 'center', gap: 2, flexShrink: 0,
+        background: C.card2, border: `1px solid ${C.brd}`, borderRadius: 8, padding: 2,
+      }}
+    >
+      {MANUSCRIPT_VIEWS.map((v) => {
+        const active = v.id === current;
+        return (
+          <Tooltip key={v.id} content={v.title} placement="bottom">
+            <button
+              type="button"
+              ref={(el) => { btnRefs.current[v.id] = el; }}
+              role="radio"
+              aria-checked={active ? 'true' : 'false'}
+              tabIndex={active ? 0 : -1}
+              aria-label={v.label}
+              title={v.title}
+              data-testid={`stitch-manuscript-view-${v.id}`}
+              data-active={active ? 'true' : undefined}
+              onClick={() => { if (!active) onChange(v.id); }}
+              className="ms-view-btn"
+              style={{
+                display: 'inline-flex', alignItems: 'center', gap: 5, whiteSpace: 'nowrap',
+                background: active ? C.card : 'transparent',
+                border: `1px solid ${active ? alpha(C.acc, '38') : 'transparent'}`,
+                color: active ? C.acc : C.txt2,
+                borderRadius: 6, padding: condensed ? '0 7px' : '0 9px', height: 24,
+                fontSize: 11, fontWeight: active ? 700 : 600, fontFamily: "'IBM Plex Sans',sans-serif",
+                cursor: 'pointer', letterSpacing: 0.1,
+              }}
+            >
+              <Icon name={v.icon} size={12} />
+              {condensed ? v.short : v.label}
+            </button>
+          </Tooltip>
+        );
+      })}
+    </span>
+  );
+}
+
 /* ── Level B: the underline tab list ─────────────────────────────────────────── */
 
 export function ManuscriptWorkspaceNav({ tab, onTabChange, badge, density = 'full', reduceMotion = false }) {
@@ -699,11 +806,15 @@ export function ManuscriptToolbar({ m, tab, onTabChange, stickyTop = 0, viewSwit
         <ManuscriptWorkspaceNav tab={tab} onTabChange={onTabChange} badge={badge}
           density={density} reduceMotion={reduceMotion} />
         {/* 118.md §12 — RIGHT SLOT: the Section ⇄ Continuous view switcher belongs
-            here and only on the Editor destination. Wave 1 deliberately leaves the
-            slot EMPTY rather than shipping a toggle with one working value — §69
-            ("do not create fake controls"). Wave 2 passes `viewSwitcher`. */}
+            here and only on the Editor destination (it means nothing on the other
+            seven). Wave 1 left the slot EMPTY rather than shipping a toggle with one
+            working value (§69); Wave 2 fills it. The slot takes a NODE or a function
+            of the bar's own density, so the switcher can condense with everything
+            else (§41) without the workspace having to measure the toolbar. */}
         {viewSwitcher && tab === 'editor' && (
-          <span style={{ marginLeft: 'auto', paddingBottom: 6, flexShrink: 0 }}>{viewSwitcher}</span>
+          <span style={{ marginLeft: 'auto', paddingBottom: 6, flexShrink: 0 }}>
+            {typeof viewSwitcher === 'function' ? viewSwitcher({ condensed, density }) : viewSwitcher}
+          </span>
         )}
       </div>
     </div>
