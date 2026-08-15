@@ -14,9 +14,36 @@
  * record to pending — which cleanly updates PRISMA, analysis readiness, and any
  * meta-analysis that used it. A later re-accept restores the snapshot.
  *
+ * ── 117.md §52-§56 — UNDO/REDO ───────────────────────────────────────────────
+ * Every decision made on this page is an undoable domain action on the project-wide
+ * history stack (scope 'screening', shared with the title/abstract workbench — the
+ * sub-tabs are navigation inside one engine, 108.md §16):
+ *
+ *   • a reviewer's full-text vote      → kind 'screening.finalDecision'
+ *   • the leader's include / exclude / return-to-review → kind 'screening.finalize'
+ *
+ * Four rules the wiring exists to satisfy:
+ *   1. ENTRIES ARE RECORDED AT ISSUE TIME with the COMPLETE prior state (108.md
+ *      §8.2/§26), so Ctrl+Z pressed before the first save returns still has
+ *      something to undo — and `recordsRef` is written synchronously with the
+ *      optimistic patch so that undo validates against the truth, not against the
+ *      pre-click row an effect has not refreshed yet.
+ *   2. EXECUTORS RE-VALIDATE AT RUN TIME against `recordsRef` AND against the live
+ *      `access` (leadership can be revoked between an action and its undo), then
+ *      write through THE SAME serialized endpoints the buttons use. The server's
+ *      `expect` compare-and-set is the authority on collaboration races: a 409 comes
+ *      back as an honest refusal, never a clobber.
+ *   3. UNDO NEVER FALSIFIES HISTORY (§56). Every write carries a `via` marker and
+ *      the server appends FINAL_REVIEW_UNDO / FINAL_REVIEW_REDO rows beside the
+ *      original decision instead of rewriting it.
+ *   4. §53's "all dependent systems revert too" is derivation-driven, not a second
+ *      copy of the truth: PRISMA, the counts and the manuscript flow are derived at
+ *      read from `finalStatus`/`rejectedReason`/decisions, and the server pokes
+ *      `handoff.updated` + `record.updated` so the open surfaces refetch.
+ *
  * Props: pid, project, access ({ isLeader, canScreen, ..., blindMode }), refreshProject
  */
-import { useState, useEffect, useCallback, lazy, Suspense } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef, lazy, Suspense } from 'react';
 import { C, FONT, MONO, alpha } from '../ui/theme.js';
 import {
   Loading, ErrorBanner, Button, Badge, DecisionChip, Card, EmptyState, Modal,
@@ -24,12 +51,26 @@ import {
 import { renderAbstract } from '../ui/highlightRender.jsx';
 import PdfViewer from '../components/PdfViewer.jsx';
 import { screeningApi } from '../api-client/screeningApi.js';
+import { SCOPE_SCREENING } from '../../../research-engine/interaction/projectScopes.js';
+import { useProjectHistory } from '../../history/HistoryContext.jsx';
+import { useUndoFeedback } from '../../history/useUndoFeedback.jsx';
+import {
+  SCREENING_KIND, SCREENING_LABEL, FULL_TEXT_STAGE, VIA, FINAL_STATUS,
+  FINAL_REVIEW_NOTE, FINALIZE_REFUSE, UNDECIDED, refusalText, finalizeNote,
+  previousDecision, decisionEntry, decisionPrecondition, decisionAlreadyApplied,
+  finalizeState, finalizeEntry, finalizePrecondition, finalizeAlreadyApplied,
+  finalizeRequest,
+} from '../lib/screeningHistory.js';
 
 // 68.md P9 — full-text retrieval panel, lazy so the flag-off case pulls no chunk.
 const FullTextPanel = lazy(() => import('../../../features/fullText/FullTextPanel.jsx'));
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 const ABSTRACT_CLAMP = 420; // chars before "show more"
+
+/** The refusal shown when this reviewer's screening permission is gone (108.md §8). */
+const DECISION_PERMISSION_REFUSAL =
+  'You no longer have permission to record decisions in this project.';
 
 function parseKeywords(raw) {
   try {
@@ -60,6 +101,38 @@ function statusBadge(rec) {
   return { color: C.teal, label: 'PENDING REVIEW' };
 }
 
+/**
+ * useRecordWrites — 108.md §14. One in-flight write per record, in issue order.
+ *
+ * The forward click, the undo and the redo all target the same row through the same
+ * endpoint, and the history layer only serializes ONE undo per scope — a click landing
+ * during an in-flight undo is not covered by it. Chaining per record makes the server
+ * see the writes in the order the user issued them, and the sequence number lets a
+ * superseded response skip its post-resolve work (a reload/rollback belonging to an
+ * intent the user has already replaced is worse than none).
+ */
+function useRecordWrites() {
+  const seqRef = useRef(null);
+  if (seqRef.current === null) seqRef.current = new Map();
+  const chainRef = useRef(null);
+  if (chainRef.current === null) chainRef.current = new Map();
+
+  const enqueue = useCallback((rid, fn) => {
+    const seq = (seqRef.current.get(rid) || 0) + 1;
+    seqRef.current.set(rid, seq);
+    const prev = chainRef.current.get(rid) || Promise.resolve();
+    const run = prev.then(() => fn());
+    // The chain must survive a rejection, or one failed write would wedge the record.
+    chainRef.current.set(rid, run.then(() => {}, () => {}));
+    return run.then((resp) => ({ resp, current: seqRef.current.get(rid) === seq }));
+  }, []);
+
+  const currentSeq = useCallback((rid) => seqRef.current.get(rid), []);
+  // Stable identity: the executors this feeds are registered in an effect, and an
+  // object rebuilt every render would unregister/re-register them on every render.
+  return useMemo(() => ({ enqueue, currentSeq }), [enqueue, currentSeq]);
+}
+
 // ── Component ─────────────────────────────────────────────────────────────────
 export default function SecondReviewTab({ pid, project, access = {}, refreshProject, onGoToExtraction }) {
   const [data, setData]       = useState(null);
@@ -85,16 +158,69 @@ export default function SecondReviewTab({ pid, project, access = {}, refreshProj
   // prompt23 Task 11 — required-reviewer count follows the project setting, not a 2.
   const quorum = Number(data?.quorum) || Number(project?.requiredScreeningReviewers) || 2;
 
-  const load = useCallback(async () => {
-    setLoading(true);
+  // ── 117.md §52/§55 — project history + the shared undo-feedback queue ────────
+  // Everything below reads through refs: the executors are registered once and must
+  // never close over a render's value (108.md §15).
+  const history = useProjectHistory();
+  const histRef = useRef(history);
+  histRef.current = history;
+  const feedback = useUndoFeedback();
+  const fbRef = useRef(feedback);
+  fbRef.current = feedback;
+  const registerExecutor = history.registerExecutor;
+
+  const accessRef = useRef(access);
+  accessRef.current = access;
+  const finalizingRef = useRef(finalizing);
+  finalizingRef.current = finalizing;
+  // The shell hands this down freshly on some renders; behind a ref so the executors
+  // (registered in an effect) keep a stable identity.
+  const refreshProjectRef = useRef(refreshProject);
+  refreshProjectRef.current = refreshProject;
+
+  /** A plain note on the shared queue, stamped with the live history scope. */
+  const notify = useCallback((note) => fbRef.current.notify({
+    scope: histRef.current.scope || SCOPE_SCREENING, ...note,
+  }), []);
+
+  /**
+   * 117.md §55 — "a subtle visible Undo action after a final-review decision".
+   *
+   * The button IS the history undo, so it and Ctrl+Z are one code path, and it is
+   * ENTRY-TARGETED: an undo-carrying note stays on screen for 8 s while later actions
+   * land on the same stack, so a bare `undo()` would routinely reverse something other
+   * than the action the note names. `undoEntry(id)` runs that one entry while it is
+   * still top-of-stack and otherwise reports 'superseded' without disturbing anything.
+   */
+  const notifyUndoable = useCallback((message, entryId, tone = 'info') => fbRef.current.notify({
+    scope: histRef.current.scope || SCOPE_SCREENING,
+    message, tone, entryId,
+    undo: () => { histRef.current.undoEntry(entryId); },
+  }), []);
+
+  /**
+   * The live record list behind a ref (108.md §15). `recordsRef` is written
+   * SYNCHRONOUSLY by `patchRecord` and by `load`, never by an effect: an executor
+   * re-validates against `recordsRef.current`, and a Ctrl+Z issued in the same tick as
+   * the forward click would otherwise be checked against the pre-click row. Same idiom
+   * as ScreeningTab.patchRecord, and for the same reason.
+   */
+  const recordsRef = useRef([]);
+
+  const decisionWrites = useRecordWrites();
+  const finalWrites = useRecordWrites();
+
+  const load = useCallback(async ({ silent = false } = {}) => {
+    if (!silent) setLoading(true);
     setError(null);
     try {
       const d = await screeningApi.listSecondReview(pid);
+      recordsRef.current = Array.isArray(d?.records) ? d.records : [];
       setData(d);
     } catch (e) {
       setError(e?.message || 'Failed to load final-review records.');
     } finally {
-      setLoading(false);
+      if (!silent) setLoading(false);
     }
   }, [pid]);
 
@@ -106,45 +232,224 @@ export default function SecondReviewTab({ pid, project, access = {}, refreshProj
     return () => clearTimeout(t);
   }, [toast]);
 
-  // ── Mutations ──
-  const handleDecision = useCallback(async (rec, decision) => {
-    if (savingDecision[rec.id]) return;
-    setSavingDecision(prev => ({ ...prev, [rec.id]: decision }));
-    setRowError(prev => ({ ...prev, [rec.id]: '' }));
-    setData(prev => prev && ({
-      ...prev,
-      records: prev.records.map(r =>
-        r.id === rec.id ? { ...r, myDecision: { ...(r.myDecision || {}), decision } } : r),
+  /** Write one row through `recordsRef` AND state in the same call (see recordsRef). */
+  const patchRecord = useCallback((rid, patch) => {
+    const next = recordsRef.current.map(r => (r.id === rid ? { ...r, ...patch(r) } : r));
+    recordsRef.current = next;
+    setData(prev => (prev ? { ...prev, records: next } : prev));
+  }, []);
+
+  /** Optimistically reflect a written full-text decision in the row (stage-stamped). */
+  const applyDecisionRow = useCallback((rid, payload) => {
+    patchRecord(rid, r => ({
+      myDecision: {
+        ...(r.myDecision || {}),
+        decision: payload.decision,
+        exclusionReason: payload.exclusionReason,
+        notes: payload.notes,
+        rating: payload.rating,
+        labels: JSON.stringify(payload.labels || []),
+        // 108.md §4 — the server's `myDecision` is stage-agnostic on other endpoints,
+        // so stamping the stage here keeps `previousDecision` scoped either way.
+        stage: payload.stage || FULL_TEXT_STAGE,
+      },
     }));
+  }, [patchRecord]);
+
+  // ── Reviewer decisions (kind 'screening.finalDecision') ─────────────────────
+  const postDecision = useCallback((rid, payload) => decisionWrites.enqueue(
+    rid, () => screeningApi.saveDecision(pid, rid, payload),
+  ), [pid, decisionWrites]);
+
+  const handleDecision = useCallback(async (rec, decision) => {
+    const rid = rec.id;
+    if (savingDecision[rid]) return;
+    if (!access.canScreen) return;
+    setSavingDecision(prev => ({ ...prev, [rid]: decision }));
+    setRowError(prev => ({ ...prev, [rid]: '' }));
+
+    // 108.md §4 — the COMPLETE prior payload, read from the LIVE row and scoped to
+    // full_text, so the inverse cannot erase the reviewer's notes/rating/labels
+    // (the upsert writes every column unconditionally) and cannot land at the wrong
+    // stage (the server defaults `stage` to rec.currentStage).
+    const live = recordsRef.current.find(r => r.id === rid) || rec;
+    const prev = previousDecision(live, FULL_TEXT_STAGE);
+    const body = { ...prev, decision, stage: FULL_TEXT_STAGE };
+
+    // §8.2/§26 — patch the row and record the entry at ISSUE time.
+    applyDecisionRow(rid, body);
+    const entry = decisionEntry({
+      recordId: rid,
+      stage: FULL_TEXT_STAGE,
+      prev,
+      next: body,
+      currentStage: live.currentStage || FULL_TEXT_STAGE,
+      title: live.title,
+      kind: SCREENING_KIND.FINAL_DECISION,
+      label: SCREENING_LABEL.FINAL_DECISION,
+    });
+    const stamped = entry ? histRef.current.record(entry) : null;
+
+    const inFlight = postDecision(rid, { ...body, via: VIA.USER });
+    const mySeq = decisionWrites.currentSeq(rid);
     try {
-      await screeningApi.saveDecision(pid, rec.id, { decision, stage: 'full_text' });
+      const { current } = await inFlight;
+      if (!current) return;
+      // Resync the reviewer chips / quorum from the server rather than guessing at
+      // another reviewer's row — blind mode strips reviewerId from the wire on
+      // purpose, so there is no honest client-side patch for that list.
+      await load({ silent: true });
+      if (stamped) notifyUndoable(FINAL_REVIEW_NOTE.DECISION, stamped.id);
     } catch (e) {
-      setRowError(prev => ({ ...prev, [rec.id]: e?.message || 'Failed to save decision.' }));
-      await load();
+      // The write never landed, so the optimistic patch is a lie — unless a newer
+      // intent already owns the record. The recorded entry stays: its own
+      // `decisionAlreadyApplied` check reports success rather than accusing a
+      // collaborator of a change this client made and rolled back itself.
+      if (decisionWrites.currentSeq(rid) === mySeq) applyDecisionRow(rid, prev);
+      setRowError(prevErr => ({ ...prevErr, [rid]: e?.message || 'Failed to save decision.' }));
     } finally {
-      setSavingDecision(prev => { const n = { ...prev }; delete n[rec.id]; return n; });
+      setSavingDecision(prevSaving => { const n = { ...prevSaving }; delete n[rid]; return n; });
     }
-  }, [pid, savingDecision, load]);
+  }, [access.canScreen, savingDecision, postDecision, decisionWrites, applyDecisionRow, load, notifyUndoable]);
+
+  /**
+   * 108.md §8/§14/§15 — the full-text decision undo/redo executor.
+   *
+   * Registered under its OWN kind: ScreeningTab's `screening.decision` executor
+   * defaults a stage-less op to 'title_abstract', and both tabs share scope
+   * 'screening', so a shared kind would let whichever tab is mounted execute the
+   * other's entries.
+   */
+  const finalDecisionExecutor = useCallback(async (op, ctx) => {
+    const rid = op && op.recordId;
+    if (!rid || !op.payload) return { ok: false, reason: 'no-executor' };
+    // Re-checked at RUN time: screening permission can be revoked between the
+    // decision and its undo, and the server would answer 403 to a request the UI
+    // should never have sent.
+    if (!accessRef.current.canScreen) {
+      return { ok: false, reason: 'refused', detail: DECISION_PERMISSION_REFUSAL };
+    }
+    const live = recordsRef.current.find(r => r.id === rid) || null;
+    if (decisionAlreadyApplied(live, op)) return true;
+    const refuse = decisionPrecondition(live, op);
+    if (refuse) return { ok: false, reason: 'refused', detail: refusalText(refuse) };
+
+    const stage = op.stage || FULL_TEXT_STAGE;
+    const payload = { ...op.payload, stage };
+    const restore = previousDecision(live, stage);
+    const via = ctx && ctx.direction === 'redo' ? VIA.REDO : VIA.UNDO;
+
+    applyDecisionRow(rid, payload);
+    const inFlight = postDecision(rid, { ...payload, via });
+    const mySeq = decisionWrites.currentSeq(rid);
+    try {
+      const { current } = await inFlight;
+      if (!current) return true;   // a newer intent already owns this record
+    } catch (e) {
+      // A throw reaches the history layer as a PERSISTENCE FAILURE and puts the entry
+      // back on its stack, so the local row has to go back too.
+      if (decisionWrites.currentSeq(rid) === mySeq) applyDecisionRow(rid, restore);
+      throw e;
+    }
+    await load({ silent: true });
+    return true;
+  }, [postDecision, decisionWrites, applyDecisionRow, load]);
+
+  useEffect(
+    () => registerExecutor(SCREENING_KIND.FINAL_DECISION, finalDecisionExecutor),
+    [registerExecutor, finalDecisionExecutor],
+  );
+
+  // ── Leader finalize / exclude / return-to-review (kind 'screening.finalize') ──
+  /**
+   * The ONE forward write path for every final-review state change on this tab —
+   * and the one the executors reuse (108.md §8: an executor is the tail of the
+   * forward path, never a private inverse route). `finalizeRequest` decides which
+   * of the two domain endpoints reaches the requested state.
+   */
+  const writeFinalState = useCallback((rid, op, via) => {
+    const { kind, body } = finalizeRequest(op, via);
+    return finalWrites.enqueue(rid, () => (kind === 'revert'
+      ? screeningApi.revertFinalReview(pid, rid, body)
+      : screeningApi.finalizeRecord(pid, rid, body)));
+  }, [pid, finalWrites]);
+
+  /**
+   * runFinalize(rid, next, opts) → { ok, resp?, entryId?, superseded?, detail? }
+   *
+   * Records the entry and patches the row at ISSUE time, writes through the
+   * serialized path, reloads on success and rolls the row back on failure.
+   */
+  const runFinalize = useCallback(async (rid, next, opts = {}) => {
+    const { restoreSnapshot = true } = opts;
+    const live = recordsRef.current.find(r => r.id === rid) || null;
+    if (!live) return { ok: false, detail: refusalText(FINALIZE_REFUSE.MISSING) };
+    const prev = finalizeState(live);
+    const op = {
+      recordId: rid,
+      target: next,
+      // §54 — the compare-and-set travels with the request; the server is the only
+      // place that can honestly answer "did a collaborator get here first?".
+      expect: { finalStatus: prev.finalStatus },
+      restoreSnapshot,
+    };
+
+    setFinalizing(p => ({ ...p, [rid]: true }));
+    setRowError(p => ({ ...p, [rid]: '' }));
+    patchRecord(rid, () => ({ ...next }));
+    const entry = finalizeEntry({
+      recordId: rid, prev, next,
+      currentStage: live.currentStage || FULL_TEXT_STAGE,
+      title: live.title,
+      restoreSnapshot,
+    });
+    const stamped = entry ? histRef.current.record(entry) : null;
+
+    const inFlight = writeFinalState(rid, op, VIA.USER);
+    const mySeq = finalWrites.currentSeq(rid);
+    try {
+      const { resp, current } = await inFlight;
+      if (!current) return { ok: true, superseded: true };
+      await load({ silent: true });
+      if (refreshProjectRef.current) await refreshProjectRef.current();
+      // 117.md §55 — ONE place decides the visible confirmation, keyed on the state
+      // that was actually reached, so the three call sites cannot drift apart.
+      const message = finalizeNote(next.finalStatus);
+      if (stamped) notifyUndoable(message, stamped.id);
+      else notify({ message });
+      return { ok: true, resp, entryId: stamped ? stamped.id : '' };
+    } catch (e) {
+      if (finalWrites.currentSeq(rid) === mySeq) patchRecord(rid, () => ({ ...prev }));
+      return { ok: false, status: e?.status, detail: e?.message || '' };
+    } finally {
+      setFinalizing(p => { const n = { ...p }; delete n[rid]; return n; });
+    }
+  }, [patchRecord, writeFinalState, finalWrites, load, notify, notifyUndoable]);
 
   const handleAccept = useCallback(async (rec, restoreSnapshot = true) => {
-    if (finalizing[rec.id]) return;
+    if (finalizingRef.current[rec.id]) return;
     setRestoreFor(null);
-    setFinalizing(prev => ({ ...prev, [rec.id]: true }));
-    setRowError(prev => ({ ...prev, [rec.id]: '' }));
-    try {
-      const resp = await screeningApi.finalizeRecord(pid, rec.id, { decision: 'accept', restoreSnapshot });
-      const h = resp?.handoff || {};
+    const out = await runFinalize(
+      rec.id,
+      { finalStatus: FINAL_STATUS.ACCEPTED, rejectedReason: '' },
+      { restoreSnapshot },
+    );
+    if (!out.ok) {
+      setRowError(prev => ({ ...prev, [rec.id]: out.detail || 'Failed to accept record.' }));
+      return;
+    }
+    if (out.superseded) return;
+    // runFinalize has already posted the undoable §55 note ("Article included"). The
+    // local Toast is reserved for what that note cannot say and the user cannot undo:
+    // a handoff that did not reach Data Extraction, or one that restored a previous
+    // extraction.
+    const h = out.resp?.handoff || {};
+    if (h.handoffStatus !== 'sent' || h.restored) {
       const kind = h.handoffStatus === 'sent' ? 'ok' : h.handoffStatus === 'failed' ? 'err' : 'info';
       const restored = h.restored ? ' (previous extraction restored)' : '';
       setToast({ kind, text: (h.message || (h.handed ? 'Sent to Data Extraction.' : 'Record accepted.')) + restored });
-      await load();
-      if (refreshProject) await refreshProject();
-    } catch (e) {
-      setRowError(prev => ({ ...prev, [rec.id]: e?.message || 'Failed to accept record.' }));
-    } finally {
-      setFinalizing(prev => { const n = { ...prev }; delete n[rec.id]; return n; });
     }
-  }, [pid, finalizing, load, refreshProject]);
+  }, [runFinalize]);
 
   // Re-accepting a record that was previously reverted: offer restore vs start fresh.
   const requestAccept = useCallback((rec) => {
@@ -153,8 +458,10 @@ export default function SecondReviewTab({ pid, project, access = {}, refreshProj
   }, [handleAccept]);
 
   // Retry the Data Extraction send for an accepted record (e.g. linked later).
+  // NOT undoable and NOT a decision — it re-attempts a delivery that already has a
+  // recorded decision behind it, so it keeps the plain Toast.
   const handleRetryHandoff = useCallback(async (rec) => {
-    if (finalizing[rec.id]) return;
+    if (finalizingRef.current[rec.id]) return;
     setFinalizing(prev => ({ ...prev, [rec.id]: true }));
     setRowError(prev => ({ ...prev, [rec.id]: '' }));
     try {
@@ -162,54 +469,105 @@ export default function SecondReviewTab({ pid, project, access = {}, refreshProj
       const h = resp?.handoff || {};
       const kind = h.handoffStatus === 'sent' ? 'ok' : h.handoffStatus === 'failed' ? 'err' : 'info';
       setToast({ kind, text: h.message || 'Send retried.' });
-      await load();
-      if (refreshProject) await refreshProject();
+      await load({ silent: true });
+      if (refreshProjectRef.current) await refreshProjectRef.current();
     } catch (e) {
       setRowError(prev => ({ ...prev, [rec.id]: e?.message || 'Failed to retry send.' }));
     } finally {
       setFinalizing(prev => { const n = { ...prev }; delete n[rec.id]; return n; });
     }
-  }, [pid, finalizing, load, refreshProject]);
+  }, [pid, load]);
 
   const submitReject = useCallback(async () => {
     const rec = rejectFor;
     if (!rec) return;
-    setFinalizing(prev => ({ ...prev, [rec.id]: true }));
-    setRowError(prev => ({ ...prev, [rec.id]: '' }));
-    try {
-      await screeningApi.finalizeRecord(pid, rec.id, { decision: 'reject', reason: rejectReason.trim() });
-      setToast({ kind: 'info', text: 'Record excluded at final review.' });
-      setRejectFor(null);
-      setRejectReason('');
-      await load();
-      if (refreshProject) await refreshProject();
-    } catch (e) {
-      setRowError(prev => ({ ...prev, [rec.id]: e?.message || 'Failed to exclude record.' }));
-    } finally {
-      setFinalizing(prev => { const n = { ...prev }; delete n[rec.id]; return n; });
+    const out = await runFinalize(rec.id, {
+      finalStatus: FINAL_STATUS.REJECTED,
+      rejectedReason: rejectReason.trim(),
+    });
+    if (!out.ok) {
+      setRowError(prev => ({ ...prev, [rec.id]: out.detail || 'Failed to exclude record.' }));
+      return;
     }
-  }, [pid, rejectFor, rejectReason, load, refreshProject]);
+    setRejectFor(null);
+    setRejectReason('');
+  }, [rejectFor, rejectReason, runFinalize]);
 
-  // Revert a sent record back to pending Final Review (removes it from active
-  // Data Extraction; the server snapshots it so a re-accept restores it).
+  // Return a finalized record to pending Final Review. For an ACCEPTED record this
+  // also removes it from active Data Extraction (the server snapshots it so a
+  // re-accept restores it); for an EXCLUDED one it simply drops the status and the
+  // recorded reason (117.md §52).
   const submitRevert = useCallback(async () => {
     const rec = revertFor;
     if (!rec) return;
-    setFinalizing(prev => ({ ...prev, [rec.id]: true }));
-    setRowError(prev => ({ ...prev, [rec.id]: '' }));
-    try {
-      const resp = await screeningApi.revertFinalReview(pid, rec.id);
-      const removed = resp?.reverted?.removedFromExtraction;
-      setToast({ kind: 'info', text: removed ? 'Returned to Final Review and removed from Data Extraction.' : 'Returned to Final Review.' });
-      setRevertFor(null);
-      await load();
-      if (refreshProject) await refreshProject();
-    } catch (e) {
-      setRowError(prev => ({ ...prev, [rec.id]: e?.message || 'Failed to revert record.' }));
-    } finally {
-      setFinalizing(prev => { const n = { ...prev }; delete n[rec.id]; return n; });
+    const out = await runFinalize(rec.id, {
+      finalStatus: FINAL_STATUS.PENDING, rejectedReason: '',
+    });
+    if (!out.ok) {
+      setRowError(prev => ({ ...prev, [rec.id]: out.detail || 'Failed to revert record.' }));
+      return;
     }
-  }, [pid, revertFor, load, refreshProject]);
+    setRevertFor(null);
+    if (out.superseded) return;
+    if (out.resp?.reverted?.removedFromExtraction) {
+      setToast({ kind: 'info', text: 'Removed from Data Extraction — the extracted data is kept and restored if you send it again.' });
+    }
+  }, [revertFor, runFinalize]);
+
+  /**
+   * 117.md §52/§54 — the finalize undo/redo executor.
+   *
+   * Re-validates against the CURRENT row read from `recordsRef` AND against the live
+   * `access` (leadership can be revoked between the action and its undo), then writes
+   * through the same serialized `writeFinalState` every button uses. The server's 409
+   * compare-and-set becomes a refusal with the server's own sentence.
+   */
+  const finalizeExecutor = useCallback(async (op, ctx) => {
+    const rid = op && op.recordId;
+    if (!rid || !op.target) return { ok: false, reason: 'no-executor' };
+    const acc = accessRef.current || {};
+    if (!acc.isLeader && !acc.canResolveConflicts) {
+      return { ok: false, reason: 'refused', detail: refusalText(FINALIZE_REFUSE.PERMISSION) };
+    }
+    const live = recordsRef.current.find(r => r.id === rid) || null;
+    // Already there (a failed forward write that was rolled back) — the goal is met.
+    if (finalizeAlreadyApplied(live, op)) return true;
+    const refuse = finalizePrecondition(live, op);
+    if (refuse) return { ok: false, reason: 'refused', detail: refusalText(refuse) };
+
+    const restore = finalizeState(live);
+    const via = ctx && ctx.direction === 'redo' ? VIA.REDO : VIA.UNDO;
+    setFinalizing(p => ({ ...p, [rid]: true }));
+    patchRecord(rid, () => ({ ...op.target }));
+    const inFlight = writeFinalState(rid, op, via);
+    const mySeq = finalWrites.currentSeq(rid);
+    try {
+      const { current } = await inFlight;
+      if (!current) return true;
+    } catch (e) {
+      if (finalWrites.currentSeq(rid) === mySeq) patchRecord(rid, () => ({ ...restore }));
+      // 409 = the stored record no longer holds the status this op expected. That is
+      // a REFUSAL (the entry goes back on its stack and the user is told why), not a
+      // persistence failure — and the server's sentence is the accurate one.
+      if (e && e.status === 409) {
+        return { ok: false, reason: 'refused', detail: e.message || refusalText(FINALIZE_REFUSE.STATUS) };
+      }
+      if (e && e.status === 403) {
+        return { ok: false, reason: 'refused', detail: refusalText(FINALIZE_REFUSE.PERMISSION) };
+      }
+      throw e;
+    } finally {
+      setFinalizing(p => { const n = { ...p }; delete n[rid]; return n; });
+    }
+    await load({ silent: true });
+    if (refreshProjectRef.current) await refreshProjectRef.current();
+    return true;
+  }, [patchRecord, writeFinalState, finalWrites, load]);
+
+  useEffect(
+    () => registerExecutor(SCREENING_KIND.FINALIZE, finalizeExecutor),
+    [registerExecutor, finalizeExecutor],
+  );
 
   // ── Loading / error ──
   if (loading && !data) {
@@ -243,6 +601,8 @@ export default function SecondReviewTab({ pid, project, access = {}, refreshProj
     { key: 'sent',    label: 'Sent to Data Extraction',     count: sentRecords.length },
   ];
 
+  const revertWasAccepted = revertFor?.finalStatus === 'accepted';
+
   return (
     <div style={{ fontFamily: FONT, color: C.txt, animation: 'sift-fade 0.3s ease', maxWidth: 1400, position: 'relative' }}>
 
@@ -271,6 +631,7 @@ export default function SecondReviewTab({ pid, project, access = {}, refreshProj
             inclusion decision. {access.isLeader
               ? 'Accept studies to send them to Data Extraction, or exclude them with a documented reason.'
               : 'Cast your final-review decision; the project leader makes the final call.'}
+            {' '}Any decision here can be undone with Ctrl+Z (⌘Z on macOS).
           </div>
         </div>
       </div>
@@ -406,11 +767,13 @@ export default function SecondReviewTab({ pid, project, access = {}, refreshProj
         </Modal>
       )}
 
-      {/* Revert (return to Final Review) confirmation — explains downstream effects */}
+      {/* Return-to-Final-Review confirmation — explains downstream effects. The
+          accepted case withdraws a study from Data Extraction; the excluded case
+          only reopens the decision (117.md §52), so it must not claim otherwise. */}
       {revertFor && (
         <Modal onClose={() => { if (!finalizing[revertFor.id]) setRevertFor(null); }} width={480}>
           <div style={{ fontSize: 15, fontWeight: 700, color: C.txt, marginBottom: 6 }}>
-            Return to Final Review?
+            {revertWasAccepted ? 'Return to Final Review?' : 'Reopen this final decision?'}
           </div>
           <div style={{
             fontSize: 12.5, color: C.txt2, lineHeight: 1.5, marginBottom: 14,
@@ -423,16 +786,33 @@ export default function SecondReviewTab({ pid, project, access = {}, refreshProj
             fontSize: 12.5, color: C.txt2, lineHeight: 1.65, background: C.surf,
             border: `1px solid ${alpha(C.gold, '40')}`, borderRadius: 8, padding: '11px 13px', marginBottom: 16,
           }}>
-            This removes the study from active <strong style={{ color: C.txt }}>Data Extraction</strong> and returns
-            the record to pending Final Review. Downstream updates automatically:
-            <ul style={{ margin: '8px 0 0', paddingLeft: 18 }}>
-              <li>PRISMA flow counts</li>
-              <li>Data Extraction &amp; analysis readiness</li>
-              <li>any meta-analysis that used this study may need to be re-run</li>
-            </ul>
-            <div style={{ marginTop: 8, color: C.grn }}>
-              Extracted data is kept and restored automatically if you send it again.
-            </div>
+            {revertWasAccepted ? (
+              <>
+                This removes the study from active <strong style={{ color: C.txt }}>Data Extraction</strong> and returns
+                the record to pending Final Review. Downstream updates automatically:
+                <ul style={{ margin: '8px 0 0', paddingLeft: 18 }}>
+                  <li>PRISMA flow counts</li>
+                  <li>Data Extraction &amp; analysis readiness</li>
+                  <li>any meta-analysis that used this study may need to be re-run</li>
+                </ul>
+                <div style={{ marginTop: 8, color: C.grn }}>
+                  Extracted data is kept and restored automatically if you send it again.
+                </div>
+              </>
+            ) : (
+              <>
+                This returns the record to pending Final Review and clears the recorded
+                exclusion reason. Downstream updates automatically:
+                <ul style={{ margin: '8px 0 0', paddingLeft: 18 }}>
+                  <li>PRISMA flow counts and the exclusion-reason breakdown</li>
+                  <li>the excluded-at-full-text totals in the manuscript</li>
+                </ul>
+                <div style={{ marginTop: 8, color: C.txt2 }}>
+                  The original exclusion stays in the project audit trail — reopening it
+                  is recorded as its own entry, not as a deletion.
+                </div>
+              </>
+            )}
           </div>
           {rowError[revertFor.id] && (
             <div style={{ fontSize: 12, color: C.red, marginBottom: 10 }}>{rowError[revertFor.id]}</div>
@@ -442,7 +822,11 @@ export default function SecondReviewTab({ pid, project, access = {}, refreshProj
               onClick={() => setRevertFor(null)}>Cancel</Button>
             <Button variant="primary" disabled={!!finalizing[revertFor.id]}
               style={{ background: C.gold, color: C.bg }}
-              onClick={submitRevert}>{finalizing[revertFor.id] ? 'Reverting…' : 'Return to Final Review'}</Button>
+              onClick={submitRevert}>
+              {finalizing[revertFor.id]
+                ? 'Reverting…'
+                : (revertWasAccepted ? 'Return to Final Review' : 'Reopen for Final Review')}
+            </Button>
           </div>
         </Modal>
       )}
@@ -481,7 +865,8 @@ function RecordCard({
   const sb = statusBadge(rec);
   const isPending = !rec.finalStatus;
   const sent = isSent(rec);
-  const myDecision = rec.myDecision?.decision || null;
+  const myDecision = rec.myDecision?.decision && rec.myDecision.decision !== UNDECIDED
+    ? rec.myDecision.decision : null;
 
   const abstract = rec.abstract || '';
   const isLong = abstract.length > ABSTRACT_CLAMP;
@@ -685,6 +1070,21 @@ function RecordCard({
           <Button variant="ghost" disabled={finalizing} onClick={() => onRevert(rec)}
             title="Return to pending Final Review (safe — extracted data is kept and restorable)">
             {finalizing ? 'Working…' : '↩ Return to Final Review'}
+          </Button>
+        </div>
+      )}
+
+      {/* 117.md §52 — an EXCLUDED record is reversible too. Ctrl+Z covers the decision
+          the leader just made; this covers the one made last week, which is the same
+          domain action and now has the same server-side inverse. */}
+      {rec.finalStatus === 'rejected' && access.isLeader && (
+        <div style={{ borderTop: `1px solid ${C.brd}`, paddingTop: 14, marginTop: 14, display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+          <span style={{ fontSize: 12, color: C.txt2 }}>
+            This record is excluded at final review.
+          </span>
+          <Button variant="ghost" disabled={finalizing} onClick={() => onRevert(rec)}
+            title="Reopen this record for Final Review (the exclusion stays in the audit trail)">
+            {finalizing ? 'Working…' : '↩ Reopen for Final Review'}
           </Button>
         </div>
       )}

@@ -196,10 +196,20 @@ export const screeningApi = {
 
   // Second Review / Final Review (Part 3; prompt21)
   listSecondReview: (pid)            => req('GET',  `/projects/${pid}/second-review`),
+  // 117.md §52/§54/§56 — body { decision:'accept'|'reject', reason?, restoreSnapshot? }
+  // plus two OPTIONAL fields the undo system adds:
+  //   expect: { finalStatus }  compare-and-set — 409 (thrown, .status 409) when the
+  //                            stored record no longer holds that status
+  //   via:    'user'|'undo'|'redo'  claimed provenance; an undo/redo replay is audited
+  //                            as FINAL_REVIEW_UNDO / FINAL_REVIEW_REDO, never by
+  //                            rewriting the original row (§56)
   finalizeRecord:   (pid, rid, body) => req('POST', `/projects/${pid}/records/${rid}/finalize`, body),
   retryHandoff:     (pid, rid)       => req('POST', `/projects/${pid}/records/${rid}/handoff/retry`),
-  // Revert a "sent to Data Extraction" final-review decision (safe; restorable).
-  revertFinalReview:(pid, rid)       => req('POST', `/projects/${pid}/records/${rid}/final-review/revert`),
+  // Return a finalized record to pending Final Review — the inverse of BOTH final
+  // decisions since 117.md §52 (an accepted record leaves Data Extraction with its
+  // extracted data snapshotted; a rejected one simply loses its status and reason).
+  // Body is optional and accepts the same `expect` / `via` fields as finalizeRecord.
+  revertFinalReview:(pid, rid, body) => req('POST', `/projects/${pid}/records/${rid}/final-review/revert`, body || {}),
 
   // Chat (Part 6) — polling via ?since
   listChat: (pid, since) => req('GET', `/projects/${pid}/chat${since ? '?since=' + encodeURIComponent(since) : ''}`),

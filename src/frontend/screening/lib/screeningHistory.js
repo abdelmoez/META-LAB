@@ -48,6 +48,18 @@ import {
 export const SCREENING_KIND = Object.freeze({
   DECISION: 'screening.decision',
   KEYWORD: 'screening.keyword',
+  // 117.md §52 — Final Review. TWO kinds, deliberately: a reviewer's full-text vote
+  // and the leader's include/exclude verdict are different domain actions with
+  // different inverses, different permissions and different audit rows.
+  //
+  // FINAL_DECISION is NOT `screening.decision`. That kind's executor lives in
+  // ScreeningTab and hard-codes SCREENING_STAGE ('title_abstract') as its stage
+  // fallback; both tabs share scope 'screening', so reusing the kind would let
+  // whichever tab happens to be mounted execute the other's entries — and the
+  // title/abstract executor writing a full-text entry is precisely the phantom-stage
+  // write the 108 stage trap is about.
+  FINAL_DECISION: 'screening.finalDecision',
+  FINALIZE: 'screening.finalize',
 });
 
 /**
@@ -57,11 +69,22 @@ export const SCREENING_KIND = Object.freeze({
  */
 export const SCREENING_LABEL = Object.freeze({
   DECISION: 'Screening decision',
+  FINAL_DECISION: 'Final-review decision',
+  FINALIZE: 'Final decision',
   KEYWORD_ADD: 'Keyword addition',
   KEYWORD_REMOVE: 'Keyword deletion',
   KEYWORD_MOVE: 'Keyword move',
   KEYWORD_REVIEW: 'Keyword suggestion review',
 });
+
+/** The stage Final Review writes at — never defaulted, never inferred (trap 1). */
+export const FULL_TEXT_STAGE = 'full_text';
+
+/** 117.md §56 — the claimed-provenance marker every Final Review write carries. */
+export const VIA = Object.freeze({ USER: 'user', UNDO: 'undo', REDO: 'redo' });
+
+/** ScreenRecord.finalStatus — '' is PENDING, and it is a real value, not an absence. */
+export const FINAL_STATUS = Object.freeze({ PENDING: '', ACCEPTED: 'accepted', REJECTED: 'rejected' });
 
 /** Why a decision undo/redo was refused. Surfaced as `detail` on the outcome. */
 export const DECISION_REFUSE = Object.freeze({
@@ -166,14 +189,21 @@ export function samePayload(a, b) {
  * action wrote; a redo expects it to carry the one it replaced. Both expect the
  * record's stage to be unchanged — a promotion cannot be reversed (there is no
  * demotion path in the server), so undoing across one is refused rather than faked.
+ *
+ * 117.md §52 — `kind`/`label` are parameters because Final Review records the SAME
+ * op shape at stage 'full_text' but must own a SEPARATE executor: both tabs live in
+ * scope 'screening', and ScreeningTab's executor falls back to 'title_abstract'
+ * whenever an op arrives without a stage. Sharing the kind would hand full-text
+ * entries to the title/abstract executor, which is the stage trap with extra steps.
+ * `entityKey` already carried the stage, so coalescing/identity are unaffected.
  */
-export function decisionEntry({ recordId, stage, prev, next, currentStage, title }) {
+export function decisionEntry({ recordId, stage, prev, next, currentStage, title, kind, label }) {
   if (!recordId || !prev || !next) return null;
   if (samePayload(prev, next)) return null;
   const expectStage = currentStage || stage;
   return {
-    kind: SCREENING_KIND.DECISION,
-    label: SCREENING_LABEL.DECISION,
+    kind: kind || SCREENING_KIND.DECISION,
+    label: label || SCREENING_LABEL.DECISION,
     entityKey: `decision:${recordId}:${stage}`,
     undoOp: {
       recordId,
@@ -235,6 +265,175 @@ export function decisionPrecondition(record, op) {
 export function decisionAlreadyApplied(record, op) {
   if (!record || !op || !op.payload) return false;
   return samePayload(previousDecision(record, op.stage), op.payload);
+}
+
+/* ── Final Review: the leader's include/exclude verdict (117.md §52-§56) ──────── */
+
+/** Why a finalize undo/redo was refused. These strings are shown to the user. */
+export const FINALIZE_REFUSE = Object.freeze({
+  MISSING: 'record-missing',
+  STAGE: 'stage-moved',
+  STATUS: 'status-changed',
+  PERMISSION: 'permission-lost',
+});
+
+/**
+ * 117.md §52 + 108.md §8 — refusal DETAIL becomes the note verbatim (historyNote), so
+ * every reason a Final Review executor can refuse for is written as a sentence for the
+ * reviewer rather than as the machine code the executor reasons with.
+ */
+const REFUSAL_TEXT = Object.freeze({
+  [FINALIZE_REFUSE.MISSING]: 'That record is no longer in this list — reload Final Review to see its current state.',
+  [FINALIZE_REFUSE.STAGE]: 'That record has moved to another review stage — its final decision can no longer be undone here.',
+  [FINALIZE_REFUSE.STATUS]: 'The final decision on that record changed since — reload to see the current state.',
+  [FINALIZE_REFUSE.PERMISSION]: 'Only the project leader can change a final decision.',
+  [DECISION_REFUSE.MISSING]: 'That record is no longer in this list — reload Final Review to see its current state.',
+  [DECISION_REFUSE.STAGE]: 'That record has moved to another review stage — this decision can no longer be undone.',
+  [DECISION_REFUSE.DECISION]: 'Your final-review decision on that record changed since — reload to see the current state.',
+});
+
+/** The user-facing sentence for a refusal code. Unknown codes degrade to the generic. */
+export function refusalText(code) {
+  return REFUSAL_TEXT[code] || '';
+}
+
+/**
+ * 117.md §55 — the visible-undo copy. The prompt's example toast reads
+ * "Article excluded — **Undo**"; the bold half is the snackbar's own Undo button
+ * (KeywordSnackbar renders one whenever the note carries an `undo`), so the MESSAGE is
+ * the sentence and the affordance is the button. Spelling "— Undo" into the message
+ * too would render the word twice.
+ */
+export const FINAL_REVIEW_NOTE = Object.freeze({
+  INCLUDED: 'Article included',
+  EXCLUDED: 'Article excluded',
+  REOPENED: 'Returned to Final Review',
+  DECISION: 'Final-review decision saved',
+});
+
+/** The note a completed forward finalize posts, per resulting status. */
+export function finalizeNote(finalStatus) {
+  if (finalStatus === FINAL_STATUS.ACCEPTED) return FINAL_REVIEW_NOTE.INCLUDED;
+  if (finalStatus === FINAL_STATUS.REJECTED) return FINAL_REVIEW_NOTE.EXCLUDED;
+  return FINAL_REVIEW_NOTE.REOPENED;
+}
+
+/**
+ * finalizeState — the COMPLETE final-review state of a record.
+ *
+ * Both columns travel together for the same reason a decision payload is complete
+ * (trap 2): `rejectedReason` is not derivable from `finalStatus`, and an inverse that
+ * restored only the status would leave "Reason: wrong population" on a record that is
+ * no longer excluded — which the exclusion-reason breakdown, the export and the
+ * inspector all read.
+ */
+export function finalizeState(record) {
+  const r = record && typeof record === 'object' ? record : {};
+  return {
+    finalStatus: typeof r.finalStatus === 'string' ? r.finalStatus : '',
+    rejectedReason: typeof r.rejectedReason === 'string' ? r.rejectedReason : '',
+  };
+}
+
+/** Two final-review states describe the same domain state (108.md §12 — no no-ops). */
+export function sameFinalizeState(a, b) {
+  if (!a || !b) return false;
+  return sameField(a.finalStatus, b.finalStatus) && sameField(a.rejectedReason, b.rejectedReason);
+}
+
+/**
+ * finalizeEntry — the history entry for one leader finalize (accept / exclude /
+ * return-to-review), or null when nothing changed.
+ *
+ * The op is "put this record into THIS final-review state", both directions, which is
+ * what makes undo and redo the same executor and the same three endpoints the buttons
+ * use. `expect.finalStatus` is re-validated locally AND sent to the server as a
+ * compare-and-set, so a collaborator's verdict produces a refusal, never a clobber.
+ *
+ * `restoreSnapshot` rides on the ACCEPT side only. Undoing back to 'accepted' always
+ * restores (the extracted data is the thing worth keeping); redoing an accept replays
+ * the operator's original restore-vs-start-fresh choice.
+ */
+export function finalizeEntry({ recordId, prev, next, currentStage, title, restoreSnapshot }) {
+  if (!recordId || !prev || !next) return null;
+  if (sameFinalizeState(prev, next)) return null;
+  const stage = currentStage || FULL_TEXT_STAGE;
+  return {
+    kind: SCREENING_KIND.FINALIZE,
+    label: SCREENING_LABEL.FINALIZE,
+    entityKey: `finalize:${recordId}`,
+    undoOp: {
+      recordId,
+      target: { ...prev },
+      expect: { finalStatus: next.finalStatus || '', currentStage: stage },
+      restoreSnapshot: true,
+    },
+    redoOp: {
+      recordId,
+      target: { ...next },
+      expect: { finalStatus: prev.finalStatus || '', currentStage: stage },
+      restoreSnapshot: restoreSnapshot !== false,
+    },
+    meta: { recordId, title: typeof title === 'string' ? title : '', status: next.finalStatus || '' },
+  };
+}
+
+/**
+ * finalizePrecondition — may this finalize op still be applied? null when it may.
+ *
+ * Read the record from the LIVE list at execute time (108.md §15). This check is not
+ * the whole defence — the server's `expect` is — but it is not vacuous either: the tab
+ * reloads the list after every write and on every `handoff.updated` poke, so a
+ * collaborator's verdict is usually visible here before the request is even sent.
+ */
+export function finalizePrecondition(record, op) {
+  if (!record) return FINALIZE_REFUSE.MISSING;
+  const expect = (op && op.expect) || {};
+  if (expect.currentStage && record.currentStage && record.currentStage !== expect.currentStage) {
+    return FINALIZE_REFUSE.STAGE;
+  }
+  if (finalizeState(record).finalStatus !== (expect.finalStatus || '')) return FINALIZE_REFUSE.STATUS;
+  return null;
+}
+
+/**
+ * finalizeAlreadyApplied — the record already holds exactly what this op would write.
+ * Reported as SUCCESS, never as a conflict: the forward write is recorded optimistically
+ * (§26) and a failed one is rolled back to the very state its undo wanted to restore.
+ */
+export function finalizeAlreadyApplied(record, op) {
+  if (!record || !op || !op.target) return false;
+  return sameFinalizeState(finalizeState(record), op.target);
+}
+
+/**
+ * finalizeRequest(op, via) → { kind:'finalize'|'revert', body }.
+ *
+ * WHICH domain endpoint reaches `op.target`, and with what body — the same two
+ * endpoints the leader's own buttons call (108.md §8: an executor is the tail of the
+ * forward write path, never a private inverse route).
+ *
+ *   target 'accepted' → POST /finalize {decision:'accept'}
+ *   target 'rejected' → POST /finalize {decision:'reject', reason}
+ *   target ''         → POST /final-review/revert
+ *
+ * `via` is the §56 provenance marker; `expect` is the §54 compare-and-set. Pure.
+ */
+export function finalizeRequest(op, via = VIA.USER) {
+  const target = (op && op.target) || {};
+  const status = typeof target.finalStatus === 'string' ? target.finalStatus : '';
+  const marker = (via === VIA.UNDO || via === VIA.REDO) ? via : VIA.USER;
+  const body = { via: marker };
+  if (op && op.expect && typeof op.expect.finalStatus === 'string') {
+    body.expect = { finalStatus: op.expect.finalStatus };
+  }
+  if (status === FINAL_STATUS.ACCEPTED) {
+    return { kind: 'finalize', body: { ...body, decision: 'accept', restoreSnapshot: op.restoreSnapshot !== false } };
+  }
+  if (status === FINAL_STATUS.REJECTED) {
+    return { kind: 'finalize', body: { ...body, decision: 'reject', reason: target.rejectedReason || '' } };
+  }
+  return { kind: 'revert', body };
 }
 
 /* ── Keywords ─────────────────────────────────────────────────────────────────── */

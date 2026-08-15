@@ -176,16 +176,20 @@ export function shouldReloadForRecordPoke(ev, screenProjectId) {
 }
 
 /**
- * 116.md §10 (r2) — may this row's final decision be reverted?
+ * 116.md §10 (r2) / 117.md §52 — may this row's final decision be reverted?
  *
- * revertFinalReview returns 400 "Only an accepted record can be reverted from Data
- * Extraction" for anything else, so rendering the button on every finalized record
- * (rejected ones included) made a guaranteed failure one click away — and the
- * inspector had no error surface to report it. SecondReviewTab gates on exactly this.
+ * The rule is still "no button that is guaranteed to 400": the endpoint accepts only
+ * a FINALIZED record, and an unfinalized one has nothing to revert. What changed is
+ * the endpoint. Before 117.md §52 it took accepted records ONLY, so offering the
+ * button on an excluded report was a guaranteed failure; §52 made the exclusion
+ * reversible too (that is the whole point of "users must be able to undo an
+ * exclude"), so refusing to render it here would now be the surface hiding a
+ * capability the domain has. SecondReviewTab gates on exactly this.
  * Pure.
  */
 export function canRevertFinal(row, canFinalize) {
-  return !!(canFinalize && row && row.finalStatus === 'accepted');
+  if (!canFinalize || !row) return false;
+  return row.finalStatus === 'accepted' || row.finalStatus === 'rejected';
 }
 
 /**

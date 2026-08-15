@@ -13,8 +13,60 @@ import { getProjectAccess, writeAudit } from '../screening/access.js';
 import { getMetaSiftSettings } from '../screening/settings.js';
 import { mkStudy } from '../../src/research-engine/project-model/defaults.js';
 import { emitToProjectMembers, emitToMetaLabProject } from '../realtime/bus.js';
+// 117.md §56/§88 — the `via` marker + the ledger rows an undo/redo replay appends.
+import { normalizeFinalReviewVia, finalReviewAuditRow } from '../screening/finalReviewAudit.js';
 
 const normTitle = s => String(s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+
+/**
+ * 117.md §52/§54 — the compare-and-set the undo/redo executors send.
+ *
+ * A history executor re-validates against its own client's copy of the record, which
+ * is exactly the copy a collaborator's write does not appear in. `{ expect:
+ * { finalStatus } }` moves the check to where the truth lives: the stored row is
+ * compared before anything is written, and a mismatch is a 409 the executor turns into
+ * an honest refusal ("changed by a collaborator") instead of a silent clobber.
+ *
+ * OPTIONAL by construction — a body without `expect` behaves exactly as it did before,
+ * so every pre-117 client (and the plain UI buttons) is unaffected.
+ */
+export const FINAL_REVIEW_CONFLICT_MESSAGE =
+  'The final decision on this record changed since — reload to see the current state.';
+
+/**
+ * finalStatusMismatch(rec, body) → true when an `expect` was sent and does not match.
+ * Exported for the controller unit suite. Pure.
+ */
+export function finalStatusMismatch(rec, body) {
+  const expect = body && typeof body === 'object' ? body.expect : null;
+  if (!expect || typeof expect !== 'object') return false;
+  if (typeof expect.finalStatus !== 'string') return false;
+  return String(rec && rec.finalStatus ? rec.finalStatus : '') !== expect.finalStatus;
+}
+
+/** The 409 body both clients read (screeningApi surfaces `error`; the inspector `message`). */
+function conflict(res, rec) {
+  return res.status(409).json({
+    error: FINAL_REVIEW_CONFLICT_MESSAGE,
+    message: FINAL_REVIEW_CONFLICT_MESSAGE,
+    conflict: true,
+    record: rec ? { id: rec.id, finalStatus: rec.finalStatus || '', rejectedReason: rec.rejectedReason || '' } : null,
+  });
+}
+
+/**
+ * 117.md §53 — "All dependent systems should revert too … PRISMA, counts, manuscript
+ * flow". Nothing is stored twice: the PRISMA engine DERIVES the flow at read from
+ * `finalStatus`/`rejectedReason`, so reverting the record IS reverting the diagram —
+ * provided the open surfaces are told to refetch. `handoff.updated` drives the
+ * screening shells; `record.updated` is what PrismaFlowDiagram / PrismaInspector
+ * subscribe to (116.md §10), and finalize/revert change the very columns the flow
+ * projection reads. Both pokes carry ids only (global invariant 8).
+ */
+function pokeFinalReview(projectId, recordId, actorId) {
+  emitToProjectMembers(projectId, { type: 'handoff.updated' }, { exclude: actorId });
+  emitToProjectMembers(projectId, { type: 'record.updated', ids: [recordId] }, { exclude: actorId });
+}
 
 /**
  * Translate a handoffToMetaLab() result into a persisted handoff status +
@@ -149,6 +201,11 @@ export async function listSecondReview(req, res) {
         // authors). Suppress both to honor blind mode on the wire, not just the UI.
         id: r.id, title: r.title, authors: blind ? '' : r.authors, year: r.year, journal: blind ? '' : r.journal,
         doi: r.doi, pmid: r.pmid, abstract: r.abstract,
+        // 117.md §52 — the undo preconditions pin the record's STAGE (108.md §4: a
+        // promotion is a one-way ratchet, so an entry recorded at one stage must not
+        // be replayed at another). The column was never on the wire here, which made
+        // both stage checks silently inert on this tab.
+        currentStage: r.currentStage,
         finalStatus: r.finalStatus, rejectedReason: r.rejectedReason,
         acceptedAt: r.acceptedAt, promotedAt: r.promotedAt, promotedVia: r.promotedVia,
         handoffStatus: r.handoffStatus, handoffError: r.handoffError,
@@ -193,16 +250,20 @@ export async function finalizeRecord(req, res) {
     if (!['accept', 'reject'].includes(decision)) {
       return res.status(400).json({ error: "decision must be 'accept' or 'reject'" });
     }
+    // 117.md §52/§54 — optional compare-and-set, then the claimed provenance marker.
+    if (finalStatusMismatch(rec, req.body)) return conflict(res, rec);
+    const via = normalizeFinalReviewVia((req.body || {}).via);
 
     if (decision === 'reject') {
       const updated = await prisma.screenRecord.update({
         where: { id: rec.id },
         data: { finalStatus: 'rejected', rejectedReason: String(reason).slice(0, 500) },
       });
-      await writeAudit(access.project.id, req.user, 'RECORD_REJECTED', {
-        entityType: 'record', entityId: rec.id, details: { reason },
+      const row = finalReviewAuditRow('reject', { via, recordId: rec.id, details: { reason } });
+      await writeAudit(access.project.id, req.user, row.action, {
+        entityType: row.entityType, entityId: row.entityId, details: row.details,
       });
-      emitToProjectMembers(access.project.id, { type: 'handoff.updated' }, { exclude: req.user.id });
+      pokeFinalReview(access.project.id, rec.id, req.user.id);
       return res.json({ record: updated, handoff: { handed: false, reason: 'rejected' } });
     }
 
@@ -218,17 +279,24 @@ export async function finalizeRecord(req, res) {
       where: { id: rec.id },
       data: {
         finalStatus: 'accepted', acceptedAt: new Date(),
+        // 117.md §52 — an accept did NOT clear the exclusion reason, so a record
+        // excluded and then accepted (which is exactly what a redo/undo pair does)
+        // stayed accepted while still carrying "Reason: wrong population" — the
+        // inspector, the export and the PRISMA breakdown all read that column.
+        rejectedReason: '',
         handoffStatus: mapped.handoffStatus, handoffAt: new Date(),
         handoffStudyId: mapped.handoffStudyId, handoffError: mapped.handoffError,
         // Snapshot consumed once it is back in Data Extraction (restored or fresh).
         revertedExtractionSnapshot: handoff.handed ? null : rec.revertedExtractionSnapshot,
       },
     });
-    await writeAudit(access.project.id, req.user, 'RECORD_ACCEPTED', {
-      entityType: 'record', entityId: rec.id,
-      details: { ...handoff, handoffStatus: mapped.handoffStatus },
+    const row = finalReviewAuditRow('accept', {
+      via, recordId: rec.id, details: { ...handoff, handoffStatus: mapped.handoffStatus },
     });
-    emitToProjectMembers(access.project.id, { type: 'handoff.updated' }, { exclude: req.user.id });
+    await writeAudit(access.project.id, req.user, row.action, {
+      entityType: row.entityType, entityId: row.entityId, details: row.details,
+    });
+    pokeFinalReview(access.project.id, rec.id, req.user.id);
     res.json({ record: updated, handoff: { ...handoff, ...mapped } });
   } catch (err) {
     console.error('[screening] finalizeRecord:', err.message);
@@ -278,7 +346,7 @@ export async function retryHandoff(req, res) {
 
 /**
  * POST /projects/:pid/records/:rid/final-review/revert — UNDO a Final Review
- * "sent to Data Extraction" decision (prompt21 Task 3/10).
+ * decision (prompt21 Task 3/10; widened by 117.md §52).
  *
  * Scientifically safe: the linked META·LAB study is NOT destroyed — it is
  * snapshotted onto the record (so any extracted data survives) and then removed
@@ -286,6 +354,15 @@ export async function retryHandoff(req, res) {
  * PRISMA (re-derived from final-review state), analysis readiness, and any
  * meta-analysis that used it. The record returns to the pending/undecided Final
  * Review state. A later re-accept restores the snapshot intact.
+ *
+ * 117.md §52 — BOTH final decisions are reversible now. This endpoint used to 400 on
+ * anything except 'accepted', so "user excludes an article → Ctrl+Z" had NO inverse
+ * anywhere in the system: the exclusion was permanent unless the leader re-decided by
+ * hand, and §52 asks for exactly that undo. Reverting a REJECTED record clears
+ * `finalStatus` AND `rejectedReason` (a stale reason on a pending record is read by
+ * the inspector, the export and the PRISMA exclusion breakdown) and touches no
+ * extraction state — a rejected record was never handed off, so there is nothing to
+ * pull back and no snapshot to keep.
  */
 export async function revertFinalReview(req, res) {
   try {
@@ -298,16 +375,21 @@ export async function revertFinalReview(req, res) {
       where: { id: req.params.rid, projectId: access.project.id },
     });
     if (!rec) return res.status(404).json({ error: 'Record not found' });
-    if (rec.finalStatus !== 'accepted') {
-      return res.status(400).json({ error: 'Only an accepted record can be reverted from Data Extraction' });
+    if (rec.finalStatus !== 'accepted' && rec.finalStatus !== 'rejected') {
+      return res.status(400).json({ error: 'Only a finalized record can be returned to Final Review' });
     }
+    // 117.md §52/§54 — optional compare-and-set, then the claimed provenance marker.
+    if (finalStatusMismatch(rec, req.body)) return conflict(res, rec);
+    const via = normalizeFinalReviewVia((req.body || {}).via);
+    const wasAccepted = rec.finalStatus === 'accepted';
 
     // Pull the study back out of the linked META·LAB project's active extraction,
     // snapshotting it first (only studies THIS record created — matched by
-    // handoffStudyId / screeningRecordId — are ever touched).
+    // handoffStudyId / screeningRecordId — are ever touched). A rejected record never
+    // reached extraction, so this whole block is skipped for it.
     let snapshot = rec.revertedExtractionSnapshot || null;
     let removed = false;
-    if (access.project.linkedMetaLabProjectId) {
+    if (wasAccepted && access.project.linkedMetaLabProjectId) {
       const mlCheck = await prisma.project.findFirst({
         where: { id: access.project.linkedMetaLabProjectId, userId: access.project.ownerId, deletedAt: null },
         select: { id: true },
@@ -338,17 +420,34 @@ export async function revertFinalReview(req, res) {
     const updated = await prisma.screenRecord.update({
       where: { id: rec.id },
       data: {
-        finalStatus: '', acceptedAt: null,
+        // 117.md §52 — the record goes back to PENDING, whichever decision it held.
+        // `rejectedReason` is part of that state: leaving it behind would keep an
+        // exclusion reason attached to a record that is no longer excluded.
+        finalStatus: '', rejectedReason: '', acceptedAt: null,
         handoffStatus: '', handoffStudyId: '', handoffAt: null, handoffError: '',
         revertedExtractionSnapshot: snapshot,
       },
     });
-    await writeAudit(access.project.id, req.user, 'RECORD_REVERTED', {
-      entityType: 'record', entityId: rec.id,
-      details: { dataExtractionEntryDeactivated: removed, snapshotKept: !!snapshot },
+    const row = finalReviewAuditRow('revert', {
+      via,
+      recordId: rec.id,
+      details: {
+        from: wasAccepted ? 'accepted' : 'rejected',
+        dataExtractionEntryDeactivated: removed,
+        snapshotKept: !!snapshot,
+        // What the undo actually restored, so §56's "decision undone" row says what
+        // the record looked like before it was reopened.
+        clearedReason: wasAccepted ? '' : String(rec.rejectedReason || '').slice(0, 500),
+      },
     });
-    emitToProjectMembers(access.project.id, { type: 'handoff.updated' }, { exclude: req.user.id });
-    res.json({ record: updated, reverted: { removedFromExtraction: removed, snapshotKept: !!snapshot } });
+    await writeAudit(access.project.id, req.user, row.action, {
+      entityType: row.entityType, entityId: row.entityId, details: row.details,
+    });
+    pokeFinalReview(access.project.id, rec.id, req.user.id);
+    res.json({
+      record: updated,
+      reverted: { from: wasAccepted ? 'accepted' : 'rejected', removedFromExtraction: removed, snapshotKept: !!snapshot },
+    });
   } catch (err) {
     console.error('[screening] revertFinalReview:', err.message);
     res.status(500).json({ error: 'Internal server error' });

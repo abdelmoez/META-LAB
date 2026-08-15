@@ -32,6 +32,14 @@ import {
   identificationSourceOptions, validateRecordPatch, buildBoxRecordsQuery,
   acceptBoxResponse, affectsBoxMembership, canRevertFinal,
 } from './inspectorModel.js';
+// 117.md §65 — "changing a final-review decision from the PRISMA panel should invoke
+// the SAME domain action as changing it in Final Review". Same endpoints, same entry
+// kind, same undo semantics — imported rather than re-derived so there is one model.
+import {
+  SCREENING_KIND, FINAL_STATUS, VIA, FINALIZE_REFUSE, refusalText,
+  finalizeState, finalizeEntry, finalizePrecondition, finalizeAlreadyApplied,
+  finalizeRequest,
+} from '../../frontend/screening/lib/screeningHistory.js';
 
 const PAGE_LIMIT = 50;
 
@@ -303,6 +311,9 @@ export function PrismaInspector({ boxId, flow, screenProjectId, onClose, onChang
 
   const rowsRef = useRef(rows); rowsRef.current = rows;
   const onChangedRef = useRef(onChanged); onChangedRef.current = onChanged;
+  // The server's per-request capability answer, read at executor RUN time: an undo
+  // may be pressed long after the finalize, and `canFinalize` can be revoked between.
+  const pageRef = useRef(page); pageRef.current = page;
 
   const history = useProjectHistory();
   const historyRef = useRef(history); historyRef.current = history;
@@ -507,31 +518,105 @@ export function PrismaInspector({ boxId, flow, screenProjectId, onClose, onChang
     return '';
   }, [patchRecord, applyLocal, applyServer, reload]);
 
-  /** Domain actions return '' on success, else the server's own message (§10 r2). */
-  const domainAction = useCallback(async (row, path, body) => {
+  /**
+   * 117.md §65 — the ONE final-review mutation path this panel has.
+   *
+   * `finalizeRequest` picks which of the two screening domain endpoints reaches the
+   * requested state and builds the body, including the §54 `expect` compare-and-set
+   * and the §56 `via` provenance marker. Nothing here re-implements the decision
+   * rules; the panel is a second SURFACE, never a second mutation path.
+   *
+   * @returns {{ok:true}|{ok:false,status:number,conflict:boolean,error:string}}
+   */
+  const postFinalState = useCallback(async (row, op, via) => {
+    const { kind, body } = finalizeRequest(op, via);
+    const path = kind === 'revert' ? '/final-review/revert' : '/finalize';
     try {
       const res = await api(screenProjectId, `/records/${encodeURIComponent(row.id)}${path}`, {
         method: 'POST', body,
       });
-      if (res.ok) { reload(); return ''; }
+      if (res.ok) return { ok: true };
       let data = null;
       try { data = await res.json(); } catch { data = null; }
-      return (data && (data.error || data.message)) || `The server refused this action (HTTP ${res.status}).`;
+      return {
+        ok: false,
+        status: res.status,
+        conflict: res.status === 409,
+        error: (data && (data.error || data.message)) || `The server refused this action (HTTP ${res.status}).`,
+      };
     } catch {
-      return 'Could not reach the server — nothing was changed.';
+      return { ok: false, status: 0, conflict: false, error: 'Could not reach the server — nothing was changed.' };
     }
-  }, [screenProjectId, reload]);
+  }, [screenProjectId]);
 
+  /**
+   * Write one final-review state and record the SAME history entry SecondReviewTab
+   * records (kind 'screening.finalize'), so the two surfaces share one domain action
+   * and one undo semantics rather than each owning half of it.
+   */
+  const applyFinalState = useCallback(async (row, next, { restoreSnapshot = true } = {}) => {
+    const prev = finalizeState(row);
+    const op = {
+      recordId: row.id, target: next,
+      expect: { finalStatus: prev.finalStatus }, restoreSnapshot,
+    };
+    const res = await postFinalState(row, op, VIA.USER);
+    if (!res.ok) return res;
+    historyRef.current.record(finalizeEntry({
+      recordId: row.id, prev, next,
+      currentStage: row.currentStage, title: row.title, restoreSnapshot,
+    }));
+    reload();
+    return { ok: true };
+  }, [postFinalState, reload]);
+
+  /** Domain actions return '' on success, else the server's own message (§10 r2). */
   const finalize = useCallback(async (row, decision, reason) => {
     if (decision === 'accept'
       && !window.confirm('Finalize this report as INCLUDED? It will be handed to Data Extraction.')) return '';
-    return domainAction(row, '/finalize', { decision, reason: reason || '' });
-  }, [domainAction]);
+    const next = decision === 'accept'
+      ? { finalStatus: FINAL_STATUS.ACCEPTED, rejectedReason: '' }
+      : { finalStatus: FINAL_STATUS.REJECTED, rejectedReason: reason || '' };
+    const res = await applyFinalState(row, next);
+    return res.ok ? '' : res.error;
+  }, [applyFinalState]);
 
   const revert = useCallback(async (row) => {
-    if (!window.confirm('Revert this final decision? The record returns to full-text review; an accepted study is withdrawn from Data Extraction.')) return '';
-    return domainAction(row, '/final-review/revert', {});
-  }, [domainAction]);
+    if (!window.confirm('Revert this final decision? The record returns to full-text review; an accepted study is withdrawn from Data Extraction, and a recorded exclusion reason is cleared.')) return '';
+    const res = await applyFinalState(row, {
+      finalStatus: FINAL_STATUS.PENDING, rejectedReason: '',
+    });
+    return res.ok ? '' : res.error;
+  }, [applyFinalState]);
+
+  /**
+   * 117.md §52/§65 — the finalize undo/redo executor, registered under the SAME kind
+   * SecondReviewTab uses. Whichever surface is mounted reverses the entry through the
+   * same two endpoints; the precondition is re-read from `rowsRef` at RUN time and the
+   * server's 409 compare-and-set decides the collaboration case.
+   */
+  useEffect(() => registerExecutor(SCREENING_KIND.FINALIZE, async (op, ctx) => {
+    const rid = op && op.recordId;
+    if (!rid || !op.target) return { ok: false, reason: 'no-executor' };
+    if (!pageRef.current.canFinalize) {
+      return { ok: false, reason: 'refused', detail: refusalText(FINALIZE_REFUSE.PERMISSION) };
+    }
+    const live = (rowsRef.current || []).find((r) => r.id === rid) || null;
+    if (finalizeAlreadyApplied(live, op)) return true;
+    const refuse = finalizePrecondition(live, op);
+    if (refuse) return { ok: false, reason: 'refused', detail: refusalText(refuse) };
+    const via = ctx && ctx.direction === 'redo' ? VIA.REDO : VIA.UNDO;
+    const res = await postFinalState(live, op, via);
+    if (!res.ok) {
+      return res.conflict
+        ? { ok: false, reason: 'refused', detail: res.error }
+        : { ok: false, reason: 'failed', detail: res.error };
+    }
+    // §53 — the counts are DERIVED, so re-loading the box and re-deriving the flow is
+    // the whole of "all dependent systems revert too" on this surface.
+    if (reloadRef.current) reloadRef.current();
+    return true;
+  }), [registerExecutor, postFinalState]);
 
   if (!box) return null;
 

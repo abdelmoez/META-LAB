@@ -31,6 +31,9 @@ import { canEditRecordMetadata, canFinalizeRecords } from '../screening/recordAc
 // 109.md §22 — keyword mutations were completely unaudited; the pure row builder
 // lives beside the other screening helpers so its shape is unit-testable.
 import { keywordAuditRows, normalizeKeywordVia, KEYWORD_AUDIT_VIA } from '../screening/keywordAudit.js';
+// 117.md §56/§88 — the same treatment for FINAL REVIEW: settled full-text decisions
+// are audited, and an undo/redo replay appends its own distinct action.
+import { normalizeFinalReviewVia, fullTextDecisionAuditRow } from '../screening/finalReviewAudit.js';
 import { rankItems } from '../../src/research-engine/screening/ai/ranking.js';
 import { splitBySource } from '../../src/research-engine/screening/sourceClassify.js';
 import { fastListEligible, buildFastListQuery } from '../../src/research-engine/screening/recordListQuery.js';
@@ -2157,6 +2160,10 @@ export async function saveDecision(req, res) {
     const { decision = 'undecided', exclusionReason = '', notes = '', rating, labels = '[]', stage: bodyStage } = req.body || {};
     const validDecisions = ['include', 'exclude', 'maybe', 'undecided'];
     if (!validDecisions.includes(decision)) return res.status(400).json({ error: 'Invalid decision value' });
+    // 117.md §56 — CLIENT-CLAIMED provenance: 'user' unless the 108 history layer is
+    // replaying this write. Recorded as claimed (there is no server-side proof), and
+    // only ever used to pick which audit action the row wears.
+    const via = normalizeFinalReviewVia((req.body || {}).via);
 
     // A decision belongs to the record's current review stage unless the
     // caller explicitly targets one (used by the Second Review screen).
@@ -2169,9 +2176,12 @@ export async function saveDecision(req, res) {
     // a reviewer CLEARS a previously-set quality signal (rating:null / notes:'')
     // while leaving the decision as maybe/undecided — otherwise stale quality/note
     // factors would linger in the persisted AI explanation.
+    // 117.md §88 — `decision` joins the selection: the final-review audit row is a
+    // TRANSITION (undecided → exclude, exclude → undecided …), so the pre-image is
+    // what decides whether this write is an event at all or just autosave churn.
     const prior = await prisma.screenDecision.findUnique({
       where: { recordId_reviewerId_stage: { recordId: rec.id, reviewerId: req.user.id, stage } },
-      select: { rating: true, notes: true },
+      select: { rating: true, notes: true, decision: true },
     });
 
     // One active decision per reviewer per record per stage (schema-enforced).
@@ -2193,6 +2203,25 @@ export async function saveDecision(req, res) {
     // 93.md §5.3 — activation: record the user's FIRST screening decision only
     // (deterministic-id PK → at most one row per user, ever). Fire-and-forget.
     recordFirstEvent(USAGE.SCREENING_DECISION_FIRST, req.user.id, { screenProjectId: p.id, meta: { stage } });
+
+    // 117.md §88 — "audit where appropriate: final review include/exclude, undo, redo".
+    // The builder decides whether this write is an event: only a transition that
+    // ESTABLISHES or WITHDRAWS a settled full-text decision qualifies, so autosave
+    // repeats and maybe/undecided churn add no rows (§88's noise warning), and every
+    // title/abstract write is skipped outright. An undo/redo replay wears
+    // FINAL_REVIEW_UNDO / FINAL_REVIEW_REDO so the ledger shows both the decision and
+    // the fact that it was undone (§56) rather than pretending one of them happened.
+    const decisionAudit = fullTextDecisionAuditRow({
+      stage, decision, previous: prior ? prior.decision : '', via,
+      recordId: rec.id, reviewerName, exclusionReason,
+    });
+    if (decisionAudit) {
+      await writeAudit(p.id, req.user, decisionAudit.action, {
+        entityType: decisionAudit.entityType,
+        entityId: decisionAudit.entityId,
+        details: decisionAudit.details,
+      });
+    }
 
     // Promotion gate (prompt19 Task 9 — BACKEND-ENFORCED).
     //

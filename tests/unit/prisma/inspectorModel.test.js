@@ -142,20 +142,24 @@ describe('shouldReloadForRecordPoke — the orphaned realtime event (§10 r2)', 
   });
 });
 
-describe('canRevertFinal — no button that is guaranteed to 400 (§10 r2)', () => {
-  it('only an ACCEPTED record can be reverted', () => {
+describe('canRevertFinal — no button that is guaranteed to 400 (§10 r2 / 117.md §52)', () => {
+  it('an ACCEPTED record can be reverted', () => {
     expect(canRevertFinal({ finalStatus: 'accepted' }, true)).toBe(true);
   });
 
-  it('a REJECTED record cannot — revertFinalReview 400s on it', () => {
-    // The button used to render on `isFinalized`, so a leader opening "Reports
-    // excluded" and clicking it got a guaranteed 400 with zero feedback.
-    expect(canRevertFinal({ finalStatus: 'rejected' }, true)).toBe(false);
+  it('a REJECTED record can too, now that revertFinalReview accepts one', () => {
+    // RE-PINNED for 117.md §52. The rule has not changed — "never render a button the
+    // endpoint is guaranteed to refuse" — the ENDPOINT has: undoing an exclusion is
+    // the whole point of §52, so revertFinalReview takes any finalized record, and
+    // hiding the button here would now be the surface withholding a real capability.
+    expect(canRevertFinal({ finalStatus: 'rejected' }, true)).toBe(true);
   });
 
   it('an unfinalized record and a caller without the capability cannot', () => {
+    // Unchanged, and still the case the endpoint 400s on: there is no decision to undo.
     expect(canRevertFinal({ finalStatus: '' }, true)).toBe(false);
     expect(canRevertFinal({ finalStatus: 'accepted' }, false)).toBe(false);
+    expect(canRevertFinal({ finalStatus: 'rejected' }, false)).toBe(false);
     expect(canRevertFinal(null, true)).toBe(false);
   });
 });
