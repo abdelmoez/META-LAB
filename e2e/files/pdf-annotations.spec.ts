@@ -17,6 +17,11 @@
  * mouse coordinates over pdf.js glyph boxes is not deterministic in CI; this is. The
  * last spec drops the `mouseup` entirely to cover the §100 keyboard path, where a
  * `selectionchange` is the only event the browser fires.
+ *
+ * 117.md §50 — a synthetic Range is built by the TEST, so no engine can get it wrong.
+ * That is a feature for the flows above and a blind spot for the WebKit drag defects
+ * 117 fixes, which is why `pdf-annotations-drag.spec.ts` exists beside this file and
+ * both run under the `webkit-pdf` project (playwright.config.ts).
  */
 import type { Page } from '@playwright/test';
 import { test, expect } from '../fixtures/stitch-test';
@@ -190,6 +195,38 @@ test.describe('PDF annotations — the full collaborative arc', () => {
     expect(await selectPdfText(page, FIXTURE_SELECTABLE)).toBe('no-match');
     await expect(page.getByRole('button', { name: 'Highlight selected text' })).toHaveCount(0);
     await expect(marks(page)).toHaveCount(0);
+
+    // 117.md §47 — and it is an EMPTY text layer, not a FAILED one. The distinction is
+    // the whole point of the marker: "this document has no text" is honest product
+    // behaviour, "the text layer threw" is a fault, and they must not look alike.
+    await expect(page.locator('[data-tl-error]')).toHaveCount(0);
+  });
+
+  test('117.md §46 — the control survives a browser that clears the selection on its own mousedown', async ({ page, request, screeningProject }) => {
+    await attachPdfToFirstRecord(request, screeningProject.siftId, { pages: 1 });
+    await openViewer(page, screeningProject.project.id);
+
+    expect(await selectPdfText(page, FIXTURE_SELECTABLE)).toBe('ok');
+    const highlightBtn = page.getByRole('button', { name: 'Highlight selected text' });
+    await expect(highlightBtn).toBeVisible();
+
+    // THE SAFARI RACE, made deterministic on every engine. WebKit collapses the document
+    // selection on `mousedown` of a control outside it; the resulting `selectionchange`
+    // used to reach `captureSelection`, see a collapsed selection and unmount the control
+    // BEFORE its own `click` was dispatched — so on Safari the button did nothing at all
+    // and no highlight was ever created. Reproducing it here means doing exactly what
+    // WebKit does, in a bubble-phase listener on the button itself (the component latches
+    // in the CAPTURE phase, which is the fix).
+    await page.evaluate(() => {
+      const btn = document.querySelector('[aria-label="Highlight selected text"]');
+      if (!btn) throw new Error('the highlight control was not in the DOM');
+      btn.addEventListener('pointerdown', () => { try { window.getSelection()?.removeAllRanges(); } catch { /* noop */ } }, { once: true });
+      btn.addEventListener('mousedown', () => { try { window.getSelection()?.removeAllRanges(); } catch { /* noop */ } }, { once: true });
+    });
+
+    await highlightBtn.click();
+    await expect(marks(page).first()).toBeVisible();
+    await expect(page.getByRole('button', { name: /Highlights \(1\)/ })).toBeVisible();
   });
 
   test('§75 — Escape dismisses the control without destroying the selection', async ({ page, request, screeningProject }) => {

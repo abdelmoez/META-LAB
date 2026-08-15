@@ -35,14 +35,27 @@
  * mouse event at all, so a `mouseup`-only capture path is unreachable without a
  * mouse. The timing rule (which event captures, and after how long) is pure and
  * lives in `selectionCaptureDelay`.
+ *
+ * ── SAFARI/WEBKIT (117.md §46-§48) ───────────────────────────────────────────
+ * Two WebKit-specific defects are fixed HERE, at capture time — the stored anchor
+ * contract (§76: PDF user space at scale 1, y-up, unrotated) is untouched, because a
+ * highlight already on the server is not wrong, it was only ever captured wrong:
+ *   1. `Range.getClientRects()` on the `scaleX`-transformed spans of a pdf.js text
+ *      layer can come back mis-mapped. Every list is now audited against the layer box
+ *      and rebuilt from per-word Range geometry when it fails — `captureSelectionRects`.
+ *   2. WebKit collapses the selection on `mousedown` of the pending control, which used
+ *      to unmount the control before its own `click` could fire. The payload is latched
+ *      at pointerdown and selection-driven teardown stands down for the gesture.
+ * The third half of the parity work — the pdf.js `endOfContent` selection sink that
+ * makes the DRAG itself behave — belongs to the text layer and lives in AppPdfViewer.
  */
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { C, FONT, MONO, alpha } from '../theme/tokens.js';
 import {
-  ANNOTATION_COLORS, colorFor, toPageRects, mergeLineRects, cssRectsToUser,
+  ANNOTATION_COLORS, colorFor, cssRectsToUser,
   userRectsToCss, rectsBounds, annotationAriaLabel, isOwnAnnotation,
   canMutateAnnotation, sortForList, MAX_COMMENT,
-  selectionThresholds, selectionCaptureDelay,
+  captureSelectionRects, selectionCaptureDelay,
 } from './pdfAnnotationModel.js';
 
 const EMPTY = Object.freeze([]);
@@ -56,8 +69,21 @@ function PdfAnnotationPageLayerBase({
   userId, canCreate, canModerate, interactive = true,
   selectedId, onSelect, onCreate, onRecolor, onComment, onDelete,
 }) {
-  const [pending, setPending] = useState(null);  // { cssRects, text, anchor:{left,top} }
+  const [pending, setPending] = useState(null);  // { cssRects, text, anchor:{left,top}, source }
   const hostRef = useRef(null);
+  // 117.md §46 — the Safari commit race. WebKit collapses the document selection on
+  // `mousedown` of a control that sits outside it, which fires `selectionchange` →
+  // `captureSelection(collapsed)` → `setPending(null)` BEFORE the button's `click` is
+  // dispatched: the control unmounts under the pointer and the highlight is never
+  // created. (Chromium keeps the selection long enough that the click always lands,
+  // which is why this only ever reproduced on Safari.) Two guards, together:
+  //   `controlHeldRef` — the pointer went down on the control, so selection-driven
+  //     clearing stands down until the gesture resolves or the user clicks elsewhere;
+  //   `latchedRef`     — the payload captured at that pointerdown, so `commit` has the
+  //     rectangles even if a re-render slipped `pending` out from under it.
+  const controlRef = useRef(null);
+  const controlHeldRef = useRef(false);
+  const latchedRef = useRef(null);
 
   // 116.md §76 — the stored anchor lives in the UNROTATED page frame, exactly like
   // extraction provenance and the jump-to-source box. Drawing (or capturing) while
@@ -67,37 +93,57 @@ function PdfAnnotationPageLayerBase({
   const unrotated = (rotation % 360) === 0;
   const usable = !!(pageDims && +scale > 0 && unrotated);
 
+  /**
+   * §46 — is the user currently working the pending control itself? Then a selection
+   * that just went away is the BROWSER's doing, not the reviewer's, and must not tear
+   * the control down. Pointer state covers the mouse gesture; `activeElement` covers
+   * the keyboard one (focusing the button can clear the selection in WebKit too).
+   */
+  const engagingControl = useCallback(() => {
+    if (controlHeldRef.current) return true;
+    const box = controlRef.current;
+    if (!box || typeof document === 'undefined') return false;
+    const active = document.activeElement;
+    return !!(active && box.contains(active));
+  }, []);
+
+  /** Give up the pending control for a reason that is genuinely the user's. */
+  const clearPending = useCallback(() => {
+    controlHeldRef.current = false;
+    latchedRef.current = null;
+    setPending(null);
+  }, []);
+
   /* Selection capture (§75). */
   const captureSelection = useCallback(() => {
     if (!canCreate || !usable) return;
+    // §46 — see `engagingControl`: while the control is the thing being pressed or
+    // focused, the selection state is not evidence about what the reviewer wants.
+    if (engagingControl()) return;
     const tl = textLayerRef && textLayerRef.current;
     if (!tl || typeof window === 'undefined') return;
     let sel;
     try { sel = window.getSelection(); } catch { return; }
-    if (!sel || sel.isCollapsed || !sel.rangeCount) { setPending(null); return; }
+    if (!sel || sel.isCollapsed || !sel.rangeCount) { clearPending(); return; }
     const range = sel.getRangeAt(0);
     // Only a selection that lives inside THIS page's text layer counts — a drag
     // that started on the previous page must not stamp a highlight here.
     const anchorNode = range.commonAncestorContainer;
-    if (!anchorNode || !tl.contains(anchorNode.nodeType === 1 ? anchorNode : anchorNode.parentNode)) { setPending(null); return; }
+    if (!anchorNode || !tl.contains(anchorNode.nodeType === 1 ? anchorNode : anchorNode.parentNode)) { clearPending(); return; }
     const text = String(sel.toString() || '').replace(/\s+/g, ' ').trim();
-    if (!text) { setPending(null); return; }
+    if (!text) { clearPending(); return; }
     let host;
     try { host = tl.getBoundingClientRect(); } catch { return; }
-    // 116.md §76 — the tolerances that separate "a real text line" from selection
-    // noise are PDF-user-space quantities, so they are projected to the current zoom
-    // rather than fixed in CSS px. At fit-width in a narrow panel a 12 pt line is
-    // barely 1 px tall; a fixed 1.5 px floor silently threw that selection away and
-    // the reviewer got no Highlight control and no explanation.
-    const tol = selectionThresholds(scale);
-    const merged = mergeLineRects(
-      toPageRects(Array.from(range.getClientRects() || []), host, { minSize: tol.minSize }),
-      { lineGap: tol.lineGap },
-    );
-    if (!merged.length) { setPending(null); return; }
-    const last = merged[merged.length - 1];
-    setPending({ cssRects: merged, text, anchor: { left: last.x0, top: last.y1 } });
-  }, [canCreate, scale, textLayerRef, usable]);
+    // 116.md §76 + 117.md §47 — one call decides the geometry: the zoom-projected
+    // noise floor and line-gap (a highlight must mean the same thing at every zoom),
+    // the bounds audit that catches WebKit's mis-mapped client rects on `scaleX`'d
+    // spans, and the per-word Range rebuild that replaces them when it fires. An empty
+    // result still means "there is nothing honest to highlight", never a guess.
+    const capture = captureSelectionRects(range, host, { scale });
+    if (!capture.rects.length) { clearPending(); return; }
+    const last = capture.rects[capture.rects.length - 1];
+    setPending({ cssRects: capture.rects, text, anchor: { left: last.x0, top: last.y1 }, source: capture.source });
+  }, [canCreate, clearPending, engagingControl, scale, textLayerRef, usable]);
 
   useEffect(() => {
     const tl = textLayerRef && textLayerRef.current;
@@ -136,14 +182,17 @@ function PdfAnnotationPageLayerBase({
   }, [captureSelection, canCreate, textLayerRef, usable]);
 
   // Escape / a click elsewhere dismisses the control (§75) without touching the
-  // browser selection, so the user can still copy what they selected.
+  // browser selection, so the user can still copy what they selected. §46 — a mousedown
+  // anywhere but the control also releases the pointer latch, which is why holding it
+  // through the commit gesture cannot leave capture wedged: the very next click outside
+  // frees it, and so does the invariant effect below.
   useEffect(() => {
     if (!pending || typeof document === 'undefined') return undefined;
-    const onKey = (e) => { if (e.key === 'Escape') setPending(null); };
+    const onKey = (e) => { if (e.key === 'Escape') clearPending(); };
     const onDown = (e) => {
       const host = hostRef.current;
       if (host && e.target && host.contains(e.target)) return;
-      setPending(null);
+      clearPending();
     };
     document.addEventListener('keydown', onKey);
     document.addEventListener('mousedown', onDown, true);
@@ -151,16 +200,26 @@ function PdfAnnotationPageLayerBase({
       document.removeEventListener('keydown', onKey);
       document.removeEventListener('mousedown', onDown, true);
     };
+  }, [clearPending, pending]);
+
+  // §46 — the latch is a guard, and a guard that can stick is a new bug. There is no
+  // control without a `pending`, so the moment one goes the other must too: this is the
+  // invariant, stated once, rather than a clear() at every teardown site.
+  useEffect(() => {
+    if (!pending) { controlHeldRef.current = false; latchedRef.current = null; }
   }, [pending]);
 
   const commit = useCallback((colorKey) => {
-    if (!pending || !usable || !onCreate) return;
-    const rects = cssRectsToUser(pending.cssRects, { scale, pageHeight: pageDims.h });
-    if (!rects.length) { setPending(null); return; }
-    onCreate({ page, rects, selectedText: pending.text, color: colorKey });
-    setPending(null);
+    // §46 — `latchedRef` is the payload snapshotted when the pointer went down on the
+    // control. It is the fallback, never the primary: a live `pending` always wins.
+    const src = pending || latchedRef.current;
+    if (!src || !usable || !onCreate) { clearPending(); return; }
+    const rects = cssRectsToUser(src.cssRects, { scale, pageHeight: pageDims.h });
+    if (!rects.length) { clearPending(); return; }
+    onCreate({ page, rects, selectedText: src.text, color: colorKey });
+    clearPending();
     try { window.getSelection().removeAllRanges(); } catch { /* noop */ }
-  }, [onCreate, page, pageDims, pending, scale, usable]);
+  }, [clearPending, onCreate, page, pageDims, pending, scale, usable]);
 
   const selected = useMemo(
     () => (selectedId ? (items || EMPTY).find((a) => a && (a.id === selectedId || a.clientId === selectedId)) || null : null),
@@ -187,8 +246,19 @@ function PdfAnnotationPageLayerBase({
       {/* §75 step 2-3 — the small context control near the selection. */}
       {pending && (
         <div
+          ref={controlRef}
           role="group"
           aria-label="Highlight the selected text"
+          // 117.md §46 — LATCH FIRST. Both handlers run in the capture phase, before
+          // WebKit gets to collapse the selection on this same mousedown, so the
+          // rectangles are safely in hand and `captureSelection` stands down until the
+          // gesture resolves. Nothing is prevented or stopped here: §75's "do not
+          // interfere" still holds — plain selection, copy and scroll are untouched.
+          onPointerDownCapture={() => { controlHeldRef.current = true; latchedRef.current = pending; }}
+          onMouseDownCapture={() => { controlHeldRef.current = true; latchedRef.current = pending; }}
+          // Which path produced these rectangles — 'client-rects' when the browser was
+          // believed, 'geometry' when the §47 audit rejected it and they were rebuilt.
+          data-selection-source={pending.source || 'client-rects'}
           style={{
             position: 'absolute', left: Math.max(0, pending.anchor.left), top: pending.anchor.top + 6,
             display: 'flex', alignItems: 'center', gap: 6, padding: '5px 7px',

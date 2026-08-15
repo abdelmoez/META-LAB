@@ -48,6 +48,14 @@ export default defineConfig({
     // undo chords and autosave-reload are exactly the interactions Safari breaks
     // first, so they get full engine coverage without tag creep.
     { name: 'webkit-search', use: { ...devices['Desktop Safari'] }, testMatch: '**/search/searchWorkspace.spec.ts' },
+    // 117.md §46-§50 — the PDF annotation files run in FULL under WebKit, not just
+    // @smoke. §50 is explicit: "do not simply test Chromium and declare Safari fixed",
+    // and the defects 117 fixes (drag-selection over a pdf.js text layer, mis-mapped
+    // client rects on scaleX'd spans, a selection collapsed by mousedown on the
+    // highlight control) are all invisible in Blink. `pdf-annotations-drag.spec.ts`
+    // exists precisely because the older file drives selection through a synthetic
+    // Range, which no engine can get wrong — only a real mouse drag can.
+    { name: 'webkit-pdf', use: { ...devices['Desktop Safari'] }, testMatch: '**/files/pdf-annotations*.spec.ts' },
     // Responsive projects only run the responsive specs (which assert layout at size).
     { name: 'mobile-chrome', use: { ...devices['Pixel 5'] }, testMatch: '**/responsive/**/*.spec.ts' },
     { name: 'tablet', use: { ...devices['iPad (gen 7) landscape'] }, testMatch: '**/responsive/**/*.spec.ts' },

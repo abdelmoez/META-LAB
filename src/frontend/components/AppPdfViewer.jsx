@@ -40,6 +40,10 @@ import { caretOffsetInSpan } from './pdfCaret.js';
 // passes an `annotation` prop cluster (inert by default, exactly like `interaction` /
 // `pageOverlay` / `reveal`), so every existing caller is behaviourally unchanged.
 import PdfAnnotationPageLayer, { NO_ANNOTATIONS } from './PdfAnnotationLayer.jsx';
+// 117.md §46-§48 — the pure decisions behind Safari/WebKit selection parity: where the
+// text-layer selection sink belongs, and how the rendering resolution is clamped and
+// re-observed. They live in the model module so they are unit-testable without a browser.
+import { endOfContentPlacement, clampRenderDpr, dprMediaQuery } from './pdfAnnotationModel.js';
 import { usePdfAnnotationUndoShortcut } from './pdfAnnotationShortcut.js';
 // 116.md §95 — the session-only byte cache. Screening → Conflict → Extraction for the
 // same paper mounts three viewers on the same URL; without this each mount re-downloads
@@ -124,6 +128,13 @@ const TEXTLAYER_CSS = `
 .mlpdf-tl[data-main-rotation="270"]{transform:rotate(270deg) translateX(-100%);}
 .mlpdf-tl mark{color:transparent;background:${HL};border-radius:2px;padding:0;margin:0;}
 .mlpdf-tl mark.cur{background:${HL_CURRENT};box-shadow:0 0 0 1px rgba(255,120,0,0.95);}
+/* 117.md §46 — the pdf.js TextLayerBuilder "end of content" sink, class-scoped. It
+   parks BELOW the layer (clipped away by the overflow rule above) and only expands to
+   cover the page while a selection is in progress. -moz-user-select is not dead code:
+   it is also how the selection handler feature-detects Firefox, exactly as pdf.js does. */
+.mlpdf-tl .mlpdf-eoc{display:block;position:absolute;inset:100% 0 0;z-index:0;cursor:default;
+  -webkit-user-select:none;-moz-user-select:none;user-select:none;}
+.mlpdf-tl.mlpdf-selecting .mlpdf-eoc{top:0;}
 .mlpdf-src-hl{animation:mlpdf-src-pulse 0.8s ease-out;box-shadow:0 0 0 3px rgba(245,158,11,0.25);}
 @keyframes mlpdf-src-pulse{0%{opacity:0;}30%{opacity:1;}60%{opacity:0.6;}100%{opacity:1;}}
 @media (prefers-reduced-motion: reduce){.mlpdf-src-hl{animation:none;}}
@@ -135,6 +146,165 @@ function ensureTextLayerStyle() {
   el.id = TEXTLAYER_STYLE_ID;
   el.textContent = TEXTLAYER_CSS;
   document.head.appendChild(el);
+}
+
+/* ── 117.md §46/§47 — text-layer selection parity with the official pdf.js viewer ──
+ *
+ * ROOT CAUSE. This viewer built its text layer with the RAW `pdfjsLib.TextLayer`, which
+ * only paints the transparent glyph runs. The official viewer wraps that in
+ * `TextLayerBuilder`, which adds one more thing: an empty "end of content" div that is
+ * parked below the page and expands to cover it while a selection is in progress, and
+ * that is MOVED in the DOM to sit immediately next to the selection's anchor. Without
+ * it, dragging past the end of a line extends the selection into whatever span comes
+ * next in DOM ORDER — and a pdf.js text layer's DOM order is drawing order, not reading
+ * order, with every span absolutely positioned and `scaleX`-transformed. Chromium's
+ * selection heuristics paper over it; WebKit does not, which is why a Safari drag
+ * selected the wrong text (or nothing at all) and no Highlight control ever appeared.
+ *
+ * This is the minimal faithful port of `web/text_layer_builder.js` (pdfjs-dist 4.10):
+ * one sink per text layer, one shared set of document listeners for all of them, the
+ * same reset triggers (pointerup / blur / keyup) and the same Firefox stand-down —
+ * detected, as pdf.js does it, by asking whether `-moz-user-select` computes on the
+ * sink (only Firefox knows the property; the CSS above sets it).
+ */
+const TL_SELECTION = new Map();   // textLayerDiv -> { end, onDown }
+let _tlSelectionTeardown = null;
+
+function resetEndOfContent(end, tl) {
+  try {
+    tl.appendChild(end);
+    end.style.width = '';
+    end.style.height = '';
+    tl.classList.remove('mlpdf-selecting');
+  } catch { /* noop */ }
+}
+
+function installTextLayerSelectionListener() {
+  if (_tlSelectionTeardown || typeof document === 'undefined' || typeof window === 'undefined') return;
+  let pointerDown = false;
+  let prevRange = null;
+  let isFirefox;                    // undefined until the first selectionchange measures it
+  const resetAll = () => { for (const [tl, rec] of TL_SELECTION) resetEndOfContent(rec.end, tl); };
+  const onPointerDown = () => { pointerDown = true; };
+  const onPointerUp = () => { pointerDown = false; resetAll(); };
+  const onBlur = () => { pointerDown = false; resetAll(); };
+  const onKeyUp = () => { if (!pointerDown) resetAll(); };
+  const onSelectionChange = () => {
+    if (!TL_SELECTION.size) return;
+    let sel;
+    try { sel = document.getSelection(); } catch { return; }
+    if (!sel || sel.rangeCount === 0) { resetAll(); prevRange = null; return; }
+    // Which layers does the live selection actually touch? Everything else stands down,
+    // so a sink on page 7 can never interfere with a drag on page 2.
+    const active = new Set();
+    for (let i = 0; i < sel.rangeCount; i++) {
+      let r; try { r = sel.getRangeAt(i); } catch { continue; }
+      for (const tl of TL_SELECTION.keys()) {
+        if (active.has(tl)) continue;
+        try { if (r.intersectsNode(tl)) active.add(tl); } catch { /* noop */ }
+      }
+    }
+    for (const [tl, rec] of TL_SELECTION) {
+      if (active.has(tl)) { try { tl.classList.add('mlpdf-selecting'); } catch { /* noop */ } }
+      else resetEndOfContent(rec.end, tl);
+    }
+    if (isFirefox === undefined) {
+      const first = TL_SELECTION.values().next().value;
+      try { isFirefox = window.getComputedStyle(first.end).getPropertyValue('-moz-user-select') === 'none'; }
+      catch { isFirefox = false; }
+    }
+    if (isFirefox) return;          // Gecko resolves this itself; moving the sink hurts there.
+    let range; try { range = sel.getRangeAt(0); } catch { return; }
+    const { modifyStart } = endOfContentPlacement(range, prevRange);
+    let anchor = modifyStart ? range.startContainer : range.endContainer;
+    if (anchor && anchor.nodeType === 3) anchor = anchor.parentNode;
+    const parent = anchor && anchor.parentElement;
+    const layer = parent && parent.closest ? parent.closest('.mlpdf-tl') : null;
+    const rec = layer ? TL_SELECTION.get(layer) : null;
+    if (rec && parent) {
+      // The sink must be page-sized wherever it lands (it may be re-parented into a
+      // span, which is absolutely positioned). The dims were measured once at render.
+      rec.end.style.width = rec.end.dataset.w || '';
+      rec.end.style.height = rec.end.dataset.h || '';
+      try { parent.insertBefore(rec.end, modifyStart ? anchor : anchor.nextSibling); } catch { /* noop */ }
+    }
+    try { prevRange = range.cloneRange(); } catch { prevRange = null; }
+  };
+  document.addEventListener('pointerdown', onPointerDown, true);
+  document.addEventListener('pointerup', onPointerUp, true);
+  document.addEventListener('keyup', onKeyUp, true);
+  document.addEventListener('selectionchange', onSelectionChange);
+  window.addEventListener('blur', onBlur);
+  _tlSelectionTeardown = () => {
+    document.removeEventListener('pointerdown', onPointerDown, true);
+    document.removeEventListener('pointerup', onPointerUp, true);
+    document.removeEventListener('keyup', onKeyUp, true);
+    document.removeEventListener('selectionchange', onSelectionChange);
+    window.removeEventListener('blur', onBlur);
+  };
+}
+
+/** Detach a text layer's sink; the shared listeners go away with the last layer. */
+function unregisterTextLayerSelection(tl) {
+  if (!tl) return;
+  const rec = TL_SELECTION.get(tl);
+  if (!rec) return;
+  TL_SELECTION.delete(tl);
+  try { tl.removeEventListener('mousedown', rec.onDown); } catch { /* noop */ }
+  try { tl.classList.remove('mlpdf-selecting'); } catch { /* noop */ }
+  try { rec.end.remove(); } catch { /* noop */ }
+  if (!TL_SELECTION.size && _tlSelectionTeardown) { _tlSelectionTeardown(); _tlSelectionTeardown = null; }
+}
+
+/** Append this text layer's sink and arm the shared listeners. Idempotent per layer. */
+function registerTextLayerSelection(tl, { width, height }) {
+  if (!tl || typeof document === 'undefined') return;
+  unregisterTextLayerSelection(tl);            // a re-render rebuilt the layer: re-arm cleanly
+  const end = document.createElement('div');
+  end.className = 'mlpdf-eoc';
+  end.setAttribute('aria-hidden', 'true');
+  end.dataset.w = `${Math.round(width)}px`;
+  end.dataset.h = `${Math.round(height)}px`;
+  tl.appendChild(end);
+  const onDown = () => { try { tl.classList.add('mlpdf-selecting'); } catch { /* noop */ } };
+  tl.addEventListener('mousedown', onDown);
+  TL_SELECTION.set(tl, { end, onDown });
+  installTextLayerSelectionListener();
+}
+
+/* ── 117.md §47 — a failed text layer must be VISIBLE, not silent ──────────────
+ * The `TextLayer.render()` catch used to swallow everything with the comment "best
+ * effort; canvas still shows". True for READING — and catastrophic for diagnosis:
+ * with no text layer there is no selection, so highlighting, comments, search and
+ * click-to-pick are all simply dead, with nothing anywhere saying why. Now the failure
+ * is stamped on the page container (`data-tl-error`) so a test or a support session can
+ * see it, and warned exactly once per document so a 300-page PDF cannot flood the
+ * console. The canvas still renders — the degradation is unchanged, only its honesty.
+ */
+const _tlWarnedDocs = new WeakSet();
+function reasonOf(err) {
+  const s = err && (err.name || err.message) ? String(err.name || err.message) : 'unknown';
+  return s.replace(/\s+/g, ' ').trim().slice(0, 120) || 'unknown';
+}
+function markTextLayerFailure(tl, doc, err) {
+  const reason = reasonOf(err);
+  try {
+    tl.setAttribute('data-tl-error', reason);
+    if (tl.parentElement) tl.parentElement.setAttribute('data-tl-error', reason);
+  } catch { /* noop */ }
+  try {
+    if (doc && !_tlWarnedDocs.has(doc)) {
+      _tlWarnedDocs.add(doc);
+      // eslint-disable-next-line no-console
+      console.warn('[AppPdfViewer] 117.md §47 — the PDF text layer failed to render; text selection, search, highlighting and comments are unavailable on this document.', err);
+    }
+  } catch { /* noop */ }
+}
+function clearTextLayerFailure(tl) {
+  try {
+    tl.removeAttribute('data-tl-error');
+    if (tl.parentElement) tl.parentElement.removeAttribute('data-tl-error');
+  } catch { /* noop */ }
 }
 
 export default function AppPdfViewer({
@@ -220,7 +390,45 @@ export default function AppPdfViewer({
   const programmaticScroll = useRef(0);         // timestamp guard: ignore indicator updates right after a programmatic scroll
 
   const openExternal = externalUrl || url;
-  const dpr = useMemo(() => (typeof window !== 'undefined' ? Math.min(window.devicePixelRatio || 1, 2) : 1), []);
+  // 117.md §47 — the rendering resolution was memoised ONCE at mount, so every page
+  // rasterized at whatever ratio the window happened to have then. Moving a window
+  // between a Retina and a non-Retina display (or changing the OS scale) left every
+  // canvas at the stale backing-store scale: blurry on the way up, wastefully heavy on
+  // the way down, and — because the text layer is sized from the CSS viewport while the
+  // canvas is not — the exact conditions under which a WebKit selection rect stops
+  // agreeing with the glyph the reader sees. `(resolution: Xdppx)` matches only while
+  // the ratio is exactly X, so its `change` event means "the ratio moved" and the query
+  // is re-armed against the new value. The clamp stays at 2 (§73 performance).
+  const [dpr, setDpr] = useState(() => (typeof window !== 'undefined' ? clampRenderDpr(window.devicePixelRatio) : 1));
+  useEffect(() => {
+    if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return undefined;
+    let mql = null;
+    let disposed = false;
+    function detach() {
+      if (!mql) return;
+      try {
+        if (mql.removeEventListener) mql.removeEventListener('change', onChange);
+        else if (mql.removeListener) mql.removeListener(onChange);
+      } catch { /* noop */ }
+      mql = null;
+    }
+    function arm() {
+      detach();
+      if (disposed) return;
+      try { mql = window.matchMedia(dprMediaQuery(window.devicePixelRatio)); } catch { mql = null; return; }
+      try {
+        if (mql.addEventListener) mql.addEventListener('change', onChange);
+        else if (mql.addListener) mql.addListener(onChange);
+      } catch { /* noop */ }
+    }
+    function onChange() {
+      if (disposed) return;
+      setDpr(clampRenderDpr(window.devicePixelRatio));
+      arm();                              // the query is per-ratio: re-arm on the new one
+    }
+    arm();
+    return () => { disposed = true; detach(); };
+  }, []);
   useEffect(() => { ensureTextLayerStyle(); }, []);
 
   /* ── 116.md §71-104 — annotations (inert unless a host opts in) ───────────── */
@@ -844,6 +1052,10 @@ function PdfPageView({
   useEffect(() => {
     if (!doc) return undefined;
     let cancelled = false;
+    // 117.md §46 — captured up front: React detaches refs BEFORE passive-effect cleanup
+    // on unmount, so reading `textRef.current` from the cleanup would find null and leak
+    // this layer's entry in the selection registry.
+    const tlNode = textRef.current;
     (async () => {
       let page;
       try { page = await doc.getPage(pageNumber); } catch { return; }
@@ -872,6 +1084,7 @@ function PdfPageView({
       const tl = textRef.current;
       if (tl) {
         try {
+          unregisterTextLayerSelection(tl);      // the sink belongs to the layer we are replacing
           tl.innerHTML = '';
           tl.style.setProperty('--scale-factor', String(scale));
           tl.setAttribute('data-main-rotation', String(rotation));
@@ -882,11 +1095,24 @@ function PdfPageView({
           if (cancelled) return;
           // Snapshot each span's original text so highlight passes are idempotent.
           tl.querySelectorAll(':scope > span').forEach((s) => { s.dataset.t = s.textContent; });
+          // 117.md §46 — the TextLayerBuilder half the raw TextLayer does not give us:
+          // the selection sink that makes a drag behave the same in WebKit as in Blink.
+          registerTextLayerSelection(tl, { width: viewport.width, height: viewport.height });
+          clearTextLayerFailure(tl);
           setTextReady((n) => n + 1);
-        } catch { /* text layer is best-effort; canvas still shows */ }
+        } catch (err) {
+          // 117.md §47 — still best-effort for RENDERING (the canvas is already painted),
+          // but no longer silent: without a text layer, selection/highlight/search/comments
+          // are all dead and the user deserves better than "it mysteriously does nothing".
+          if (!cancelled) markTextLayerFailure(tl, doc, err);
+        }
       }
     })();
-    return () => { cancelled = true; try { renderRef.current && renderRef.current.cancel(); } catch { /* noop */ } };
+    return () => {
+      cancelled = true;
+      try { renderRef.current && renderRef.current.cancel(); } catch { /* noop */ }
+      unregisterTextLayerSelection(tlNode);
+    };
   }, [doc, pageNumber, scale, rotation, dpr, onDims]);
 
   // (Re)apply highlights when the term/options/current-match change or text rebuilds.

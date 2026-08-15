@@ -26,6 +26,17 @@
  * never used to re-derive a position, because a text-match anchor that is not
  * unique would fabricate a location (the honesty rule AppPdfViewer already
  * enforces for coordinate-less provenance).
+ *
+ * ── 117.md §46-§48 (Safari/WebKit parity) ────────────────────────────────────
+ * The stored-anchor contract above is UNCHANGED. What 117 adds lives entirely at
+ * CAPTURE time, because that is where the WebKit defect is: the browser's own
+ * `Range.getClientRects()` is now audited against the text layer it must live in and,
+ * when it cannot be trusted, rebuilt from per-word/per-character Range geometry
+ * (`auditSelectionRects` / `rectsFromRangeGeometry` / `captureSelectionRects`) — the
+ * same cross-validate-then-fall-back-to-geometry discipline 98.md §16 established in
+ * pdfCaret.js for the identical mis-mapping. `endOfContentPlacement` and the
+ * `clampRenderDpr` / `dprMediaQuery` pair carry the two other pure decisions the
+ * viewer needs for that parity, so both are unit-testable without a browser.
  */
 import { revealBoxFor } from './pdfRevealBox.js';
 
@@ -232,6 +243,279 @@ export function rectsBounds(rects) {
   }), { x0: +list[0].x0, y0: +list[0].y0, x1: +list[0].x1, y1: +list[0].y1 });
 }
 
+/* ── 117.md §46-§48 — WebKit selection-rect validation + geometric rebuild ─── */
+
+/**
+ * How far outside the text layer a reported selection rectangle may sit before it is
+ * treated as a mis-mapped coordinate rather than an antialiasing rounding error.
+ * Two CSS px covers the sub-pixel drift a transformed span legitimately produces.
+ */
+export const SELECTION_RECT_SLACK_PX = 2;
+
+/** The host page-layer box, tolerant about which DOMRect fields the caller supplied. */
+function hostBox(host) {
+  if (!host) return null;
+  const left = +host.left, top = +host.top;
+  if (!finite(left) || !finite(top)) return null;
+  const w = finite(host.width) ? +host.width : (finite(host.right) ? +host.right - left : NaN);
+  const h = finite(host.height) ? +host.height : (finite(host.bottom) ? +host.bottom - top : NaN);
+  // Bounds we cannot measure are reported as null: the audit may then only reject a
+  // rect it can actually DISPROVE (the pdfCaret.js §16 discipline — never veto blind).
+  return { left, top, w: w > 0 ? w : null, h: h > 0 ? h : null };
+}
+
+/**
+ * auditSelectionRects(clientRects, host, { minSize, slack })
+ *   → { rects, suspect, reason, dropped }
+ *
+ * 117.md §47 — the capture path used to trust `Range.getClientRects()` outright. This
+ * repo already documents (98.md §16, pdfCaret.js) that WebKit MIS-MAPS the x coordinate
+ * of Ranges inside the per-span `scaleX` transform pdf.js applies to a text layer: the
+ * numbers come back plausible-looking but wrong — collapsed to zero width, shifted off
+ * the page, or spanning the whole document. A highlight built from those is stored in
+ * PDF user space and is then wrong FOREVER, on every browser, which is exactly the
+ * class of bug §76 forbids. So every reported rectangle is now judged against the text
+ * layer it must live in:
+ *   - it must be finite and not inverted;
+ *   - it must intersect the layer box (within `slack`);
+ *   - it must not be LARGER than the layer box (a selection cannot exceed its page);
+ *   - it must clear the zoom-projected noise floor to be KEPT (that part is not
+ *     evidence of a bug — but if it eats every rect while text was selected, the
+ *     geometry is not usable and the caller should rebuild).
+ * `suspect` says "do not trust this list"; it never decides on its own what to store.
+ */
+export function auditSelectionRects(clientRects, host, { minSize = MIN_RECT_UNITS, slack = SELECTION_RECT_SLACK_PX } = {}) {
+  const box = hostBox(host);
+  const dropped = { outside: 0, inverted: 0, oversize: 0, tiny: 0 };
+  if (!box) return { rects: [], suspect: true, reason: 'no-host', dropped };
+  const list = Array.isArray(clientRects) ? clientRects : [];
+  const rects = [];
+  let seen = 0;
+  for (const r of list) {
+    if (!r) continue;
+    const x0 = +r.left - box.left, y0 = +r.top - box.top;
+    const x1 = +r.right - box.left, y1 = +r.bottom - box.top;
+    if (![x0, y0, x1, y1].every(finite)) { dropped.inverted++; continue; }
+    seen++;
+    if (x1 < x0 || y1 < y0) { dropped.inverted++; continue; }
+    if (box.w != null && box.h != null) {
+      if (x1 < -slack || x0 > box.w + slack || y1 < -slack || y0 > box.h + slack) { dropped.outside++; continue; }
+      if ((x1 - x0) > box.w + slack || (y1 - y0) > box.h + slack) { dropped.oversize++; continue; }
+    }
+    if (x1 - x0 < minSize || y1 - y0 < minSize) { dropped.tiny++; continue; }
+    rects.push({ x0, y0, x1, y1 });
+  }
+  const reason = dropped.outside ? 'out-of-bounds'
+    : dropped.oversize ? 'oversize'
+      : dropped.inverted ? 'inverted'
+        : (seen > 0 && !rects.length) ? 'degenerate' : '';
+  return { rects, suspect: !!reason, reason, dropped };
+}
+
+/** True for whitespace, without allocating a regexp per character. */
+function isSpace(ch) { return ch === ' ' || ch === '\t' || ch === '\n' || ch === '\r' || ch === '\f' || ch === ' '; }
+
+/** Non-whitespace [from,to) segments of `text` between `from` and `to`. */
+function wordSegments(text, from, to) {
+  const segs = [];
+  let i = from;
+  while (i < to) {
+    while (i < to && isSpace(text[i])) i++;
+    if (i >= to) break;
+    let j = i;
+    while (j < to && !isSpace(text[j])) j++;
+    segs.push([i, j]);
+    i = j;
+  }
+  return segs;
+}
+
+/**
+ * rangeTextChunks(range) → [{ node, from, to }] in document order.
+ *
+ * The text-node slices a Range actually covers, resolved WITHOUT `TreeWalker` /
+ * `intersectsNode` so the same walk is exercisable against the tiny fake DOM the
+ * pdfCaret suite established (house rule: no jsdom). Element-boundary Ranges — which
+ * is what `selectNodeContents(span)` produces — are honoured by slicing the child
+ * list at the start/end offsets.
+ */
+export function rangeTextChunks(range) {
+  const root = range && range.commonAncestorContainer;
+  if (!root) return [];
+  const start = range.startContainer, end = range.endContainer;
+  const sOff = Math.max(0, Math.trunc(+range.startOffset) || 0);
+  const eOff = Math.max(0, Math.trunc(+range.endOffset) || 0);
+  const chunks = [];
+  let started = false, finished = false;
+  const visit = (node) => {
+    if (finished || !node) return;
+    const isStartEl = node === start && node.nodeType === 1;
+    const isEndEl = node === end && node.nodeType === 1;
+    if (isStartEl) started = true;
+    if (node.nodeType === 3) {
+      const text = node.textContent || '';
+      let from = 0, to = text.length;
+      if (!started) {
+        if (node !== start) return;              // still before the range
+        started = true;
+        from = Math.min(sOff, text.length);
+      }
+      if (node === end) { to = Math.min(eOff, text.length); finished = true; }
+      if (to > from) chunks.push({ node, from, to, text });
+      return;
+    }
+    const kids = node.childNodes || [];
+    const lo = isStartEl ? Math.min(sOff, kids.length) : 0;
+    const hi = isEndEl ? Math.min(eOff, kids.length) : kids.length;
+    for (let i = lo; i < hi; i++) { visit(kids[i]); if (finished) return; }
+    if (isEndEl) finished = true;
+  };
+  visit(root);
+  return chunks;
+}
+
+/**
+ * rectsFromRangeGeometry(range, { maxChars }) → viewport rects, rebuilt from
+ * per-WORD (and, where a word will not measure, per-CHARACTER) sub-Ranges.
+ *
+ * 117.md §47 — the same escape hatch pdfCaret.caretOffsetByGeometry already uses for
+ * the identical WebKit defect: a one-character `Range.getBoundingClientRect()` is
+ * measured by the layout engine and is correct on transformed text, where the
+ * whole-Range client-rect list is not. Bounded by `maxChars` so a 2 000-character
+ * selection can never turn into an unbounded layout storm; the cap is only ever hit
+ * on the already-degraded path.
+ */
+export function rectsFromRangeGeometry(range, { maxChars = 4000 } = {}) {
+  const chunks = rangeTextChunks(range);
+  if (!chunks.length) return [];
+  const owner = chunks[0].node.ownerDocument;
+  if (!owner || typeof owner.createRange !== 'function') return [];
+  let rng;
+  try { rng = owner.createRange(); } catch { return []; }
+  const out = [];
+  let budget = maxChars;
+  const measure = (node, a, b) => {
+    let r;
+    try { rng.setStart(node, a); rng.setEnd(node, b); r = rng.getBoundingClientRect(); }
+    catch { return null; }
+    if (!r) return null;
+    const left = +r.left, top = +r.top, right = +r.right, bottom = +r.bottom;
+    if (![left, top, right, bottom].every(finite)) return null;
+    if (right - left <= 0 && bottom - top <= 0) return null;
+    return { left, top, right, bottom };
+  };
+  for (const chunk of chunks) {
+    const segs = wordSegments(chunk.text, chunk.from, chunk.to);
+    for (let k = 0; k < segs.length; k++) {
+      if (budget <= 0) return out;
+      const a = segs[k][0];
+      // Each measurement runs to where the NEXT word starts (and the last one to the
+      // end of the chunk), so the inter-word space is inside a rectangle rather than a
+      // hole between two of them. Measuring the bare words instead leaves gaps a space
+      // wide, which `mergeLineRects` would honour as real — and a rebuilt highlight
+      // would come out word-by-word instead of as the line the reviewer dragged.
+      const stop = k + 1 < segs.length ? segs[k + 1][0] : chunk.to;
+      budget -= (stop - a);
+      const word = measure(chunk.node, a, stop);
+      if (word) { out.push(word); continue; }
+      // It would not measure as one Range — fall back to its characters, which is the
+      // narrowest question the layout engine can be asked (and the one 98.md §16 found
+      // WebKit still answers correctly on transformed text).
+      for (let i = a; i < stop; i++) {
+        const ch = measure(chunk.node, i, i + 1);
+        if (ch) out.push(ch);
+      }
+    }
+  }
+  return out;
+}
+
+/**
+ * captureSelectionRects(range, host, { scale, maxChars })
+ *   → { rects, source, suspect, reason }
+ *
+ * 117.md §46/§47 — THE capture decision, in one pure place: take the browser's own
+ * client rects, audit them against the text layer, and rebuild them from per-word
+ * geometry when the audit distrusts what came back. `rects` are page-local CSS px,
+ * already merged into one rectangle per rendered line; an empty list means "there is
+ * nothing honest to highlight here", never a guess.
+ */
+export function captureSelectionRects(range, host, { scale = 1, maxChars = 4000 } = {}) {
+  const s = +scale > 0 ? +scale : 1;
+  const tol = selectionThresholds(s);
+  const merge = (rects) => mergeLineRects(rects, { lineGap: tol.lineGap });
+  let raw = [];
+  try { raw = Array.from((range && range.getClientRects && range.getClientRects()) || []); } catch { raw = []; }
+  const direct = auditSelectionRects(raw, host, { minSize: tol.minSize });
+  if (!direct.suspect && direct.rects.length) {
+    return { rects: merge(direct.rects), source: 'client-rects', suspect: false, reason: '' };
+  }
+  const rebuilt = auditSelectionRects(
+    rectsFromRangeGeometry(range, { maxChars }), host, { minSize: tol.minSize },
+  );
+  if (rebuilt.rects.length) {
+    return { rects: merge(rebuilt.rects), source: 'geometry', suspect: true, reason: direct.reason || 'rebuilt' };
+  }
+  if (direct.rects.length) {
+    // Geometry could not improve on it (an environment with no measurable layout).
+    // Using what the browser said is still better than refusing — it is flagged.
+    return { rects: merge(direct.rects), source: 'client-rects', suspect: true, reason: direct.reason };
+  }
+  return { rects: [], source: 'none', suspect: direct.suspect, reason: direct.reason || 'empty' };
+}
+
+/* ── 117.md §46 — the pdf.js text-layer selection sink ────────────────────── */
+
+/** `Range.compareBoundaryPoints` constants, named so the rule below reads. */
+export const RANGE_START_TO_END = 1;
+export const RANGE_END_TO_END = 2;
+
+/**
+ * endOfContentPlacement(range, prevRange) → { modifyStart }
+ *
+ * The one DECISION inside pdf.js's `TextLayerBuilder` global selection handler, lifted
+ * out so it is testable: when the live range still ends where the previous one ended
+ * (or its start has arrived at that end), the user is dragging the START of the
+ * selection, so the "end of content" sink belongs BEFORE the anchor rather than after
+ * it. Getting this backwards is what makes a WebKit backward drag select the wrong
+ * spans. Total: no previous range, or a Range that cannot compare, means "after".
+ */
+export function endOfContentPlacement(range, prevRange) {
+  if (!range || !prevRange || typeof range.compareBoundaryPoints !== 'function') return { modifyStart: false };
+  let sameEnd = false, startAtEnd = false;
+  try { sameEnd = range.compareBoundaryPoints(RANGE_END_TO_END, prevRange) === 0; } catch { sameEnd = false; }
+  try { startAtEnd = range.compareBoundaryPoints(RANGE_START_TO_END, prevRange) === 0; } catch { startAtEnd = false; }
+  return { modifyStart: !!(sameEnd || startAtEnd) };
+}
+
+/* ── 117.md §47 — rendering resolution ────────────────────────────────────── */
+
+/**
+ * The backing-store ceiling. §76 states that device pixel ratio touches the CANVAS
+ * ONLY and can never move a stored annotation; keeping the clamp and the media query
+ * here — beside that claim — is what lets a unit test hold the viewer to it.
+ */
+export const MAX_RENDER_DPR = 2;
+
+/** The scale a page canvas is rasterized at: the device ratio, capped at 2. */
+export function clampRenderDpr(value) {
+  const n = +value;
+  return Math.min(Number.isFinite(n) && n > 0 ? n : 1, MAX_RENDER_DPR);
+}
+
+/**
+ * The media query that fires when the device pixel ratio LEAVES its current value —
+ * `(resolution: Xdppx)` matches only while the ratio is exactly X, so a `change` event
+ * means "the ratio moved" and the listener must be re-armed against the new one. Built
+ * from the RAW ratio, never the clamped one, so a 3 → 2 move (dragging the window to a
+ * different monitor) is still detected even though both clamp to 2.
+ */
+export function dprMediaQuery(value) {
+  const n = +value;
+  const raw = Number.isFinite(n) && n > 0 ? n : 1;
+  return `(resolution: ${raw}dppx)`;
+}
+
 /* ── Page indexing (§93/§94) ──────────────────────────────────────────────── */
 
 /**
@@ -431,6 +715,9 @@ export default {
   MAX_SELECTED_TEXT, MAX_COMMENT, colorFor,
   toPageRects, mergeLineRects, cssRectsToUser, userRectsToCss, rectsBounds,
   selectionThresholds, selectionCaptureDelay, SELECTION_SETTLE_MS,
+  auditSelectionRects, rangeTextChunks, rectsFromRangeGeometry, captureSelectionRects,
+  SELECTION_RECT_SLACK_PX, endOfContentPlacement, RANGE_START_TO_END, RANGE_END_TO_END,
+  clampRenderDpr, dprMediaQuery, MAX_RENDER_DPR,
   indexByPage, sortForList, createMountGate,
   canMutateAnnotation, isOwnAnnotation, annotationAriaLabel,
   pendingAnnotation, upsertByClientId, markFailed, dropByClientId, mergeServerList,
