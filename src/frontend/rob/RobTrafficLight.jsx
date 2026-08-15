@@ -8,9 +8,30 @@
  * vars, which the canvas rasteriser cannot resolve.
  */
 import { useMemo, useState } from 'react';
-import { C, FONT, MONO } from '../theme/tokens.js';
+import { C, FONT } from '../theme/tokens.js';
 import { rasterizeSvg, downloadBlob, downloadText } from '../components/exportCore.js';
 import { judgmentStyle, legendFor } from './judgmentStyle.js';
+
+/* 118.md §22/§26 — the SVG's own font stack.
+ *
+ * This string is a standalone export artifact: it is rasterised OFF the DOM and
+ * embedded in the .docx beside the forest, funnel and PRISMA figures, all of which
+ * are drawn in Georgia (svgBuilders.js / research-engine/prisma/svg.js). It used to
+ * be lettered in the APPLICATION's UI stacks — `FONT` (Inter/Manrope) for labels,
+ * `MONO` (IBM Plex Mono) for the D1..D5 headers — so one figure in the manuscript
+ * was set in the web app's typeface while its neighbours were set in a serif. That
+ * is precisely the "exported PecanRev UI styling" §22 rules out.
+ *
+ * `FONT` was also unresolvable here in the first place: it is `var(--t-font, …)`,
+ * and the canvas rasteriser has no document to resolve a custom property against,
+ * so the exported PNG fell back to whatever the renderer chose.
+ *
+ * On-screen chrome (buttons, the empty state) deliberately keeps `FONT` — that is
+ * application UI, not the figure. The Okabe–Ito judgement hexes stay untouched:
+ * they are semantic (colour-blind-safe, redundant with the +/!/×/? symbols) and
+ * contract-pinned in judgmentStyle.js, not decoration.
+ */
+const SVG_FONT = "Georgia, 'Times New Roman', serif";
 
 // Redundant, colour-free symbols. RoB 2: low '+' · some '!' · high '×'.
 // ROBINS-I (severity-ordered, all Basic-Latin/Latin-1 so the export rasteriser
@@ -61,12 +82,12 @@ export function buildTrafficLightSVG(matrix, { title = 'Risk of bias (RoB 2)' } 
 
   const parts = [];
   parts.push(`<rect x="0" y="0" width="${width}" height="${height}" fill="#ffffff"/>`);
-  parts.push(`<text x="${padL}" y="26" font-family="${FONT}" font-size="15" font-weight="700" fill="#1a1a1a">${esc(title)}</text>`);
+  parts.push(`<text x="${padL}" y="26" font-family="${SVG_FONT}" font-size="15" font-weight="700" fill="#1a1a1a">${esc(title)}</text>`);
 
   // Column headers (D1..D5, Overall)
   cols.forEach((c, i) => {
     const x = cx0 + i * cell;
-    parts.push(`<text x="${x}" y="${padT - 14}" font-family="${MONO}" font-size="12" font-weight="700" fill="#444" text-anchor="middle">${esc(c.label)}</text>`);
+    parts.push(`<text x="${x}" y="${padT - 14}" font-family="${SVG_FONT}" font-size="12" font-weight="700" fill="#444" text-anchor="middle">${esc(c.label)}</text>`);
   });
 
   rows.forEach((r, ri) => {
@@ -74,7 +95,7 @@ export function buildTrafficLightSVG(matrix, { title = 'Risk of bias (RoB 2)' } 
     const full = labelOf(r);
     const shown = full.length > TRUNC ? `${full.slice(0, TRUNC - 1)}…` : full;
     // Full label is preserved as a hover <title> so truncation never hides it.
-    parts.push(`<text x="${padL - 14}" y="${y + 4}" font-family="${FONT}" font-size="12.5" fill="#222" text-anchor="end"><title>${esc(full)}</title>${esc(shown)}</text>`);
+    parts.push(`<text x="${padL - 14}" y="${y + 4}" font-family="${SVG_FONT}" font-size="12.5" fill="#222" text-anchor="end"><title>${esc(full)}</title>${esc(shown)}</text>`);
     const byDomain = {};
     for (const cl of (r.cells || [])) byDomain[cl.domainId] = cl.judgment;
     cols.forEach((c, ci) => {
@@ -82,7 +103,7 @@ export function buildTrafficLightSVG(matrix, { title = 'Risk of bias (RoB 2)' } 
       const st = judgmentStyle(j);
       const x = cx0 + ci * cell;
       parts.push(`<circle cx="${x}" cy="${y}" r="14" fill="${st.hex}" stroke="#ffffff" stroke-width="2"/>`);
-      parts.push(`<text x="${x}" y="${y + 5}" font-family="${FONT}" font-size="15" font-weight="800" fill="#ffffff" text-anchor="middle">${esc(SYMBOL[j] || SYMBOL.na)}</text>`);
+      parts.push(`<text x="${x}" y="${y + 5}" font-family="${SVG_FONT}" font-size="15" font-weight="800" fill="#ffffff" text-anchor="middle">${esc(SYMBOL[j] || SYMBOL.na)}</text>`);
     });
   });
 
@@ -91,8 +112,8 @@ export function buildTrafficLightSVG(matrix, { title = 'Risk of bias (RoB 2)' } 
   let lx = padL;
   legend.forEach(l => {
     parts.push(`<circle cx="${lx + 8}" cy="${ly - 4}" r="8" fill="${l.hex}"/>`);
-    parts.push(`<text x="${lx + 8}" y="${ly - 0.5}" font-family="${FONT}" font-size="11" font-weight="800" fill="#fff" text-anchor="middle">${esc(SYMBOL[l.key])}</text>`);
-    parts.push(`<text x="${lx + 22}" y="${ly}" font-family="${FONT}" font-size="11.5" fill="#333">${esc(l.label)}</text>`);
+    parts.push(`<text x="${lx + 8}" y="${ly - 0.5}" font-family="${SVG_FONT}" font-size="11" font-weight="800" fill="#fff" text-anchor="middle">${esc(SYMBOL[l.key])}</text>`);
+    parts.push(`<text x="${lx + 22}" y="${ly}" font-family="${SVG_FONT}" font-size="11.5" fill="#333">${esc(l.label)}</text>`);
     lx += 40 + l.label.length * CHARW;
   });
 

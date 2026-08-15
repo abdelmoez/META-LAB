@@ -75,6 +75,12 @@ export function liveSvgToString(svgId, { background = null, stripBgRect = false 
   return { svg: new XMLSerializer().serializeToString(clone), W, H, bg };
 }
 
+/* buildPrismaSVG — the LEGACY single-column diagram, kept only as the fallback for
+   projects with no record-level screening data (research-engine/prisma/svg.js owns
+   the canonical PRISMA 2020 figure). 118.md §22/§26: `opts.monochrome` gives it the
+   same neutral skin as the canonical builder — the green "included" box becomes an
+   ordinary white/#333 box — so BOTH figure paths export unbranded. Presentation
+   only: no count, label or coordinate reads this flag. */
 export function buildPrismaSVG(prisma,opts){
   const o=opts||{};
   const n=k=>{const v=+prisma[k];return isNaN(v)?0:v;};
@@ -129,7 +135,8 @@ export function buildPrismaSVG(prisma,opts){
   const yFt=y; y+=30+26;
 
   // Included
-  svg+=box(colL,y,boxW,46,["Studies included in review (n = "+included+")",(prisma.quant?"   In meta-analysis (n = "+prisma.quant+")":"")].filter(Boolean),{bold:true,fill:"#f3f7f3",stroke:"#2e7d32"});
+  const incStyle=o.monochrome?{bold:true}:{bold:true,fill:"#f3f7f3",stroke:"#2e7d32"};
+  svg+=box(colL,y,boxW,46,["Studies included in review (n = "+included+")",(prisma.quant?"   In meta-analysis (n = "+prisma.quant+")":"")].filter(Boolean),incStyle);
   svg+=vArrow(cx,yFt+30,y);
   y+=46+20;
 
@@ -401,7 +408,13 @@ export function buildPubForestSVG(result,opts){
    ratio measures, logit for proportions), tick labels are back-transformed for
    readability, colors are ABSOLUTE hex (export-safe) and the font is Georgia.
    Input is a runMeta result ({studies:[{_es,_se,…}], pES, …}). Returns
-   { svg, W, H } or null when fewer than 3 usable studies. Deterministic. */
+   { svg, W, H } or null when fewer than 3 usable studies. Deterministic.
+
+   118.md §22/§26 — `opts.monochrome` is the neutral export skin: the pooled-effect
+   reference line was the plot's one coloured element (a green #2e7d32 dashed rule),
+   which is application styling in a submitted manuscript. Monochrome draws the SAME
+   dashed line in black, so the figure stays readable in greyscale print and carries
+   no brand colour. Presentation only — no datum, scale or coordinate reads it. */
 export function buildFunnelSVG(result, opts){
   if(!result || !Array.isArray(result.studies)) return null;
   const o=opts||{};
@@ -437,7 +450,8 @@ export function buildFunnelSVG(result, opts){
   const yS=se=>MT+(se/maxSE)*plotH;   // SE increases DOWNWARD (0 at top)
 
   // palette — absolute hex only (rasterizeSvg cannot resolve CSS variables)
-  const INK="#111111", GREY="#555555", AXIS="#333333", CONE_FILL="#f2f2f2", CONE_LINE="#bbbbbb", POOL="#2e7d32", DOT="#333333";
+  const INK="#111111", GREY="#555555", AXIS="#333333", CONE_FILL="#f2f2f2", CONE_LINE="#bbbbbb", DOT="#333333";
+  const POOL=o.monochrome?"#000000":"#2e7d32";   // 118.md §22 — see the header note
   const FF="Georgia, 'Times New Roman', serif";
   const esc=s=>String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
   const txt=(x,y,s,size,opt)=>{const a=(opt&&opt.anchor)||"start";const fill=(opt&&opt.fill)||INK;const fw=(opt&&opt.bold)?"700":"400";const it=(opt&&opt.italic)?"italic":"normal";const tr=(opt&&opt.transform)?` transform="${opt.transform}"`:"";

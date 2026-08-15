@@ -60,13 +60,36 @@ export async function forestPng(result, opts = {}) {
   return { blob, width: targetWidthPx, height: Math.round((built.H / built.W) * targetWidthPx), svg: built.svg };
 }
 
+/* ── 118.md §22/§26 — the ONE presentation seam for the neutral export skin ──
+ *
+ * §22: the exported manuscript must not carry the application's colours. The
+ * figure BUILDERS therefore gained a `monochrome` option that swaps their two
+ * decorative tints (PRISMA's header/stage bands and green included box, the
+ * funnel's green pooled line) for neutral greys and black — and NOTHING else.
+ *
+ * This module is where that option is decided, because this is the seam that
+ * already separates "a figure for the screen" from "a figure for a file":
+ *   · prismaPng / funnelPng feed the .docx and the reproducibility bundle only
+ *     → monochrome by DEFAULT (a caller may still pass `monochrome:false`);
+ *   · prismaSvg is shared by the bundle AND the in-editor preview, so it stays
+ *     colour by default and the bundle asks for monochrome explicitly.
+ * Screen previews are untouched.
+ *
+ * This is PRESENTATION, not a second drawing. The builders read the flag only
+ * where they emit a fill or a stroke, so the exported figure remains the same
+ * drawing of the same numbers as the on-screen one (117.md §12/§57) — the same
+ * geometry, the same wrapped text, the same counts, by construction.
+ */
+const mono = (opts) => (opts && opts.monochrome !== undefined ? !!opts.monochrome : true);
+
 /**
  * Render a PRISMA 2020 flow PNG from a computePrismaCounts() result (or a raw
- * prisma-shape object).
+ * prisma-shape object). Monochrome unless the caller opts out (see above).
  * @returns {Promise<{blob:Blob,width:number,height:number,svg:string}>}
  */
 export async function prismaPng(prismaResultOrShape, opts = {}) {
   const isResult = prismaResultOrShape && prismaResultOrShape.counts;
+  const monochrome = mono(opts);
   // 103.md §16 — "Do not create a separate export calculation path." When the
   // canonical record-derived flow is available it is drawn by the SAME builder the
   // on-screen diagram uses, so the exported figure and the live one are the same
@@ -74,11 +97,11 @@ export async function prismaPng(prismaResultOrShape, opts = {}) {
   // for projects with no record-level data yet.
   const flow = (isResult && prismaResultOrShape.flow) || opts.flow || null;
   const built = flow
-    ? buildPrismaFlowSVG(flow, { title: opts.title || '', perSource: true })
+    ? buildPrismaFlowSVG(flow, { title: opts.title || '', perSource: true, monochrome })
     : (() => {
       const shape = isResult ? countsToPrismaShape(prismaResultOrShape) : (prismaResultOrShape || {});
       const resolved = isResult ? prismaResultOrShape.counts : undefined;
-      return buildPrismaSVG(shape, { title: opts.title || '', resolved });
+      return buildPrismaSVG(shape, { title: opts.title || '', resolved, monochrome });
     })();
   if (!built || !built.svg) return null;
   const targetWidthPx = opts.targetWidthPx || 900;
@@ -89,11 +112,14 @@ export async function prismaPng(prismaResultOrShape, opts = {}) {
 /**
  * Render a funnel-plot PNG from a runMeta result (85.md B1 buildFunnelSVG).
  * Mirrors forestPng; null when <3 usable studies (same guard as the Analysis tab).
+ * Monochrome unless the caller opts out (118.md §22 — see the seam note above).
  * @returns {Promise<{blob:Blob,width:number,height:number,svg:string}>|null}
  */
 export async function funnelPng(result, opts = {}) {
   if (!result) return null;
-  const built = buildFunnelSVG(result, { esType: opts.esType, title: opts.title, prec: opts.prec });
+  const built = buildFunnelSVG(result, {
+    esType: opts.esType, title: opts.title, prec: opts.prec, monochrome: mono(opts),
+  });
   if (!built || !built.svg) return null;
   const targetWidthPx = opts.targetWidthPx || 2200;
   const blob = await rasterizeSvg(built.svg, built.W, built.H, { targetWidthPx, background: '#ffffff' });
@@ -190,17 +216,22 @@ export function forestSvg(result, opts = {}) {
  * one had not, which is precisely why the manuscript's figure and Screening's figure
  * were different drawings of different numbers. They are now the SAME builder fed by
  * the SAME derivation.
+ *
+ * 118.md §22/§26 — this one is shared by the in-editor PRISMA preview and the repro
+ * bundle's prisma_2020.svg, so unlike prismaPng it defaults to the SCREEN palette;
+ * the bundle passes `monochrome:true` so its .svg and its .png are the same figure.
  */
 export function prismaSvg(prismaResultOrShape, opts = {}) {
   const isResult = prismaResultOrShape && prismaResultOrShape.counts;
   const flow = (isResult && prismaResultOrShape.flow) || opts.flow || null;
+  const monochrome = !!(opts && opts.monochrome);
   if (flow) {
-    const builtFlow = buildPrismaFlowSVG(flow, { title: opts.title || '', perSource: true });
+    const builtFlow = buildPrismaFlowSVG(flow, { title: opts.title || '', perSource: true, monochrome });
     return builtFlow ? builtFlow.svg : null;
   }
   const shape = isResult ? countsToPrismaShape(prismaResultOrShape) : (prismaResultOrShape || {});
   const resolved = isResult ? prismaResultOrShape.counts : undefined;
-  const built = buildPrismaSVG(shape, { title: opts.title || '', resolved });
+  const built = buildPrismaSVG(shape, { title: opts.title || '', resolved, monochrome });
   return built ? built.svg : null;
 }
 

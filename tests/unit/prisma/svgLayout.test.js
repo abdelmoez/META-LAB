@@ -448,6 +448,18 @@ describe('export and live view use the same layout', () => {
     expect(png.boxes).toEqual(live.boxes);
     expect(png.W).toBe(live.W);
     expect(png.H).toBe(live.H);
+    // 118.md §22/§26 — `monochrome` (the neutral Word/bundle skin) joins `noBg` as an
+    // export-only PRESENTATION option: it may repaint, never re-lay-out. Stripping
+    // every fill/stroke must leave the two SVGs byte-identical, which is what keeps
+    // the exported figure the same drawing of the same numbers as the live one.
+    const mono = buildPrismaFlowSVG(DEEP, { perSource: true, monochrome: true });
+    const stripPaint = (s) => s.replace(/\s(?:fill|stroke)="[^"]*"/g, '');
+    expect(mono.boxes).toEqual(live.boxes);
+    expect(mono.W).toBe(live.W);
+    expect(mono.H).toBe(live.H);
+    expect(stripPaint(mono.svg)).toBe(stripPaint(live.svg));
+    expect(mono.svg).not.toContain('#eef1f5');
+    expect(mono.svg).not.toContain('#2e7d32');
   });
 
   it('the interactive hit-targets sit exactly on the drawn boxes', () => {

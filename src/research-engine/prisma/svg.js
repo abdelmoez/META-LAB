@@ -231,6 +231,7 @@ export function wrapBoxLines(lines, w) {
  *   updated    render the UPDATED-review template (previous-studies column)
  *   perSource  include the per-database breakdown inside the identification box
  *   footnotes  include the official footnotes (default true)
+ *   monochrome 118.md §22/§26 — PRESENTATION ONLY (see below)
  * Pure.
  */
 export function buildPrismaFlowSVG(flow, opts = {}) {
@@ -243,6 +244,25 @@ export function buildPrismaFlowSVG(flow, opts = {}) {
   const o = opts || {};
   const hasOther = n('identified_other') > 0 || n('sought_other') > 0;
   const showFootnotes = o.footnotes !== false;
+
+  /* ── 118.md §22/§26 — the neutral (unbranded) skin ──────────────────────────
+   *
+   * §22 asks that the Word manuscript carry no application styling. This diagram
+   * had exactly two decorative tints: the bluish-grey column-header/stage-band
+   * fill (#eef1f5) and the green "included" terminal box (#f3f7f3 on #2e7d32).
+   * On screen they are useful signposts; in a submitted manuscript they read as
+   * a screenshot of a web app, and a journal template cannot restyle them.
+   *
+   * `monochrome` swaps those two literals for the neutral grey/black-stroke
+   * treatment every other box already uses. It is a SKIN, not a second drawing:
+   * this flag is read ONLY where a fill/stroke literal is emitted, never where a
+   * count, a label, a size or a coordinate is computed. So the 117.md §12/§57
+   * invariant — the exported figure and the live one are the same drawing of the
+   * same numbers — holds BY CONSTRUCTION, and `boxes`/`W`/`H` are provably
+   * identical with the flag on or off (asserted in tests/unit/prisma/svgLayout).
+   */
+  const BAND_FILL = o.monochrome ? '#f2f2f2' : '#eef1f5';
+  const INCLUDED_STYLE = o.monochrome ? {} : { fill: '#f3f7f3', stroke: '#2e7d32' };
 
   /* ── geometry ──────────────────────────────────────────────────────────── */
   const RAIL = 26;               // left stage-band rail
@@ -266,7 +286,7 @@ export function buildPrismaFlowSVG(flow, opts = {}) {
 
   /* ── column headers ────────────────────────────────────────────────────── */
   const headerH = 26;
-  const header = (x, text) => `<rect x="${x}" y="${y}" width="${colW}" height="${headerH}" fill="#eef1f5" stroke="${LINE}" stroke-width="1"/>`
+  const header = (x, text) => `<rect x="${x}" y="${y}" width="${colW}" height="${headerH}" fill="${BAND_FILL}" stroke="${LINE}" stroke-width="1"/>`
     + `<text x="${x + colW / 2}" y="${y + 17}" text-anchor="middle" font-family="${FF}" font-size="11.5" font-weight="700" fill="${INK}">${esc(text)}</text>`;
 
   svg += header(dbX, o.updated ? COLUMN_HEADERS.dbUpdated : COLUMN_HEADERS.db);
@@ -494,8 +514,10 @@ export function buildPrismaFlowSVG(flow, opts = {}) {
     ];
   const incW = hasOther ? COL_W + GAP_X + SIDE_W : COL_W;
   const incX = hasOther ? dbX + (W - RAIL - PAD * 2 - incW) / 2 : dbX;
+  // 118.md §22 — monochrome drops the green tint/stroke, so the terminal box is
+  // drawn exactly like every other box (white on the shared #333 stroke).
   const inc = drawBox('included_studies', incX, y, incW, incLines, {
-    bold: true, fill: '#f3f7f3', stroke: '#2e7d32',
+    bold: true, ...INCLUDED_STYLE,
   });
   svg += inc.svg;
   // 105.md — the arrow the user reported. It starts at the ELIGIBILITY box's own
@@ -516,7 +538,7 @@ export function buildPrismaFlowSVG(flow, opts = {}) {
   const bandTop = (o.title ? 44 : 14) + headerH + 18;
   const band = (label, y1, y2) => {
     const cy = (y1 + y2) / 2;
-    return `<rect x="${RAIL - 22}" y="${y1}" width="20" height="${Math.max(0, y2 - y1)}" fill="#eef1f5" stroke="${LINE}" stroke-width="0.8"/>`
+    return `<rect x="${RAIL - 22}" y="${y1}" width="20" height="${Math.max(0, y2 - y1)}" fill="${BAND_FILL}" stroke="${LINE}" stroke-width="0.8"/>`
       + `<text x="${RAIL - 12}" y="${cy}" text-anchor="middle" font-family="${FF}" font-size="10" font-weight="700"`
       + ` fill="${INK}" transform="rotate(-90 ${RAIL - 12} ${cy})">${esc(label)}</text>`;
   };

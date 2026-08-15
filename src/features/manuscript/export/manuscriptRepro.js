@@ -114,7 +114,11 @@ export async function buildReproPackage(project, draft, opts = {}) {
   }
 
   // PRISMA diagram (PNG + SVG)
-  const svg = prismaSvg(prismaResult, {});
+  // 118.md §22/§26 — the bundle is a submission artifact, so its figure carries the
+  // neutral (unbranded) skin. prismaPng is monochrome by default; prismaSvg is shared
+  // with the in-editor preview and therefore has to be ASKED, or the bundle would ship
+  // a coloured .svg beside a monochrome .png of the same diagram.
+  const svg = prismaSvg(prismaResult, { monochrome: true });
   if (svg) entries.push({ name: 'prisma/prisma_2020.svg', text: svg });
   try {
     const { prismaPng } = await import('./figures.js');
