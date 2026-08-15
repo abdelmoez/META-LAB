@@ -142,6 +142,26 @@ describe('manuscript/citations', () => {
     expect(a).toContain('(2020).');
     expect(a).toContain('https://doi.org/10.1/x');
   });
+  /**
+   * 117.md §29 — formatting an author list must be IDEMPOTENT. PubMed/RIS and every
+   * Vancouver-formatted list a researcher pastes back write the initials
+   * concatenated ("Smith JA"), and taking only the first character deleted the
+   * second initial on every round trip — so a correction from "Alpha A" to
+   * "Alpha AA" rendered as "Alpha A" and looked like it had not saved.
+   */
+  it('keeps concatenated initials whole, and still shortens a real given name', () => {
+    const van = (authors) => formatCitation({ authors, title: 'T' }, 'vancouver');
+    expect(van('Polack FP; Thomas SJ')).toContain('Polack FP, Thomas SJ.');
+    expect(van('Alpha AA; Gamma GG')).toContain('Alpha AA, Gamma GG.');
+    // Re-formatting our own output returns it unchanged.
+    expect(van('Polack FP, Thomas SJ')).toContain('Polack FP, Thomas SJ.');
+    // A given NAME (including an all-caps one) is still reduced to one initial.
+    expect(van('Smith, John')).toContain('Smith J.');
+    expect(van('Smith Andrew Brian')).toContain('Smith AB.');
+    expect(van('Smith, JOHN')).toContain('Smith J.');
+    // APA/Harvard spell the same run out with stops.
+    expect(formatCitation({ authors: 'Polack FP', title: 'T' }, 'apa')).toContain('Polack, F. P.');
+  });
   it('builds and numbers a reference list', () => {
     const refs = referencesFromProject(fixtureProject());
     const list = generateReferenceList(refs, 'vancouver');

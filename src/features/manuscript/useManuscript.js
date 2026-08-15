@@ -75,6 +75,10 @@ import {
   libraryAddEntry, libraryEditReference, librarySuppress, libraryRestore,
   libraryDeleteEntry, libraryMerge, recordToReferenceEntry, usedReferenceIds,
   suggestReferenceDuplicates,
+  // 117.md §88 (r3) — "reference merges must be auditable and undoable". ONE history
+  // kind for the whole overlay, with pure entry/precondition/label/note builders.
+  REFERENCE_LIBRARY_KIND, referenceLibraryEntry, referenceLibraryUndoStep,
+  referenceLibraryNote,
 } from '../../research-engine/manuscript/referenceLibrary.js';
 import { generateDraft } from '../../research-engine/manuscript/draft.js';
 import { gradeCertaintyEnabled, sofCertaintyMap } from '../../frontend/workspace/gradeApi.js';
@@ -82,6 +86,10 @@ import { gradeCertaintyEnabled, sofCertaintyMap } from '../../frontend/workspace
 // returns a no-op shape), so the manuscript keeps working in any shell that has not
 // mounted one yet.
 import { useProjectHistory } from '../../frontend/history/HistoryContext.jsx';
+// 108.md §17 / 117.md §88 — the shared undo-feedback queue (the bottom-left snackbar
+// with an entry-targeted Undo button). Inert outside a provider, exactly like
+// useProjectHistory, so a shell that has not mounted one simply gets no toast.
+import { useUndoFeedback } from '../../frontend/history/useUndoFeedback.jsx';
 // 117.md §13 — the SSE poke channel. The manuscript is a downstream reader of the
 // screening record set, so it subscribes to the SAME pokes the PRISMA diagram does
 // and re-fetches through the authorized endpoints (events are never trusted as data).
@@ -139,6 +147,14 @@ export function useManuscript(project, upd) {
   const history = useProjectHistory();
   const historyRef = useRef(history);
   historyRef.current = history;
+
+  // 117.md §88 — the same render-assigned ref for the feedback queue. The manuscript
+  // is mounted inside ProjectInteractionProvider (StitchProjectWorkspace / the legacy
+  // Workspace), so this resolves to the real snackbar queue there and to the inert
+  // no-op shape in a shell-less test.
+  const feedback = useUndoFeedback();
+  const feedbackRef = useRef(feedback);
+  feedbackRef.current = feedback;
 
   // Pending debounced field patches for ONE draft at a time: { draftId, fields:Map }.
   const pending = useRef(null);
@@ -1257,8 +1273,44 @@ export function useManuscript(project, upd) {
    *   3. materialize — which strips empty containers and returns `undefined` for an
    *      empty library, so a project that never used the feature keeps a blob with
    *      no `referenceLibrary` key at all (the byte-stability rule).
+   *
+   * 117.md §88 (r3) — and step 4: record the mutation in the project history. Every
+   * writer below passes its OP ID, which is what turns "the library changed" into a
+   * named, undoable action ("Merge references", "Delete reference", …). The op id is
+   * null on the undo/redo path — an executor must never record what it is replaying.
    */
-  const writeLibrary = useCallback((mutator) => {
+
+  /**
+   * 117.md §88 — one history entry per library action, plus the undo-carrying
+   * snackbar for the three destructive-feeling ops (merge / delete / import).
+   *
+   * `prev`/`next` are the COMPLETE overlays the write moved between, so undo and
+   * redo are the same wholesale write in opposite directions and there is no inverse
+   * of `libraryMerge` to maintain (see referenceLibrary.js §88 for why that matters).
+   * The note's button is ENTRY-TARGETED (`undoEntry`, never a bare `undo()`): notes
+   * queue for 8 s, during which newer actions land on the same stack.
+   */
+  const recordLibraryOp = useCallback((op, prev, next) => {
+    const entry = referenceLibraryEntry(op, prev, next);
+    if (!entry) return null;                       // nothing moved → no history cost
+    const stamped = historyRef.current.record(entry);
+    if (!stamped) return null;                     // `projectUndoRedo` off (109.md §5)
+    // Only `import` reads the count; deriving it from the two snapshots keeps the
+    // sentence honest even when some records were skipped as no-ops.
+    const added = Math.max(0, (next.entries || []).length - (prev.entries || []).length);
+    const message = referenceLibraryNote(op, added);
+    if (message) {
+      feedbackRef.current.notify({
+        scope: historyRef.current.scope || '',
+        message,
+        entryId: stamped.id,
+        undo: () => { historyRef.current.undoEntry(stamped.id); },
+      });
+    }
+    return stamped;
+  }, []);
+
+  const writeLibrary = useCallback((mutator, op = null) => {
     const cur = readReferenceLibrary(projectRef.current);
     const next = mutator(cur);
     if (!next) return false;
@@ -1274,8 +1326,9 @@ export function useManuscript(project, upd) {
       setLastError((e && e.message) || 'Could not save the reference library.');
       return false;
     }
+    if (op) recordLibraryOp(op, cur, next);
     return true;
-  }, [upd]);
+  }, [upd, recordLibraryOp]);
 
   /** §28/§29 — add a reference (manual entry or a confirmed smart lookup). */
   const addReference = useCallback((entry) => {
@@ -1285,7 +1338,7 @@ export function useManuscript(project, upd) {
       const next = libraryAddEntry(lib, entry, { usedIds: used, nowIso: new Date().toISOString() });
       if (next) newId = next.entries[next.entries.length - 1].id;
       return next;
-    });
+    }, 'add');
     return ok ? newId : null;
   }, [writeLibrary]);
 
@@ -1297,13 +1350,14 @@ export function useManuscript(project, upd) {
    */
   const editReference = useCallback((id, patch, opts = {}) => writeLibrary(
     (lib) => libraryEditReference(lib, id, patch, { ...opts, nowIso: new Date().toISOString() }),
+    'edit',
   ), [writeLibrary]);
 
   /** §31 — hide a derived reference from the bibliography (restorable). */
-  const suppressReference = useCallback((id) => writeLibrary((lib) => librarySuppress(lib, id)), [writeLibrary]);
-  const restoreReference = useCallback((id) => writeLibrary((lib) => libraryRestore(lib, id)), [writeLibrary]);
+  const suppressReference = useCallback((id) => writeLibrary((lib) => librarySuppress(lib, id), 'suppress'), [writeLibrary]);
+  const restoreReference = useCallback((id) => writeLibrary((lib) => libraryRestore(lib, id), 'restore'), [writeLibrary]);
   /** Delete an ADDED reference outright (a derived one can only be suppressed). */
-  const deleteReference = useCallback((id) => writeLibrary((lib) => libraryDeleteEntry(lib, id)), [writeLibrary]);
+  const deleteReference = useCallback((id) => writeLibrary((lib) => libraryDeleteEntry(lib, id), 'delete'), [writeLibrary]);
 
   /**
    * §32 — merge two references. The losing id becomes an ALIAS of the survivor, so
@@ -1317,6 +1371,7 @@ export function useManuscript(project, upd) {
       refs: resolveReferenceLibrary(projectRef.current, { library: lib }).refs,
       nowIso: new Date().toISOString(),
     }),
+    'merge',
   ), [writeLibrary]);
 
   /**
@@ -1341,9 +1396,38 @@ export function useManuscript(project, upd) {
         added += 1;
       }
       return added ? next : null;
-    });
+    }, 'import');
     return added;
   }, [writeLibrary]);
+
+  /* ── 117.md §88 (r3) — the reference-library undo/redo executor ──────────────
+   *
+   * ONE executor for ONE kind, mirroring `manuscript.prismaOverride` above: it
+   * re-validates against the LIVE overlay (never the state at record time), refuses
+   * politely and BY NAME when a collaborator — or this user in another tab — moved
+   * the library since, and otherwise writes the recorded snapshot back through the
+   * SAME `writeLibrary` path the forward action used (108.md §8 — never a local-state
+   * rollback). `op` is omitted on that call, so replaying an entry never records one.
+   *
+   * Byte-stability: undoing the FIRST library op writes back the normalized EMPTY
+   * overlay, which `materializeReferenceLibrary` turns into `undefined` — the
+   * `referenceLibrary` key leaves the blob entirely instead of lingering as `{}`.
+   *
+   * Registered in its own effect (rather than alongside the three above) because it
+   * depends on `writeLibrary`, which is declared here — the library is a PROJECT-level
+   * concern and its whole write path lives in this block.
+   *
+   * Same honest limitation as the draft executors: `upd` reports persistence failure
+   * asynchronously through `saveState`, so a refusal here is a PRECONDITION failure,
+   * not a persistence one. The persistence net is the shell's blob-conflict handler,
+   * which clears every blob-backed scope on an autosave 409.
+   */
+  useEffect(() => registerExecutor(REFERENCE_LIBRARY_KIND, (op) => {
+    const step = referenceLibraryUndoStep(readReferenceLibrary(projectRef.current), op);
+    if (!step.ok) return { ok: false, reason: 'refused', detail: step.detail };
+    const applied = writeLibrary(() => step.library);
+    return applied ? true : { ok: false, reason: 'failed' };
+  }), [registerExecutor, writeLibrary]);
 
   // 85.md B2 — "Insert reference" from the Tables/Figures panels: no editor is
   // mounted there, so the token is appended to the END of Results (the caller

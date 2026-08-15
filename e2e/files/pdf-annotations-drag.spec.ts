@@ -57,13 +57,29 @@ async function openViewer(page: Page, projectId: string): Promise<ShellNav> {
 }
 
 interface GlyphBox {
+  /** Viewport coordinates — what page.mouse needs. */
   left: number; top: number; right: number; bottom: number; width: number; height: number;
+  /** The same run relative to its page container — what survives a scroll. */
+  pageLeft: number; pageTop: number; pageRight: number; pageBottom: number;
 }
 
 /**
  * The viewport box of the text run containing `needle` on page 1 — i.e. where the
  * glyphs the reviewer would drag across actually are, as the ENGINE measures them.
  * Returns null when the run is not there (a scanned page, a text layer that failed).
+ *
+ * It SCROLLS THE RUN INTO VIEW first, which is not a convenience: the T&A workbench
+ * puts the PDF panel inside a scrolling record column under a sticky decision bar and
+ * pager, so at the project's default viewport the fixture's body line starts BELOW the
+ * fold. `getBoundingClientRect` still reports where it would be, and a mouse press at
+ * those coordinates lands on the pager button that covers them — a drag that selects
+ * nothing, for a reason that has nothing to do with the text layer. A reviewer scrolls
+ * the line into view before dragging across it; so does this.
+ *
+ * Both coordinate systems are returned. Viewport coords drive `page.mouse`; the
+ * page-relative ones are what the later assertions compare, because Playwright may
+ * auto-scroll the container to reach a control and viewport numbers captured before
+ * that would then be measuring a different thing.
  */
 async function glyphBox(page: Page, needle: string): Promise<GlyphBox | null> {
   return page.evaluate((text: string) => {
@@ -72,21 +88,41 @@ async function glyphBox(page: Page, needle: string): Promise<GlyphBox | null> {
     const spans = Array.from(tl.querySelectorAll(':scope > span')) as HTMLElement[];
     const target = spans.find((s) => ((s.dataset.t ?? s.textContent) || '').includes(text));
     if (!target) return null;
+    target.scrollIntoView({ block: 'center', inline: 'center' });
     const r = target.getBoundingClientRect();
     if (!(r.width > 0) || !(r.height > 0)) return null;
-    return { left: r.left, top: r.top, right: r.right, bottom: r.bottom, width: r.width, height: r.height };
+    const pageEl = target.closest('[data-page]');
+    const p = pageEl ? pageEl.getBoundingClientRect() : { left: 0, top: 0 };
+    return {
+      left: r.left, top: r.top, right: r.right, bottom: r.bottom, width: r.width, height: r.height,
+      pageLeft: r.left - p.left, pageTop: r.top - p.top, pageRight: r.right - p.left, pageBottom: r.bottom - p.top,
+    };
   }, needle);
 }
 
 /**
  * A REAL drag across `box`, in steps, the way a reviewer selects a line. Returns the
- * horizontal span actually traversed so the caller can assert the highlight overlaps it.
+ * horizontal span actually traversed, in PAGE-RELATIVE px, so the caller can assert the
+ * highlight overlaps it no matter what the container scrolled to in between.
  */
-async function dragAcross(page: Page, box: GlyphBox): Promise<{ x0: number; x1: number; y: number }> {
+async function dragAcross(page: Page, box: GlyphBox): Promise<{ x0: number; x1: number }> {
   const y = box.top + box.height / 2;
   const inset = Math.max(1, Math.min(6, box.width * 0.04));
   const x0 = box.left + inset;
   const x1 = box.right - inset;
+
+  // The press must actually land on a glyph run of THIS text layer. If something is
+  // covering it, every assertion below would fail as "the drag selected nothing", which
+  // says nothing about the engine's selection behaviour — the thing this file exists to
+  // test. Checked, not assumed, so the failure names itself.
+  const onText = await page.evaluate(([px, py]: number[]) => {
+    const el = document.elementFromPoint(px, py);
+    if (!el) return 'nothing is at the drag point';
+    const span = el.closest('.mlpdf-tl > span');
+    return span ? '' : `the drag point is covered by <${el.tagName.toLowerCase()}>`;
+  }, [x0 + Math.max(2, (x1 - x0) * 0.1), y]);
+  expect(onText, 'the drag never reached the text layer').toBe('');
+
   await page.mouse.move(x0, y);
   await page.mouse.down();
   // Several intermediate moves: a single jump to the end is not a drag in any engine's
@@ -95,7 +131,7 @@ async function dragAcross(page: Page, box: GlyphBox): Promise<{ x0: number; x1: 
     await page.mouse.move(x0 + ((x1 - x0) * i) / 8, y, { steps: 2 });
   }
   await page.mouse.up();
-  return { x0, x1, y };
+  return { x0: box.pageLeft + inset, x1: box.pageRight - inset };
 }
 
 /** The first mark's box expressed as fractions of the page-1 container box. */
@@ -108,6 +144,19 @@ async function markRelativeToPage(page: Page): Promise<{ x: number; y: number; w
     const m = mark.getBoundingClientRect();
     if (!(p.width > 0) || !(p.height > 0)) return null;
     return { x: (m.left - p.left) / p.width, y: (m.top - p.top) / p.height, w: m.width / p.width, h: m.height / p.height };
+  });
+}
+
+/** The first mark's box in page-relative CSS px (the frame the drag was recorded in). */
+async function markPageBox(page: Page): Promise<{ x0: number; y0: number; x1: number; y1: number } | null> {
+  return page.evaluate(() => {
+    const pageEl = document.querySelector('[data-page="1"]');
+    const mark = document.querySelector('[data-annotation-id]');
+    if (!pageEl || !mark) return null;
+    const p = pageEl.getBoundingClientRect();
+    const m = mark.getBoundingClientRect();
+    if (!(m.width > 0) || !(m.height > 0)) return null;
+    return { x0: m.left - p.left, y0: m.top - p.top, x1: m.right - p.left, y1: m.bottom - p.top };
   });
 }
 
@@ -138,16 +187,18 @@ test.describe('117.md §46-§50 — PDF highlighting driven by a real mouse drag
     // the selection there, the control unmounted, and this click never landed.
     await expect(page.getByRole('button', { name: /Highlights \(1\)/ })).toBeVisible();
 
-    /* The mark is on the page that was dragged, and it covers what was dragged. */
+    /* The mark is on the page that was dragged, and it covers what was dragged. Both
+       boxes are page-relative, so an auto-scroll on the way to a control cannot make
+       this pass or fail for the wrong reason. */
     await expect(page.locator('[data-page="1"] [data-annotation-id]').first()).toBeVisible();
     await expect(page.locator('[data-page="2"] [data-annotation-id]')).toHaveCount(0);
-    const markBox = await marks(page).first().boundingBox();
-    expect(markBox).not.toBeNull();
+    const markBox = await markPageBox(page);
+    expect(markBox, 'the painted highlight had no measurable box').not.toBeNull();
     const TOL = 8;   // px: engines disagree about glyph edges, not about which line
-    expect(markBox!.x, 'highlight starts to the right of the drag').toBeLessThan(dragged.x1 + TOL);
-    expect(markBox!.x + markBox!.width, 'highlight ends left of the drag').toBeGreaterThan(dragged.x0 - TOL);
-    expect(markBox!.y).toBeLessThan(box!.bottom + TOL);
-    expect(markBox!.y + markBox!.height).toBeGreaterThan(box!.top - TOL);
+    expect(markBox!.x0, 'the highlight starts past the end of the drag').toBeLessThan(dragged.x1 + TOL);
+    expect(markBox!.x1, 'the highlight ends before the start of the drag').toBeGreaterThan(dragged.x0 - TOL);
+    expect(markBox!.y0, 'the highlight sits below the dragged line').toBeLessThan(box!.pageBottom + TOL);
+    expect(markBox!.y1, 'the highlight sits above the dragged line').toBeGreaterThan(box!.pageTop - TOL);
 
     /* §80 "comment creation works" — through the popover, with real keyboard input. */
     await marks(page).first().click();

@@ -43,7 +43,7 @@ import PdfAnnotationPageLayer, { NO_ANNOTATIONS } from './PdfAnnotationLayer.jsx
 // 117.md §46-§48 — the pure decisions behind Safari/WebKit selection parity: where the
 // text-layer selection sink belongs, and how the rendering resolution is clamped and
 // re-observed. They live in the model module so they are unit-testable without a browser.
-import { endOfContentPlacement, clampRenderDpr, dprMediaQuery } from './pdfAnnotationModel.js';
+import { endOfContentPlacement, clampRenderDpr, dprMediaQuery, fitWidthFromContainer } from './pdfAnnotationModel.js';
 import { usePdfAnnotationUndoShortcut } from './pdfAnnotationShortcut.js';
 // 117.md §44 (r2 fix) — an overlay that CONSUMES Escape must claim the browser
 // fullscreen exit the same press causes; otherwise §44 reads it as "the researcher left
@@ -564,21 +564,51 @@ export default function AppPdfViewer({
   }, [url, withCredentials, reloadKey]);
 
   /* ── Track the scroll-container width so pages fit-to-width and re-fit on resize ─ */
+  // 117.md §46/§48 — THE FIT-WIDTH / SCROLLBAR FEEDBACK LOOP, and why it belongs to the
+  // Safari selection story. Fit-width sizes the page from the container's CONTENT width,
+  // and a classic (space-taking) vertical scrollbar is subtracted from that width. So on
+  // any engine that draws one — WebKit everywhere, Blink/Gecko outside overlay-scrollbar
+  // platforms — a document whose height lands within a scrollbar's width of the viewport
+  // is BISTABLE: with the bar the page is ~10 px narrower and overflows (bar stays), and
+  // the re-fit that follows makes it fit again (bar goes), which widens the container,
+  // which re-fits, forever. Each cycle re-runs the page render effect, which REBUILDS THE
+  // TEXT LAYER (`tl.innerHTML = ''`) — so a reviewer's selection was destroyed a few
+  // hundred ms after they made it, the Highlight control vanished with it, and on a
+  // 1-page PDF Safari could not highlight anything at all. (Measured: clientWidth
+  // alternating 342 ↔ 352 forever under WebKit; Blink's overlay scrollbars hid it.)
+  //
+  // The fix is `fitWidthFromContainer` (pdfAnnotationModel.js, beside the other §46-§48
+  // rules and unit-tested there): make the measurement independent of whether the bar is
+  // showing RIGHT NOW by keeping its width reserved once this container has shown one.
+  // Nothing about the stored anchor changes — this only stops the projection scale from
+  // oscillating.
+  const scrollGutterRef = useRef(0);
+  const measureWrapWidth = useCallback(() => {
+    const el = wrapRef.current;
+    if (!el) return 0;
+    const fit = fitWidthFromContainer({
+      offsetWidth: el.offsetWidth, clientWidth: el.clientWidth, reserved: scrollGutterRef.current,
+    });
+    scrollGutterRef.current = fit.reserved;
+    return fit.width;
+  }, []);
   useEffect(() => {
     const el = wrapRef.current;
     if (!el) return undefined;
-    if (typeof ResizeObserver === 'undefined') { setWrapW(el.clientWidth); return undefined; }
+    if (typeof ResizeObserver === 'undefined') { setWrapW(measureWrapWidth()); return undefined; }
     let raf = 0;
-    const ro = new ResizeObserver((entries) => {
-      const w = entries[0]?.contentRect?.width;
-      if (!w) return;
+    const ro = new ResizeObserver(() => {
       cancelAnimationFrame(raf);                       // coalesce rapid resizes (RoB drag) → 1 update/frame
-      raf = requestAnimationFrame(() => setWrapW((prev) => (Math.abs(prev - w) >= 1 ? Math.round(w) : prev)));
+      raf = requestAnimationFrame(() => {
+        const w = measureWrapWidth();
+        if (!w) return;
+        setWrapW((prev) => (Math.abs(prev - w) >= 1 ? Math.round(w) : prev));
+      });
     });
     ro.observe(el);
-    setWrapW(el.clientWidth);
+    setWrapW(measureWrapWidth());
     return () => { cancelAnimationFrame(raf); ro.disconnect(); };
-  }, [doc, error, loading]);
+  }, [doc, error, loading, measureWrapWidth]);
 
   /* ── Per-page display geometry (fit-width × zoom, rotation-aware) ─────────── */
   // Intrinsic (rotation-applied) dims; a page falls back to page-1's dims until its

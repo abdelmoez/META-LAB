@@ -819,6 +819,156 @@ export function filterReferenceRows(rows, f = {}) {
   });
 }
 
+/* ════════════ 117.md §88 (r3) — every library mutation is UNDOABLE ════════════
+ *
+ * "Reference merges must be auditable and undoable."
+ *
+ * A merge is the one library op nobody could reconstruct by hand: it fills the
+ * survivor's blanks from the loser, unions tags/keywords, concatenates notes, folds
+ * in the loser's PDF / screening / study links, ALIASES the loser's id and (for a
+ * derived reference) suppresses it as well. An undo built from a per-op inverse
+ * would therefore be a second implementation of `libraryMerge` running backwards —
+ * a second place to get it wrong, and the first place to silently break a citation
+ * that was already written. Delete and import have the same shape (an import lands
+ * N entries in one action; a delete takes an entry AND its edits patch with it).
+ *
+ * So a history entry carries COMPLETE prev/next OVERLAY snapshots and the executor
+ * writes one of them back wholesale — the whole-value pattern the analysis engine's
+ * FIGURE_PRESENTATION ops already use, for the same reason: ONE undo step per user
+ * action and no inverse to maintain. The snapshot is cheap because the overlay is
+ * small: the included studies are NOT in it (they are re-derived from
+ * `project.studies` on every read, §31), so it is a handful of added entries plus
+ * three small maps.
+ *
+ * The `expect` half is what makes it safe under collaboration (108.md §14/§15): the
+ * executor deep-compares the LIVE overlay against the state the entry was recorded
+ * against, and refuses BY NAME when somebody else moved it.
+ *
+ * Byte-stability: an undo of the FIRST library op restores the normalized EMPTY
+ * overlay, and `materializeReferenceLibrary` turns that back into `undefined` — so
+ * the project blob loses the `referenceLibrary` key entirely rather than keeping an
+ * empty `{}` behind. Absence is restored as absence, exactly like applyFactPin.
+ *
+ * Everything here is pure: the hook contributes the write path and the clock, and
+ * nothing else.
+ */
+
+/** The 108.md history `kind` for EVERY reference-library mutation. Deliberately one. */
+export const REFERENCE_LIBRARY_KIND = 'manuscript.referenceLibrary';
+
+/**
+ * Human labels — this is what "<label> undone" reads as in the undo snackbar, so the
+ * wording matches the buttons the researcher pressed (Merge…, Delete, Hide, Restore).
+ */
+export const REFERENCE_LIBRARY_OP_LABELS = Object.freeze({
+  add: 'Add reference',
+  edit: 'Edit reference',
+  merge: 'Merge references',
+  suppress: 'Hide reference',
+  restore: 'Restore reference',
+  delete: 'Delete reference',
+  import: 'Import references',
+});
+
+export const REFERENCE_LIBRARY_OPS = Object.freeze(Object.keys(REFERENCE_LIBRARY_OP_LABELS));
+
+/** Label for one op id (an unknown id still reads as something honest). Pure. */
+export function referenceLibraryOpLabel(op) {
+  const key = String(op == null ? '' : op);
+  return REFERENCE_LIBRARY_OP_LABELS[key] || 'Reference library change';
+}
+
+/**
+ * Deterministic JSON: object keys SORTED, `undefined` collapsed to null. Two overlays
+ * that are deep-equal serialize identically whatever order their keys arrived in
+ * (entries preserve unknown keys verbatim, so key order really does vary).
+ */
+function stableJson(v) {
+  if (v === undefined) return 'null';
+  if (v === null || typeof v !== 'object') return JSON.stringify(v);
+  if (Array.isArray(v)) return `[${v.map(stableJson).join(',')}]`;
+  return `{${Object.keys(v).sort().map((k) => `${JSON.stringify(k)}:${stableJson(v[k])}`).join(',')}}`;
+}
+
+/** The stable serialization of an overlay — the §14 precondition's comparison key. Pure. */
+export function referenceLibrarySignature(lib) {
+  const l = normalizeReferenceLibrary(lib);
+  return stableJson({ entries: l.entries, edits: l.edits, aliases: l.aliases, removed: l.removed });
+}
+
+/** Deep-equality for two overlays (both normalized first, so shape noise never counts). Pure. */
+export function referenceLibraryMatches(lib, expected) {
+  return referenceLibrarySignature(lib) === referenceLibrarySignature(expected);
+}
+
+/**
+ * referenceLibraryEntry(op, prev, next) → the 108.md entry to record, or `null` when
+ * the overlay did not actually move (a no-op must never cost the user a Ctrl+Z).
+ *
+ * Recorded at ISSUE time, with the complete pre-image AND post-image, so undo and
+ * redo are the same code path in opposite directions.
+ */
+export function referenceLibraryEntry(op, prev, next) {
+  const before = normalizeReferenceLibrary(prev);
+  const after = normalizeReferenceLibrary(next);
+  if (referenceLibrarySignature(before) === referenceLibrarySignature(after)) return null;
+  return {
+    kind: REFERENCE_LIBRARY_KIND,
+    label: referenceLibraryOpLabel(op),
+    // The overlay is ONE project-level entity, so every library entry shares a key.
+    entityKey: 'referenceLibrary',
+    undoOp: { op, library: before, expect: after },
+    redoOp: { op, library: after, expect: before },
+  };
+}
+
+/**
+ * The refusal sentence (108.md §17 — an executor's `detail` REPLACES the generic
+ * "changed by a collaborator" line, and this surface has no banner to correct it).
+ */
+export function referenceLibraryRefusal(op) {
+  return `The reference library changed since “${referenceLibraryOpLabel(op)}” — reload before undoing.`;
+}
+
+/**
+ * referenceLibraryUndoStep(current, op) → { ok:true, library } | { ok:false, detail }
+ *
+ * The executor's ENTIRE decision, kept pure so the §14 precondition is unit-tested
+ * rather than buried inside a React hook. `library` is the complete overlay to write
+ * back through the ordinary forward path.
+ */
+export function referenceLibraryUndoStep(current, op) {
+  const o = isObj(op) ? op : null;
+  if (!o || !isObj(o.library)) return { ok: false, detail: referenceLibraryRefusal(o && o.op) };
+  if (!referenceLibraryMatches(current, o.expect)) {
+    return { ok: false, detail: referenceLibraryRefusal(o.op) };
+  }
+  return { ok: true, library: normalizeReferenceLibrary(o.library) };
+}
+
+/**
+ * §88 — the ops that also get an UNDO-CARRYING SNACKBAR, not just a stack entry.
+ * These are the three that feel destructive in the moment: a merge makes a reference
+ * disappear from the list, a delete removes one outright, and an import lands a batch
+ * the researcher may immediately regret. Add / edit / hide / restore are visible and
+ * individually reversible in the panel itself, so a toast for them would be noise.
+ */
+export const REFERENCE_LIBRARY_NOTE_OPS = Object.freeze(['merge', 'delete', 'import']);
+
+/**
+ * referenceLibraryNote(op, added) — the snackbar sentence, '' when this op gets none.
+ * `added` is how many entries the op landed (only `import` reads it). Pure.
+ */
+export function referenceLibraryNote(op, added = 0) {
+  if (op === 'merge') return 'References merged — every citation still resolves.';
+  if (op === 'delete') return 'Reference deleted from the library.';
+  if (op === 'import') {
+    const n = Number.isFinite(added) && added > 0 ? Math.floor(added) : 0;
+    return `${n} reference${n === 1 ? '' : 's'} imported into the library.`;
+  }
+  return '';
+}
+
 export default {
   REFERENCE_FIELDS,
   REFERENCE_FIELD_KEYS,
@@ -856,4 +1006,16 @@ export default {
   sortReferences,
   collectReferenceTags,
   filterReferenceRows,
+  // 117.md §88 (r3) — the undo/audit model for the overlay writers above.
+  REFERENCE_LIBRARY_KIND,
+  REFERENCE_LIBRARY_OP_LABELS,
+  REFERENCE_LIBRARY_OPS,
+  REFERENCE_LIBRARY_NOTE_OPS,
+  referenceLibraryOpLabel,
+  referenceLibrarySignature,
+  referenceLibraryMatches,
+  referenceLibraryEntry,
+  referenceLibraryRefusal,
+  referenceLibraryUndoStep,
+  referenceLibraryNote,
 };

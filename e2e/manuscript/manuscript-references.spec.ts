@@ -40,12 +40,28 @@ async function seedStudies(request: APIRequestContext, projectId: string) {
   expect(put.ok()).toBeTruthy();
 }
 
-/** A duplicate of s1 under a different id, so §91's merge step has something to merge. */
+/**
+ * Two included studies that are the SAME publication, so §91's merge step has
+ * something to merge.
+ *
+ * They must not be byte-identical: 117.md §32's resolver deduplicates the derived
+ * set itself, on an exact DOI → PMID → normalized-title+year key, and records an
+ * ALIAS for every copy it drops. Two rows carrying the same title and year are
+ * therefore collapsed before the panel ever sees them (their citations already
+ * survive, by alias — that is the §32 guarantee, unit-tested in
+ * referenceLibrary117), and the duplicate CARD correctly has nothing to offer.
+ *
+ * What the card is actually for is the pair that exact-key dedupe cannot collapse
+ * — which is the realistic one: the same trial harvested from two databases, one
+ * record carrying the DOI and the other only the PMID. Different keys, so both
+ * survive the resolver; `classifyPair` still calls them a probable duplicate; and
+ * the merge has real work to do (the survivor gains the PMID it lacked).
+ */
 async function seedDuplicate(request: APIRequestContext, projectId: string) {
   const proj = await (await request.get(`/api/projects/${projectId}`)).json();
   proj.studies = [
-    { id: 's1', title: 'Alpha trial of the intervention', authors: 'Alpha A; Gamma G', year: '2019', journal: 'Lancet' },
-    { id: 's2', title: 'Alpha trial of the intervention', authors: 'Alpha A; Gamma G', year: '2019', journal: 'Lancet' },
+    { id: 's1', title: 'Alpha trial of the intervention', authors: 'Alpha A; Gamma G', year: '2019', journal: 'Lancet', doi: '10.1000/alpha' },
+    { id: 's2', title: 'Alpha trial of the intervention', authors: 'Alpha A; Gamma G', year: '2019', journal: 'Lancet', pmid: '31234567' },
   ];
   const put = await request.put(`/api/projects/${projectId}/autosave`, { data: proj });
   expect(put.ok()).toBeTruthy();
@@ -90,12 +106,18 @@ async function openEditorSection(page: Page, section: string) {
 
 const citeChips = (page: Page) => page.getByTestId('stitch-manuscript-rich-editor').locator('.ms-cite');
 
-/** Insert a citation at the caret through the toolbar picker. */
-async function insertCitation(page: Page, search: string) {
+/**
+ * Insert a citation at the caret through the toolbar picker.
+ * `expectOptions` pins how many references the search was supposed to narrow to —
+ * pass 1 when the test depends on citing one PARTICULAR reference, so a fixture
+ * that stops being unambiguous fails loudly instead of citing the wrong one.
+ */
+async function insertCitation(page: Page, search: string, expectOptions?: number) {
   await page.getByTestId('stitch-manuscript-insert-citation').click();
   const popover = page.getByTestId('stitch-manuscript-insert-citation-popover');
   await expect(popover).toBeVisible();
   await popover.getByTestId('stitch-manuscript-insert-citation-search').fill(search);
+  if (expectOptions != null) await expect(popover.getByRole('option')).toHaveCount(expectOptions);
   await popover.getByRole('option').first().click();
   await expect(popover).toHaveCount(0);
 }
@@ -253,20 +275,27 @@ test.describe('Manuscript reference manager (117.md §26-§41, §78, §91)', () 
     await expect(page.getByText(/Delta cohort of long-term outcomes/)).toBeVisible();
     await expect(page.getByText(/2022;377\(2\):100-110/)).toBeVisible();
 
-    /* §32 — the two identical seeded studies are offered as a merge, and merging
-       must not break a citation already written against the LOSING id. */
+    /* §32 — the two seeded copies of the same trial are offered as a merge, and
+       merging must not break a citation already written against the LOSING id.
+       "Merge into the first" keeps the pair's FIRST reference (s1, the DOI copy),
+       so the citation written here has to point at the second one (s2) or the
+       merge would prove nothing — hence the search by s2's PMID, which is the one
+       field that tells the two apart. */
     const editor = await openEditorSection(page, 'results');
     await editor.click();
     await page.keyboard.press('ControlOrMeta+End');
     await page.keyboard.type('The duplicated record is cited here ');
-    await insertCitation(page, 'Alpha trial');
+    await insertCitation(page, '31234567', 1);
     await expect(citeChips(page)).toHaveCount(1);
     await expect(page.getByTestId('stitch-manuscript-save-status').first()).toContainText(/Saved/i, { timeout: 20_000 });
 
     await page.getByTestId('stitch-manuscript-subtab-references').click();
     const dupCard = page.getByTestId('stitch-manuscript-reference-duplicates');
     await expect(dupCard).toBeVisible();
-    await dupCard.getByRole('button', { name: /Merge into the first/ }).first().click();
+    await dupCard.getByTestId('stitch-manuscript-merge-s1-s2').click();
+    // The loser is gone from the list; it survives only as an alias (and, being a
+    // derived reference, as a restorable hidden one).
+    await expect(dupCard).toHaveCount(0);
 
     // The citation still resolves after the merge (never "[?]").
     await openEditorSection(page, 'results');
@@ -281,7 +310,21 @@ test.describe('Manuscript reference manager (117.md §26-§41, §78, §91)', () 
     await editDialog.getByTestId('stitch-manuscript-reffield-authors').fill('Alpha AA; Gamma GG');
     await editDialog.getByTestId('stitch-manuscript-reference-save').click();
     await expect(editDialog).toHaveCount(0);
+    // Vancouver keeps a two-initial run whole ("Alpha AA"), so the correction is
+    // legible in the bibliography rather than silently collapsed back to "Alpha A".
     await expect(page.getByText(/Alpha AA/)).toBeVisible();
+
+    // §29 — the correction is an OVERLAY PATCH on the derived reference: the study
+    // record is untouched, which is what makes "a refresh can never win over the
+    // correction" structural. Asserted against the persisted blob, which also gives
+    // the shell's debounced autosave a deterministic point to have landed by — a
+    // reload that outran it would be testing the debounce, not the overlay.
+    await expect.poll(async () => {
+      const p = await (await request.get(`/api/projects/${tmpProject.id}`)).json();
+      const edits = (p.referenceLibrary && p.referenceLibrary.edits) || {};
+      return (edits.s1 && edits.s1.authors) || '';
+    }, { timeout: 20_000 }).toBe('Alpha AA; Gamma GG');
+
     // …and it survives a full reload (the overlay is persisted, not view state).
     await page.reload();
     await expect(page.getByTestId('stitch-manuscript-workspace')).toBeVisible({ timeout: 20_000 });
@@ -291,23 +334,31 @@ test.describe('Manuscript reference manager (117.md §26-§41, §78, §91)', () 
     /* §37 — change the citation style; the bibliography re-renders derivationally. */
     const styleSelect = page.getByLabel('Citation style');
     await styleSelect.selectOption('harvard');
-    await expect(page.getByText(/Alpha AA/)).toBeVisible();
+    // The correction survives the style change — spelled Harvard's way ("Alpha,
+    // A. A."), which is the point: the metadata is stored once and FORMATTED per
+    // style, never stored per style.
+    await expect(page.getByText(/Alpha, A\. A\./)).toBeVisible();
     // Harvard quotes the title and puts the year in parentheses after the authors.
     await expect(page.getByText(/\(2019\)/).first()).toBeVisible();
     // §37 — the in-text marker follows the style too.
     await openEditorSection(page, 'results');
     await expect(citeChips(page).first()).toHaveText(/\(Alpha.*2019\)/, { timeout: 10_000 });
 
-    /* §41 — export. The manuscript must still produce a real .docx with all of it. */
+    /* §41 — export. The manuscript must still produce a real .docx with all of it.
+       The canonical export button lives on the OVERVIEW panel: the Export panel
+       renders the same control without test ids so the id stays unique (the same
+       place manuscript.spec.ts exports from). */
     await styleSelect.selectOption('vancouver');
-    await page.getByTestId('stitch-manuscript-subtab-export').click();
+    await page.getByTestId('stitch-manuscript-subtab-overview').click();
     const download = page.waitForEvent('download', { timeout: 60_000 });
     await page.getByTestId('stitch-manuscript-export-word').click();
     // Validation warnings (uncited references while drafting) are allowed through.
+    // The review only appears AFTER prepareExport resolves, so this waits for it
+    // rather than sampling visibility on the same tick; a clean model downloads
+    // with no dialog at all, which is why the wait is allowed to time out.
     const review = page.getByTestId('stitch-manuscript-export-validation');
-    if (await review.isVisible().catch(() => false)) {
-      await page.getByTestId('stitch-manuscript-export-anyway').click();
-    }
+    const reviewed = await review.waitFor({ state: 'visible', timeout: 15_000 }).then(() => true, () => false);
+    if (reviewed) await page.getByTestId('stitch-manuscript-export-anyway').click();
     const file = await download;
     expect(file.suggestedFilename()).toMatch(/\.docx$/);
   });

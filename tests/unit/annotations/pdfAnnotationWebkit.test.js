@@ -27,7 +27,7 @@ import {
   auditSelectionRects, rangeTextChunks, rectsFromRangeGeometry, captureSelectionRects,
   SELECTION_RECT_SLACK_PX, endOfContentPlacement, RANGE_START_TO_END, RANGE_END_TO_END,
   clampRenderDpr, dprMediaQuery, MAX_RENDER_DPR,
-  cssRectsToUser, selectionThresholds,
+  cssRectsToUser, selectionThresholds, fitWidthFromContainer,
 } from '../../../src/frontend/components/pdfAnnotationModel.js';
 import { readSource } from '../../helpers/readSource.js';
 
@@ -464,5 +464,77 @@ describe('117.md §46 — the annotation layer survives Safari\'s selection coll
   it('still refuses to draw or capture on a rotated page (the §76 stand-down is intact)', () => {
     expect(src).toContain('const unrotated = (rotation % 360) === 0;');
     expect(src).toContain('const usable = !!(pageDims && +scale > 0 && unrotated);');
+  });
+});
+
+/* ── §46/§48 — the fit-width ↔ scrollbar feedback loop ─────────────────────── */
+
+describe('117.md §46/§48 — fit-width cannot oscillate with the vertical scrollbar', () => {
+  // The measured WebKit case: a 352 px container that draws a 10 px scrollbar. With the
+  // bar the content box is 342 and the page overflows; re-fitting to 342 makes it fit,
+  // the bar goes, the content box is 352 again — and the cycle rebuilds the text layer
+  // (`tl.innerHTML = ''`) every few hundred ms, which is what destroyed a Safari
+  // reviewer's selection before they could reach the Highlight control.
+  const WITH_BAR = { offsetWidth: 352, clientWidth: 342 };
+  const NO_BAR = { offsetWidth: 352, clientWidth: 352 };
+
+  it('reports the SAME width whether or not the bar is showing, once it has been seen', () => {
+    const shown = fitWidthFromContainer({ ...WITH_BAR, reserved: 0 });
+    expect(shown).toEqual({ width: 342, reserved: 10 });
+    const hidden = fitWidthFromContainer({ ...NO_BAR, reserved: shown.reserved });
+    expect(hidden.width, 'the bar disappearing must not widen the page').toBe(342);
+    expect(hidden.reserved).toBe(10);
+  });
+
+  it('reaches a fixed point in one step and stays there for both layout states', () => {
+    let reserved = 0;
+    let width = 0;
+    // Alternate the two self-consistent layouts the way the real loop did.
+    for (const state of [WITH_BAR, NO_BAR, WITH_BAR, NO_BAR, NO_BAR, WITH_BAR]) {
+      const out = fitWidthFromContainer({ ...state, reserved });
+      if (reserved) expect(out.width, 'the width moved after the gutter was known').toBe(width);
+      ({ width, reserved } = out);
+    }
+    expect(width).toBe(342);
+    expect(reserved).toBe(10);
+  });
+
+  it('costs nothing where the scrollbar takes no space (overlay scrollbars, Blink)', () => {
+    // clientWidth === offsetWidth in BOTH states, so there is no gutter to reserve and
+    // the reported width is exactly what the container measures — no lost pixels.
+    expect(fitWidthFromContainer({ offsetWidth: 362, clientWidth: 362, reserved: 0 }))
+      .toEqual({ width: 362, reserved: 0 });
+  });
+
+  it('never double-counts a border: it is in the live gutter and in the remembered one', () => {
+    // A 2 px border each side: offsetWidth is 4 px larger in both states.
+    const bordered = fitWidthFromContainer({ offsetWidth: 356, clientWidth: 342, reserved: 0 });
+    expect(bordered.reserved).toBe(14);            // 4 border + 10 scrollbar
+    expect(bordered.width).toBe(342);
+    // Bar gone: clientWidth grows by the bar only, and only the bar is subtracted back.
+    expect(fitWidthFromContainer({ offsetWidth: 356, clientWidth: 352, reserved: 14 }).width).toBe(342);
+  });
+
+  it('is monotone in the remembered gutter and refuses nonsense measurements', () => {
+    expect(fitWidthFromContainer({ offsetWidth: 352, clientWidth: 352, reserved: 10 }).reserved).toBe(10);
+    expect(fitWidthFromContainer({ offsetWidth: 352, clientWidth: 330, reserved: 10 }).reserved).toBe(22);
+    for (const bad of [0, -5, NaN, null, undefined, 'x']) {
+      expect(fitWidthFromContainer({ offsetWidth: 352, clientWidth: bad, reserved: 7 }))
+        .toEqual({ width: 0, reserved: 7 });
+    }
+    // An unmeasurable offsetWidth may not invent a gutter, nor lose the remembered one.
+    expect(fitWidthFromContainer({ offsetWidth: NaN, clientWidth: 342, reserved: 0 }))
+      .toEqual({ width: 342, reserved: 0 });
+    expect(fitWidthFromContainer()).toEqual({ width: 0, reserved: 0 });
+  });
+
+  it('is the rule the viewer actually measures with (no second copy in the component)', () => {
+    const viewer = readSource(VIEWER);
+    expect(viewer).toContain('fitWidthFromContainer({');
+    expect(viewer).toContain('scrollGutterRef.current = fit.reserved;');
+    expect(viewer).toContain('setWrapW(measureWrapWidth());');
+    // The old measurement read the ResizeObserver entry directly, which is exactly the
+    // number that flips with the scrollbar.
+    expect(viewer).not.toContain('entries[0]?.contentRect?.width');
   });
 });

@@ -14,6 +14,7 @@
  * value is in the round trip through autosave, not in any single function.
  */
 import { test, expect } from '../fixtures/stitch-test';
+import * as api from '../helpers/api';
 
 /** The canonical flow — the SAME payload the Screening PRISMA tab draws from. */
 async function canonicalFlow(request: import('@playwright/test').APIRequestContext, siftId: string) {
@@ -29,9 +30,15 @@ async function openManuscriptPrisma(page: import('@playwright/test').Page, proje
   await page.getByTestId('stitch-manuscript-subtab-prisma').click();
 }
 
-/** The "n" cell of one stage row in the PRISMA counts table. */
+/**
+ * The "n" cell of one stage row in the PRISMA counts table.
+ * The label is matched as a LITERAL: "Records excluded (screening)" is a real stage
+ * name, and interpolating it raw made "(screening)" a regex group — the anchored
+ * pattern then only matched a label without the brackets, i.e. nothing on the page.
+ */
 function stageRow(page: import('@playwright/test').Page, stage: string) {
-  return page.locator('tr', { has: page.locator('td', { hasText: new RegExp(`^${stage}$`) }) }).first();
+  const literal = stage.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return page.locator('tr', { has: page.locator('td', { hasText: new RegExp(`^${literal}$`) }) }).first();
 }
 
 test.describe('Manuscript PRISMA is a synchronized view of the canonical flow', () => {
@@ -122,21 +129,52 @@ test.describe('Manuscript PRISMA is a synchronized view of the canonical flow', 
     await expect(stageRow(page, 'Records identified')).toContainText(String(autoIdentified));
   });
 
-  test('§13 — a screening decision propagates without a refresh button', async ({ page, request, screeningProject }) => {
+  /**
+   * §13 — "changes anywhere affecting PRISMA must automatically propagate… no
+   * refresh button".
+   *
+   * The decision is issued by a SECOND reviewer, and that is not incidental: the
+   * realtime bus deliberately EXCLUDES the acting user from `decision.saved`
+   * (`emitToProjectMembers(..., { exclude: req.user.id })`), because the surface
+   * that made the change already shows it. A decision issued from this browser's
+   * own session would therefore emit no frame to this browser at all, and the only
+   * thing left to catch it would be the 20 s `visibilitychange` throttle the hook
+   * keeps for the same-user second-tab case — so a test that decided as itself
+   * would be asserting that fallback (or nothing), never the propagation §13 is
+   * about. A collaborator screening while the author drafts is also the honest
+   * shape of the requirement.
+   */
+  test('§13 — a screening decision propagates without a refresh button', async ({ page, request, screeningProject, normalContext }) => {
     const { project, siftId } = screeningProject;
     await openManuscriptPrisma(page, project.id);
 
-    const before = (await canonicalFlow(request, siftId)).flow.boxes.excluded_screening.n;
+    /* The counts TABLE reports project-level scalars (`flow.counts.*`), not the
+       drawn boxes. The difference is load-bearing here: PRISMA 2020 gives the
+       other-methods column no "records screened"/"records excluded" box, so
+       `boxes.excluded_screening` is DATABASE-ARM ONLY — and the fixture's records
+       come from a bare RIS upload with no declared database, i.e. the other arm.
+       Reading the box would watch a number that is 0 before and after, whoever
+       decides. `counts.excludedScreen` is the both-arms figure the row renders. */
+    const excludedScreen = async () => (await canonicalFlow(request, siftId)).flow.counts.excludedScreen;
+    const before = await excludedScreen();
     await expect(stageRow(page, 'Records excluded (screening)')).toContainText(String(before));
 
-    // Exclude one record through the real domain action (never a direct DB poke).
+    // A second reviewer joins the screening workspace (the screening.spec.ts pattern).
+    const second = await api.me(normalContext.request);
+    expect(second?.email, 'the seeded normal user must be resolvable').toBeTruthy();
+    await api.addProjectMember(request, siftId, { email: second!.email, preset: 'reviewer' });
+
+    // They exclude one record through the real domain action (never a direct DB poke).
     const list = await (await request.get(`/api/screening/projects/${encodeURIComponent(siftId)}/records?limit=1`)).json();
     const rid = (list.records || [])[0]?.id;
     expect(rid, 'no screening record to decide on').toBeTruthy();
-    const dec = await request.post(`/api/screening/projects/${encodeURIComponent(siftId)}/records/${encodeURIComponent(rid)}/decision`, {
+    const dec = await normalContext.request.post(`/api/screening/projects/${encodeURIComponent(siftId)}/records/${encodeURIComponent(rid)}/decision`, {
       data: { decision: 'exclude', stage: 'title_abstract' },
     });
     expect(dec.ok(), `saveDecision failed: ${dec.status()}`).toBeTruthy();
+    // The canonical flow really did move — otherwise the assertion below could pass
+    // for the wrong reason (or fail for a counting reason, not a delivery one).
+    await expect.poll(excludedScreen, { timeout: 15_000 }).toBe(before + 1);
 
     // No reload, no refresh control: the SSE poke → debounced source refetch.
     // Generous timeout — the client debounce is ~2s on top of delivery.

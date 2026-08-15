@@ -68,12 +68,28 @@ export function parseAuthor(token) {
   return { family: t, given: '', raw: t };
 }
 
-/** Initials "AB" from a given-name string ("Andrew B." / "Andrew Brian" / "A B"). */
+/**
+ * Initials "AB" from a given-name string ("Andrew B." / "Andrew Brian" / "A B").
+ *
+ * 117.md §29 — a token that is ALREADY a run of initials is kept whole. PubMed,
+ * RIS (`AU  - Smith JA`) and every Vancouver-formatted list a researcher pastes
+ * back in write the initials CONCATENATED, so taking only the first character
+ * silently deleted an author's second initial — "Polack FP" rendered as
+ * "Polack F", and a §29 correction from "Alpha A" to "Alpha AA" appeared not to
+ * save at all. Formatting must be idempotent: re-formatting our own output has to
+ * return it unchanged.
+ *
+ * The run is capped at three characters, which is what keeps this a rule about
+ * initials rather than a rule about capital letters: "AA"/"FP"/"JWB" are initials,
+ * an all-caps given NAME ("JOHN", "MARIA" — some databases shout every field) is
+ * not, and is still reduced to one initial. Pure.
+ */
+const INITIALS_RUN_RE = /^[A-Z]{2,3}$/;
 function initialsOf(given) {
   const g = clean(given);
   if (!g) return '';
   const tokens = g.split(/[\s.\-]+/).filter(Boolean);
-  return tokens.map((w) => w[0].toUpperCase()).join('');
+  return tokens.map((w) => (INITIALS_RUN_RE.test(w) ? w : w[0].toUpperCase())).join('');
 }
 
 /** Format a single author for a given style. Pure. */

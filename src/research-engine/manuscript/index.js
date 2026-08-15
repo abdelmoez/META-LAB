@@ -9,6 +9,10 @@ export * from './model.js';
 export * from './sourceHash.js';
 export * from './prismaCounts.js';
 export * from './citations.js';
+// 117.md §26-§33 + §88 — THE reference resolver seam (derived included studies +
+// the project-level overlay), its pure overlay writers, and the undo/audit model
+// those writers are recorded through. No name collides with anything else here.
+export * from './referenceLibrary.js';
 export * from './tables.js';
 export * from './draft.js';
 export * from './prismaChecklist.js';

@@ -516,6 +516,41 @@ export function dprMediaQuery(value) {
   return `(resolution: ${raw}dppx)`;
 }
 
+/* ── 117.md §46/§48 — fit-width must not oscillate with the scrollbar ─────── */
+
+/**
+ * fitWidthFromContainer({ offsetWidth, clientWidth, reserved }) → { width, reserved }
+ *
+ * THE DECISION that stops a fit-width PDF panel from re-laying-out forever, and the
+ * reason it lives beside the other §46-§48 rules: on WebKit it is what made "text
+ * selection does not work in Safari" true even after the sink and the capture audit
+ * were right.
+ *
+ * Fit-width sizes the page from the container's CONTENT width, and a classic
+ * (space-taking) vertical scrollbar is subtracted from that width. A document whose
+ * height lands within a scrollbar's width of the viewport is therefore BISTABLE: with
+ * the bar the page is ~10 px narrower and overflows, so the bar is right; re-fitting to
+ * that narrower width makes the page short enough to fit, so the bar goes; the container
+ * widens; re-fit; forever. Every cycle rebuilds the text layer, so a selection lives a
+ * few hundred milliseconds. Blink hides it behind overlay scrollbars; WebKit does not.
+ *
+ * The rule: once a container has shown a vertical scrollbar, that width stays RESERVED,
+ * so the number fed to fit-width is the same whether or not the bar is showing right now
+ * and the loop cannot close. `offsetWidth - clientWidth` is that width; a border sits in
+ * both the live and the remembered term, so it cancels and is never double-counted.
+ * Monotone in `reserved` (it only ever grows), which is what makes the fixed point
+ * reachable in one step. Pure: the caller owns the remembered value.
+ */
+export function fitWidthFromContainer({ offsetWidth, clientWidth, reserved = 0 } = {}) {
+  const held = +reserved > 0 ? +reserved : 0;
+  const cw = +clientWidth;
+  if (!Number.isFinite(cw) || cw <= 0) return { width: 0, reserved: held };
+  const ow = +offsetWidth;
+  const live = Number.isFinite(ow) ? Math.max(0, ow - cw) : 0;
+  const keep = Math.max(held, live);
+  return { width: Math.max(0, cw - (keep - live)), reserved: keep };
+}
+
 /* ── Page indexing (§93/§94) ──────────────────────────────────────────────── */
 
 /**
