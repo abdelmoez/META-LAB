@@ -54,6 +54,9 @@ import {
   // 108.md §6 — pure capture/apply/compare for the two undoable structured
   // mutations (section lock, fact pin). See manuscript/historyOps.js.
   sectionLockOf, sectionLockMatches, captureFactPin, applyFactPin, factPinMatches,
+  // 117.md §21/§22 — the audited PRISMA data-override model (registry + pure
+  // write/compare primitives). See manuscript/prismaCounts.js.
+  setPrismaOverride, prismaOverrideOf, prismaOverrideMatches, prismaOverrideLabel,
   // 102.md — manual-input placeholder detection, counts, grouping and navigation.
   collectPlaceholders, placeholderCounts, groupPlaceholders, stepPlaceholder,
 } from '../../research-engine/manuscript/index.js';
@@ -63,11 +66,23 @@ import { gradeCertaintyEnabled, sofCertaintyMap } from '../../frontend/workspace
 // returns a no-op shape), so the manuscript keeps working in any shell that has not
 // mounted one yet.
 import { useProjectHistory } from '../../frontend/history/HistoryContext.jsx';
+// 117.md §13 — the SSE poke channel. The manuscript is a downstream reader of the
+// screening record set, so it subscribes to the SAME pokes the PRISMA diagram does
+// and re-fetches through the authorized endpoints (events are never trusted as data).
+import { useRealtime } from '../../frontend/hooks/useRealtime.js';
+import { shouldReloadForRecordPoke } from '../prisma/inspectorModel.js';
 import * as MS from './manuscriptState.js';
 import {
   emptyManuscriptSources, fetchManuscriptSources, linkedScreenProjectId, composeGenOpts,
   sourceAvailability,
 } from './manuscriptData.js';
+
+/**
+ * 117.md §13 — the floor between two "the tab became visible again" refreshes of the
+ * live sources. Long enough that alt-tabbing costs nothing, short enough that coming
+ * back from a screening session always shows current numbers.
+ */
+export const VISIBILITY_REFRESH_THROTTLE_MS = 20000;
 
 export function useManuscript(project, upd) {
   const drafts = useMemo(() => readManuscripts(project), [project]);
@@ -243,7 +258,36 @@ export function useManuscript(project, upd) {
       ));
       return applied ? true : { ok: false, reason: 'refused' };
     });
-    return () => { offLock(); offFact(); };
+    // 117.md §22 "Allow undo" — a PRISMA data override is a discrete, audited,
+    // exactly-invertible mutation, so it joins the two above under the same contract:
+    // re-validate the field's CURRENT stored value against `expect` (a collaborator,
+    // or this user in another tab, may have moved it) and write through mutateActive.
+    // 108.md — the undo APPENDS an audit row marked via:'undo'; it never rewrites the
+    // forward entry, so the §22 log stays a history rather than a current state.
+    const offPrisma = registerExecutor('manuscript.prismaOverride', (op, ctx) => {
+      const d = freshestDraft();
+      if (!d || d.id !== op.draftId) return { ok: false, reason: 'refused' };
+      if (!prismaOverrideMatches(d, op.field, op.expect)) {
+        return {
+          ok: false,
+          reason: 'refused',
+          detail: `The “${prismaOverrideLabel(op.field)}” override changed since — reload before undoing.`,
+        };
+      }
+      const applied = mutateActive((cur) => (
+        cur && cur.id === op.draftId
+          ? setPrismaOverride(cur, op.field, op.value, {
+            auto: op.auto,
+            // 117.md §22 (r2 integration) — undo/redo rows name their actor too.
+            by: (projectRef.current && projectRef.current._me && projectRef.current._me.name) || undefined,
+            nowIso: new Date().toISOString(),
+            via: (ctx && ctx.direction) === 'redo' ? 'redo' : 'undo',
+          })
+          : null
+      ));
+      return applied ? true : { ok: false, reason: 'refused' };
+    });
+    return () => { offLock(); offFact(); offPrisma(); };
   }, [registerExecutor, mutateActive, freshestDraft]);
 
   // Ensure ≥1 draft (seed from legacy on first use); keep activeId valid. Holds a
@@ -342,16 +386,101 @@ export function useManuscript(project, upd) {
     return { sources: sourcesRef.current, fetchedAt: null };
   }, [pid, screenPid]);
 
+  /* ══════════ 117.md §13 — automatic propagation, no refresh button ══════════
+   *
+   * "Changes anywhere affecting PRISMA must automatically propagate… No refresh
+   * button should be required for ordinary synchronization."
+   *
+   * Until now the manuscript's live sources were fetched ONCE per project open (plus
+   * on export), so a screening decision, a second-reviewer finalization or a fresh
+   * import left the editor showing project-open numbers until the researcher
+   * navigated away and back. The PRISMA diagram already solved this by subscribing to
+   * the SSE poke channel; the manuscript is a downstream reader of the SAME record
+   * set, so it subscribes to the same three pokes and re-runs the SAME soft-fail
+   * fetch. Pokes carry ids only (global invariant 8) — nothing here trusts the event
+   * as data.
+   *
+   * Debounced ~2s because one research action lands several pokes (a decision save
+   * pokes decision.saved, a finalize pokes handoff.updated, a bulk import pokes once
+   * at completion): one burst must cost ONE refetch, not one per event. The refetch
+   * itself is guarded by `sourcesGenRef`, so a poke arriving as the project changes
+   * can never install the old project's sources.
+   */
+  const pokeTimer = useRef(null);
+  const refreshSourcesRef = useRef(refreshSources);
+  refreshSourcesRef.current = refreshSources;
+  const onPrismaPoke = useCallback((ev) => {
+    if (!shouldReloadForRecordPoke(ev, screenPid)) return;
+    if (pokeTimer.current) clearTimeout(pokeTimer.current);
+    pokeTimer.current = setTimeout(() => {
+      pokeTimer.current = null;
+      refreshSourcesRef.current();
+    }, 2000);
+  }, [screenPid]);
+  useEffect(() => () => { if (pokeTimer.current) clearTimeout(pokeTimer.current); }, []);
+  useRealtime({
+    // A metadata edit can move a record between the database and other-methods arms.
+    'record.updated': onPrismaPoke,
+    // Title/abstract decisions and conflict resolutions.
+    'decision.saved': onPrismaPoke,
+    // Second-review finalize / revert (the included + reports boxes).
+    'handoff.updated': onPrismaPoke,
+  });
+
+  /* 117.md §13 — THE SAME-USER, SECOND-TAB CASE.
+   *
+   * The pokes above cover collaborators, but the bus deliberately EXCLUDES the
+   * acting user from decision/finalize events (their own UI already reflects the
+   * change — in the surface that made it). A researcher screening in one tab with
+   * the manuscript open in another is therefore invisible to the SSE path, and it
+   * is a completely ordinary way to work.
+   *
+   * Returning to the tab is the moment those numbers are about to be read, so that
+   * is when they are refreshed. Throttled so flicking between tabs cannot turn into
+   * a fetch storm, and only on the hidden→visible transition, never on every focus
+   * event. No new state and no refresh button: the same soft-fail fetch as always.
+   */
+  const lastVisibleRefreshRef = useRef(0);
+  useEffect(() => {
+    if (typeof document === 'undefined' || !pid) return undefined;
+    const onVisible = () => {
+      if (document.visibilityState !== 'visible') return;
+      const now = Date.now();
+      if (now - lastVisibleRefreshRef.current < VISIBILITY_REFRESH_THROTTLE_MS) return;
+      lastVisibleRefreshRef.current = now;
+      refreshSourcesRef.current();
+    };
+    document.addEventListener('visibilitychange', onVisible);
+    return () => document.removeEventListener('visibilitychange', onVisible);
+  }, [pid, screenPid]);
+
   const genOpts = useMemo(
     () => composeGenOpts({ project, runMeta, gradeByOutcome, sources }),
     [project, gradeByOutcome, sources],
   );
 
   /* ── derived engine data for the panels ── */
+  /* 117.md §12/§14/§57 — THE ROOT CAUSE OF THE OUT-OF-SYNC MANUSCRIPT PRISMA.
+   *
+   * 103.md built the bridge: computePrismaCounts short-circuits into `adaptFlow`
+   * whenever `opts.flow` is present, so the manuscript reads the same record-derived
+   * numbers Screening draws. `fetchManuscriptSources` has fetched that flow since
+   * 103.md and `composeGenOpts` has forwarded it as `genOpts.flow` — but THIS memo
+   * (and prepareExport below) never passed it, so the bridge never fired for the two
+   * call sites that actually feed the editor. The manuscript therefore resolved every
+   * box through the legacy counter chain, whose highest live tier is the stale
+   * `project.prisma` blob MetaSiftPrismaSync stamps in — which is exactly the
+   * "different counts / stale counts / missing branches" §14 forbids.
+   *
+   * One line each. Everything downstream (tables, diagram, narrative, fact tokens,
+   * dependency fingerprints, snapshots, export) reads THIS object, so threading it
+   * here is what makes §14 structurally true rather than maintained by hand.
+   */
   const prismaCounts = useMemo(
     () => computePrismaCounts(project, {
       overrides: activeDraft && activeDraft.prismaOverrides,
       ...(sources.screening ? { screening: sources.screening } : {}),
+      ...(sources.prismaFlow ? { flow: sources.prismaFlow } : {}),
     }),
     [project, activeDraft, sources],
   );
@@ -545,9 +674,13 @@ export function useManuscript(project, upd) {
     const { sources: fresh, fetchedAt } = await refreshSources();
     const proj = projectRef.current;
     const gOpts = composeGenOpts({ project: proj, runMeta, gradeByOutcome, sources: fresh });
+    // 117.md §12/§57 — same canonical bridge as the display memo above (see its
+    // comment). Without `flow` here the exported .docx/.zip re-derived the legacy
+    // chain and could embed a DIFFERENT PRISMA than the editor had just validated.
     const pc = computePrismaCounts(proj, {
       overrides: draft.prismaOverrides,
       ...(fresh.screening ? { screening: fresh.screening } : {}),
+      ...(fresh.prismaFlow ? { flow: fresh.prismaFlow } : {}),
     });
 
     /* 101.md §36 — the export is a CLEAN manuscript.
@@ -756,6 +889,74 @@ export function useManuscript(project, upd) {
       redoOp: { draftId, sectionId: id, locked: !!locked, expect: prev },
     });
   }, [mutateActive, freshestDraft]);
+
+  /* ══════════ 117.md §21/§22 — applying and reverting a PRISMA data override ══
+   *
+   * A STRUCTURAL mutation, not a debounced meta patch: the old panel wrote the whole
+   * `prismaOverrides` object through `setMetaDebounced` from a render-time snapshot,
+   * so two fields edited inside one debounce window could lose each other, no audit
+   * line existed at all, and there was nothing to undo. Now each field goes through
+   * the pure `setPrismaOverride` writer (which appends the capped §22 audit entry and
+   * deletes the key on revert) via `mutateActive` — the same serialized path every
+   * other structured manuscript mutation uses.
+   *
+   * `auto` is read off the CURRENT resolved counts, i.e. the automated value the
+   * override displaces, and stored on the audit line so it can be read later without
+   * re-deriving anything.
+   */
+  const prismaCountsRef = useRef(prismaCounts);
+  prismaCountsRef.current = prismaCounts;
+
+  const writePrismaOverride = useCallback((field, value, meta = {}) => {
+    if (!field) return null;
+    const before = freshestDraft();
+    const draftId = before ? before.id : null;
+    const prev = prismaOverrideOf(before, field);
+    const pc = prismaCountsRef.current;
+    const ovInfo = (pc && pc.overrides && pc.overrides[field]) || null;
+    // The automated value: the one the overlay displaced when an override is already
+    // in force, else the currently resolved (un-overridden) count.
+    const auto = ovInfo ? ovInfo.auto : ((pc && pc.counts && pc.counts[field]) ?? null);
+    const next = mutateActive((d) => {
+      if (!d || d.id !== draftId) return null;
+      // 117.md §22 (r2 integration) — the audit entry names its actor. Same seam
+      // the snapshot author uses; absent identity degrades to an entry without `by`.
+      const p = projectRef.current;
+      const by = (p && p._me && p._me.name) || undefined;
+      const out = setPrismaOverride(d, field, value, { auto, by, nowIso: new Date().toISOString(), ...meta });
+      // A no-op returns the SAME draft: skip the write entirely rather than
+      // autosaving an identical blob (and never record an entry for nothing).
+      if (out === d) return null;
+      // Bump the draft's own updatedAt through the shared meta helper, exactly like
+      // every other structural mutation (MS.setSectionLocked / MS.setMeta).
+      return MS.setMeta(out, {});
+    });
+    if (!next || !draftId) return null;
+    const to = prismaOverrideOf(next, field);
+    if (prev === to) return null;                       // nothing moved → no entry
+    if (!meta.via || meta.via === 'user') {
+      historyRef.current.record({
+        kind: 'manuscript.prismaOverride',
+        label: to == null ? 'Revert PRISMA override' : 'PRISMA override',
+        entityKey: `${draftId}:${field}`,
+        undoOp: { draftId, field, value: prev, auto, expect: to },
+        redoOp: { draftId, field, value: to, auto, expect: prev },
+      });
+    }
+    return next;
+  }, [mutateActive, freshestDraft]);
+
+  /** §21 "apply override" — record a manual value for one PRISMA box. */
+  const setPrismaOverrideField = useCallback(
+    (field, value) => writePrismaOverride(field, value),
+    [writePrismaOverride],
+  );
+
+  /** §21/§22 "revert to automatic" — the field tracks live project data again. */
+  const revertPrismaOverride = useCallback(
+    (field) => writePrismaOverride(field, null),
+    [writePrismaOverride],
+  );
 
   // 85.md B2 — per-asset override (draft.assets[id]): include toggle is an
   // IMMEDIATE structural write; title/caption/legend text edits go through the
@@ -1156,6 +1357,15 @@ export function useManuscript(project, upd) {
     setAssetOverride, queueAssetPatch, insertAssetReference, prepareExport,
     dataStatus: sources.dataStatus,
     screening: sources.screening,
+    // 117.md §12 — the canonical record-derived flow itself, so the export paths can
+    // hand it to the figure builders (and a panel can show the §18 reconciliation)
+    // without re-fetching or re-deriving it.
+    prismaFlow: sources.prismaFlow,
+    // 117.md §21/§22 — apply / revert one audited PRISMA data override, plus the
+    // capped in-draft audit trail behind them.
+    setPrismaOverride: setPrismaOverrideField,
+    revertPrismaOverride,
+    prismaOverrideLog: (activeDraft && activeDraft.prismaOverrideLog) || [],
     screeningWorkflow: sources.screeningWorkflow,
     searchMethodsText: sources.searchMethodsText,
     robAssessments: sources.robAssessments,

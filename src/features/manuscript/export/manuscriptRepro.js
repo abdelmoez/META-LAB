@@ -64,7 +64,9 @@ function analysisDatasetCsv(project) {
  *   generatedBy, software, gradeByOutcome,
  *   // 73.md Part 8 — live-wired data (all optional; absent → legacy output):
  *   screening, screeningWorkflow, searchMethodsText, analysis,
- *   robAssessments, robByStudyId, perSource }
+ *   robAssessments, robByStudyId, perSource,
+ *   // 117.md §12 — canonical derivePrismaFlow output (absent → legacy counter chain)
+ *   prismaFlow }
  * @returns {Promise<Blob>}
  */
 export async function buildReproPackage(project, draft, opts = {}) {
@@ -72,9 +74,14 @@ export async function buildReproPackage(project, draft, opts = {}) {
   // 73.md Part 8 — thread the SAME live-wired sources the on-screen tables use so
   // the bundle can never disagree with the workspace (screening → PRISMA counts,
   // RoB v2 → risk-of-bias table, pecan per-source → search table).
+  // 117.md §12/§57 — the reproducibility bundle must ship the SAME PRISMA the editor
+  // showed and the .docx embeds: the canonical record-derived flow when the project
+  // has one (which also makes prisma_2020.svg/png the two-column PRISMA 2020 figure
+  // instead of the legacy single-column drawing), the legacy chain otherwise.
   const prismaResult = computePrismaCounts(project, {
     overrides: draft.prismaOverrides,
     ...(opts.screening ? { screening: opts.screening } : {}),
+    ...(opts.prismaFlow ? { flow: opts.prismaFlow } : {}),
   });
   warnings.push(...(prismaResult.warnings || []));
   const primary = primaryAnalysis(project, { runMeta: opts.runMeta, ...(opts.analysis ? { analysis: opts.analysis } : {}) });

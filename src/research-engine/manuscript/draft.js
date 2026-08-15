@@ -39,7 +39,11 @@ import { getOutcomePairs, filterStudiesForOutcome } from '../import-export/journ
 // 116.md §26/§32 — the per-figure labels a forest plot carries. Resolved HERE, on the
 // analysis entry, so the Word export, the reproducibility bundle and the in-app figure
 // preview all draw the labels the reviewer persisted — the same ones the screen shows.
-import { forestFigureLabels } from '../charts/forestFigureConfig.js';
+// 117.md §24/§81 — the SAME entry now carries the whole presentation record (subtitle,
+// footer note, column visibility, per-figure decimals, bounded geometry). The TITLE is
+// deliberately still absent: Word numbers and captions its own figures, so an image that
+// baked a title in would caption itself twice.
+import { resolveForestPresentation } from '../charts/forestFigureConfig.js';
 // 116.md §31 — p-values ALWAYS through fmtP/fmtPExpr: a 2-dp project printed
 // "P = 0.00" for p = 0.004 because these call sites used fmtNum. fmtP floors at
 // three places and collapses anything below the floor to a strict inequality.
@@ -104,7 +108,7 @@ export function primaryAnalysis(project, opts = {}) {
   return {
     pair: best.pair, subset: best.subset, result,
     model: analysis.model, tau2Method: analysis.tau2Method,
-    figure: forestFigureLabels(project, best.pair),
+    figure: resolveForestPresentation(project, best.pair),
   };
 }
 
@@ -124,9 +128,10 @@ export function allAnalyses(project, opts = {}) {
     pair, subset,
     result: subset.length >= 2 ? runMeta(subset, analysis.model, { tau2Method: analysis.tau2Method }) : null,
     model: analysis.model, tau2Method: analysis.tau2Method,
-    // 116.md §26/§32 — the persisted axis name / favours texts ride with the analysis
-    // so every figure consumer gets them without re-reading analysisSettings itself.
-    figure: forestFigureLabels(project, pair),
+    // 116.md §26/§32 + 117.md §24 — the persisted axis name / favours texts and the whole
+    // presentation record ride with the analysis so every figure consumer gets them
+    // without re-reading analysisSettings itself.
+    figure: resolveForestPresentation(project, pair),
   }));
 }
 
@@ -486,10 +491,20 @@ export function studySelectionParagraph(pc, opts = {}) {
   // 85.md B1 — assetRefs emits the structured token so numbering/placement stay
   // live; without it the legacy frozen "(Figure 1)" text is byte-identical.
   const figRef = opts && opts.assetRefs ? '([[figure:prisma]])' : '(Figure 1)';
+  // 117.md §15 — the RETRIEVAL stage. PRISMA 2020 requires "reports sought for
+  // retrieval" and "reports not retrieved" to be reported, and a review that lost
+  // full texts must say so. Only the canonical record-derived flow knows these
+  // numbers, so the clause is emitted only when it is present — a legacy project's
+  // paragraph stays byte-identical.
+  const hasFlow = !!(pc && pc.flow);
+  const retrieval = hasFlow && c.sought != null
+    ? `, ${c.sought} reports were sought for retrieval${c.notRetrieved != null ? ` (${c.notRetrieved} could not be retrieved)` : ''}`
+    : '';
   return [
     c.identified != null ? `${c.identified} records were identified` : `${PH('Number of records identified unavailable')}`,
     c.duplicatesRemoved != null ? `, of which ${c.duplicatesRemoved} duplicates were removed` : '',
     c.screened != null ? `; ${c.screened} records were screened` : '',
+    retrieval,
     c.reportsAssessed != null ? `, ${c.reportsAssessed} reports were assessed for eligibility` : '',
     c.included != null ? `, and ${c.included} studies met the inclusion criteria.` : '.',
   ].join('') + ` The study-selection process is shown in the PRISMA 2020 flow diagram ${figRef}.`;

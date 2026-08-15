@@ -228,20 +228,38 @@ export function buildSummaryOfFindingsTable(project, opts = {}) {
 
 /**
  * C. PRISMA counts table — from a computePrismaCounts() result. Pure.
+ *
+ * 117.md §15 — RECORDS vs REPORTS vs STUDIES. PRISMA 2020 changes unit as the flow
+ * descends, and the retrieval stage ("Reports sought for retrieval" / "Reports not
+ * retrieved") is a mandatory part of the diagram that the legacy counter model could
+ * not represent at all. Those rows — and "Reports of included studies", the count
+ * that makes the studies-vs-reports distinction visible — are therefore emitted ONLY
+ * when the canonical record-derived flow is present (`prismaResult.flow`), because
+ * only then does the project actually know them. A legacy project's table is
+ * byte-identical to before.
+ *
  * @param {object} prismaResult  output of computePrismaCounts(project, …)
  */
 export function buildPrismaCountsTable(prismaResult) {
   const c = (prismaResult && prismaResult.counts) || {};
   const prov = (prismaResult && prismaResult.provenance) || {};
+  const hasFlow = !!(prismaResult && prismaResult.flow);
   const fmtCell = (v) => (typeof v === 'number' && Number.isFinite(v) ? String(v) : '[not recorded]');
   const def = [
     ['identified', 'Records identified', c.identified],
     ['duplicatesRemoved', 'Duplicate records removed', c.duplicatesRemoved],
     ['screened', 'Records screened', c.screened],
     ['excludedScreen', 'Records excluded (screening)', c.excludedScreen],
+    ...(hasFlow ? [
+      ['sought', 'Reports sought for retrieval', c.sought],
+      ['notRetrieved', 'Reports not retrieved', c.notRetrieved],
+    ] : []),
     ['reportsAssessed', 'Reports assessed for eligibility', c.reportsAssessed],
     ['reportsExcluded', 'Reports excluded (full text)', c.reportsExcluded],
     ['included', 'Studies included in review', c.included],
+    ...(hasFlow ? [
+      ['includedReports', 'Reports of included studies', c.includedReports],
+    ] : []),
     ['includedQuant', 'Studies in meta-analysis', c.includedQuant],
   ];
   const rows = def.map(([key, label, val]) => ({
@@ -258,7 +276,9 @@ export function buildPrismaCountsTable(prismaResult) {
     ],
     rows: rows.map((r) => ({ stage: r.stage, n: r.n })),
     rowsWithProvenance: rows,
-    note: 'Counts resolved from manual PRISMA entries, overrides, and live screening data. "[not recorded]" marks values you must enter.',
+    note: hasFlow
+      ? 'Counts derived from this project\'s screening records; any manual override is labelled in the Source column. "[not recorded]" marks values the records cannot answer.'
+      : 'Counts resolved from manual PRISMA entries, overrides, and live screening data. "[not recorded]" marks values you must enter.',
     warnings: (prismaResult && prismaResult.warnings) || [],
     available: !!(prismaResult && prismaResult.hasAny),
     generatedFrom: 'prisma',

@@ -21,6 +21,9 @@ import {
   assetToken,
   // 101.md §34 — locate the section that states a given project fact.
   factToken,
+  // 117.md §21/§22 — the ONE registry of overridable PRISMA boxes + its labels, so
+  // the panel, the counts adapter and the audit log cannot list different fields.
+  PRISMA_OVERRIDE_FIELDS, prismaOverrideLabel,
 } from '../../research-engine/manuscript/index.js';
 import { RichSectionEditor, RichToolbar, RICH_EDITOR_CSS } from './richEditor/RichSectionEditor.jsx';
 // 101.md §34 — the optional "recent manuscript updates" panel paired with Show Changes.
@@ -1953,35 +1956,135 @@ export function ReferencesPanel({ m }) {
 }
 
 /* ════════════ 6. PRISMA ════════════ */
-const PROV_TAG = { manual: 'blue', override: 'purple', computed: 'green', derived: 'green', missing: 'red' };
-const OVERRIDE_FIELDS = [
-  { k: 'identified', label: 'Records identified' },
-  { k: 'dedupe', label: 'Duplicates removed' },
-  { k: 'screened', label: 'Records screened' },
-  { k: 'excludedScreen', label: 'Excluded at screening' },
-  { k: 'reportsExcluded', label: 'Reports excluded (full text)' },
-  { k: 'included', label: 'Studies included' },
-  { k: 'includedQuant', label: 'Included in meta-analysis' },
-];
+const PROV_TAG = {
+  manual: 'blue', override: 'purple', computed: 'green', derived: 'green',
+  // 103.md — a count that IS a record set. Visually distinct from a typed number.
+  records: 'green', 'not-performed': 'yellow', missing: 'red',
+};
+
+/**
+ * 117.md §18 — the reconciliation banner. Compact and NON-INTRUSIVE by design: it
+ * renders nothing at all while the flow reconciles (the green "✓ Flow reconciles"
+ * confirmation belongs to the Screening tab, where a researcher is actively working
+ * on the records), and appears only when the structural self-audit found something.
+ * The count comes first because that is the actionable part; the first two messages
+ * follow so the researcher can tell whether it affects publication output.
+ */
+export function PrismaReconciliationBanner({ reconciliation }) {
+  const rec = reconciliation;
+  if (!rec) return null;
+  const issues = (rec.issues || []).filter((i) => i && i.severity !== 'info');
+  if (rec.ok !== false && !issues.length) return null;
+  const errs = issues.filter((i) => i.severity === 'error');
+  const bad = rec.ok === false || errs.length > 0;
+  const n = issues.length;
+  return (
+    <div data-testid="manuscript-prisma-reconciliation" role={bad ? 'alert' : undefined}
+      style={{
+        fontSize: 11.5, lineHeight: 1.6, borderRadius: 8, padding: '8px 11px', marginBottom: 10,
+        color: bad ? C.red : C.yel,
+        border: `1px solid ${alpha(bad ? C.red : C.yel, '55')}`,
+        background: alpha(bad ? C.red : C.yel, '12'),
+      }}>
+      <strong>
+        {bad ? 'This PRISMA flow does not reconcile' : 'PRISMA flow — worth checking before submission'}
+        {` (${n} issue${n === 1 ? '' : 's'})`}
+      </strong>
+      <ul style={{ margin: '4px 0 0', paddingLeft: 18 }}>
+        {issues.slice(0, 2).map((i, k) => <li key={i.id || k}>{i.message}</li>)}
+      </ul>
+      {n > 2 && <div style={{ marginTop: 4, color: C.muted }}>{`+${n - 2} more — open the PRISMA Flow tab to inspect the records behind each count.`}</div>}
+    </div>
+  );
+}
+
+/**
+ * 117.md §21 — ONE overridable PRISMA count.
+ *
+ * "Do not silently replace real project data": the automated value and the manual
+ * one are shown TOGETHER whenever they differ, with a per-field revert control. The
+ * input is buffered and commits on blur/Enter rather than on every keystroke,
+ * because each commit is a real structural write with an audit entry (§22) — a
+ * keystroke-level write would produce a log of half-typed numbers.
+ */
+export function PrismaOverrideField({ field, label, auto, value, onApply, onRevert }) {
+  const [buf, setBuf] = useState(value == null ? '' : String(value));
+  useEffect(() => { setBuf(value == null ? '' : String(value)); }, [value]);
+  const reset = () => setBuf(value == null ? '' : String(value));
+  const commit = () => {
+    const raw = String(buf).trim();
+    if (raw === '') { if (value != null) onRevert(field); else reset(); return; }
+    const n = Number(raw);
+    if (!Number.isFinite(n) || n < 0) { reset(); return; }
+    if (value != null && n === value) return;
+    onApply(field, n);
+  };
+  const autoText = auto == null ? 'not recorded' : String(auto);
+  return (
+    <div data-testid={`prisma-override-${field}`}>
+      <Labeled label={label}>
+        <input type="number" min="0" value={buf}
+          aria-label={`${label} — manual override`}
+          onChange={(e) => setBuf(e.target.value)}
+          onBlur={commit}
+          onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); commit(); } if (e.key === 'Escape') reset(); }}
+          placeholder={auto == null ? 'automatic' : `automatic (${autoText})`}
+          style={inp} />
+      </Labeled>
+      {value != null ? (
+        <div style={{ marginTop: 5, fontSize: 11, lineHeight: 1.6, color: C.muted }}>
+          <div>
+            {'Automated value: '}<strong style={{ color: C.txt2 }}>{autoText}</strong>
+            {' → Manual override: '}<strong style={{ color: C.purp }}>{String(value)}</strong>
+          </div>
+          <button type="button" onClick={() => onRevert(field)}
+            style={{ ...btnS('ghost'), fontSize: 10.5, padding: '3px 8px', marginTop: 4 }}>
+            Revert to automatic
+          </button>
+        </div>
+      ) : (
+        <div style={{ marginTop: 5, fontSize: 11, color: C.dim }}>
+          {`Automated value: ${autoText}`}
+        </div>
+      )}
+    </div>
+  );
+}
 
 export function PrismaPanel({ m, exporters }) {
   const pc = m.prismaCounts;
   const pt = m.tables.prisma;
-  const overrides = m.activeDraft.prismaOverrides || {};
+  const overrides = (m.activeDraft && m.activeDraft.prismaOverrides) || {};
+  const ovInfo = (pc && pc.overrides) || {};
   const svgs = useFigureSvgs(m, { prisma: true });
 
-  const setOverride = (k, raw) => {
-    const next = { ...overrides };
-    if (raw === '' || raw == null) delete next[k];
-    else { const n = Number(raw); if (Number.isFinite(n)) next[k] = n; }
-    m.setMetaDebounced({ prismaOverrides: next });
-  };
+  // 117.md §12 — the canonical record-derived flow. Its presence is what unlocks the
+  // retrieval-stage rows/fields (§15) and the reconciliation banner (§18); a project
+  // with no linked screening records keeps the legacy counter surface exactly.
+  const hasFlow = !!(pc && pc.flow);
+  const fields = PRISMA_OVERRIDE_FIELDS.filter((f) => hasFlow || !f.flowOnly);
+
+  // 117.md §21/§22 — structural, audited writes (see useManuscript.writePrismaOverride).
+  const applyOverride = (field, n) => m.setPrismaOverride(field, n);
+  const revertOverride = (field) => m.revertPrismaOverride(field);
 
   const provRows = (pt && pt.rowsWithProvenance) || [];
+  const log = (m.prismaOverrideLog || []).slice().reverse();
+
+  // 117.md §18 — on the canonical path the reconciliation issues ALREADY ride the
+  // warnings channel (adaptFlow maps them there so every legacy consumer sees them).
+  // The banner is now the dedicated surface for exactly those, so listing them again
+  // underneath would say the same thing twice; everything else still shows.
+  const bannerMessages = new Set((((pc && pc.reconciliation) || {}).issues || []).map((i) => i && i.message));
+  const otherWarnings = ((pc && pc.warnings) || []).filter((w) => !bannerMessages.has(w));
 
   return (
     <div>
-      <Block title="PRISMA 2020 counts" desc="Computed from your project data; manual overrides take precedence (and are labelled below).">
+      <Block title="PRISMA 2020 counts"
+        desc={hasFlow
+          ? 'Derived from this project’s screening records — the same numbers the PRISMA Flow tab draws. A manual override is labelled below and never replaces the derived value.'
+          : 'Computed from your project data; manual overrides take precedence (and are labelled below).'}>
+        <PrismaReconciliationBanner reconciliation={pc && pc.reconciliation} />
         {pt && pt.available ? (
           <div style={{ overflowX: 'auto', border: `1px solid ${C.brd}`, borderRadius: 10 }}>
             <table style={{ borderCollapse: 'collapse', width: '100%' }}>
@@ -2004,30 +2107,63 @@ export function PrismaPanel({ m, exporters }) {
             </table>
           </div>
         ) : <InfoBox color={C.muted}>{(pt && pt.note) || 'No PRISMA counts available yet.'}</InfoBox>}
-        {(pc.warnings || []).map((w, i) => <InfoBox key={i} color={C.yel}>{w}</InfoBox>)}
+        {otherWarnings.map((w, i) => <InfoBox key={i} color={C.yel}>{w}</InfoBox>)}
       </Block>
 
-      <Block title="PRISMA 2020 flow diagram">
+      <Block title="PRISMA 2020 flow diagram"
+        desc={hasFlow ? 'The same diagram Screening draws, from the same records.' : undefined}>
         {svgs.loading ? <div style={{ color: C.muted, fontSize: 12 }}>Rendering…</div>
           : svgs.error ? <InfoBox color={C.red}>{svgs.error}</InfoBox>
             : svgs.prisma ? <SvgBox svg={svgs.prisma} />
               : <InfoBox color={C.muted}>Enter counts below to see the flow diagram.</InfoBox>}
       </Block>
 
-      <Block title="Manual overrides" desc="Enter a number to override the computed value for that PRISMA box. Leave blank to use the computed value.">
+      <Block title="Manual overrides" desc="Enter a number to override the value for that PRISMA box, or leave it blank to track the project automatically. Overrides are recorded and can be undone.">
         <Card>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(200px,1fr))', gap: 12 }}>
-            {OVERRIDE_FIELDS.map((f) => (
-              <Labeled key={f.k} label={f.label}>
-                <input type="number" min="0" value={overrides[f.k] == null ? '' : overrides[f.k]}
-                  onChange={(e) => setOverride(f.k, e.target.value)}
-                  placeholder="computed" style={inp} />
-              </Labeled>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(210px,1fr))', gap: 14 }}>
+            {fields.map((f) => (
+              <PrismaOverrideField key={f.key} field={f.key} label={f.label}
+                auto={ovInfo[f.key] ? ovInfo[f.key].auto : ((pc && pc.counts && pc.counts[f.key]) ?? null)}
+                value={overrides[f.key] == null || overrides[f.key] === '' ? null : Number(overrides[f.key])}
+                onApply={applyOverride} onRevert={revertOverride} />
             ))}
           </div>
-          <InfoBox color={C.purp}>Any value entered here is treated as a <strong>manual override</strong> and is labelled accordingly in the counts table and the PRISMA flow diagram.</InfoBox>
+          <InfoBox color={C.purp}>
+            A value entered here is a <strong>manual override</strong>: it is labelled in the counts table, carried into the narrative and the export, and recorded below.
+            {hasFlow ? ' The flow diagram continues to show the record-derived figures, so the underlying records stay inspectable.' : ''}
+          </InfoBox>
         </Card>
       </Block>
+
+      {log.length > 0 && (
+        <Block title="Override history" desc="Every manual change to a PRISMA count, most recent first.">
+          <div data-testid="prisma-override-log" style={{ overflowX: 'auto', border: `1px solid ${C.brd}`, borderRadius: 10 }}>
+            <table style={{ borderCollapse: 'collapse', width: '100%' }}>
+              <thead>
+                <tr>
+                  <th style={cellTh}>When</th>
+                  <th style={cellTh}>Field</th>
+                  <th style={cellTh}>Automated</th>
+                  <th style={cellTh}>Change</th>
+                </tr>
+              </thead>
+              <tbody>
+                {log.map((e, i) => (
+                  <tr key={i}>
+                    <td style={cellTd}>{fmtLogTime(e.at)}</td>
+                    <td style={cellTd}>{prismaOverrideLabel(e.field)}</td>
+                    <td style={cellTd}>{e.auto == null ? '—' : String(e.auto)}</td>
+                    <td style={cellTd}>
+                      {`${e.from == null ? 'automatic' : e.from} → ${e.to == null ? 'automatic' : e.to}`}
+                      {e.via ? <span style={{ ...tagS('gray'), marginLeft: 6 }}>{e.via}</span> : null}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </Block>
+      )}
 
       <Block title="Checklists">
         <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
@@ -2042,6 +2178,15 @@ export function PrismaPanel({ m, exporters }) {
       </Block>
     </div>
   );
+}
+
+/** Audit timestamps render locally; an unparseable/absent stamp is honestly blank. */
+function fmtLogTime(iso) {
+  if (!iso) return '—';
+  try {
+    const d = new Date(iso);
+    return Number.isNaN(d.getTime()) ? '—' : d.toLocaleString();
+  } catch { return '—'; }
 }
 
 /* ════════════ 7. EXPORT ════════════ */

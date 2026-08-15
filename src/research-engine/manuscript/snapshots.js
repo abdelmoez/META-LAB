@@ -81,7 +81,14 @@ export function createSnapshot(draft, project, opts = {}) {
       nowIso, author: opts.author, appVersion: opts.appVersion,
     }),
     depState: computeDependencyState(project, opts.genOpts || {}),
-    prismaCounts: computePrismaCounts(project, { overrides: draft.prismaOverrides, ...(opts.genOpts || {}) }).counts,
+    // 117.md §12/§57 — a snapshot must record the numbers the manuscript ACTUALLY
+    // stated at that moment, so it honours the caller's resolved result (passed
+    // directly or inside genOpts) and only re-derives when it has none.
+    prismaCounts: (
+      opts.prismaCounts
+      || (opts.genOpts && opts.genOpts.prismaCounts)
+      || computePrismaCounts(project, { overrides: draft.prismaOverrides, ...(opts.genOpts || {}) })
+    ).counts,
   };
   const snapshots = capSnapshots([...(Array.isArray(draft.snapshots) ? draft.snapshots : []), snapshot]);
   const nextDraft = {

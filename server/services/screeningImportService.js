@@ -27,6 +27,7 @@ import { prisma } from '../db/client.js';
 import { parseByFormat, normTitle } from '../../src/research-engine/import-export/parsers.js';
 import { mergeFillBlanks, MERGE_FILL_FIELDS } from '../../src/research-engine/screening/deduplication.js';
 import { isResetLocked } from '../screening/resetLock.js';
+import { emitToProjectMembers } from '../realtime/bus.js';
 
 // Insert batch size. createMany on SQLite is bound by the 999-variable limit
 // (~12 columns/row → ~80 rows max per statement); 400 keeps us safely under it
@@ -303,6 +304,42 @@ const landingQueues = new Map(); // projectId -> tail promise of the chain
 export function whenLandingIdle(projectId) {
   const tail = landingQueues.get(projectId);
   return tail ? tail.then(() => {}) : Promise.resolve();
+}
+
+/* ════════════ 117.md §13 — one poke per import BURST ════════════
+ *
+ * "Changes anywhere affecting PRISMA must automatically propagate… No refresh button
+ * should be required." An import is the single largest PRISMA change there is, and it
+ * was the ONE mutating path that emitted nothing at all: every open PRISMA diagram and
+ * every open Manuscript Editor kept pre-import numbers until the user navigated away.
+ *
+ * It is also the path where a naive emit would be worst. A pecan run lands one batch
+ * per provider PAGE, so emitting per landing would fire dozens of times per run, and
+ * every emit costs two DB queries to resolve recipients. So landings are collapsed by
+ * a per-project TRAILING debounce: any number of landings in a burst produce exactly
+ * ONE poke, after the burst settles. `unref()` keeps a pending poke from holding the
+ * process open at shutdown — an emit is best-effort by contract, and clients poll as
+ * their fallback.
+ *
+ * The poke carries no ids (global invariant 8): an import touches thousands of records
+ * and every subscriber refetches through its own authorized endpoint anyway. The actor
+ * is NOT excluded, unlike the per-record edit pokes — the person who just imported is
+ * exactly the person whose other open tabs (manuscript, PRISMA) must catch up.
+ */
+export const IMPORT_POKE_DEBOUNCE_MS = 1500;
+const importPokeTimers = new Map(); // projectId -> timer
+
+export function pokeImportLanded(projectId) {
+  if (!projectId) return;
+  const prev = importPokeTimers.get(projectId);
+  if (prev) clearTimeout(prev);
+  const t = setTimeout(() => {
+    importPokeTimers.delete(projectId);
+    try { emitToProjectMembers(projectId, { type: 'record.updated' }); }
+    catch { /* emits must never affect the import that triggered them */ }
+  }, IMPORT_POKE_DEBOUNCE_MS);
+  if (typeof t.unref === 'function') t.unref();
+  importPokeTimers.set(projectId, t);
 }
 
 /** Exported for unit tests (serialization + leak-free drain are pinned there). */
@@ -582,6 +619,12 @@ async function dedupeAndInsertRecordsSerialized(projectId, records, opts = {}) {
       catch { /* pre-existing decision (unique conflict) — leave it */ }
     }
   }
+
+  // 117.md §13 — tell every open PRISMA/manuscript surface that the record set moved.
+  // Only when something actually landed: a wholly-rejected file changes no count, and
+  // `skippedDuplicates` counts too because the batch's duplicateCount feeds the
+  // "records removed before screening" box even when no record was inserted.
+  if (imported > 0 || skippedDuplicates > 0 || updated > 0) pokeImportLanded(projectId);
 
   // 96.md — `updated` is ADDITIVE (existing keys byte-compatible): distinct existing
   // records whose blank metadata this import filled. updated ⊆ skippedDuplicates, so

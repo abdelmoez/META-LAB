@@ -100,7 +100,11 @@ export function detectContradictions(project, draft, opts = {}) {
   }
 
   // (c) included-count — stated count of included studies ≠ project count.
-  const pc = computePrismaCounts(p, opts);
+  // 117.md §12/§57 — honour the caller's already-resolved counts (the SAME object the
+  // editor renders, flow + draft overrides included). Re-deriving here made this check
+  // compare the manuscript against a number no surface displayed, which is how a
+  // "contradiction" could be reported between the manuscript and itself.
+  const pc = opts.prismaCounts || computePrismaCounts(p, opts);
   // 106.md — the fallback must be PUBLICATIONS. `studies.length` counts extraction
   // rows, so a case series of eight patients made this check assert that the
   // manuscript's honest "1 study was included" contradicted the project — a

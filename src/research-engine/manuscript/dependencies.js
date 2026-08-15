@@ -189,7 +189,12 @@ export function computeDependencyState(project, opts = {}) {
       configured: search.date,
     },
     'search.strategy': { string: search.string, searchMethodsText: clean(opts.searchMethodsText) },
-    'prisma.counts': computePrismaCounts(p, opts).counts,
+    // 117.md §12/§57 — ONE resolved PRISMA result per render. The caller (the
+    // manuscript hook) already computed the counts the editor is DISPLAYING, flow
+    // and draft overrides included; re-deriving here from a partial opts bundle is
+    // how a split brain starts — the fingerprint would describe numbers no surface
+    // ever showed. The direct call remains the fallback for callers that have none.
+    'prisma.counts': (opts.prismaCounts || computePrismaCounts(p, opts)).counts,
     'screening.workflow': {
       reviewers: opts.reviewers != null ? opts.reviewers : null,
       blind: opts.blind != null ? !!opts.blind : null,

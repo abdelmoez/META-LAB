@@ -196,6 +196,26 @@ export function ScreeningModule({project,updateProject,activeId,updNested}){
 /* META·SIFT link — auto-fills the PRISMA flow from the linked screening project (Part 12).
    The manual ScreeningModule above is preserved in source but no longer rendered:
    title/abstract screening is now owned by META·SIFT. project.records is never deleted. */
+/**
+ * 117.md §12/§57 — WHAT THIS COMPONENT IS, NOW THAT THE FLOW IS CANONICAL.
+ *
+ * This writes a SUMMARY SNAPSHOT of the screening rollup into `project.prisma`. It
+ * was the stale-count culprit: the legacy counter chain (manuscript/prismaCounts.js)
+ * ranks `project.prisma` above live screening data, so whatever this stamped in
+ * became what the Manuscript Editor reported — forever, and regardless of what the
+ * records actually said.
+ *
+ * The fix is NOT to delete the blob. It is that the manuscript now threads the
+ * canonical record-derived flow into `computePrismaCounts`, which short-circuits into
+ * `adaptFlow` and never consults `project.prisma` at all. So for a LINKED project this
+ * snapshot can no longer cause staleness — it is outranked by construction, not by
+ * being kept in step.
+ *
+ * It is kept because it remains the ONLY PRISMA source for the surfaces that have no
+ * flow: an unlinked or record-less project, the legacy PRISMATab input fields, the
+ * legacy report/ZIP fallback path, and any older project blob. Deleting it would
+ * regress those; leaving it can no longer regress the linked ones.
+ */
 export function MetaSiftPrismaSync({project,updateProject,activeId,setTab}){
   const[st,setSt]=useState({loading:true});
   const[creating,setCreating]=useState(false);

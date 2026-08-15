@@ -81,6 +81,12 @@ import { openExportDialog, registerExportDialog } from "./exportDialogBridge.js"
    src/frontend/workspace/charts/svgBuilders.js (prompt46 Phase 4) and imported
    here. ForestPlot / FunnelPlot live in the sibling charts.jsx. */
 import { SVG_XML_HEADER, presetTag, liveSvgToString, buildPrismaSVG, buildPubForestSVG } from "./charts/svgBuilders.js";
+// 117.md §12/§57 — the canonical PRISMA 2020 builder. The report HTML and the journal
+// ZIP used the legacy single-column `buildPrismaSVG(project.prisma)` unconditionally,
+// so a screening-linked project shipped a figure drawn from the stale summary blob
+// while Screening and the Manuscript Editor drew the record-derived one. Same builder,
+// same derivation, everywhere the figure appears.
+import { buildPrismaFlowSVG } from "../../research-engine/prisma/svg.js";
 // 116.md §26/§32 — ONE resolver for every forest surface's text + no-effect authority.
 import { resolveForestFigure } from "../../research-engine/charts/forestFigureConfig.js";
 import { ForestPlot, FunnelPlot } from "./charts/charts.jsx";
@@ -668,9 +674,27 @@ export default function MetaLab({ initialProjectId = null, initialTab = null, on
     if(importRef.current)importRef.current.value="";
   };
 
+  /* 117.md §12/§57 — fetch the canonical record-derived PRISMA flow for the linked
+     screening workspace. Soft-fail by design: no link, no records, a disabled feature
+     or a network error all return null and the caller falls back to the legacy
+     `project.prisma` diagram, exactly as before. This is a READ of the same authorized
+     endpoint usePrismaFlow/the manuscript use — no second derivation anywhere. */
+  const fetchCanonicalPrismaFlow=async()=>{
+    const spid=linkedSp||resolvedSpId;
+    if(!spid) return null;
+    try{
+      const r=await fetch(`/api/screening/projects/${encodeURIComponent(spid)}/prisma`,{credentials:"include"});
+      if(!r.ok) return null;
+      const d=await r.json();
+      return (d&&d.flow)||null;
+    }catch(_){ return null; }
+  };
+
   // Self-contained report HTML (print CSS + embedded figures). The export
   // dialog offers PDF (print window) or HTML file — user chooses explicitly.
-  const buildReportHTML=(precOverride)=>{
+  // 117.md §12 — `flow` (when the project is screening-linked) selects the canonical
+  // two-column PRISMA 2020 figure; absent, the legacy single-column drawing stands.
+  const buildReportHTML=(precOverride,flow)=>{
     if(!project) return null;
     const p=project, pico=p.pico||{}, pr=p.prisma||{};
     // 86.md P1.6/P1.5 — report the PRIMARY outcome pool (persisted estimator), not
@@ -691,8 +715,11 @@ export default function MetaLab({ initialProjectId = null, initialTab = null, on
        `ES_TYPES[esType].scale`, the STORED-scale name, so the report captioned a
        back-transformed ratio axis "lnOR". The registry owns the null; an unset
        esLabel means "auto" and the layout derives one name for every surface. */
-    const forest=res?buildPubForestSVG(res,{esType,...resolveForestFigure(p,_pooled.pair),showCounts:true,showWeights:true,prec}):null;
-    const prismaFig=buildPrismaSVG(pr,{title:""});
+    /* 117.md §81 — the two hard-coded column flags that used to follow the spread beat
+       the reviewer's own persisted choice, so the report printed columns the Forest tab
+       was told to hide. The resolved record is now the whole opinion. */
+    const forest=res?buildPubForestSVG(res,{esType,...resolveForestFigure(p,_pooled.pair),prec}):null;
+    const prismaFig=flow?buildPrismaFlowSVG(flow,{title:"",perSource:true}):buildPrismaSVG(pr,{title:""});
     const grade=p.grade||{};
     const gradeRows=GRADE_DOMAINS.map(d=>{const o=GRADE_OPTIONS.find(x=>x.v===grade[d.id]);return `<tr><td>${esc(d.label)}</td><td>${o?esc(o.label):"—"}</td></tr>`;}).join("");
     const studyRows=(p.studies||[]).filter(s=>s.es!=="").map(s=>`<tr><td>${esc((s.author||"")+(s.year?" "+s.year:""))}</td><td>${esc(s.outcome||"")}</td><td style="text-align:right">${dv(+s.es)}</td><td style="text-align:right">${dv(+s.lo)} to ${dv(+s.hi)}</td></tr>`).join("");
@@ -775,9 +802,12 @@ export default function MetaLab({ initialProjectId = null, initialTab = null, on
     }
 
     // 1) PRISMA diagram — SVG + high-res PNG.
+    // 117.md §12/§57 — one fetch, reused by BOTH the figure here and report.html below,
+    // so the ZIP can never contain two different PRISMA diagrams of the same review.
     report("Preparing PRISMA diagram…");
+    const canonicalFlow=await fetchCanonicalPrismaFlow();
     try{
-      const built=buildPrismaSVG(pr,{title:""});
+      const built=canonicalFlow?buildPrismaFlowSVG(canonicalFlow,{title:"",perSource:true}):buildPrismaSVG(pr,{title:""});
       if(built&&built.svg){
         entries.push({name:"figures/prisma-diagram.svg",text:SVG_XML_HEADER+built.svg});
         files.push({name:"figures/prisma-diagram.svg",note:"PRISMA 2020 flow (vector)"});
@@ -810,7 +840,9 @@ export default function MetaLab({ initialProjectId = null, initialTab = null, on
       // scale ("lnOR (back-transformed)", "logit (%)") while the same figure on screen
       // said "Odds Ratio" / "Proportion (%)"; an unset label now means "auto" and the
       // layout derives ONE name for every surface.
-      const built=buildPubForestSVG(result,{esType,...resolveForestFigure(project,pair,{defaultTitle:pair.label||""}),showCounts:true,showWeights:true,prec,noBg:transparent});
+      // 117.md §81 — same fix as the report path: the persisted record wins, not two
+      // literals appended after the spread.
+      const built=buildPubForestSVG(result,{esType,...resolveForestFigure(project,pair,{defaultTitle:pair.label||""}),prec,noBg:transparent});
       if(!built){ warnings.push(`Forest plot for "${pair.label}" skipped (not enough studies to draw).`); continue; }
       let slug=jsSafeName(pair.label,`outcome-${forestN+1}`);
       if(usedForestSlugs.has(slug)) slug=`${slug}-${forestN+1}`; // distinct labels can slugify identically → keep unique
@@ -877,7 +909,7 @@ export default function MetaLab({ initialProjectId = null, initialTab = null, on
     }catch(_){ warnings.push("Study table could not be generated."); }
     report("Preparing report…");
     try{
-      const html=buildReportHTML(prec);
+      const html=buildReportHTML(prec,canonicalFlow);
       if(html){ entries.push({name:"report.html",text:html}); files.push({name:"report.html",note:"Full self-contained report (open in a browser)"}); }
     }catch(_){ warnings.push("Report HTML could not be generated."); }
 
@@ -945,7 +977,9 @@ export default function MetaLab({ initialProjectId = null, initialTab = null, on
       sizing:false,
       defaults:{format:"pdf"},
       run:async(choice)=>{
-        const html=buildReportHTML(choice.precision);
+        // 117.md §12 — the standalone report draws the canonical flow too, so the
+        // PDF/HTML a reviewer receives matches Screening and the Manuscript Editor.
+        const html=buildReportHTML(choice.precision,await fetchCanonicalPrismaFlow());
         if(!html) throw new Error("No project selected.");
         if(choice.format==="pdf"){
           // Existing print-window path; if pop-ups are blocked the user can

@@ -245,6 +245,24 @@ export const FACTS = Object.freeze({
     hint: 'Record title/abstract screening decisions.',
     resolve: (c) => num(c.prisma.excludedScreen),
   },
+  /* 117.md §15 — the RETRIEVAL stage and the reports-vs-studies split. These three
+     resolve ONLY from the canonical record-derived flow (the legacy counter model
+     cannot represent retrieval at all), so on a project without linked records they
+     render as visible placeholders rather than confident numbers — §17 again. */
+  'prisma.reportsSought': {
+    label: 'Reports sought for retrieval',
+    engine: 'screening',
+    depKey: 'prisma.counts',
+    hint: 'Mark records as sought for full-text retrieval in Screening.',
+    resolve: (c) => num(c.prisma.sought),
+  },
+  'prisma.notRetrieved': {
+    label: 'Reports not retrieved',
+    engine: 'screening',
+    depKey: 'prisma.counts',
+    hint: 'Record which full texts could not be obtained.',
+    resolve: (c) => num(c.prisma.notRetrieved),
+  },
   'prisma.reportsAssessed': {
     label: 'Reports assessed for eligibility',
     engine: 'screening',
@@ -265,6 +283,16 @@ export const FACTS = Object.freeze({
     depKey: 'prisma.counts',
     hint: 'Include at least one study.',
     resolve: (c) => num(c.prisma.included),
+  },
+  // 117.md §15 — "studies included" and "reports of included studies" are DIFFERENT
+  // numbers whenever one study is described by several reports; PRISMA 2020 draws
+  // both in the terminal box and the manuscript must be able to state both.
+  'prisma.includedReports': {
+    label: 'Reports of included studies',
+    engine: 'screening',
+    depKey: 'prisma.counts',
+    hint: 'Link reports of the same study so the report count can differ from the study count.',
+    resolve: (c) => num(c.prisma.includedReports),
   },
 
   /* ── Included studies (§15) ────────────────────────────────────────────── */
@@ -472,9 +500,15 @@ export function buildFactContext(project, opts = {}) {
       duplicatesRemoved: counts.duplicatesRemoved != null ? counts.duplicatesRemoved : counts.dedupe,
       screened: counts.screened,
       excludedScreen: counts.excludedScreen,
+      // 117.md §15 — retrieval + the reports-vs-studies split. Absent on the legacy
+      // counter path (undefined → num() → null → a visible placeholder), present the
+      // moment the canonical flow is threaded in.
+      sought: counts.sought,
+      notRetrieved: counts.notRetrieved,
       reportsAssessed: counts.reportsAssessed,
       reportsExcluded: counts.reportsExcluded,
       included: counts.included,
+      includedReports: counts.includedReports,
     },
     // 106.md §Prevent double counting — `total` is the number of PUBLICATIONS, not
     // the number of extraction rows. Seven cases of one article, or three outcome

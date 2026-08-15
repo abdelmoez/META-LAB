@@ -331,6 +331,8 @@ function h1(text, D, opts = {}) {
  *   runMeta, prec, software, appVersion, includeFigures, tables, references,
  *   prismaResult, primary, gradeByOutcome, robByStudyId, robOpts, robAssessments,
  *   searchOpts, screening, analysis,
+ *   prismaFlow,    // 117.md §12 — canonical derivePrismaFlow output; only read when
+ *                  // `prismaResult` is absent (it already carries the flow)
  *   // 85.md B2 — placement-aware assembly (all optional; defaults derive them):
  *   assets,        // computeManuscriptAssets output
  *   numbering,     // resolveNumbering output
@@ -348,7 +350,15 @@ export async function buildManuscriptDocx(project, draft, opts = {}) {
 
   const prec = opts.prec;
   const onInfo = typeof opts.onInfo === 'function' ? opts.onInfo : null;
-  const prismaResult = opts.prismaResult || computePrismaCounts(project, { overrides: draft.prismaOverrides, screening: opts.screening });
+  // 117.md §12/§57 — the CANONICAL flow wins when the caller has it. `prismaResult`
+  // (the normal path: useManuscript.prepareExport) already carries it, so this
+  // fallback only matters for a direct/legacy invocation — but it must not silently
+  // drop the flow and export a different PRISMA figure than the editor showed.
+  const prismaResult = opts.prismaResult || computePrismaCounts(project, {
+    overrides: draft.prismaOverrides,
+    screening: opts.screening,
+    ...(opts.prismaFlow ? { flow: opts.prismaFlow } : {}),
+  });
   const primary = opts.primary || primaryAnalysis(project, { runMeta: opts.runMeta, analysis: opts.analysis });
   if (!opts.tables && onInfo && !opts.robByStudyId && !opts.screening) {
     // Default table building without live sources yields weaker tables (no RoB

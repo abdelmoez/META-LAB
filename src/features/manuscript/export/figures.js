@@ -25,14 +25,27 @@ import { countsToPrismaShape } from '../../../research-engine/manuscript/index.j
  * resolve the labels once (research-engine/charts/forestFigureConfig.js) and hand them
  * over on the analysis entry as `.figure`, so the Word export, the repro bundle and the
  * in-app preview cannot drift from each other or from the screen.
+ *
+ * 117.md §24/§81 — the same seam now carries the whole PRESENTATION record
+ * (subtitle, footer note, column visibility, per-figure decimals and the bounded
+ * geometry). This whitelist is the last place a persisted control could silently
+ * fail to reach the submitted Word file, so every key `resolveForestPresentation`
+ * emits must appear here; a parity test asserts exactly that.
  */
+const FOREST_PRESENTATION_OPT_KEYS = Object.freeze([
+  'esLabel', 'favLow', 'favHigh', 'subtitle', 'note',
+  'showCounts', 'showWeights', 'showPI', 'decimals', 'metrics', 'noBg',
+]);
+
 function forestOpts(opts = {}) {
   const o = { esType: opts.esType, title: opts.title, prec: opts.prec };
-  ['esLabel', 'favLow', 'favHigh', 'showCounts', 'showWeights', 'showPI', 'noBg'].forEach((k) => {
+  FOREST_PRESENTATION_OPT_KEYS.forEach((k) => {
     if (opts[k] !== undefined) o[k] = opts[k];
   });
   return o;
 }
+
+export { FOREST_PRESENTATION_OPT_KEYS };
 
 /**
  * Render a forest-plot PNG from a runMeta result.
@@ -166,9 +179,25 @@ export function forestSvg(result, opts = {}) {
   return built ? built.svg : null;
 }
 
-/** PRISMA SVG string (no rasterization) for the repro bundle. */
+/**
+ * PRISMA SVG string (no rasterization) for the repro bundle AND the in-editor
+ * preview.
+ *
+ * 117.md §12/§57 (root cause) — this function had NO flow branch, so the Manuscript
+ * Editor's PRISMA tab drew the legacy single-column diagram from the legacy counter
+ * chain even for projects whose canonical two-column flow was already loaded: the
+ * export path (prismaPng) had been taught the canonical builder in 103.md and this
+ * one had not, which is precisely why the manuscript's figure and Screening's figure
+ * were different drawings of different numbers. They are now the SAME builder fed by
+ * the SAME derivation.
+ */
 export function prismaSvg(prismaResultOrShape, opts = {}) {
   const isResult = prismaResultOrShape && prismaResultOrShape.counts;
+  const flow = (isResult && prismaResultOrShape.flow) || opts.flow || null;
+  if (flow) {
+    const builtFlow = buildPrismaFlowSVG(flow, { title: opts.title || '', perSource: true });
+    return builtFlow ? builtFlow.svg : null;
+  }
   const shape = isResult ? countsToPrismaShape(prismaResultOrShape) : (prismaResultOrShape || {});
   const resolved = isResult ? prismaResultOrShape.counts : undefined;
   const built = buildPrismaSVG(shape, { title: opts.title || '', resolved });

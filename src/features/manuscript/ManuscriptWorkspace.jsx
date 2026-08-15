@@ -142,9 +142,13 @@ export function ManuscriptWorkspace({ project, upd }) {
       robAssessments: m.robAssessments, robByStudyId: m.robByStudyId,
       perSource: m.perSource, analysis: m.genOpts && m.genOpts.analysis,
       prec: project && project.analysisPrecision,
+      // 117.md §12/§57 — the canonical record-derived flow, so the bundle's PRISMA
+      // counts, prisma_2020.svg/png and bundled .docx are the SAME PRISMA the editor
+      // displayed. Absent (unlinked / record-less project) → legacy counter chain.
+      prismaFlow: m.prismaFlow,
     });
     downloadBlob(blob, `${safeName(project.name)}-reproducibility.zip`);
-  }), [runExport, project, freshDraft, m.runMeta, m.gradeByOutcome, m.screening, m.screeningWorkflow, m.searchMethodsText, m.robAssessments, m.robByStudyId, m.perSource, m.genOpts]);
+  }), [runExport, project, freshDraft, m.runMeta, m.gradeByOutcome, m.screening, m.screeningWorkflow, m.searchMethodsText, m.robAssessments, m.robByStudyId, m.perSource, m.genOpts, m.prismaFlow]);
 
   const onPrismaChecklist = useCallback(() => runExport('prisma', async () => {
     const cx = await import('./export/checklistExport.js');

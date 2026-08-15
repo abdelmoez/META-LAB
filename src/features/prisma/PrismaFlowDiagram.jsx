@@ -103,7 +103,17 @@ export function PrismaFlowDiagram({
       if (onChangedRef.current) onChangedRef.current();
     }, 1200);
   }, [screenProjectId]);
-  useRealtime({ 'record.updated': onRecordPoke });
+  /* 117.md §13 (r2 integration) — decisions and finalizations are exactly as
+   * flow-relevant as metadata edits (every screening/eligibility box is a set over
+   * ScreenDecision + finalStatus), yet only `record.updated` had a subscriber here.
+   * A reviewer's vote or a leader's finalize in another session now refreshes an
+   * open diagram through the same debounced path; the events carry no ids, so the
+   * existing refetch-through-authorized-endpoints flow already covers them. */
+  useRealtime({
+    'record.updated': onRecordPoke,
+    'decision.saved': onRecordPoke,
+    'handoff.updated': onRecordPoke,
+  });
 
   const built = useMemo(
     () => (flow ? buildPrismaFlowSVG(flow, { title, perSource, updated }) : null),

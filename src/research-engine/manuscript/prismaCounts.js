@@ -16,6 +16,11 @@
  *   4. DERIVED          — arithmetic between the above (screened = identified − dups …).
  *   5. MISSING          — nothing known → null + a warning; NEVER fabricated.
  *
+ * 117.md §21/§22 — on the CANONICAL (flow) path the tiers above do not apply: the
+ * counts are derived from records and only an EXPLICIT, AUDITED override may sit on
+ * top of them, as a non-destructive overlay that records the automated value it
+ * displaced. See adaptFlow + PRISMA_OVERRIDE_FIELDS below.
+ *
  * The arithmetic mirrors buildPrismaSVG (svgBuilders.js) so the table, the diagram
  * and the narrative always agree:
  *   identified = dbs + reg + other
@@ -37,6 +42,45 @@ function toNum(v) {
   if (v === '' || v == null) return null;
   const n = Number(v);
   return Number.isFinite(n) ? n : null;
+}
+
+/* ════════════ 117.md §21/§22 — the explicit, audited DATA override model ════
+ *
+ * §21 draws a line the previous implementation did not: a manual count is not a
+ * replacement for project data, it is an OVERLAY on top of it. So every override
+ * keeps BOTH numbers — `{ value, auto }` — and the UI is required to show them
+ * together ("Automated value: 231 → Manual override: 229") with a revert control.
+ * The derived value is never mutated, which is what makes "revert to automatic"
+ * a deletion of one key rather than a recovery operation.
+ *
+ * This registry is the ONE place that says which boxes are overridable, so the
+ * panel, the counts adapter and the audit log cannot drift.
+ *
+ * `flowOnly` fields exist only on the canonical record-derived flow (the legacy
+ * counter chain has no retrieval stage and no reports-vs-studies split), so the
+ * panel hides them for a project that has no linked records yet rather than
+ * offering an input that would do nothing.
+ */
+export const PRISMA_OVERRIDE_FIELDS = Object.freeze([
+  { key: 'identified', label: 'Records identified' },
+  { key: 'dedupe', label: 'Duplicates removed' },
+  { key: 'screened', label: 'Records screened' },
+  { key: 'excludedScreen', label: 'Records excluded (screening)' },
+  { key: 'sought', label: 'Reports sought for retrieval', flowOnly: true },
+  { key: 'notRetrieved', label: 'Reports not retrieved', flowOnly: true },
+  { key: 'reportsAssessed', label: 'Reports assessed for eligibility' },
+  { key: 'reportsExcluded', label: 'Reports excluded (full text)' },
+  { key: 'included', label: 'Studies included in review' },
+  { key: 'includedReports', label: 'Reports of included studies', flowOnly: true },
+  { key: 'includedQuant', label: 'Studies in meta-analysis' },
+]);
+
+export const PRISMA_OVERRIDE_KEYS = PRISMA_OVERRIDE_FIELDS.map((f) => f.key);
+
+/** Human label for an overridable field (falls back to the raw key). Pure. */
+export function prismaOverrideLabel(key) {
+  const f = PRISMA_OVERRIDE_FIELDS.find((x) => x.key === key);
+  return f ? f.label : String(key == null ? '' : key);
 }
 
 /**
@@ -231,7 +275,26 @@ export function computePrismaCounts(project, opts = {}) {
 
   const hasAny = Object.values(counts).some((v) => typeof v === 'number' && Number.isFinite(v));
 
-  return { counts, provenance, warnings, hasAny, overrideNote: (opts.overrides && opts.overrides.note) || '' };
+  // 117.md §21 — the SAME {value, auto} overlay shape the flow path publishes, so
+  // the panel can render "Automated value → Manual override" on either path. The
+  // legacy chain short-circuits at the first tier that answers, so the automated
+  // value is recovered by re-resolving the SAME inputs with the overrides removed —
+  // one extra pure pass, and only when an override actually exists. The recursion is
+  // one level deep by construction: the inner call has no overrides, so no field can
+  // resolve to 'override' and it cannot re-enter.
+  const overrides = {};
+  const overridden = Object.keys(provenance).filter((k) => provenance[k] === 'override');
+  if (overridden.length) {
+    const auto = computePrismaCounts(project, { ...opts, overrides: {} });
+    for (const k of overridden) {
+      overrides[k] = { value: counts[k], auto: auto.counts[k] == null ? null : auto.counts[k] };
+    }
+  }
+
+  return {
+    counts, provenance, warnings, hasAny, overrides,
+    overrideNote: (opts.overrides && opts.overrides.note) || '',
+  };
 }
 
 /**
@@ -241,8 +304,11 @@ export function computePrismaCounts(project, opts = {}) {
  * numbers that came from records.
  *
  * Provenance for every key is 'records': the count is the size of a set the caller
- * can inspect (§12). There is no 'override'/'manual' tier here on purpose — a
- * number the project can derive must not be typeable.
+ * can inspect (§12). There is still no 'manual' tier — a number the project can
+ * derive must not be silently outranked by a stale typed one — but 117.md §21 adds
+ * one EXPLICIT, AUDITED override tier on top, which is a different thing: it keeps
+ * the automated value, is labelled everywhere it applies, and is revertible in one
+ * click. See the overlay below.
  * Pure.
  */
 function adaptFlow(flow, opts = {}) {
@@ -282,14 +348,154 @@ function adaptFlow(flow, opts = {}) {
     ? rec.issues.filter((i) => i.severity !== 'info').map((i) => i.message)
     : [];
 
+  /* ── 117.md §21/§22 — explicit audited overrides ON the canonical flow ──────
+   *
+   * 103.md deliberately gave adaptFlow NO override tier: "a number the project can
+   * derive must not be typeable". 117.md §21 revisits that, and the resolution is
+   * not a retreat — it is a different mechanism. The derived counts are computed
+   * FIRST and kept intact; an override is then layered on top and RECORDS the
+   * automated value it displaced (`{ value, auto }`), so:
+   *
+   *   - nothing derived is destroyed (the auto value is still in the result, and
+   *     the record sets behind `flow.boxes` are untouched);
+   *   - the UI can state both numbers, which is exactly what §21 demands;
+   *   - reverting is deleting one key, never a repair;
+   *   - the figure, the counts table, the narrative and the export all read this
+   *     one object, so an override cannot apply to some surfaces and not others.
+   */
+  const ov = (opts && opts.overrides) || {};
+  const overrides = {};
+  for (const key of PRISMA_OVERRIDE_KEYS) {
+    const v = toNum(ov[key]);
+    if (v == null) continue;
+    overrides[key] = { value: v, auto: counts[key] == null ? null : counts[key] };
+    counts[key] = v;
+    provenance[key] = 'override';
+    // `dedupe` and `duplicatesRemoved` are the SAME number under two names in this
+    // object (the arithmetic twin the legacy chain introduced). Leaving one behind
+    // would make the result self-contradictory, so they move together — this is the
+    // only propagation, and it is an identity, not an inference.
+    if (key === 'dedupe') { counts.duplicatesRemoved = v; provenance.duplicatesRemoved = 'override'; }
+  }
+  const overriddenKeys = Object.keys(overrides);
+  if (overriddenKeys.length) {
+    // Never silent (§21). The DIAGRAM is deliberately left alone: every box in it is
+    // a record set a reviewer can click into (§12), and a typed number has no records
+    // behind it — redrawing the figure from an override would destroy exactly the
+    // inspectability that makes the flow trustworthy. So the override governs the
+    // reported counts and the figure keeps showing what the records say, and this
+    // warning states that difference rather than hiding it.
+    warnings.push(
+      `${overriddenKeys.length} PRISMA count${overriddenKeys.length === 1 ? ' is' : 's are'} manually overridden `
+      + `(${overriddenKeys.map(prismaOverrideLabel).join(', ')}) — the counts table, narrative and export report the `
+      + 'override; the flow diagram still draws the record-derived figures.',
+    );
+  }
+
   return {
     counts,
     provenance,
     warnings,
     hasAny: Object.values(counts).some((v) => typeof v === 'number' && Number.isFinite(v)),
+    overrides,
     overrideNote: (opts.overrides && opts.overrides.note) || '',
     flow,
+    // §18 — the structural self-audit, surfaced as an object rather than only as
+    // warning strings, so a panel can show an issue COUNT and severity without
+    // re-deriving anything.
+    reconciliation: rec,
   };
+}
+
+/* ════════════ 117.md §22 — the override record ON THE DRAFT ════════════
+ *
+ * The overlay above is a READ-time projection; these are the pure write/compare
+ * primitives behind it, kept in this module so the override model has exactly one
+ * home (the registry, the read overlay and the audit entry cannot drift apart).
+ *
+ * Byte-stability (repo rule): `prismaOverrideLog` materializes ONLY when non-empty,
+ * exactly like draft.assets / draft.snapshots, and the writer both caps it and
+ * deletes it when it empties — so a project that never overrode a count normalizes
+ * byte-identically and needs no migration. The cap is enforced on every WRITE (there
+ * is no read-side normalizer for this key), which is also what heals a blob that
+ * arrived with an over-long array.
+ */
+
+/** How many audit entries the in-draft override log keeps (oldest dropped first). */
+export const PRISMA_OVERRIDE_LOG_CAP = 50;
+
+const asObj = (v) => (v && typeof v === 'object' && !Array.isArray(v) ? v : null);
+
+/** The stored override for one field — a number, or null when it tracks the project. Pure. */
+export function prismaOverrideOf(draft, field) {
+  const d = asObj(draft);
+  const ov = d ? asObj(d.prismaOverrides) : null;
+  if (!ov || !field) return null;
+  return toNum(ov[field]);
+}
+
+/**
+ * The §14 undo precondition: does this field's override still hold the value the
+ * history entry was recorded against? `expected` null/'' means "no override".
+ * Pure.
+ */
+export function prismaOverrideMatches(draft, field, expected) {
+  const exp = expected == null || expected === '' ? null : toNum(expected);
+  return prismaOverrideOf(draft, field) === exp;
+}
+
+/**
+ * setPrismaOverride(draft, field, value, meta) → draft
+ *
+ * `value` null/'' REVERTS THE FIELD TO AUTOMATIC (the key is deleted — reverting is
+ * a deletion, never a repair, because the derived value was never destroyed).
+ * A no-op (same value already stored, or a revert of a field that has none) returns
+ * the draft UNCHANGED and writes no audit entry.
+ *
+ * @param {object} meta { auto, nowIso, by, reason, via } — `auto` is the automated
+ *   value being displaced (from the counts result), recorded so the audit line can
+ *   be read years later without re-deriving anything. `via` marks an undo/redo
+ *   application (108.md audit-marker convention); a user action omits it.
+ * Pure.
+ */
+export function setPrismaOverride(draft, field, value, meta = {}) {
+  const d = asObj(draft);
+  if (!d || !field) return draft;
+  const from = prismaOverrideOf(d, field);
+  const to = value == null || value === '' ? null : toNum(value);
+  if (to == null && value != null && value !== '') return draft;   // unparseable → ignore
+  if (from === to) return draft;
+
+  const prev = asObj(d.prismaOverrides) || {};
+  const next = { ...prev };
+  if (to == null) delete next[field];
+  else next[field] = to;
+
+  const entry = {
+    field,
+    from,
+    to,
+    auto: meta.auto == null ? null : toNum(meta.auto),
+    at: meta.nowIso || null,
+  };
+  if (meta.by) entry.by = String(meta.by);
+  if (meta.reason) entry.reason = String(meta.reason);
+  // 108.md — an undo APPENDS an audit row, it never rewrites one, so the marker
+  // rides on the new entry. Absent for an ordinary user edit (byte-stability).
+  if (meta.via && meta.via !== 'user') entry.via = String(meta.via);
+
+  const log = [...(Array.isArray(d.prismaOverrideLog) ? d.prismaOverrideLog : []), entry]
+    .slice(-PRISMA_OVERRIDE_LOG_CAP);
+
+  const out = { ...d, prismaOverrides: next };
+  if (log.length) out.prismaOverrideLog = log;
+  else delete out.prismaOverrideLog;
+  return out;
+}
+
+/** Revert one field to live automatic synchronization (§22). Pure. */
+export function clearPrismaOverride(draft, field, meta = {}) {
+  return setPrismaOverride(draft, field, null, meta);
 }
 
 /**
@@ -311,4 +517,15 @@ export function countsToPrismaShape(result) {
   };
 }
 
-export default { computePrismaCounts, countsToPrismaShape };
+export default {
+  computePrismaCounts,
+  countsToPrismaShape,
+  PRISMA_OVERRIDE_FIELDS,
+  PRISMA_OVERRIDE_KEYS,
+  PRISMA_OVERRIDE_LOG_CAP,
+  prismaOverrideLabel,
+  prismaOverrideOf,
+  prismaOverrideMatches,
+  setPrismaOverride,
+  clearPrismaOverride,
+};
