@@ -12,6 +12,7 @@
  *     edits:   { [refId]: {field: value} }  // per-id patches over DERIVED refs (§29)
  *     aliases: { [oldId]: survivingId }     // merges + dedupe survivors (§32)
  *     removed: [ refId… ]                   // suppressed derived entries (§31)
+ *     merges:  { [mergedId]: {into, filled, …} }  // the inverse of a merge (§J.16)
  *   }
  *
  * Why an overlay and not a materialized list:
@@ -225,7 +226,53 @@ export function normalizeReferenceLibrary(raw) {
     }
   }
   const removed = [...new Set((Array.isArray(r.removed) ? r.removed : []).map(clean).filter(Boolean))];
-  return { entries, edits, aliases, removed };
+  const merges = {};
+  if (isObj(r.merges)) {
+    for (const key of Object.keys(r.merges)) {
+      const rec = r.merges[key];
+      if (!isObj(rec)) continue;
+      const from = clean(key);
+      const into = clean(rec.into);
+      if (!from || !into || from === into) continue;
+      const out = { into };
+      if (isObj(rec.filled)) {
+        const filled = {};
+        for (const k of Object.keys(rec.filled)) {
+          const f = rec.filled[k];
+          const field = clean(k);
+          if (!field || !isObj(f)) continue;
+          filled[field] = { to: normalizeFilledValue(f.to), from: normalizeFilledValue(f.from) };
+        }
+        if (Object.keys(filled).length) out.filled = filled;
+      }
+      const chained = [...new Set((Array.isArray(rec.chained) ? rec.chained : []).map(clean).filter(Boolean))];
+      if (chained.length) out.chained = chained;
+      if (rec.hidden === true) out.hidden = true;
+      merges[from] = out;
+    }
+  }
+  return { entries, edits, aliases, removed, merges };
+}
+
+/**
+ * A recorded merge value. `null` means "the field was ABSENT before" — deliberately
+ * distinct from `''`, which an `edits` patch stores to mean "the derived value is
+ * wrong and the right answer is nothing" (§29). Pure.
+ */
+function normalizeFilledValue(v) {
+  if (v === null || v === undefined) return null;
+  if (Array.isArray(v)) return v.map(clean).filter(Boolean);
+  return clean(v);
+}
+
+/** Value equality for a recorded merge value (string | string[] | null). Pure. */
+function sameFilledValue(a, b) {
+  if (Array.isArray(a) || Array.isArray(b)) {
+    const x = Array.isArray(a) ? a : [];
+    const y = Array.isArray(b) ? b : [];
+    return x.length === y.length && x.every((v, i) => v === y[i]);
+  }
+  return (a === null || a === undefined ? null : a) === (b === null || b === undefined ? null : b);
 }
 
 /**
@@ -244,6 +291,7 @@ export function materializeReferenceLibrary(lib) {
   if (Object.keys(l.edits).length) out.edits = l.edits;
   if (Object.keys(l.aliases).length) out.aliases = l.aliases;
   if (l.removed.length) out.removed = l.removed;
+  if (Object.keys(l.merges).length) out.merges = l.merges;
   return Object.keys(out).length ? out : undefined;
 }
 
@@ -323,6 +371,7 @@ function applyEdit(ref, patch) {
  *   entryIds: Set<string>,           // ids that come from the overlay's entries[]
  *   removedIds: Set<string>,         // suppressed derived ids (§31)
  *   suppressed: object[],            // the suppressed derived refs (so they can be restored)
+ *   mergedAway: object,              // §J.16 — suppressed-BY-A-MERGE ids → {into, survivor, recorded}
  *   library: object,                 // the normalized overlay it resolved
  * }}
  *
@@ -378,9 +427,35 @@ export function resolveReferenceLibrary(project, opts = {}) {
     if (target && !byId.has(from)) byId.set(from, target);
   }
 
+  /* 117.md §J.16 — WHICH suppressed entries are suppressed BY A MERGE.
+   *
+   * A merge suppresses the loser AND aliases its id. Restoring it independently put
+   * the id back into `refs`, at which point the alias stopped applying (an id that
+   * exists canonically is never overwritten by an alias, five lines above) and the
+   * merged-away copy reappeared beside its survivor. So a merged-away entry is NOT
+   * independently restorable: it is shown as merged, and the only way back is an
+   * UNMERGE, which takes the alias, the suppression and the survivor's fill with it.
+   *
+   * The test is `library.aliases[id]` — the STORED, user/merge alias map, never the
+   * flattened one, because the dedupe aliases folded into `aliases` below describe
+   * copies that were never in `refs` at all and can never be suppressed.
+   */
+  const mergedAway = {};
+  for (const id of library.removed) {
+    if (!library.aliases[id]) continue;
+    const into = resolveAliasId(aliases, id);
+    mergedAway[id] = {
+      into,
+      survivor: byId.get(into) || null,
+      // A merge recorded before §J.16 has no inverse stored: unmerging it can still
+      // un-alias and un-hide, but the blank-fill it applied cannot be undone.
+      recorded: !!library.merges[id],
+    };
+  }
+
   return {
     refs, byId, aliases, derivedIds, entryIds, removedIds,
-    suppressed, library,
+    suppressed, mergedAway, library,
   };
 }
 
@@ -495,11 +570,19 @@ export function librarySuppress(library, id) {
   return { ...lib, removed: [...lib.removed, refId] };
 }
 
-/** §31 — restore a suppressed reference. */
+/**
+ * §31 — restore a suppressed reference.
+ *
+ * 117.md §J.16 — a reference suppressed BY A MERGE refuses: putting its id back into
+ * `refs` makes the alias stop applying, and the merged-away copy reappears beside its
+ * survivor (the bug this rule closes). `libraryUnmerge` is the way back for those,
+ * and the refusal lives HERE so no caller can reintroduce the resurrection.
+ */
 export function libraryRestore(library, id) {
   const lib = normalizeReferenceLibrary(library);
   const refId = clean(id);
   if (!refId || !lib.removed.includes(refId)) return null;
+  if (lib.aliases[refId]) return null;
   return { ...lib, removed: lib.removed.filter((x) => x !== refId) };
 }
 
@@ -576,7 +659,7 @@ export function libraryMerge(library, args = {}) {
   const linkPatchEntry = (entry) => {
     if (!loser) return entry;
     const out = { ...entry };
-    for (const k of ['pdfAttachmentId', 'screeningRecordId', 'studyId', 'sourceDb']) {
+    for (const k of ['pdfAttachmentId', 'screeningRecordId', 'screeningProjectId', 'studyId', 'sourceDb']) {
       if (!clean(out[k]) && clean(loser[k])) out[k] = clean(loser[k]);
     }
     return out;
@@ -598,7 +681,125 @@ export function libraryMerge(library, args = {}) {
   // otherwise the merged-away study would come straight back on the next resolve.
   const wasEntry = next.entries.some((e) => e.id === mergedId);
   const nextRemoved = wasEntry ? removed : [...new Set([...removed, mergedId])];
-  return { ...next, entries, edits, aliases, removed: nextRemoved };
+
+  /* 4. 117.md §J.16 — RECORD THE INVERSE, so the merge is reversible by button and
+   *    not only by Ctrl+Z.
+   *
+   * `filled` is a DIFF of the survivor's own stored slice (its `edits` patch, or its
+   * entry object) taken across steps 1-2, rather than a re-derivation of the fill
+   * rules. That matters: `libraryEditReference` deliberately skips a field the
+   * researcher already corrected, and `linkPatchEntry` writes four non-bibliographic
+   * fields — a second implementation of "what a merge writes" would drift from the
+   * first the moment either rule changed. The diff simply cannot.
+   *
+   * Recorded only for a loser that ends up SUPPRESSED (a derived reference). An
+   * ENTRY loser is genuinely deleted, and its reversal is the undo stack's job — the
+   * one place that carries the entry's full payload (§88).
+   */
+  let mergeRecord = null;
+  if (!wasEntry) {
+    const filled = diffSurvivorSlice(survivorSliceOf(lib, survivorId), survivorSliceOf({ ...next, entries, edits }, survivorId));
+    // Ids previously merged INTO this loser were re-flattened onto the survivor;
+    // an unmerge has to point them back at the loser they actually belong to.
+    const chained = Object.keys(lib.aliases).filter((k) => k !== mergedId && resolveAliasId(lib.aliases, k) === mergedId);
+    mergeRecord = { into: survivorId };
+    if (Object.keys(filled).length) mergeRecord.filled = filled;
+    if (chained.length) mergeRecord.chained = chained;
+    // Already hidden by hand before the merge → an unmerge must leave it hidden.
+    if (lib.removed.includes(mergedId)) mergeRecord.hidden = true;
+  }
+  const merges = mergeRecord ? { ...next.merges, [mergedId]: mergeRecord } : next.merges;
+  return { ...next, entries, edits, aliases, removed: nextRemoved, merges };
+}
+
+/** The survivor's own STORED slice — its entry object, or its `edits` patch. Pure. */
+function survivorSliceOf(lib, id) {
+  const entry = (lib.entries || []).find((e) => e.id === id);
+  if (entry) return { kind: 'entry', obj: entry };
+  return { kind: 'edit', obj: (lib.edits || {})[id] || null };
+}
+
+/** Field-level diff of two survivor slices → { field: {to, from} }. Pure. */
+function diffSurvivorSlice(before, after) {
+  const a = isObj(before.obj) ? before.obj : {};
+  const b = isObj(after.obj) ? after.obj : {};
+  const out = {};
+  for (const k of new Set([...Object.keys(a), ...Object.keys(b)])) {
+    if (k === 'id') continue;
+    const from = Object.prototype.hasOwnProperty.call(a, k) ? normalizeFilledValue(a[k]) : null;
+    const to = Object.prototype.hasOwnProperty.call(b, k) ? normalizeFilledValue(b[k]) : null;
+    if (sameFilledValue(from, to)) continue;
+    out[k] = { to, from };
+  }
+  return out;
+}
+
+/**
+ * 117.md §J.16 — UNMERGE: the button-path inverse of `libraryMerge`.
+ *
+ * It removes the alias, lifts the suppression and puts back exactly the fields the
+ * merge wrote on the survivor — and NOTHING else. A field the researcher has changed
+ * since the merge is left alone rather than reverted: the merge no longer owns that
+ * value, and silently overwriting a correction is the failure mode §29 exists to
+ * prevent. So the round trip is byte-exact when nothing happened in between, and
+ * conservative when something did.
+ *
+ * Returns the next overlay, or `null` when this id was not merged away.
+ */
+export function libraryUnmerge(library, mergedId) {
+  const lib = normalizeReferenceLibrary(library);
+  const id = clean(mergedId);
+  if (!id) return null;
+  const rec = lib.merges[id];
+  const aliasTarget = clean(lib.aliases[id]);
+  // A merge recorded before §J.16 has an alias but no inverse: it can still be
+  // un-aliased and un-hidden, which is what stops the resurrection bug.
+  if (!rec && !aliasTarget) return null;
+  const survivorId = (rec && rec.into) || aliasTarget;
+
+  let next = lib;
+
+  /* 1. put the survivor's own slice back, field by field. */
+  const filled = (rec && rec.filled) || {};
+  if (Object.keys(filled).length) {
+    const slice = survivorSliceOf(next, survivorId);
+    const cur = isObj(slice.obj) ? { ...slice.obj } : {};
+    let changed = false;
+    for (const k of Object.keys(filled)) {
+      const { to, from } = filled[k];
+      const now = Object.prototype.hasOwnProperty.call(cur, k) ? normalizeFilledValue(cur[k]) : null;
+      if (!sameFilledValue(now, to)) continue;    // moved on since the merge — keep it
+      if (from === null) { delete cur[k]; } else { cur[k] = from; }
+      changed = true;
+    }
+    if (changed && slice.kind === 'entry') {
+      const idx = next.entries.findIndex((e) => e.id === survivorId);
+      if (idx >= 0) {
+        const entries = next.entries.slice();
+        entries[idx] = normalizeLibraryEntry({ ...cur, id: survivorId });
+        next = { ...next, entries };
+      }
+    } else if (changed) {
+      const edits = { ...next.edits };
+      if (Object.keys(cur).length) edits[survivorId] = cur; else delete edits[survivorId];
+      next = { ...next, edits };
+    }
+  }
+
+  /* 2. the alias goes, and anything that was merged into THIS id points back at it. */
+  const aliases = { ...next.aliases };
+  delete aliases[id];
+  for (const k of ((rec && rec.chained) || [])) {
+    if (aliases[k] && k !== id) aliases[k] = id;
+  }
+
+  /* 3. the suppression goes — unless the entry was already hidden by hand. */
+  const removed = (rec && rec.hidden) ? next.removed : next.removed.filter((x) => x !== id);
+
+  const merges = { ...next.merges };
+  delete merges[id];
+
+  return { ...next, aliases: flattenAliases(aliases), removed, merges };
 }
 
 /* ════════════ 117.md §30 — import ════════════ */
@@ -864,6 +1065,8 @@ export const REFERENCE_LIBRARY_OP_LABELS = Object.freeze({
   add: 'Add reference',
   edit: 'Edit reference',
   merge: 'Merge references',
+  // 117.md §J.16 — the button-path inverse of a merge (Ctrl+Z is the other one).
+  unmerge: 'Unmerge references',
   suppress: 'Hide reference',
   restore: 'Restore reference',
   delete: 'Delete reference',
@@ -893,7 +1096,12 @@ function stableJson(v) {
 /** The stable serialization of an overlay — the §14 precondition's comparison key. Pure. */
 export function referenceLibrarySignature(lib) {
   const l = normalizeReferenceLibrary(lib);
-  return stableJson({ entries: l.entries, edits: l.edits, aliases: l.aliases, removed: l.removed });
+  return stableJson({
+    entries: l.entries, edits: l.edits, aliases: l.aliases, removed: l.removed,
+    // §J.16 — the merge inverse is part of the overlay, so an undo precondition that
+    // ignored it could replay over a library whose merge record had already moved.
+    merges: l.merges,
+  });
 }
 
 /** Deep-equality for two overlays (both normalized first, so shape noise never counts). Pure. */
@@ -998,6 +1206,7 @@ export default {
   libraryRestore,
   libraryDeleteEntry,
   libraryMerge,
+  libraryUnmerge,
   recordToReferenceEntry,
   previewReferenceImport,
   suggestReferenceDuplicates,

@@ -20,8 +20,11 @@
  *     ≥300 dpi effective (2200px forest/funnel, 1800px PRISMA/RoB source width at
  *     600/560px display width) and attach altText instead.
  *
- * The `docx` import is dynamic so the library is code-split out of the main bundle
- * (the whole manuscript editor is behind the OFF-by-default `manuscriptEditor` flag).
+ * The `docx` import is dynamic so the library is code-split out of the main bundle:
+ * the manuscript workspace itself is lazy-loaded by ManuscriptTab, and this export
+ * path only runs when a user actually asks for a Word file. (117.md §K.2 flipped
+ * `manuscriptEditor` to default ON, so the flag no longer keeps the chunk out of
+ * most installs — the code splitting is what does.)
  */
 import {
   computePrismaCounts,
@@ -32,6 +35,8 @@ import {
   buildSearchStrategyTable,
   generateReferenceList,
   orderReferencesForManuscript,
+  // 117.md §K.4 — Harvard year disambiguation, read off the rendered bibliography.
+  yearSuffixesOf,
   collectCitationOrder,
   draftSectionTexts,
   renderInlineMarkers,
@@ -469,7 +474,11 @@ export async function buildManuscriptDocx(project, draft, opts = {}) {
   // exports as "[?]" rather than taking a number the bibliography does not have.
   const citeKnownIds = new Set(refList.map((r) => r.id));
   const { orderMap } = collectCitationOrder(draftSectionTexts(draft), { aliases: refAliases, knownIds: citeKnownIds });
-  const citeOpts = { aliases: refAliases, refsById };
+  // 117.md §K.4 — the Harvard "2020a" suffixes are read off the BIBLIOGRAPHY ROWS
+  // this document is about to print, so an exported marker can never disagree with
+  // the exported entry. Empty for every numeric style.
+  const citeYearSuffixes = yearSuffixesOf(refList, refAliases);
+  const citeOpts = { aliases: refAliases, refsById, yearSuffixes: citeYearSuffixes };
   const secMd = (id) => renderInlineMarkers((draft.sections[id] && draft.sections[id].content) || '', orderMap, draft.citationStyle, citeOpts);
   // 117.md §4 — manual tables are emitted INLINE by markdownToParagraphs (they are
   // prose blocks), so the inline context carries their registry entries: caption

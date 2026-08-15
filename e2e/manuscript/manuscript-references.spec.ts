@@ -25,6 +25,7 @@
  * citation style, export.
  */
 import { test, expect } from '../fixtures/stitch-test';
+import { attachPdfToFirstRecord } from '../helpers/pdf';
 
 type Page = import('@playwright/test').Page;
 type APIRequestContext = import('@playwright/test').APIRequestContext;
@@ -361,6 +362,132 @@ test.describe('Manuscript reference manager (117.md §26-§41, §78, §91)', () 
     if (reviewed) await page.getByTestId('stitch-manuscript-export-anyway').click();
     const file = await download;
     expect(file.suggestedFilename()).toMatch(/\.docx$/);
+  });
+
+  /**
+   * 117.md §38 / §J.3 — "Open PDF" is a FEATURE now, not a seam.
+   *
+   * Nothing writes `pdfAttachmentId`, and nothing needs to: an included study that
+   * came through screening names its screening record, and that record's attachment
+   * is resolved on demand through the pre-117 listing endpoint. So this seeds a REAL
+   * PDF on a REAL screening record (through the real upload route, exactly as
+   * files-pdf.spec.ts does), links a study to it, and asserts the chip menu offers
+   * the action — and that a reference with no screening record still does not, which
+   * is the half that keeps the button honest.
+   *
+   * The screeningProject fixture is used rather than tmpProject because the
+   * attachment lives on a screening record; the manuscript project is the same
+   * META·LAB project the workspace belongs to.
+   */
+  test('§J.3: "Open PDF" appears for a screening-linked reference and opens the in-app viewer', async ({ page, request, screeningProject }) => {
+    const attached = await attachPdfToFirstRecord(request, screeningProject.siftId);
+
+    const proj = await (await request.get(`/api/projects/${screeningProject.project.id}`)).json();
+    proj.studies = [
+      {
+        id: 'p1', title: 'Screened trial with a full text', authors: 'Lee K', year: '2020',
+        journal: 'Lancet', doi: '10.1000/withpdf',
+        screeningRecordId: attached.recordId, screeningProjectId: screeningProject.siftId,
+      },
+      // No screening linkage at all — the action must NOT appear for this one.
+      { id: 'p2', title: 'Typed by hand with no record', authors: 'Roe B', year: '2021', journal: 'BMJ' },
+    ];
+    expect((await request.put(`/api/projects/${screeningProject.project.id}/autosave`, { data: proj })).ok()).toBeTruthy();
+
+    await openManuscript(page, screeningProject.project.id);
+    const editor = await openEditorSection(page, 'results');
+    await editor.click();
+    await page.keyboard.press('ControlOrMeta+End');
+    await page.keyboard.type('The full text was reviewed ');
+    await insertCitation(page, 'Screened trial', 1);
+    await expect(citeChips(page)).toHaveCount(1);
+
+    /* The chip is addressed by its reference id, not by position: the picker inserts
+       at the caret, and this spec deliberately does not care where that is. */
+    const chipFor = (id: string) => page.getByTestId('stitch-manuscript-rich-editor').locator(`.ms-cite[data-cite="${id}"]`);
+
+    // Resolution is LAZY: it starts when the action menu opens, so the action
+    // appears a moment later rather than on first paint.
+    await chipFor('p1').click();
+    const menu = page.getByTestId('stitch-manuscript-cite-menu');
+    await expect(menu).toBeVisible();
+    await expect(menu.getByTestId('stitch-manuscript-cite-pdf-p1')).toBeVisible({ timeout: 15_000 });
+
+    // …and it opens the SAME viewer the screening surface uses (no new route).
+    await menu.getByTestId('stitch-manuscript-cite-pdf-p1').click();
+    const viewer = page.getByTestId('stitch-manuscript-reference-pdf');
+    await expect(viewer).toBeVisible({ timeout: 15_000 });
+    await expect(viewer).toContainText('Screened trial with a full text');
+    await viewer.getByTestId('stitch-manuscript-reference-pdf-close').click();
+    await expect(viewer).toHaveCount(0);
+
+    // The reference with no screening record offers no PDF action at all.
+    await openEditorSection(page, 'results');
+    await editor.click();
+    await page.keyboard.press('ControlOrMeta+End');
+    await page.keyboard.type(' and the manual reference too ');
+    await insertCitation(page, 'Typed by hand', 1);
+    await expect(citeChips(page)).toHaveCount(2);
+    await chipFor('p2').click();
+    const menu2 = page.getByTestId('stitch-manuscript-cite-menu');
+    await expect(menu2).toBeVisible();
+    await expect(menu2.getByTestId('stitch-manuscript-cite-edit-p2')).toBeVisible();
+    await expect(menu2.getByTestId('stitch-manuscript-cite-pdf-p2')).toHaveCount(0);
+  });
+
+  /**
+   * 117.md §J.16 — a merged-away reference is UNMERGED, never "restored".
+   *
+   * The shipped behaviour listed it in the hidden-references card with a Restore
+   * button, and pressing it brought the duplicate back beside its survivor (the alias
+   * stops applying the moment the id is a reference again). This walks the whole
+   * loop in the browser: merge → the card says what happened → Unmerge → both
+   * references are back and the survivor has given up the metadata the merge filled.
+   */
+  test('§J.16: a merged reference is shown as merged, and Unmerge puts both back', async ({ page, request, tmpProject }) => {
+    await seedDuplicate(request, tmpProject.id);
+    await openManuscript(page, tmpProject.id);
+    await page.getByTestId('stitch-manuscript-subtab-references').click();
+
+    // The merge survivor (s1, the DOI copy) gains the PMID the loser carried.
+    const dupCard = page.getByTestId('stitch-manuscript-reference-duplicates');
+    await expect(dupCard).toBeVisible();
+    await dupCard.getByTestId('stitch-manuscript-merge-s1-s2').click();
+    await expect(dupCard).toHaveCount(0);
+    await expect(page.getByTestId('stitch-manuscript-reference-s2')).toHaveCount(0);
+
+    // §J.16 — the hidden card names the survivor and offers Unmerge, NOT Restore.
+    const hidden = page.getByTestId('stitch-manuscript-reference-hidden');
+    await expect(hidden).toBeVisible();
+    await expect(hidden.getByTestId('stitch-manuscript-reference-mergedinto-s2')).toContainText('Merged into Alpha');
+    await expect(hidden.getByTestId('stitch-manuscript-reference-restore-s2')).toHaveCount(0);
+
+    // The merge recorded its own inverse (what it filled on the survivor), which is
+    // what makes the Unmerge below exact rather than approximate.
+    await expect.poll(async () => {
+      const p = await (await request.get(`/api/projects/${tmpProject.id}`)).json();
+      const lib = p.referenceLibrary || {};
+      return JSON.stringify({
+        into: ((lib.merges || {}).s2 || {}).into || '',
+        pmid: ((lib.edits || {}).s1 || {}).pmid || '',
+      });
+    }, { timeout: 20_000 }).toBe(JSON.stringify({ into: 's1', pmid: '31234567' }));
+
+    // Unmerge separates them again and gives the filled metadata back.
+    await hidden.getByTestId('stitch-manuscript-reference-unmerge-s2').click();
+    await expect(page.getByTestId('stitch-manuscript-reference-s2')).toBeVisible();
+    await expect(page.getByTestId('stitch-manuscript-reference-hidden')).toHaveCount(0);
+
+    // The overlay is back to having no merge at all (asserted against the blob, which
+    // also gives the debounced autosave a deterministic point to have landed by).
+    await expect.poll(async () => {
+      const p = await (await request.get(`/api/projects/${tmpProject.id}`)).json();
+      const lib = p.referenceLibrary || {};
+      return JSON.stringify({
+        aliases: lib.aliases || {}, removed: lib.removed || [],
+        merges: lib.merges || {}, edits: lib.edits || {},
+      });
+    }, { timeout: 20_000 }).toBe(JSON.stringify({ aliases: {}, removed: [], merges: {}, edits: {} }));
   });
 
   test('§33: the library manager searches, filters and hides/restores derived references', async ({ page, request, tmpProject }) => {

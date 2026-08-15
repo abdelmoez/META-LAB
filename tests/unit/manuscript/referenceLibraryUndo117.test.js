@@ -120,12 +120,14 @@ describe('117.md §88 — one kind, a human label per op', () => {
       add: 'Add reference',
       edit: 'Edit reference',
       merge: 'Merge references',
+      // 117.md §J.16 (re-pinned) — the button-path inverse of a merge.
+      unmerge: 'Unmerge references',
       suppress: 'Hide reference',
       restore: 'Restore reference',
       delete: 'Delete reference',
       import: 'Import references',
     });
-    expect(REFERENCE_LIBRARY_OPS).toEqual(['add', 'edit', 'merge', 'suppress', 'restore', 'delete', 'import']);
+    expect(REFERENCE_LIBRARY_OPS).toEqual(['add', 'edit', 'merge', 'unmerge', 'suppress', 'restore', 'delete', 'import']);
   });
 
   it('labels each op through the accessor, and never leaves an unknown op nameless', () => {

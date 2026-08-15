@@ -133,14 +133,16 @@ export function citeChipHtml(idOrIds, nOrLabel, opts = {}) {
  * the first render (mdToHtml) and the in-place renumbering effect can never
  * disagree about what a chip should say.
  *
- * `orderMap` may be a Map or a plain object; `refsById` is only consulted by
- * author-year styles. An id that resolves to nothing yields `broken:true` so the
- * chip can say so instead of silently renumbering to something wrong (§39).
+ * `orderMap` may be a Map or a plain object; `refsById` and `yearSuffixes` are only
+ * consulted by author-year styles (§K.4 — the Harvard "2020a" disambiguation comes
+ * from the rendered bibliography, so the chip and the entry always agree). An id
+ * that resolves to nothing yields `broken:true` so the chip can say so instead of
+ * silently renumbering to something wrong (§39).
  */
-export function citeChipLabel(idOrIds, orderMap, style, refsById) {
+export function citeChipLabel(idOrIds, orderMap, style, refsById, yearSuffixes) {
   const ids = (Array.isArray(idOrIds) ? idOrIds : String(idOrIds == null ? '' : idOrIds).split(','))
     .map((s) => String(s).trim()).filter(Boolean);
-  const label = formatCitationMarker(ids, orderMap, style || 'vancouver', { refsById });
+  const label = formatCitationMarker(ids, orderMap, style || 'vancouver', { refsById, yearSuffixes });
   const known = (id) => {
     if (isAuthorYearStyle(style)) {
       if (!refsById) return true;
@@ -341,7 +343,7 @@ function inlineHtml(escText, orderMap, assetNumbers, factOpts, refOpts) {
     // the label comes from the ONE style-aware formatter the renumbering effect
     // also uses.
     const raw = unescapeEntities(idEsc);
-    const { label, broken } = citeChipLabel(raw, orderMap, ro.citationStyle, ro.refsById);
+    const { label, broken } = citeChipLabel(raw, orderMap, ro.citationStyle, ro.refsById, ro.yearSuffixes);
     return citeChipHtml(raw, label, { broken });
   });
   t = t.replace(new RegExp(ASSET_TOKEN_RE.source, 'g'), (_m, kind, suffix) => {
@@ -490,12 +492,13 @@ const EMPTY_FACT_OPTS = { facts: null, overrides: null, changes: new Map(), show
 
 /** Neutral cross-reference options — no registry knowledge, default caption format. */
 const EMPTY_REF_OPTS = {
-  knownAssetIds: null, templateId: null, citationStyle: null, refsById: null,
+  knownAssetIds: null, templateId: null, citationStyle: null, refsById: null, yearSuffixes: null,
 };
 
 /** Normalize the cross-reference slice of opts once per render (117.md §8/§11/§37). */
 function refOptsOf(opts) {
-  if (!opts || (!opts.knownAssetIds && !opts.templateId && !opts.citationStyle && !opts.refsById)) return EMPTY_REF_OPTS;
+  if (!opts || (!opts.knownAssetIds && !opts.templateId && !opts.citationStyle && !opts.refsById
+    && !opts.yearSuffixes)) return EMPTY_REF_OPTS;
   return {
     knownAssetIds: opts.knownAssetIds || null,
     templateId: opts.templateId || null,
@@ -504,6 +507,8 @@ function refOptsOf(opts) {
     // 117.md §37/§38 — reference metadata, needed by author-year labels and by the
     // "is this citation resolvable at all" check.
     refsById: opts.refsById || null,
+    // 117.md §K.4 — the Harvard "2020a" suffix map from the rendered bibliography.
+    yearSuffixes: opts.yearSuffixes || null,
   };
 }
 

@@ -34,6 +34,9 @@ import {
   filterReferenceRows, sortReferences, collectReferenceTags, REFERENCE_SORTS,
 } from '../../research-engine/manuscript/referenceLibrary.js';
 import { authorYearLabel } from '../../research-engine/manuscript/citations.js';
+// 117.md §J.3 — decorate references with the PDF attachment the lazy resolver found,
+// so "Open PDF" appears exactly when a PDF really is reachable.
+import { withResolvedPdfIds } from './referencePdfLinks.js';
 import {
   RichSectionEditor, RichToolbar, RICH_EDITOR_CSS, CrossRefPicker, CrossRefList,
   CiteRefPicker, citeItemOf,
@@ -1100,11 +1103,17 @@ export function referencePreviewLine(ref) {
   return [r.journal, r.year].filter(Boolean).join(' · ');
 }
 
-/** §38 — hover preview: first author, year, title, journal. */
-export function CiteHoverCard({ info, refs, pageEl }) {
+/**
+ * §38 — hover preview: first author, year, title, journal.
+ * §K.4 — `yearSuffixes` keeps the preview's "Smith, 2020a" identical to the chip and
+ * to the bibliography entry; without it the preview would name a year that the
+ * marker beside it disambiguated differently.
+ */
+export function CiteHoverCard({ info, refs, pageEl, yearSuffixes = null }) {
   const pos = info && anchorUnder(info.rect, pageEl, 280);
   if (!info || !pos) return null;
   const list = Array.isArray(refs) ? refs.filter(Boolean) : [];
+  const sfx = (r) => (yearSuffixes && r ? (yearSuffixes[r.id] || '') : '');
   return (
     <div data-testid="stitch-manuscript-cite-hover" role="tooltip"
       style={{ ...popoverBox, top: pos.top, left: pos.left, width: 280, padding: '8px 10px', pointerEvents: 'none' }}>
@@ -1117,7 +1126,7 @@ export function CiteHoverCard({ info, refs, pageEl }) {
         </div>
       ) : list.slice(0, 3).map((r, i) => (
         <div key={r.id || i} style={{ marginTop: i ? 6 : 0 }}>
-          <div style={{ fontSize: 11.5, fontWeight: 700, color: C.txt, lineHeight: 1.4 }}>{authorYearLabel(r)}</div>
+          <div style={{ fontSize: 11.5, fontWeight: 700, color: C.txt, lineHeight: 1.4 }}>{authorYearLabel(r, sfx(r))}</div>
           <div style={{ fontSize: 11.5, color: C.txt2, lineHeight: 1.45 }}>{r.title || '(no title)'}</div>
           {referencePreviewLine(r) && (
             <div style={{ fontSize: 10, color: C.muted, marginTop: 2 }}>{referencePreviewLine(r)}</div>
@@ -1144,10 +1153,12 @@ export function CiteHoverCard({ info, refs, pageEl }) {
  */
 export function CiteRefMenu({
   info, refs, pageEl, onView, onEdit, onOpenPdf, onGoToReferences, onRemove, onClose,
+  yearSuffixes = null,
 }) {
   const pos = info && anchorUnder(info.rect, pageEl, 268);
   if (!info || !pos) return null;
   const list = Array.isArray(refs) ? refs : [];
+  const sfx = (r) => (yearSuffixes && r ? (yearSuffixes[r.id] || '') : '');
   const btn = {
     ...btnS('ghost'), width: '100%', justifyContent: 'flex-start', fontSize: 11.5,
     padding: '5px 8px', border: '1px solid transparent', background: 'transparent',
@@ -1173,7 +1184,7 @@ export function CiteRefMenu({
           <div key={r.id} style={{ marginBottom: multi ? 6 : 0 }}>
             {multi && (
               <div style={{ fontSize: 10.5, fontWeight: 700, color: C.txt, padding: '3px 6px 1px' }}>
-                {authorYearLabel(r)}
+                {authorYearLabel(r, sfx(r))}
               </div>
             )}
             <button type="button" style={btn} data-testid={`stitch-manuscript-cite-view-${r.id}`}
@@ -1376,13 +1387,29 @@ export function EditorPanel({ m, exporters, sectionRequest, onOpenAssetPanel, on
     setCiteMenu(null);
   };
 
-  /** 117.md §38 — the reference objects behind a chip's ids (alias-resolved). */
+  /**
+   * 117.md §38 — the reference objects behind a chip's ids (alias-resolved).
+   * §J.3 — decorated with whatever the lazy PDF resolver has learned, which is what
+   * makes "Open PDF" appear for a screening-linked study. `m.referencePdfIds` is
+   * empty until a menu asks, so a hover costs nothing.
+   */
   const refsOf = (info) => {
     const by = m.refsById;
     if (!info || !by) return [];
-    return (info.ids || [])
+    const list = (info.ids || [])
       .map((id) => (typeof by.get === 'function' ? by.get(id) : by[id]))
       .filter(Boolean);
+    return withResolvedPdfIds(list, m.screenProjectId, m.referencePdfIds);
+  };
+
+  /* §J.3 — resolve on MENU OPEN, never on hover: opening the action menu is the one
+     moment a researcher is about to ask for the PDF, and it is a deliberate click. */
+  const openCiteMenu = (info) => {
+    setCiteHover(null);
+    setCiteMenu(info);
+    if (info && m.resolveReferencePdfs) {
+      Promise.resolve(m.resolveReferencePdfs(info.ids || [])).catch(() => { /* soft-fail */ });
+    }
   };
 
   // MS-11: derive sub-entries from headings at render time — no model change.
@@ -1908,7 +1935,8 @@ export function EditorPanel({ m, exporters, sectionRequest, onOpenAssetPanel, on
                 // the reference metadata behind them, and the two chip callbacks.
                 citationStyle={m.activeDraft.citationStyle}
                 refsById={m.refsById}
-                onCiteChipMenu={(info) => { setCiteHover(null); setCiteMenu(info); }}
+                yearSuffixes={m.citationYearSuffixes}
+                onCiteChipMenu={openCiteMenu}
                 onCiteChipHover={setCiteHover}
                 ariaLabel={(SECTION_TYPES.find((s) => s.id === sel) || {}).label || 'Section'}
                 placeholder="Write this section here, or generate it from your project data. Use the toolbar for headings, lists and citations." />
@@ -1924,10 +1952,12 @@ export function EditorPanel({ m, exporters, sectionRequest, onOpenAssetPanel, on
             )}
             {/* 117.md §38 — citation hover preview + action menu, same rules */}
             {!isTitle && !citeMenu && citeHover && (
-              <CiteHoverCard info={citeHover} refs={refsOf(citeHover)} pageEl={pageRef.current} />
+              <CiteHoverCard info={citeHover} refs={refsOf(citeHover)} pageEl={pageRef.current}
+                yearSuffixes={m.citationYearSuffixes} />
             )}
             {!isTitle && citeMenu && (
               <CiteRefMenu info={citeMenu} refs={refsOf(citeMenu)} pageEl={pageRef.current}
+                yearSuffixes={m.citationYearSuffixes}
                 onView={(id) => { closeCiteMenu(); onOpenReference && onOpenReference(id, 'view'); }}
                 onEdit={(id) => { closeCiteMenu(); onOpenReference && onOpenReference(id, 'edit'); }}
                 onOpenPdf={(id) => { closeCiteMenu(); onOpenReference && onOpenReference(id, 'pdf'); }}
@@ -2824,6 +2854,70 @@ function ReferenceRow({ row, onEdit, onSuppress, onDelete, onInsert, onMergeWith
 /** §33 — above this many rows the list windows (renders a slice) to stay fast. */
 export const REFERENCE_WINDOW_SIZE = 200;
 
+/** §J.3 — the notice shown when a reference has no PDF this workspace can reach. */
+export const REFERENCE_PDF_MISSING_NOTE =
+  'Open the linked PDF from the Files tab — reference attachments are managed there.';
+
+/**
+ * 117.md §38/§J.3 — the in-app PDF for a citation.
+ *
+ * It REUSES the screening `<PdfViewer>` — the same wrapper the Title & Abstract,
+ * Second Review, Conflicts and RoB surfaces all reach the PDF through, addressed the
+ * same way (screening project + record). There is no manuscript-specific viewer, no
+ * new route and no second attachment model; a PDF opened here is byte-for-byte the
+ * one the reviewer annotated during screening, annotations included.
+ *
+ * Loaded with a DYNAMIC import so pdf.js and the annotation layer stay out of the
+ * manuscript chunk until a researcher actually asks for a PDF, and read-only
+ * (`canManage={false}`): attaching and replacing belong to the surfaces that own the
+ * record, not to the bibliography.
+ */
+export function ReferencePdfDialog({ target, onClose }) {
+  const [Viewer, setViewer] = useState(null);
+  const [err, setErr] = useState('');
+  useEffect(() => {
+    if (!target) return undefined;
+    let alive = true;
+    setErr('');
+    import('../../frontend/screening/components/PdfViewer.jsx')
+      .then((mod) => { if (alive) setViewer(() => mod.default); })
+      .catch(() => { if (alive) setErr('Could not load the PDF viewer.'); });
+    return () => { alive = false; };
+  }, [target]);
+  if (!target) return null;
+  return (
+    <div role="dialog" aria-modal="true" aria-label="Reference PDF"
+      data-testid="stitch-manuscript-reference-pdf"
+      style={{
+        position: 'fixed', inset: 0, zIndex: 60, display: 'flex', alignItems: 'center',
+        justifyContent: 'center', background: 'rgba(15,23,42,0.35)', padding: 16,
+      }}>
+      <div style={{
+        background: C.card, border: `1px solid ${C.brd}`, borderRadius: 12, padding: 14,
+        maxWidth: 980, width: '100%', height: '88vh', display: 'flex', flexDirection: 'column', minHeight: 0,
+      }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 10 }}>
+          <h3 style={{ margin: 0, fontSize: 13.5, fontWeight: 700, color: C.txt, flex: 1, minWidth: 0 }}>
+            {target.title || 'Reference PDF'}
+          </h3>
+          <button onClick={onClose} style={btnS('ghost')}
+            data-testid="stitch-manuscript-reference-pdf-close">Close</button>
+        </div>
+        {err ? <InfoBox color={C.red}>{err}</InfoBox> : null}
+        <div style={{ flex: 1, minHeight: 0, display: 'flex' }}>
+          {Viewer ? (
+            <div style={{ flex: 1, minHeight: 0, display: 'flex' }}>
+              <Viewer pid={target.screenProjectId} recordId={target.recordId} canManage={false} defaultOpen flush />
+            </div>
+          ) : (!err && (
+            <div style={{ fontSize: 11.5, color: C.muted, padding: 12 }}>Opening the PDF…</div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export function ReferencesPanel({ m, onInsertCitation, focusReference }) {
   const [copied, setCopied] = useState(false);
   const [err, setErr] = useState('');
@@ -2840,7 +2934,11 @@ export function ReferencesPanel({ m, onInsertCitation, focusReference }) {
   const refs = m.references || [];
   const missing = refs.filter((r) => !(r.ref && (r.ref.doi || r.ref.pmid))).length;
   const suppressed = m.suppressedReferences || [];
+  // 117.md §J.16 — which suppressed rows are suppressed BY A MERGE.
+  const mergedAway = m.mergedReferences || {};
   const dupes = (m.duplicateReferences && m.duplicateReferences.pairs) || [];
+  /* 117.md §J.3 — the reference whose PDF is open in the in-app viewer. */
+  const [pdfTarget, setPdfTarget] = useState(null);
 
   // §33 — the filter vocabularies come from the data, so a filter can never offer a
   // value that matches nothing.
@@ -2866,10 +2964,23 @@ export function ReferencesPanel({ m, onInsertCitation, focusReference }) {
     setFilters({ cited: 'all', type: '', year: '', journal: '', tag: '' });
     setHighlightId(focusReference.id);
     if (focusReference.action === 'edit') setEditingId(focusReference.id);
+    /* 117.md §J.3 — "Open PDF" now OPENS one. The chip menu only offers the action
+       once the lazy resolver found an attachment, so this is normally a direct hit;
+       it still re-resolves (cached, so free) and soft-fails to the Files-tab notice,
+       which is the honest answer when this workspace cannot reach a PDF at all. */
     if (focusReference.action === 'pdf') {
-      setNotice('Open the linked PDF from the Files tab — reference attachments are managed there.');
+      const open = () => {
+        const target = m.referencePdfTarget && m.referencePdfTarget(focusReference.id);
+        if (target) { setNotice(''); setPdfTarget(target); return true; }
+        return false;
+      };
+      if (!open()) {
+        Promise.resolve(m.resolveReferencePdfs ? m.resolveReferencePdfs([focusReference.id]) : null)
+          .then(() => { if (!open()) setNotice(REFERENCE_PDF_MISSING_NOTE); })
+          .catch(() => setNotice(REFERENCE_PDF_MISSING_NOTE));
+      }
     }
-  }, [focusReference]);
+  }, [focusReference]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const editing = editingId ? (refs.find((r) => r.id === editingId) || {}).ref : null;
 
@@ -3073,22 +3184,51 @@ export function ReferencesPanel({ m, onInsertCitation, focusReference }) {
         </Card>
       ) : <InfoBox color={C.muted}>No references yet. References are collected from your included studies and imported records.</InfoBox>}
 
-      {/* §31 — suppressed derived entries stay restorable, never silently gone. */}
+      {/* §31 — suppressed derived entries stay restorable, never silently gone.
+          §J.16 — but a reference suppressed BY A MERGE is not one of them: putting its
+          id back makes the alias stop applying and the merged-away copy reappears
+          beside its survivor. Those rows say what happened to them and offer the only
+          honest way back — Unmerge, which takes the alias, the suppression and the
+          survivor's blank-fill with it. */}
       {suppressed.length > 0 && (
         <Card style={{ marginTop: 12 }} data-testid="stitch-manuscript-reference-hidden">
           <div style={{ fontSize: 11, fontWeight: 700, color: C.txt, marginBottom: 6 }}>
             {suppressed.length} hidden reference{suppressed.length === 1 ? '' : 's'}
           </div>
-          {suppressed.map((r) => (
-            <div key={r.id} style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 11.5, color: C.txt2, marginBottom: 4 }}>
-              <span style={{ flex: 1, minWidth: 0 }}>{r.title || r.id}</span>
-              <button onClick={() => m.restoreReference && m.restoreReference(r.id)}
-                data-testid={`stitch-manuscript-reference-restore-${r.id}`}
-                style={{ ...btnS('ghost'), fontSize: 10.5 }}>Restore</button>
+          {suppressed.map((r) => {
+            const merged = mergedAway[r.id] || null;
+            return (
+              <div key={r.id} style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 11.5, color: C.txt2, marginBottom: 4, flexWrap: 'wrap' }}>
+                <span style={{ flex: 1, minWidth: 0 }}>{r.title || r.id}</span>
+                {merged ? (
+                  <>
+                    <span data-testid={`stitch-manuscript-reference-mergedinto-${r.id}`}
+                      style={{ fontSize: 10.5, color: C.muted }}>
+                      Merged into {merged.survivor ? authorYearLabel(merged.survivor) : 'another reference'}
+                    </span>
+                    <button onClick={() => m.unmergeReference && m.unmergeReference(r.id)}
+                      data-testid={`stitch-manuscript-reference-unmerge-${r.id}`}
+                      style={{ ...btnS('ghost'), fontSize: 10.5 }}>Unmerge</button>
+                  </>
+                ) : (
+                  <button onClick={() => m.restoreReference && m.restoreReference(r.id)}
+                    data-testid={`stitch-manuscript-reference-restore-${r.id}`}
+                    style={{ ...btnS('ghost'), fontSize: 10.5 }}>Restore</button>
+                )}
+              </div>
+            );
+          })}
+          {Object.keys(mergedAway).length > 0 && (
+            <div style={{ fontSize: 10.5, color: C.muted, marginTop: 4, lineHeight: 1.5 }}>
+              A merged reference cannot be restored on its own — it would come back beside the reference it was merged into. Unmerge separates them again and puts back the details the merge filled in.
             </div>
-          ))}
+          )}
         </Card>
       )}
+
+      {/* §J.3 — the in-app PDF, opened through the SAME screening viewer every other
+          surface uses (never a second viewer, never a new route). */}
+      <ReferencePdfDialog target={pdfTarget} onClose={() => setPdfTarget(null)} />
     </div>
   );
 }

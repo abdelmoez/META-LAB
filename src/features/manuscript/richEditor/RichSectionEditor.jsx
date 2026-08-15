@@ -203,6 +203,10 @@ export const RichSectionEditor = forwardRef(function RichSectionEditor({
   // library is not known here", and every citation is assumed valid — the same rule
   // knownAssetIds follows for cross-references.
   refsById = null,
+  // 117.md §K.4 — Harvard year-disambiguation suffixes (id → 'a'|'b'|…), read off the
+  // rendered bibliography by the hook. Absent for every numeric style, so those chip
+  // labels are byte-identical to what they always were.
+  yearSuffixes = null,
   // 117.md §38 — citation chip interaction. Same division of labour as the
   // cross-reference chip: the editor owns the DOM and the caret, the parent owns
   // the popovers.
@@ -219,7 +223,7 @@ export const RichSectionEditor = forwardRef(function RichSectionEditor({
   useEffect(() => { onChangeRef.current = onChange; });
   // 117.md — render-context refs so the memoized api closures never go stale.
   const refOptsRef = useRef(null);
-  refOptsRef.current = { knownAssetIds, templateId, citationStyle, refsById };
+  refOptsRef.current = { knownAssetIds, templateId, citationStyle, refsById, yearSuffixes };
   const onAssetChipMenuRef = useRef(onAssetChipMenu);
   const onAssetChipHoverRef = useRef(onAssetChipHover);
   const onCiteChipMenuRef = useRef(onCiteChipMenu);
@@ -249,7 +253,7 @@ export const RichSectionEditor = forwardRef(function RichSectionEditor({
   if (html0.current == null) {
     html0.current = mdToHtml(value || '', {
       orderMap, assetNumbers, facts, factOverrides, factChanges, showChanges,
-      knownAssetIds, templateId, citationStyle, refsById,
+      knownAssetIds, templateId, citationStyle, refsById, yearSuffixes,
     });
   }
 
@@ -270,12 +274,12 @@ export const RichSectionEditor = forwardRef(function RichSectionEditor({
     if (!orderMap && !refsById) return;
     el.querySelectorAll(`span.${CITE_CHIP_CLASS}[data-cite]`).forEach((chip) => {
       const raw = chip.getAttribute('data-cite') || '';
-      const { label, broken } = citeChipLabel(raw, orderMap, citationStyle, refsById);
+      const { label, broken } = citeChipLabel(raw, orderMap, citationStyle, refsById, yearSuffixes);
       if (chip.textContent !== label) chip.textContent = label;
       setAttr(chip, 'data-cite-broken', broken ? 'true' : '');
       setAttr(chip, 'aria-label', citeChipAria(label, broken));
     });
-  }, [orderMap, citationStyle, refsById]);
+  }, [orderMap, citationStyle, refsById, yearSuffixes]);
 
   // Asset chips renumber the same way ('Table 2' ⇄ 'Table ?') when numbering or
   // availability changes — atomic islands, caret-safe.
@@ -866,7 +870,7 @@ export const RichSectionEditor = forwardRef(function RichSectionEditor({
       const ids = (Array.isArray(refId) ? refId : parseCiteIds(refId)).filter(Boolean);
       if (!ids.length || readOnlyRef.current) return;
       const ro = refOptsRef.current || {};
-      const { label, broken } = citeChipLabel(ids, orderMapRef.current, ro.citationStyle, ro.refsById);
+      const { label, broken } = citeChipLabel(ids, orderMapRef.current, ro.citationStyle, ro.refsById, ro.yearSuffixes);
       insertHtml(`${citeChipHtml(ids, label, { broken })}&nbsp;`);
     },
     /**
@@ -882,7 +886,7 @@ export const RichSectionEditor = forwardRef(function RichSectionEditor({
       const next = refId ? ids.filter((x) => x !== String(refId)) : [];
       if (!next.length) return replaceNode(chip, null);
       const ro = refOptsRef.current || {};
-      const { label, broken } = citeChipLabel(next, orderMapRef.current, ro.citationStyle, ro.refsById);
+      const { label, broken } = citeChipLabel(next, orderMapRef.current, ro.citationStyle, ro.refsById, ro.yearSuffixes);
       return replaceNode(chip, citeChipHtml(next, label, { broken }));
     },
     /** Forget the citation chip the menu was bound to (dismissed without acting). */

@@ -15,8 +15,9 @@ import {
   CITE_EMPTY_TEXT,
 } from '../../../src/features/manuscript/richEditor/RichSectionEditor.jsx';
 import {
-  EditorPanel, ReferencesPanel, CiteRefMenu, CiteHoverCard,
+  EditorPanel, ReferencesPanel, CiteRefMenu, CiteHoverCard, ReferencePdfDialog,
   AddReferenceDialog, ImportReferencesDialog, LOOKUP_UNVERIFIED_NOTE, IMPORT_HINT,
+  REFERENCE_PDF_MISSING_NOTE,
 } from '../../../src/features/manuscript/manuscriptPanels.jsx';
 import { makeManuscriptDraft, normalizeDraft } from '../../../src/research-engine/manuscript/model.js';
 import { citeChipHtml, citeChipLabel, mdToHtml } from '../../../src/features/manuscript/richEditor/mdDom.js';
@@ -238,6 +239,80 @@ describe('117.md §38 — the citation action menu', () => {
   });
 });
 
+/* ════════════ §K.4 — Harvard disambiguation reaches every visible label ════════════ */
+
+describe('117.md §K.4 — "2020a" appears on the chip, the preview and the menu', () => {
+  const SMITH_A = {
+    id: 'a', title: 'Aspirin trial', authorsRaw: 'Smith J',
+    authorsList: [{ family: 'Smith', given: 'J' }], journal: 'Lancet', year: '2020',
+  };
+  const SMITH_B = { ...SMITH_A, id: 'b', title: 'Beta blocker trial' };
+  const suffixes = { a: 'a', b: 'b' };
+  const byId = new Map([['a', SMITH_A], ['b', SMITH_B]]);
+  const rect = { top: 120, bottom: 134, left: 90, right: 150 };
+
+  it('the editor chip renders the suffixed marker', () => {
+    const html = renderToStaticMarkup(
+      <RichSectionEditor value="x [[cite:b]]" orderMap={new Map([['a', 1], ['b', 2]])}
+        citationStyle="harvard" refsById={byId} yearSuffixes={suffixes} onChange={noop} />,
+    );
+    expect(html).toContain('(Smith, 2020b)');
+    expect(html).not.toContain('>(Smith, 2020)<');
+  });
+
+  it('the hover preview names the same disambiguated year', () => {
+    const html = renderToStaticMarkup(
+      <CiteHoverCard info={{ ids: ['a'], label: '(Smith, 2020a)', broken: false, rect }}
+        refs={[SMITH_A]} pageEl={pageEl} yearSuffixes={suffixes} />,
+    );
+    expect(html).toContain('Smith, 2020a');
+  });
+
+  it('the multi-citation menu heads each row with its own letter', () => {
+    const html = renderToStaticMarkup(
+      <CiteRefMenu info={{ ids: ['a', 'b'], label: '(Smith, 2020a; Smith, 2020b)', broken: false, rect }}
+        refs={[SMITH_A, SMITH_B]} pageEl={pageEl} yearSuffixes={suffixes} />,
+    );
+    expect(html).toContain('Smith, 2020a');
+    expect(html).toContain('Smith, 2020b');
+  });
+
+  it('without a suffix map every label is exactly what it always was', () => {
+    const html = renderToStaticMarkup(
+      <CiteHoverCard info={{ ids: ['a'], label: '(Smith, 2020)', broken: false, rect }}
+        refs={[SMITH_A]} pageEl={pageEl} />,
+    );
+    expect(html).toContain('Smith, 2020');
+    expect(html).not.toContain('2020a');
+  });
+});
+
+/* ════════════ §J.3 — the in-app PDF ════════════ */
+
+describe('117.md §J.3 — the citation PDF opens the screening viewer', () => {
+  it('renders nothing at all until a target exists', () => {
+    expect(renderToStaticMarkup(<ReferencePdfDialog target={null} onClose={noop} />)).toBe('');
+  });
+
+  it('is a modal naming the reference, with a Close action, while the viewer loads', () => {
+    const html = renderToStaticMarkup(
+      <ReferencePdfDialog target={{ screenProjectId: 'sift-1', recordId: 'rec1', attachmentId: 'att-1', title: 'Aspirin trial' }}
+        onClose={noop} />,
+    );
+    expect(html).toContain('data-testid="stitch-manuscript-reference-pdf"');
+    expect(html).toContain('aria-modal="true"');
+    expect(html).toContain('aria-label="Reference PDF"');
+    expect(html).toContain('Aspirin trial');
+    expect(html).toContain('data-testid="stitch-manuscript-reference-pdf-close"');
+    // The viewer chunk is dynamically imported, so the first paint says so honestly.
+    expect(html).toContain('Opening the PDF…');
+  });
+
+  it('the Files-tab fallback sentence is still the honest one', () => {
+    expect(REFERENCE_PDF_MISSING_NOTE).toMatch(/Files tab/);
+  });
+});
+
 /* ════════════ §28/§29 — Add Reference ════════════ */
 
 describe('117.md §28/§29 — the Add Reference dialog', () => {
@@ -321,6 +396,11 @@ const mockM = (over = {}) => ({
   activeDraft: normalizeDraft(makeManuscriptDraft()),
   references: REFS,
   suppressedReferences: [],
+  // 117.md §J.16/§J.3/§K.4 — the three maps the follow-up surfaces read.
+  mergedReferences: {},
+  referencePdfIds: {},
+  screenProjectId: '',
+  citationYearSuffixes: {},
   duplicateReferences: { pairs: [], skipped: false, total: REFS.length },
   refsById: new Map(REFS.map((r) => [r.id, r.ref])),
   referenceAliases: {},
@@ -387,6 +467,55 @@ describe('117.md §33 — the References panel is a library manager', () => {
     expect(html).toContain('data-testid="stitch-manuscript-reference-hidden"');
     expect(html).toContain('Hidden one');
     expect(html).toContain('data-testid="stitch-manuscript-reference-restore-z"');
+  });
+
+  /* 117.md §J.16 — the hidden card has TWO kinds of row, and they must not look the
+     same: restoring a merged-away reference resurrected it beside its survivor. */
+  it('§J.16 — a MERGED-away reference says so and offers Unmerge, not Restore', () => {
+    const html = renderToStaticMarkup(
+      <ReferencesPanel m={mockM({
+        suppressedReferences: [{ id: 'z', title: 'The duplicate copy' }],
+        mergedReferences: { z: { into: 'a', survivor: REFS[0].ref, recorded: true } },
+      })} />,
+    );
+    expect(html).toContain('data-testid="stitch-manuscript-reference-mergedinto-z"');
+    expect(html).toContain('Merged into Lee, 2019');
+    expect(html).toContain('data-testid="stitch-manuscript-reference-unmerge-z"');
+    expect(html).toContain('>Unmerge<');
+    expect(html).not.toContain('data-testid="stitch-manuscript-reference-restore-z"');
+    expect(html).toContain('A merged reference cannot be restored on its own');
+  });
+
+  it('§J.16 — the two cases render side by side in the SAME card', () => {
+    const html = renderToStaticMarkup(
+      <ReferencesPanel m={mockM({
+        suppressedReferences: [
+          { id: 'z', title: 'The duplicate copy' },
+          { id: 'y', title: 'Hidden by hand' },
+        ],
+        mergedReferences: { z: { into: 'a', survivor: REFS[0].ref, recorded: true } },
+      })} />,
+    );
+    expect(html).toContain('2 hidden references');
+    expect(html).toContain('data-testid="stitch-manuscript-reference-unmerge-z"');
+    expect(html).toContain('data-testid="stitch-manuscript-reference-restore-y"');
+    expect(html).not.toContain('data-testid="stitch-manuscript-reference-unmerge-y"');
+  });
+
+  it('§J.16 — a merge whose survivor is unknown still says what happened', () => {
+    const html = renderToStaticMarkup(
+      <ReferencesPanel m={mockM({
+        suppressedReferences: [{ id: 'z', title: 'The duplicate copy' }],
+        mergedReferences: { z: { into: 'gone', survivor: null, recorded: false } },
+      })} />,
+    );
+    expect(html).toContain('Merged into another reference');
+    expect(html).toContain('data-testid="stitch-manuscript-reference-unmerge-z"');
+  });
+
+  it('§J.3 — no PDF viewer exists until a reference is asked to open one', () => {
+    const html = renderToStaticMarkup(<ReferencesPanel m={mockM()} />);
+    expect(html).not.toContain('data-testid="stitch-manuscript-reference-pdf"');
   });
 
   it('§37 — the style selector offers all seven styles', () => {

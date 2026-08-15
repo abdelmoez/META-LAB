@@ -35,6 +35,8 @@ import {
   buildRobTable, buildSearchStrategyTable,
   generateReferenceList, orderReferencesForManuscript,
   collectCitationOrder, draftSectionTexts, citationToken, CITATION_TOKEN_RE,
+  // 117.md §K.4 — Harvard year disambiguation, read off the rendered bibliography.
+  yearSuffixesOf,
   computeReadiness, smartInsights,
   evaluateStaleness, primaryAnalysis, allAnalyses,
   computeSectionInputsHashes, checkConsistency,
@@ -73,7 +75,7 @@ import {
 import {
   resolveReferenceLibrary, materializeReferenceLibrary, readReferenceLibrary,
   libraryAddEntry, libraryEditReference, librarySuppress, libraryRestore,
-  libraryDeleteEntry, libraryMerge, recordToReferenceEntry, usedReferenceIds,
+  libraryDeleteEntry, libraryMerge, libraryUnmerge, recordToReferenceEntry, usedReferenceIds,
   suggestReferenceDuplicates,
   // 117.md §88 (r3) — "reference merges must be auditable and undoable". ONE history
   // kind for the whole overlay, with pure entry/precondition/label/note builders.
@@ -94,6 +96,16 @@ import { useUndoFeedback } from '../../frontend/history/useUndoFeedback.jsx';
 // screening record set, so it subscribes to the SAME pokes the PRISMA diagram does
 // and re-fetches through the authorized endpoints (events are never trusted as data).
 import { useRealtime } from '../../frontend/hooks/useRealtime.js';
+// 117.md §K.6 — the SAME-USER, cross-WINDOW edge the SSE bus deliberately excludes.
+// A screening write in another tab of this browser broadcasts the same thin poke,
+// and it lands on the SAME debounced refetch. No-ops without BroadcastChannel.
+import { subscribeProjectPokes } from '../../frontend/hooks/projectBroadcast.js';
+// 117.md §J.3 — "Open PDF" resolves through the EXISTING screening attachment
+// endpoint: lazy, batched per screening record, and cached both ways.
+import {
+  collectPdfLinkTargets, createReferencePdfResolver, pdfAttachmentIdFor, withResolvedPdfIds,
+} from './referencePdfLinks.js';
+import { screeningApi } from '../../frontend/screening/api-client/screeningApi.js';
 // 117.md §22 (r2) — audit actors come from the signed-in user, not a phantom
 // `project._me` key nothing ever wrote. Optional: SSR tests have no provider.
 import { useOptionalAuth } from '../../frontend/context/AuthContext.jsx';
@@ -503,6 +515,22 @@ export function useManuscript(project, upd) {
     return () => document.removeEventListener('visibilitychange', onVisible);
   }, [pid, screenPid]);
 
+  /* 117.md §K.6 — …AND THE SAME-USER, SECOND-WINDOW CASE, WITHOUT WAITING.
+   *
+   * The visibility throttle above is the fallback, not the answer: it only fires when
+   * the researcher comes BACK to this tab, and a second WINDOW side by side never
+   * hides. `subscribeProjectPokes` closes that edge with a BroadcastChannel — same
+   * origin, same user, no server — carrying the same thin `{projectId, kind}` the SSE
+   * bus carries, keyed on the SCREENING project id (that is what the screening writes
+   * name). It lands on the SAME 2s-debounced `refreshSources` the SSE pokes use, so
+   * one burst of screening activity still costs exactly one refetch, and a browser
+   * without BroadcastChannel simply keeps the old behaviour.
+   */
+  useEffect(() => {
+    if (!screenPid) return undefined;
+    return subscribeProjectPokes(screenPid, (poke) => onPrismaPoke(poke));
+  }, [screenPid, onPrismaPoke]);
+
   const genOpts = useMemo(
     () => composeGenOpts({ project, runMeta, gradeByOutcome, sources }),
     [project, gradeByOutcome, sources],
@@ -703,11 +731,90 @@ export function useManuscript(project, upd) {
     return list.map((row) => ({ ...row, cited: citationUsage.cited.has(row.id) }));
   }, [activeDraft, citationDraft, libraryRefs, refAliases, citationUsage]);
 
+  /**
+   * 117.md §K.4 — the Harvard year-disambiguation map, READ OFF the bibliography that
+   * was just rendered rather than recomputed. That direction matters: the suffix is
+   * assigned in bibliography order, so deriving it from anything else would be a
+   * second algorithm that could drift from the list the reader is looking at. Empty
+   * for every numeric style, so nothing downstream moves for them.
+   */
+  const citationYearSuffixes = useMemo(
+    () => yearSuffixesOf(references, refAliases),
+    [references, refAliases],
+  );
+
   /** §32 — probable-duplicate pairs the panel offers to merge (bounded scan). */
   const duplicateReferences = useMemo(
     () => suggestReferenceDuplicates(libraryRefs),
     [libraryRefs],
   );
+
+  /* ══════════ 117.md §38/§J.3 — "Open PDF" is wired, not a seam ══════════
+   *
+   * A DERIVED reference is an included study; a study that came through screening
+   * names its record. That record's PDF is resolvable through the SAME pre-117
+   * endpoint the screening viewer uses, so nothing new is stored on the reference and
+   * no new route exists — the attachment id is DERIVED on demand, exactly like every
+   * other number in this engine.
+   *
+   * LAZY: nothing is fetched until a surface asks (a chip menu opening, or the panel
+   * being asked to open a PDF). BATCHED + CACHED per screening record, so a menu
+   * re-opening is free and a bibliography of hundreds never becomes a request storm.
+   * SOFT-FAIL: a failed listing stays UNKNOWN (not "no PDF") and is not cached, so the
+   * action simply does not appear and the Files-tab notice still applies.
+   */
+  const [refPdfIds, setRefPdfIds] = useState(() => ({}));
+  const refPdfResolverRef = useRef(null);
+  const refPdfProjectRef = useRef(null);
+  const refPdfResolver = useCallback(() => {
+    // A different project is a different attachment universe — never reuse the cache.
+    if (!refPdfResolverRef.current || refPdfProjectRef.current !== pid) {
+      refPdfProjectRef.current = pid;
+      refPdfResolverRef.current = createReferencePdfResolver({ listPdf: screeningApi.listPdf });
+    }
+    return refPdfResolverRef.current;
+  }, [pid]);
+  // A project switch drops what was learned; already-empty stays the SAME object so
+  // the mount pass costs no extra render.
+  useEffect(() => { setRefPdfIds((prev) => (Object.keys(prev).length ? {} : prev)); }, [pid]);
+
+  const refsByIdRef = useRef(refsById);
+  refsByIdRef.current = refsById;
+
+  /**
+   * §J.3 — resolve the PDF linkage for a set of reference ids (or reference
+   * objects). Returns a promise so a caller can await it before deciding what to
+   * show; the resolved ids also land in state so the chip menu can re-render with
+   * the action. Safe to call repeatedly — everything already known is skipped.
+   */
+  const resolveReferencePdfs = useCallback(async (idsOrRefs) => {
+    const list = (Array.isArray(idsOrRefs) ? idsOrRefs : [idsOrRefs])
+      .map((x) => (x && typeof x === 'object' ? x : refsByIdRef.current && refsByIdRef.current.get(String(x))))
+      .filter(Boolean);
+    if (!list.length) return {};
+    const resolver = refPdfResolver();
+    const { targets } = collectPdfLinkTargets(list, screenPid, resolver.known);
+    if (!targets.length) return resolver.known;
+    const patch = await resolver.resolve(targets);
+    if (Object.keys(patch).length) setRefPdfIds((prev) => ({ ...prev, ...patch }));
+    return resolver.known;
+  }, [refPdfResolver, screenPid]);
+
+  /**
+   * §J.3 — everything the in-app viewer needs for one reference, or null when this
+   * reference has no resolvable PDF. The viewer is the screening one, addressed by
+   * (screening project, record) exactly as the screening surface addresses it.
+   */
+  const referencePdfTarget = useCallback((refId) => {
+    const ref = refsByIdRef.current && refsByIdRef.current.get(String(refId));
+    if (!ref) return null;
+    const recordId = String(ref.screeningRecordId || '').trim();
+    const screenProjectId = String(ref.screeningProjectId || '').trim() || screenPid;
+    if (!recordId || !screenProjectId) return null;
+    const attachmentId = pdfAttachmentIdFor(ref, screenPid, refPdfResolver().known);
+    if (!attachmentId) return null;
+    return { screenProjectId, recordId, attachmentId, title: ref.title || refId };
+  }, [refPdfResolver, screenPid]);
 
   const refSignature = useMemo(() => {
     if (!liveDraft) return '';
@@ -1356,6 +1463,13 @@ export function useManuscript(project, upd) {
   /** §31 — hide a derived reference from the bibliography (restorable). */
   const suppressReference = useCallback((id) => writeLibrary((lib) => librarySuppress(lib, id), 'suppress'), [writeLibrary]);
   const restoreReference = useCallback((id) => writeLibrary((lib) => libraryRestore(lib, id), 'restore'), [writeLibrary]);
+  /**
+   * §J.16 — UNMERGE: the button-path inverse of a merge. `libraryRestore` refuses a
+   * merged-away reference (restoring it resurrected a duplicate beside its survivor),
+   * so this is the ONE way back from the panel — it takes the alias, the suppression
+   * and the survivor's blank-fill with it. Ctrl+Z remains the other way.
+   */
+  const unmergeReference = useCallback((id) => writeLibrary((lib) => libraryUnmerge(lib, id), 'unmerge'), [writeLibrary]);
   /** Delete an ADDED reference outright (a derived one can only be suppressed). */
   const deleteReference = useCallback((id) => writeLibrary((lib) => libraryDeleteEntry(lib, id), 'delete'), [writeLibrary]);
 
@@ -1797,8 +1911,20 @@ export function useManuscript(project, upd) {
     citationOrderMap: citationOrder.orderMap,
     duplicateReferences,
     suppressedReferences: refLibrary.suppressed,
+    // 117.md §J.16 — which of those are suppressed BY A MERGE (id → {into, survivor}),
+    // so the hidden-references card can offer Unmerge instead of a Restore that would
+    // resurrect a duplicate beside its survivor.
+    mergedReferences: refLibrary.mergedAway,
     referencesAreLegacy: legacyDraftRefs,
-    addReference, editReference, mergeReferences,
+    // 117.md §J.3 — the resolved reference→PDF map, the screening workspace it is
+    // resolved against, and the two lazy entry points.
+    referencePdfIds: refPdfIds,
+    screenProjectId: screenPid,
+    resolveReferencePdfs, referencePdfTarget,
+    // 117.md §K.4 — Harvard year-disambiguation suffixes, read straight off the
+    // rendered bibliography so a marker can never disagree with its entry.
+    citationYearSuffixes,
+    addReference, editReference, mergeReferences, unmergeReference,
     suppressReference, restoreReference, deleteReference, importReferences,
     insertCitationReference,
     // 73.md Parts 8/9 — live data wiring + provenance/outdated/lock surface.

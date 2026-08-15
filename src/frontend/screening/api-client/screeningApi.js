@@ -1,5 +1,23 @@
 // screeningApi.js — API client for META·SIFT Beta
+import { publishProjectPoke, PROJECT_BROADCAST_KINDS } from '../../hooks/projectBroadcast.js';
+
 const BASE = '/api/screening';
+
+/**
+ * 117.md §K.6 — same-user cross-WINDOW pokes.
+ *
+ * The SSE bus excludes the acting user, so a screening decision made in one tab was
+ * invisible to a manuscript open in another until its 20s visibility throttle fired
+ * (§J.10). `poke` closes that edge: after a write RESOLVES (i.e. the server said
+ * yes), the same thin `{projectId, kind}` the SSE bus carries is broadcast to this
+ * user's other windows, which refetch through the ordinary authorized endpoints.
+ *
+ * Wrapped here rather than at each call site because THIS is the only place that
+ * sees every screening write and its outcome — a per-tab implementation would drift
+ * the moment a fourth surface learned to finalize a record. A rejected promise
+ * broadcasts nothing, and a browser without BroadcastChannel no-ops.
+ */
+const poke = (pid, kind) => (result) => { publishProjectPoke(pid, kind); return result; };
 
 async function req(method, path, body) {
   const opts = { method, credentials: 'include', headers: {} };
@@ -77,7 +95,8 @@ export const screeningApi = {
   // force=true to "Import anyway" (record-level DOI/PMID/title dedupe still
   // applies). Thrown errors carry .status and .data (the parsed JSON body).
   importRecords: (pid, body, { force = false } = {}) =>
-    req('POST', `/projects/${pid}/import`, force ? { ...body, force: true } : body),
+    req('POST', `/projects/${pid}/import`, force ? { ...body, force: true } : body)
+      .then(poke(pid, PROJECT_BROADCAST_KINDS.IMPORT)),
   // 65.md SCR-10 — server-side preview through the REAL parser registry. body
   // { format, content, filename }; the server parses at most the first 256KB and
   // returns { detectedFormat, sample, counts:{parsed,rejected}, decisionColumnDetected,
@@ -88,8 +107,18 @@ export const screeningApi = {
   // is completed / completed_with_warnings / failed. The browser need not stay open.
   startImport: (pid, body, { force = false } = {}) =>
     req('POST', `/projects/${pid}/import/start`, force ? { ...body, force: true } : body),
+  // §K.6 — an ASYNC import lands when the job reaches a terminal state, not when it
+  // starts, so the cross-window poke rides the poll that observes it (a terminal poll
+  // is the last one the caller makes, and the listener debounces anyway).
   getImportJob: (pid, jobId) =>
-    req('GET', `/projects/${pid}/import/jobs/${jobId}`),
+    req('GET', `/projects/${pid}/import/jobs/${jobId}`)
+      .then((job) => {
+        const status = job && job.job ? job.job.status : (job && job.status);
+        if (status === 'completed' || status === 'completed_with_warnings') {
+          publishProjectPoke(pid, PROJECT_BROADCAST_KINDS.IMPORT);
+        }
+        return job;
+      }),
   // params: { format: 'csv'|'json'|'ris', filter } — no client-side format
   // validation here; the ExportDialog item declares the valid formats and the
   // server generates the file (prompt9 Task 6 adds 'ris').
@@ -105,12 +134,14 @@ export const screeningApi = {
   exportDownloadUrl: (pid, jobId)   => `${BASE}/projects/${pid}/export/jobs/${jobId}/download`,
 
   // Decisions
-  saveDecision:  (pid, rid, body) => req('POST', `/projects/${pid}/records/${rid}/decision`, body),
+  saveDecision:  (pid, rid, body) => req('POST', `/projects/${pid}/records/${rid}/decision`, body)
+    .then(poke(pid, PROJECT_BROADCAST_KINDS.DECISION)),
   listDecisions: (pid)            => req('GET',  `/projects/${pid}/decisions`),
 
   // Conflicts
   listConflicts:   (pid)          => req('GET',  `/projects/${pid}/conflicts`),
-  resolveConflict: (pid, cid, body) => req('POST', `/projects/${pid}/conflicts/${cid}/resolve`, body),
+  resolveConflict: (pid, cid, body) => req('POST', `/projects/${pid}/conflicts/${cid}/resolve`, body)
+    .then(poke(pid, PROJECT_BROADCAST_KINDS.DECISION)),
 
   // Presence + field locking (prompt23) — ephemeral; all best-effort on the client.
   getPresence:       (pid)       => req('GET',  `/projects/${pid}/presence`),
@@ -203,13 +234,15 @@ export const screeningApi = {
   //   via:    'user'|'undo'|'redo'  claimed provenance; an undo/redo replay is audited
   //                            as FINAL_REVIEW_UNDO / FINAL_REVIEW_REDO, never by
   //                            rewriting the original row (§56)
-  finalizeRecord:   (pid, rid, body) => req('POST', `/projects/${pid}/records/${rid}/finalize`, body),
+  finalizeRecord:   (pid, rid, body) => req('POST', `/projects/${pid}/records/${rid}/finalize`, body)
+    .then(poke(pid, PROJECT_BROADCAST_KINDS.HANDOFF)),
   retryHandoff:     (pid, rid)       => req('POST', `/projects/${pid}/records/${rid}/handoff/retry`),
   // Return a finalized record to pending Final Review — the inverse of BOTH final
   // decisions since 117.md §52 (an accepted record leaves Data Extraction with its
   // extracted data snapshotted; a rejected one simply loses its status and reason).
   // Body is optional and accepts the same `expect` / `via` fields as finalizeRecord.
-  revertFinalReview:(pid, rid, body) => req('POST', `/projects/${pid}/records/${rid}/final-review/revert`, body || {}),
+  revertFinalReview:(pid, rid, body) => req('POST', `/projects/${pid}/records/${rid}/final-review/revert`, body || {})
+    .then(poke(pid, PROJECT_BROADCAST_KINDS.HANDOFF)),
 
   // Chat (Part 6) — polling via ?since
   listChat: (pid, since) => req('GET', `/projects/${pid}/chat${since ? '?since=' + encodeURIComponent(since) : ''}`),

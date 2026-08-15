@@ -146,7 +146,10 @@ export const EXTRA_REFERENCE_FIELDS = Object.freeze([
   'articleNumber', 'pmcid', 'isbn', 'publisher', 'place', 'edition', 'bookTitle',
   'editors', 'conference', 'institution', 'registryId', 'version', 'repository',
   'publicationType', 'language', 'accessed', 'abstract', 'notes',
-  'pdfAttachmentId', 'screeningRecordId', 'studyId', 'sourceDb',
+  // 117.md §J.3 — the screening linkage a study carries. `screeningProjectId` rides
+  // alongside `screeningRecordId` so a reference can name the workspace its PDF
+  // lives in, rather than the manuscript guessing the current project's.
+  'pdfAttachmentId', 'screeningRecordId', 'screeningProjectId', 'studyId', 'sourceDb',
 ]);
 
 const LIST_REFERENCE_FIELDS = Object.freeze(['keywords', 'tags']);
@@ -282,13 +285,19 @@ function pagesPart(r) {
   return r.pages ? r.pages : '';
 }
 
-/** Format a single reference (no leading number) in the given style. Pure. */
-export function formatCitation(ref, style = 'vancouver') {
+/**
+ * Format a single reference (no leading number) in the given style. Pure.
+ * `opts.yearSuffix` is the §K.4 Harvard disambiguation letter — it appears on the
+ * bibliography year exactly as it appears in the in-text marker, which is the whole
+ * point of a suffix (the two have to be matched by eye).
+ */
+export function formatCitation(ref, style = 'vancouver', opts = {}) {
   const r = normalizeReference(ref, ref && ref.id);
   const authors = formatAuthorList(r.authorsList, style);
+  const sfx = (isAuthorYearStyle(style) && r.year) ? clean(opts && opts.yearSuffix) : '';
   const title = r.title;
   const j = r.journal;
-  const y = r.year;
+  const y = r.year ? `${r.year}${sfx}` : r.year;
   const v = r.volume;
   const iss = r.issue;
   const pg = pagesPart(r);
@@ -361,9 +370,12 @@ export function formatCitation(ref, style = 'vancouver') {
  * the journal + volume. The plain-text formatCitation() above is the un-emphasised
  * form used for clipboard/BibTeX. Pure.
  */
-export function formatCitationSegments(ref, style = 'vancouver') {
+export function formatCitationSegments(ref, style = 'vancouver', opts = {}) {
   const r = normalizeReference(ref, ref && ref.id);
   const authors = formatAuthorList(r.authorsList, style);
+  // §K.4 — the same disambiguation letter the plain-text form and the in-text
+  // marker use; only an author-year style has one.
+  const yearSuffix = (isAuthorYearStyle(style) && r.year) ? clean(opts && opts.yearSuffix) : '';
   const segs = [];
   const push = (text, italics) => { if (clean(text)) segs.push({ text, italics: !!italics }); };
 
@@ -386,7 +398,7 @@ export function formatCitationSegments(ref, style = 'vancouver') {
   // 117.md §37 — Harvard italicises the JOURNAL (the title is quoted, not italic).
   if (style === 'harvard') {
     push(authors ? `${authors} ` : '');
-    push(r.year ? `(${r.year}) ` : '');
+    push(r.year ? `(${r.year}${yearSuffix}) ` : '');
     push(r.title ? `'${r.title}', ` : '');
     push(r.journal ? `${r.journal}` : '', true);
     let tail = '';
@@ -575,8 +587,80 @@ export function isAuthorYearStyle(style) {
   return style === 'harvard';
 }
 
-/** "Smith, 2020" / "Smith et al., 2020" — the Harvard in-text form. Pure. */
-export function authorYearLabel(ref) {
+/**
+ * The first author's FAMILY name, or '' when the reference names no author.
+ * `raw` is the fallback the parser leaves when a token could not be split — using
+ * it keeps "Institute of Health" a usable grouping key instead of nothing. Pure.
+ */
+export function firstAuthorFamily(ref) {
+  const list = Array.isArray(ref && ref.authorsList) ? ref.authorsList : [];
+  const first = list[0];
+  return clean(first ? (first.family || first.raw) : '');
+}
+
+/**
+ * 117.md §K.4 — HARVARD YEAR DISAMBIGUATION ("2020a" / "2020b").
+ *
+ * Harvard's in-text marker is "(Family, Year)". Two references by the same first
+ * author in the same year therefore render the SAME marker, and the reader cannot
+ * tell which entry of the bibliography a sentence is citing. The convention is a
+ * lowercase letter suffix on the year, assigned in BIBLIOGRAPHY ORDER — which is
+ * why this takes the ordered list and not a bag: the suffix is a property of the
+ * reference's POSITION in the list the reader is looking at, so it recomputes
+ * derivationally (like every number in this engine) instead of being stored.
+ *
+ * Grouping key: normalized first-author family name + year, exactly the two things
+ * the marker shows. A reference with no author or no year gets NO suffix — a
+ * suffix on a marker that already reads differently would be noise, and inventing
+ * an author to group by is precisely the kind of guess this codebase refuses.
+ *
+ * A group of ONE gets no suffix at all (there is nothing to disambiguate), which
+ * is what keeps every existing single-collision-free bibliography byte-identical.
+ *
+ * @param refs  the references IN BIBLIOGRAPHY ORDER
+ * @param style the citation style; a numeric style has no author-year marker to
+ *              disambiguate, so it returns {} and nothing downstream moves.
+ * @returns {{[refId]: string}} suffix per reference id ('a', 'b', … 'z', 'aa', …)
+ * Pure.
+ */
+export function assignYearSuffixes(refs, style = 'harvard') {
+  const out = {};
+  if (!isAuthorYearStyle(style)) return out;
+  const list = Array.isArray(refs) ? refs : [];
+  const groups = new Map();
+  for (const r of list) {
+    if (!r) continue;
+    const fam = firstAuthorFamily(r).toLowerCase();
+    const year = clean(r.year);
+    if (!fam || !year) continue;
+    const key = `${fam}|${year}`;
+    const bucket = groups.get(key);
+    if (bucket) bucket.push(r.id); else groups.set(key, [r.id]);
+  }
+  for (const ids of groups.values()) {
+    if (ids.length < 2) continue;              // no collision → no suffix
+    ids.forEach((id, i) => { if (id) out[id] = yearSuffixLetter(i); });
+  }
+  return out;
+}
+
+/** 0→'a' … 25→'z', 26→'aa', 27→'ab' (bijective base-26, so it never runs out). Pure. */
+export function yearSuffixLetter(index) {
+  let n = Math.max(0, Math.floor(Number(index) || 0));
+  let s = '';
+  for (;;) {
+    s = String.fromCharCode(97 + (n % 26)) + s;
+    n = Math.floor(n / 26) - 1;
+    if (n < 0) return s;
+  }
+}
+
+/**
+ * "Smith, 2020" / "Smith et al., 2020" — the Harvard in-text form. Pure.
+ * `suffix` is the §K.4 disambiguation letter; it rides on the YEAR, so a reference
+ * without a year never grows one.
+ */
+export function authorYearLabel(ref, suffix = '') {
   const r = ref || {};
   const list = Array.isArray(r.authorsList) ? r.authorsList : [];
   const first = list[0];
@@ -585,7 +669,7 @@ export function authorYearLabel(ref) {
     ? `${fam} and ${clean(list[1].family || list[1].raw)}`
     : fam);
   const y = clean(r.year);
-  return y ? `${name}, ${y}` : name;
+  return y ? `${name}, ${y}${clean(suffix)}` : name;
 }
 
 /**
@@ -594,7 +678,11 @@ export function authorYearLabel(ref) {
  * @param ids       the token's reference ids (already alias-resolved or not)
  * @param orderMap  Map(id → 1-based number), alias keys included
  * @param style     citation style id
- * @param opts      { refsById: Map|object } — needed by author-year styles only
+ * @param opts      { refsById: Map|object, yearSuffixes?: Map|object }
+ *                  — both are needed by author-year styles only. `yearSuffixes` is
+ *                  the §K.4 disambiguation map from `assignYearSuffixes`, keyed by
+ *                  CANONICAL reference id; an alias id resolves through the ref it
+ *                  found, so a merged-away citation gets its survivor's suffix.
  * Unknown ids render "[?]", never a silent omission. Pure.
  */
 export function formatCitationMarker(ids, orderMap, style = 'vancouver', opts = {}) {
@@ -605,10 +693,16 @@ export function formatCitationMarker(ids, orderMap, style = 'vancouver', opts = 
     if (!src) return null;
     return (typeof src.get === 'function' ? src.get(id) : src[id]) || null;
   };
+  const suffixOf = (ref, id) => {
+    const src = opts && opts.yearSuffixes;
+    if (!src) return '';
+    const get = (k) => (k ? (typeof src.get === 'function' ? src.get(k) : src[k]) : null);
+    return clean((ref && get(ref.id)) || get(id) || '');
+  };
   if (isAuthorYearStyle(style)) {
     const parts = list.map((id) => {
       const ref = lookup(id);
-      return ref ? authorYearLabel(ref) : '?';
+      return ref ? authorYearLabel(ref, suffixOf(ref, id)) : '?';
     });
     return `(${parts.join('; ')})`;
   }
@@ -702,17 +796,52 @@ export function collectCitationUsage(draft, opts = {}) {
 
 /**
  * Generate a numbered reference list. Returns an array of { index, id, ref, text }
- * in the supplied order (order of appearance / inclusion). Pure.
+ * in the supplied order (order of appearance / inclusion).
+ *
+ * 117.md §K.4 — THIS is where Harvard's year suffixes are decided, because this
+ * function is the one place that sees the bibliography IN ORDER. A row that needs
+ * one carries `yearSuffix`, so every other consumer (chip labels, in-text markers,
+ * the .docx) reads the assignment off the bibliography instead of recomputing it —
+ * which is what makes "the marker and the entry always agree" structural rather
+ * than a coincidence of two identical algorithms. Rows without a suffix are shaped
+ * exactly as they always were. Pure.
  */
 export function generateReferenceList(refs, style = 'vancouver') {
   const list = dedupeReferences(refs);
-  return list.map((r, i) => ({
-    index: i + 1,
-    id: r.id,
-    ref: r,
-    text: formatCitation(r, style),
-    segments: formatCitationSegments(r, style),
-  }));
+  const suffixes = assignYearSuffixes(list, style);
+  return list.map((r, i) => {
+    const yearSuffix = suffixes[r.id] || '';
+    const row = {
+      index: i + 1,
+      id: r.id,
+      ref: r,
+      text: formatCitation(r, style, { yearSuffix }),
+      segments: formatCitationSegments(r, style, { yearSuffix }),
+    };
+    if (yearSuffix) row.yearSuffix = yearSuffix;
+    return row;
+  });
+}
+
+/**
+ * §K.4 — the `id → suffix` map a rendered bibliography implies, alias keys included
+ * when an alias map is supplied. One helper so the editor, the panels and the .docx
+ * all build the SAME map from the SAME rows. Pure.
+ */
+export function yearSuffixesOf(rows, aliases) {
+  const out = {};
+  for (const row of (Array.isArray(rows) ? rows : [])) {
+    if (!row || !row.yearSuffix) continue;
+    out[row.id] = row.yearSuffix;
+    if (row.ref && row.ref.id) out[row.ref.id] = row.yearSuffix;
+  }
+  if (aliases && typeof aliases === 'object') {
+    for (const from of Object.keys(aliases)) {
+      const to = resolveCiteId(from, aliases);
+      if (out[to] && !out[from]) out[from] = out[to];
+    }
+  }
+  return out;
 }
 
 /** Inline citation marker for a 1-based index in a style. Pure. */
@@ -880,6 +1009,10 @@ export default {
   collapseNumberRanges,
   isAuthorYearStyle,
   authorYearLabel,
+  firstAuthorFamily,
+  assignYearSuffixes,
+  yearSuffixLetter,
+  yearSuffixesOf,
   formatCitationMarker,
   collectCitationOrder,
   collectCitationUsage,
