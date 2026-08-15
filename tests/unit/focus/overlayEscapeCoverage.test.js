@@ -101,6 +101,9 @@ const WIRED = [
   // Menus / popovers
   'frontend/screening/components/KeywordContextMenu.jsx',
   'features/manuscript/FactProvenanceCard.jsx',
+  // 118.md §51/§52 — the manuscript toolbar's New-draft confirmation and its
+  // '⋯' overflow menu are popovers, and both dismiss on Escape.
+  'features/manuscript/ManuscriptToolbar.jsx',
   'features/searchBuilder/components/MeshDetailsPopover.jsx',
   'features/searchBuilder/components/TermEditorPopover.jsx',
   'features/searchBuilder/components/TermChipRow.jsx',

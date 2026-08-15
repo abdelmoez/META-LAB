@@ -207,6 +207,22 @@ export function searchStageHref(stageId, ctx = {}) {
   return `/app/project/${pid}?tab=search&stage=${id}`;
 }
 
+/**
+ * 118.md §47 — deep-link a MANUSCRIPT EDITOR destination (Overview / Updates / Editor
+ * / Tables / Figures / References / PRISMA / Export) within the unified Stitch
+ * workspace. The host route is `?tab=manuscript`; the embedded ManuscriptWorkspace
+ * reads `?ms=<id>` back off the URL for its own sub-navigation. `ms` is collision-free
+ * (the host owns `?tab=`; `screen`/`stage` belong to screening and search), and the
+ * whole shape is the same engine-sub-param contract those two already prove, so deep
+ * links and browser Back/Forward resolve to the same destination (§48).
+ * ctx = { projectId }.
+ */
+export function manuscriptSubHref(subtabId, ctx = {}) {
+  const pid = encodeURIComponent(ctx.projectId || '');
+  const id = encodeURIComponent(subtabId || 'overview'); // the manuscript workspace home
+  return `/app/project/${pid}?tab=manuscript&ms=${id}`;
+}
+
 /* ─── 5. Active-route matching (design2.md "Preserve deep links") ─────────────── */
 
 /** Which global rail key is active for a given pathname + search. */
@@ -297,6 +313,21 @@ export function readSearchStageParam(search) {
     return resolveStageAlias(qs.get('stage') || 'terms');
   } catch {
     return 'terms';
+  }
+}
+
+/** 118.md §47 — parse the Manuscript Editor destination (`?ms=`) — only meaningful
+ *  while tab=manuscript. Bare `?tab=manuscript` (no `ms`) is the workspace home,
+ *  'overview'. An UNKNOWN value also resolves to 'overview' inside the workspace
+ *  (normalizeSubtab), so a stale deep link lands somewhere real instead of a blank
+ *  panel — the readScreenParam / readSearchStageParam precedent. */
+export function readManuscriptSubParam(search) {
+  if (typeof search !== 'string' || !search) return 'overview';
+  try {
+    const qs = new URLSearchParams(search.startsWith('?') ? search.slice(1) : search);
+    return qs.get('ms') || 'overview';
+  } catch {
+    return 'overview';
   }
 }
 

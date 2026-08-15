@@ -49,6 +49,8 @@ import { buildWorkflowSequence, sequenceIndex, sequenceNeighbours } from '../nav
 import {
   activeProjectStage, projectStageHref, categoryForStage, categoryShowsSubmenu, activeSubmenuKey,
   readSearchStageParam, searchStageHref,
+  // 118.md §47 — the Manuscript Editor's engine sub-param (`?ms=<destination>`).
+  readManuscriptSubParam, manuscriptSubHref,
 } from '../nav/navConfig.js';
 import {
   StitchLoadingState, StitchErrorState, StitchButton, StitchBadge, S, salpha,
@@ -425,7 +427,14 @@ function DeepToolPage({ stage }) {
   } else if (stage === 'grade') {
     body = (<LazyGrade project={project} upd={doc.upd} />);
   } else if (stage === 'manuscript') {
-    body = (<LazyManuscript project={project} upd={doc.upd} />);
+    // 118.md §47/§48 — the Manuscript Editor's eight destinations are real URL state:
+    // `?tab=manuscript&ms=<id>`. Same round-trip as the Search workflow's `?stage=`
+    // (initial value read off the URL, changes pushed back through react-router), so
+    // deep links, refresh and browser Back/Forward all resolve to the same
+    // destination. The LEGACY shell passes neither prop and keeps component state.
+    body = (<LazyManuscript project={project} upd={doc.upd}
+      initialSubtab={readManuscriptSubParam(search)}
+      onSubtabChange={(id) => navigate(manuscriptSubHref(id, { projectId }))} />);
   } else if (stage === 'report') {
     body = (<LazyReport project={project} upd={doc.upd} />);
   } else if (stage === 'methods') {

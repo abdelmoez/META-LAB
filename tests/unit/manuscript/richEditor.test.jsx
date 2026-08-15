@@ -146,7 +146,13 @@ describe('EditorPanel — 3-panel WYSIWYG shell (MS-3)', () => {
     expect(html).toContain('Verify the pooled numbers.');
     // canonical export testid stays on the Overview panel — tools reuses the group
     expect(html).toContain('Export Word');
-    expect(html).toContain('data-testid="stitch-manuscript-save-status"');
+    // 118.md §44 — the save state is NOT here any more. It moved to the sticky
+    // manuscript toolbar, which is on screen at every scroll position of every
+    // destination, so the tools column's copy was a second claim on the same glance
+    // (and a duplicate of a test id the e2e suite reads). Pinned as an ABSENCE so the
+    // duplicate cannot quietly come back.
+    expect(html).not.toContain('data-testid="stitch-manuscript-save-status"');
+    expect(html).not.toContain('Save status');
   });
 
   it('title section is a plain input on the page', () => {

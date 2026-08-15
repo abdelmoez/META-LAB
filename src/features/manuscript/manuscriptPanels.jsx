@@ -1983,10 +1983,11 @@ export function EditorPanel({ m, exporters, sectionRequest, onOpenAssetPanel, on
       {/* ── right: tools (collapsible; stacks below on narrow screens via wrap) ── */}
       {toolsOpen && (
         <div data-testid="stitch-manuscript-tools" style={{ width: 264, minWidth: 220, flex: '0 1 264px', display: 'flex', flexDirection: 'column', gap: 12 }}>
-          <Card style={{ padding: 12 }}>
-            <ToolsLabel>Save status</ToolsLabel>
-            <SaveStatusPill saveState={m.saveState} lastError={m.lastError} onRetry={m.retry} />
-          </Card>
+          {/* 118.md §44 — the "Save status" card that used to open this column is
+              GONE. The state now lives in the sticky manuscript toolbar, which is on
+              screen at every scroll position of every destination; keeping a second
+              copy here duplicated the test id, competed for the same glance and gave
+              the tools column a header that was not a tool. Same pill, one home. */}
 
           {/* 101.md §6/§34 — Show Changes lives with the tools, not in the page
               chrome, so a researcher who never turns it on never sees it. The
@@ -2226,35 +2227,64 @@ function ToolsGroup({ id, title, defaultOpen = false, children }) {
  * to load the latest, which is what the shell's own banner/badge offers, so the pill
  * says which way to go instead of growing a second, competing affordance.
  */
+/* 118.md §44 — the pill now lives in the sticky manuscript toolbar, so it is read at
+   a glance rather than hunted for: a status DOT carries the state pre-attentively and
+   the word confirms it. The four states, their wording, their test id and the
+   "conflict never offers Retry" rule are all UNCHANGED — this is a re-skin of an
+   honest indicator, not a new save channel. `role=status` + `aria-live=polite` is the
+   §42 half of the same idea (the transition is announced, never trapped). */
+const savePillBase = {
+  display: 'inline-flex', alignItems: 'center', gap: 6, whiteSpace: 'nowrap',
+  padding: '3px 11px 3px 9px', borderRadius: 99, fontSize: 10.5, fontWeight: 600, letterSpacing: 0.2,
+};
+
+function SaveDot({ color, pulse }) {
+  return (
+    <span aria-hidden="true" style={{
+      width: 6, height: 6, borderRadius: '50%', flexShrink: 0, background: color,
+      boxShadow: pulse ? `0 0 0 3px ${alpha(color, '22')}` : 'none',
+    }} />
+  );
+}
+
 export function SaveStatusPill({ saveState, lastError, onRetry }) {
   if (saveState === 'conflict') {
     return (
       <span
         data-testid="stitch-manuscript-save-status"
+        role="status"
+        aria-live="polite"
         title="Another tab or collaborator saved first, so this change was refused. Load the latest version before editing further."
-        style={tagS('red')}
+        style={{ ...tagS('red'), ...savePillBase }}
       >
+        <SaveDot color={C.red} />
         Updated elsewhere — not saved
       </span>
     );
   }
   if (saveState === 'error') {
     return (
-      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-        <span data-testid="stitch-manuscript-save-status" title={lastError || 'Could not save changes.'} style={tagS('red')}>
+      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 7, flexWrap: 'nowrap' }}>
+        <span data-testid="stitch-manuscript-save-status" role="status" aria-live="polite"
+          title={lastError || 'Could not save changes.'} style={{ ...tagS('red'), ...savePillBase }}>
+          <SaveDot color={C.red} />
           Save failed
         </span>
         {onRetry && (
-          <button onClick={onRetry} aria-label="Retry saving" style={{ ...btnS('danger'), fontSize: 10.5, padding: '3px 10px' }}>
+          <button type="button" onClick={onRetry} aria-label="Retry saving"
+            style={{ ...btnS('danger'), fontSize: 10.5, padding: '3px 10px' }}>
             Retry
           </button>
         )}
       </span>
     );
   }
+  const saving = saveState === 'saving';
   return (
-    <span data-testid="stitch-manuscript-save-status" style={tagS(saveState === 'saving' ? 'yellow' : 'green')}>
-      {saveState === 'saving' ? 'Saving…' : 'Saved'}
+    <span data-testid="stitch-manuscript-save-status" role="status" aria-live="polite"
+      style={{ ...tagS(saving ? 'yellow' : 'green'), ...savePillBase }}>
+      <SaveDot color={saving ? C.yel : C.grn} pulse={saving} />
+      {saving ? 'Saving…' : 'Saved'}
     </span>
   );
 }

@@ -1,40 +1,87 @@
 /**
- * features/manuscript/ManuscriptWorkspace.jsx — 64.md (P3). The carded, sub-tabbed
- * Manuscript workspace. PRESENTATIONAL shell only: it wires the already-tested
- * `useManuscript` hook to the panels and lazy-loads the heavy .docx/.zip exporters
- * inside click handlers so they never enter the main bundle.
+ * features/manuscript/ManuscriptWorkspace.jsx — 64.md (P3), restructured by 118.md
+ * §1-§9. The Manuscript Editor's workspace SHELL. PRESENTATIONAL only: it wires the
+ * already-tested `useManuscript` hook to the panels and lazy-loads the heavy
+ * .docx/.zip exporters inside click handlers so they never enter the main bundle.
+ *
+ * 118.md §1/§3/§9 — the old layout (a section header, a loose control row, a yellow
+ * banner and eight CTA-styled buttons) is gone. Those controls now belong to ONE
+ * dedicated engine header (ManuscriptToolbar), sticky above the document, and this
+ * file is what is left: state, routing and the panel host.
  *
  * Renders in BOTH the legacy and the Stitch shell — styled exclusively with the
  * legacy token system (Stitch auto-remaps --t-*).
  */
-import { useState, useCallback } from 'react';
-import { C, btnS, tagS } from '../../frontend/workspace/ui/styles.js';
-import { SectionHeader, InfoBox } from '../../frontend/workspace/ui/primitives.jsx';
-import { Icon } from '../../frontend/components/icons.jsx';
-import { alpha } from '../../frontend/theme/tokens.js';
-import { CITATION_STYLES, JOURNAL_TEMPLATES, SECTION_IDS } from '../../research-engine/manuscript/index.js';
+import { useState, useEffect, useCallback, useRef } from 'react';
+import { C } from '../../frontend/workspace/ui/styles.js';
+import { InfoBox } from '../../frontend/workspace/ui/primitives.jsx';
+import { SECTION_IDS } from '../../research-engine/manuscript/index.js';
 import { useManuscript } from './useManuscript.js';
 import {
-  Select, OverviewPanel, EditorPanel, TablesPanel, FiguresPanel, ReferencesPanel, PrismaPanel, ExportPanel,
-  UpdatesPanel, SaveStatusPill, ExportValidationDialog,
+  OverviewPanel, EditorPanel, TablesPanel, FiguresPanel, ReferencesPanel, PrismaPanel, ExportPanel,
+  UpdatesPanel, ExportValidationDialog,
 } from './manuscriptPanels.jsx';
-
-const SUBTABS = [
-  { id: 'overview', label: 'Overview', icon: 'layers' },
-  { id: 'updates', label: 'Updates', icon: 'refresh' },
-  { id: 'editor', label: 'Editor', icon: 'pencil' },
-  { id: 'tables', label: 'Tables', icon: 'table' },
-  { id: 'figures', label: 'Figures', icon: 'barChart' },
-  { id: 'references', label: 'References', icon: 'bookOpen' },
-  { id: 'prisma', label: 'PRISMA', icon: 'flow' },
-  { id: 'export', label: 'Export', icon: 'download' },
-];
+import {
+  ManuscriptToolbar, ManuscriptToolbarSkeleton, MANUSCRIPT_TAB_IDS, MS_PANEL_ID, msTabDomId,
+} from './ManuscriptToolbar.jsx';
 
 const safeName = (s) => String(s || 'manuscript').replace(/[^a-z0-9]+/gi, '-').replace(/^-+|-+$/g, '') || 'manuscript';
 
-export function ManuscriptWorkspace({ project, upd }) {
+const normalizeSubtab = (id) => (MANUSCRIPT_TAB_IDS.includes(id) ? id : 'overview');
+
+/* 118.md §49 — one constant engine column. The toolbar spans it; only the document
+   column inside changes width per destination, so the chrome never resizes. */
+const SHELL_STYLE = { maxWidth: 1440, margin: '0 auto', padding: '4px 2px' };
+
+/**
+ * @param {string}   initialSubtab   118.md §47 — the host's URL sub-param (`?ms=`).
+ *                   Stitch passes it; the LEGACY shell passes nothing, so the default
+ *                   keeps that shell on pure component state (it has no such route).
+ * @param {function} onSubtabChange  (id) => void — the router-aware host pushes the
+ *                   sub-param. Absent → local state only, exactly as before.
+ */
+export function ManuscriptWorkspace({ project, upd, initialSubtab, onSubtabChange }) {
   const m = useManuscript(project, upd);
-  const [tab, setTab] = useState('overview');
+  const [tab, setTabState] = useState(() => normalizeSubtab(initialSubtab));
+
+  /* ── 118.md §46-§48 — ONE navigation seam ────────────────────────────────────
+     Every destination change in this workspace goes through `setTab`, so there is
+     exactly one place that (a) keeps the Updates panel's lazy heavy sync plan
+     refreshed on entry and (b) reports the change to the router-aware host. The
+     panels are siblings of `useManuscript`, which stays mounted ABOVE all of them:
+     switching destinations therefore never unmounts the hook, and a debounced edit
+     in flight survives the switch untouched (§46). */
+  /* Live handles, so `setTab` can be referentially STABLE for the whole mount: it is
+     handed to the toolbar and to every panel, and a fresh identity on each render
+     would churn their memo/effect dependency lists for no behavioural gain. */
+  const hostNavRef = useRef(onSubtabChange);
+  hostNavRef.current = onSubtabChange;
+  const refreshPlanRef = useRef(m.refreshSyncPlan);
+  refreshPlanRef.current = m.refreshSyncPlan;
+  const tabRef = useRef(tab);
+  tabRef.current = tab;
+
+  const setTab = useCallback((next) => {
+    const id = normalizeSubtab(next);
+    setTabState(id);
+    // 84.md — the Updates destination owns a heavy plan that is computed on entry only.
+    if (id === 'updates' && refreshPlanRef.current) refreshPlanRef.current();
+    if (typeof hostNavRef.current === 'function') hostNavRef.current(id);
+  }, []);
+
+  /* 118.md §47/§48 — the URL is authoritative wherever the host supplies it. The
+     host re-renders on every location change (deep link, white side-menu, browser
+     Back/Forward), so reconciling the incoming prop in an effect catches all three
+     with one mechanism — the SearchWorkspace `initialStage` precedent. Reporting
+     back out of here would loop, so the reconcile writes LOCAL state only. */
+  useEffect(() => {
+    if (typeof hostNavRef.current !== 'function' || initialSubtab == null) return;
+    const id = normalizeSubtab(initialSubtab);
+    if (id === tabRef.current) return;
+    setTabState(id);
+    if (id === 'updates' && refreshPlanRef.current) refreshPlanRef.current();
+  }, [initialSubtab]);
+
   const [exporting, setExporting] = useState(null); // null | 'word' | 'repro' | 'prisma' | 'prismaS'
   const [exportError, setExportError] = useState('');
   // 85.md B2 — pre-export validation review ({ model, validation, fetchedAt })
@@ -49,7 +96,7 @@ export function ManuscriptWorkspace({ project, upd }) {
     if (!SECTION_IDS.includes(id)) { setTab('editor'); return; }
     setSectionRequest({ id, at: Date.now() });
     setTab('editor');
-  }, []);
+  }, [setTab]);
 
   /* 117.md §38 — the citation chip's menu actions. "View reference" / "Edit
      reference" / "Open PDF" all live in the References tab (which owns the library),
@@ -60,7 +107,7 @@ export function ManuscriptWorkspace({ project, upd }) {
   const openReference = useCallback((refId, action) => {
     setFocusReference(refId ? { id: refId, action: action || 'view', at: Date.now() } : null);
     setTab('references');
-  }, []);
+  }, [setTab]);
 
   const runExport = useCallback(async (key, fn) => {
     setExporting(key);
@@ -177,128 +224,73 @@ export function ManuscriptWorkspace({ project, upd }) {
   const exporters = { onExportWord, onExportRepro, onPrismaChecklist, onPrismaSChecklist, exporting, exportError, exportProgress };
 
   if (!m.activeDraft) {
+    // 118.md §49 — reserve the toolbar's dimensions while the manuscript resolves,
+    // so the workspace does not jump when the real bar arrives.
     return (
-      <div data-testid="stitch-manuscript-workspace" style={{ maxWidth: 900, margin: '0 auto', padding: '4px 2px' }}>
-        <SectionHeader icon="pencil" title="Manuscript" desc="Generate, edit and export a submission-ready manuscript from your project data." />
-        <InfoBox color={C.muted}>Preparing manuscript…</InfoBox>
+      <div data-testid="stitch-manuscript-workspace" style={SHELL_STYLE}>
+        <ManuscriptToolbarSkeleton />
+        <div style={{ maxWidth: 900, margin: '0 auto' }}>
+          <InfoBox color={C.muted}>Preparing manuscript…</InfoBox>
+        </div>
       </div>
     );
   }
 
   return (
-    // The Editor's 3-panel layout (outline · page · tools, 65.md MS-3) needs the
-    // full width; the other sub-tabs keep the calmer 900px column.
-    <div data-testid="stitch-manuscript-workspace" style={{ maxWidth: tab === 'editor' ? 1440 : 900, margin: '0 auto', padding: '4px 2px' }}>
-      <SectionHeader icon="pencil" title="Manuscript" desc="Generate, edit and export a submission-ready manuscript from your project data." />
+    /* 118.md §49/§57 — the engine column is now a CONSTANT width: the toolbar is
+       chrome and must not resize when the destination changes. Only the document
+       column below it narrows (the Editor's outline · page · tools layout, 65.md
+       MS-3, needs the full width; the other destinations keep the calmer 900px
+       reading column). */
+    <div data-testid="stitch-manuscript-workspace" style={SHELL_STYLE}>
+      <ManuscriptToolbar m={m} tab={tab} onTabChange={setTab} />
 
-      {/* top control row */}
-      <div style={{ display: 'flex', alignItems: 'flex-end', gap: 14, flexWrap: 'wrap', marginBottom: 14 }}>
-        {m.drafts.length > 1 && (
-          <Labeled label="Draft">
-            <Select value={m.activeId || ''} onChange={(e) => { if (m.flush) m.flush(); m.setActiveId(e.target.value); }}>
-              {m.drafts.map((d, i) => <option key={d.id} value={d.id}>{d.title || `Draft ${i + 1}`}</option>)}
-            </Select>
-          </Labeled>
-        )}
-        <button onClick={() => m.addDraft({})} style={btnS('ghost')}><Icon name="plus" size={13} /> New draft</button>
-
-        <Labeled label="Template">
-          <Select value={m.activeDraft.templateId} onChange={(e) => m.setMeta({ templateId: e.target.value })}>
-            {JOURNAL_TEMPLATES.map((t) => <option key={t.id} value={t.id}>{t.label}</option>)}
-          </Select>
-        </Labeled>
-        <Labeled label="Citation style">
-          <Select value={m.activeDraft.citationStyle} onChange={(e) => m.setMeta({ citationStyle: e.target.value })}>
-            {CITATION_STYLES.map((s) => <option key={s.id} value={s.id}>{s.label}</option>)}
-          </Select>
-        </Labeled>
-
-        <span style={{ marginLeft: 'auto' }}>
-          <SaveStatusPill saveState={m.saveState} lastError={m.lastError} onRetry={m.retry} />
-        </span>
-      </div>
-
-      {/* AI verify banner */}
-      <div style={{
-        background: alpha(C.yel, '12'), border: `1px solid ${alpha(C.yel, '30')}`, borderLeft: `3px solid ${C.yel}`,
-        borderRadius: 10, padding: '11px 16px', marginBottom: 18, fontSize: 12.5, color: C.txt2, lineHeight: 1.6,
-        display: 'flex', gap: 10, alignItems: 'center',
-      }}>
-        <Icon name="alertTriangle" size={15} />
-        <span><strong style={{ color: C.yel }}>Auto-draft</strong> — verify all content and numbers against your extracted data before submission.</span>
-      </div>
-
-      {/* sub-tab bar */}
-      <div style={{ display: 'flex', gap: 7, flexWrap: 'wrap', marginBottom: 20 }}>
-        {SUBTABS.map((s) => {
-          // 84.md — the Updates tab carries a count badge when the manuscript is
-          // out of sync with the project (updates available / critical), and its
-          // heavy sync plan is (re)computed only when the tab is opened.
-          const wantsBadge = s.id === 'updates'
-            && (m.freshness.status === 'updates' || m.freshness.status === 'critical');
-          const badgeN = (m.freshness.counts && m.freshness.counts.outdated) || m.outdatedCount;
-          return (
-            <button key={s.id}
-              onClick={() => { setTab(s.id); if (s.id === 'updates' && m.refreshSyncPlan) m.refreshSyncPlan(); }}
-              data-testid={`stitch-manuscript-subtab-${s.id}`}
-              style={{ ...btnS(tab === s.id ? 'primary' : 'ghost'), fontSize: 11.5 }}>
-              <Icon name={s.icon} size={12} /> {s.label}
-              {wantsBadge && badgeN > 0 && (
-                <span data-testid="stitch-manuscript-updates-badge"
-                  style={{
-                    ...tagS(m.freshness.status === 'critical' ? 'red' : 'yellow'),
-                    marginLeft: 6, padding: '0 6px', fontSize: 10, lineHeight: '15px',
-                  }}>
-                  {badgeN}
-                </span>
-              )}
-            </button>
-          );
-        })}
-      </div>
-
-      {/* 85.md B2 — pre-export validation review (rendered above every panel so
-          it is visible from whichever tab hosted the export button). */}
+      {/* 85.md B2 — pre-export validation review. 118.md keeps it mounted ABOVE
+          every panel so it is visible from whichever destination started the export. */}
       {exportReview && (
-        <ExportValidationDialog review={exportReview} exporting={exporting}
-          onExportAnyway={onExportAnyway} onClose={() => setExportReview(null)} />
+        <div style={{ maxWidth: 900, margin: '0 auto' }}>
+          <ExportValidationDialog review={exportReview} exporting={exporting}
+            onExportAnyway={onExportAnyway} onClose={() => setExportReview(null)} />
+        </div>
       )}
 
-      {/* panels */}
-      {tab === 'overview' && <OverviewPanel m={m} exporters={exporters} onOpenSection={openSection} />}
-      {tab === 'updates' && <UpdatesPanel m={m} />}
-      {/* 117.md §10 — "Edit table" on a GENERATED object opens the panel that owns
-          it (a builder table has no prose to jump to). */}
-      {tab === 'editor' && (
-        <EditorPanel m={m} exporters={exporters} sectionRequest={sectionRequest}
-          onOpenAssetPanel={(which) => setTab(which === 'figures' ? 'figures' : 'tables')}
-          /* 117.md §38 — View / Edit / Open PDF / Go to References from a chip. */
-          onOpenReference={openReference} />
-      )}
-      {tab === 'tables' && <TablesPanel m={m} />}
-      {tab === 'figures' && <FiguresPanel m={m} />}
-      {tab === 'references' && (
-        <ReferencesPanel m={m} focusReference={focusReference}
-          /* 117.md §34 — "Cite" from the library inserts at the end of Results when
-             no editor is mounted, exactly like the Tables panel's Insert reference. */
-          onInsertCitation={(id) => {
-            const ok = m.insertCitationReference && m.insertCitationReference(id);
-            if (ok) setTab('editor');
-          }} />
-      )}
-      {tab === 'prisma' && <PrismaPanel m={m} exporters={exporters} />}
-      {tab === 'export' && <ExportPanel m={m} exporters={exporters} />}
+      {/* panels — the tablist's one tabpanel (118.md §42). */}
+      <div
+        id={MS_PANEL_ID}
+        role="tabpanel"
+        aria-labelledby={msTabDomId(tab)}
+        data-testid="stitch-manuscript-panel"
+        style={{ maxWidth: tab === 'editor' ? 'none' : 900, margin: '0 auto' }}
+      >
+        {/* 118.md §3 — `onNavigate` is the ONE way a panel changes destination, so
+            an Overview CTA and a nav tab take exactly the same path (Updates plan
+            refresh + the ?ms= round-trip included). */}
+        {tab === 'overview' && <OverviewPanel m={m} exporters={exporters} onOpenSection={openSection} onNavigate={setTab} />}
+        {tab === 'updates' && <UpdatesPanel m={m} onNavigate={setTab} onOpenSection={openSection} />}
+        {/* 117.md §10 — "Edit table" on a GENERATED object opens the panel that owns
+            it (a builder table has no prose to jump to). */}
+        {tab === 'editor' && (
+          <EditorPanel m={m} exporters={exporters} sectionRequest={sectionRequest}
+            onNavigate={setTab}
+            onOpenAssetPanel={(which) => setTab(which === 'figures' ? 'figures' : 'tables')}
+            /* 117.md §38 — View / Edit / Open PDF / Go to References from a chip. */
+            onOpenReference={openReference} />
+        )}
+        {tab === 'tables' && <TablesPanel m={m} onNavigate={setTab} />}
+        {tab === 'figures' && <FiguresPanel m={m} onNavigate={setTab} />}
+        {tab === 'references' && (
+          <ReferencesPanel m={m} focusReference={focusReference} onNavigate={setTab}
+            /* 117.md §34 — "Cite" from the library inserts at the end of Results when
+               no editor is mounted, exactly like the Tables panel's Insert reference. */
+            onInsertCitation={(id) => {
+              const ok = m.insertCitationReference && m.insertCitationReference(id);
+              if (ok) setTab('editor');
+            }} />
+        )}
+        {tab === 'prisma' && <PrismaPanel m={m} exporters={exporters} onNavigate={setTab} />}
+        {tab === 'export' && <ExportPanel m={m} exporters={exporters} onNavigate={setTab} />}
+      </div>
     </div>
-  );
-}
-
-/* tiny local label wrapper (kept here so the shell has no panel-internal deps) */
-function Labeled({ label, children }) {
-  return (
-    <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-      <span style={{ fontSize: 10, fontWeight: 700, color: C.muted, letterSpacing: 0.6, textTransform: 'uppercase' }}>{label}</span>
-      {children}
-    </label>
   );
 }
 
