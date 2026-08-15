@@ -51,6 +51,17 @@ export function ManuscriptWorkspace({ project, upd }) {
     setTab('editor');
   }, []);
 
+  /* 117.md §38 — the citation chip's menu actions. "View reference" / "Edit
+     reference" / "Open PDF" all live in the References tab (which owns the library),
+     so the chip's job is to say WHICH reference and WHAT to do with it; the panel
+     opens on that reference. `focusReference` changes on every request so repeating
+     the same action re-triggers it. */
+  const [focusReference, setFocusReference] = useState(null);
+  const openReference = useCallback((refId, action) => {
+    setFocusReference(refId ? { id: refId, action: action || 'view', at: Date.now() } : null);
+    setTab('references');
+  }, []);
+
   const runExport = useCallback(async (key, fn) => {
     setExporting(key);
     setExportError('');
@@ -88,6 +99,9 @@ export function ManuscriptWorkspace({ project, upd }) {
         prismaResult: model.prismaCounts, primary: model.primary, tables: model.tables,
         analyses: model.analyses, assets: model.assets,
         numbering: model.numbering, placements: model.placements,
+        // 117.md §41 — the resolved, validated bibliography + its alias map, so the
+        // .docx cites exactly what the export dialog just checked.
+        references: model.references, referenceAliases: model.referenceAliases,
         robAssessments: model.robAssessments, robByStudyId: model.robByStudyId,
         screening: model.screening, validation: model.validation,
         onProgress: (step, total, label) => setExportProgress(`Rendering figure ${step}/${total}…`),
@@ -257,11 +271,21 @@ export function ManuscriptWorkspace({ project, upd }) {
           it (a builder table has no prose to jump to). */}
       {tab === 'editor' && (
         <EditorPanel m={m} exporters={exporters} sectionRequest={sectionRequest}
-          onOpenAssetPanel={(which) => setTab(which === 'figures' ? 'figures' : 'tables')} />
+          onOpenAssetPanel={(which) => setTab(which === 'figures' ? 'figures' : 'tables')}
+          /* 117.md §38 — View / Edit / Open PDF / Go to References from a chip. */
+          onOpenReference={openReference} />
       )}
       {tab === 'tables' && <TablesPanel m={m} />}
       {tab === 'figures' && <FiguresPanel m={m} />}
-      {tab === 'references' && <ReferencesPanel m={m} />}
+      {tab === 'references' && (
+        <ReferencesPanel m={m} focusReference={focusReference}
+          /* 117.md §34 — "Cite" from the library inserts at the end of Results when
+             no editor is mounted, exactly like the Tables panel's Insert reference. */
+          onInsertCitation={(id) => {
+            const ok = m.insertCitationReference && m.insertCitationReference(id);
+            if (ok) setTab('editor');
+          }} />
+      )}
       {tab === 'prisma' && <PrismaPanel m={m} exporters={exporters} />}
       {tab === 'export' && <ExportPanel m={m} exporters={exporters} />}
     </div>

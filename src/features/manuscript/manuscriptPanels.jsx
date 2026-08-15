@@ -27,8 +27,16 @@ import {
   // the panel, the counts adapter and the audit log cannot list different fields.
   PRISMA_OVERRIDE_FIELDS, prismaOverrideLabel,
 } from '../../research-engine/manuscript/index.js';
+// 117.md §26-§39 — the reference-library vocabulary the panel renders: the §28 type
+// taxonomy + its per-type field reveal, and the §33 search/filter/sort helpers.
+import {
+  REFERENCE_TYPES, DEFAULT_REFERENCE_TYPE, referenceTypeLabel, fieldsForType,
+  filterReferenceRows, sortReferences, collectReferenceTags, REFERENCE_SORTS,
+} from '../../research-engine/manuscript/referenceLibrary.js';
+import { authorYearLabel } from '../../research-engine/manuscript/citations.js';
 import {
   RichSectionEditor, RichToolbar, RICH_EDITOR_CSS, CrossRefPicker, CrossRefList,
+  CiteRefPicker, citeItemOf,
 } from './richEditor/RichSectionEditor.jsx';
 // 101.md §34 — the optional "recent manuscript updates" panel paired with Show Changes.
 import { ChangeTrackingPanel } from './ChangeTrackingPanel.jsx';
@@ -1078,6 +1086,124 @@ export function AssetRefMenu({
   );
 }
 
+/* ════════════ 117.md §38 — citation chip surfaces ════════════
+ *
+ * Deliberately the SAME two components as the cross-reference chip (hover card +
+ * action menu), anchored the same way inside the paper page. A citation and a table
+ * reference are the same interaction to a researcher — click the thing, act on it —
+ * so they are the same interaction here.
+ */
+
+/** One line of "Smith et al., 2020 · Journal · Year" for a reference. */
+export function referencePreviewLine(ref) {
+  const r = ref || {};
+  return [r.journal, r.year].filter(Boolean).join(' · ');
+}
+
+/** §38 — hover preview: first author, year, title, journal. */
+export function CiteHoverCard({ info, refs, pageEl }) {
+  const pos = info && anchorUnder(info.rect, pageEl, 280);
+  if (!info || !pos) return null;
+  const list = Array.isArray(refs) ? refs.filter(Boolean) : [];
+  return (
+    <div data-testid="stitch-manuscript-cite-hover" role="tooltip"
+      style={{ ...popoverBox, top: pos.top, left: pos.left, width: 280, padding: '8px 10px', pointerEvents: 'none' }}>
+      <div style={{ fontSize: 11, fontWeight: 700, color: info.broken ? C.red : C.acc, marginBottom: 3 }}>
+        {info.label}
+      </div>
+      {list.length === 0 ? (
+        <div style={{ fontSize: 11.5, color: C.txt, lineHeight: 1.45 }}>
+          This citation does not match any reference in the library.
+        </div>
+      ) : list.slice(0, 3).map((r, i) => (
+        <div key={r.id || i} style={{ marginTop: i ? 6 : 0 }}>
+          <div style={{ fontSize: 11.5, fontWeight: 700, color: C.txt, lineHeight: 1.4 }}>{authorYearLabel(r)}</div>
+          <div style={{ fontSize: 11.5, color: C.txt2, lineHeight: 1.45 }}>{r.title || '(no title)'}</div>
+          {referencePreviewLine(r) && (
+            <div style={{ fontSize: 10, color: C.muted, marginTop: 2 }}>{referencePreviewLine(r)}</div>
+          )}
+        </div>
+      ))}
+      {list.length > 3 && (
+        <div style={{ fontSize: 10, color: C.muted, marginTop: 5 }}>+{list.length - 3} more in this citation</div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * §38 — the citation action menu: View reference · Edit reference · Open PDF ·
+ * Go to References · Remove citation.
+ *
+ * "Open PDF" appears ONLY when the reference actually carries a linked attachment.
+ * A dead button that always says "no PDF" would be worse than no button — it would
+ * teach the researcher the action never works.
+ *
+ * On a MULTI-reference citation the per-reference actions are offered per reference
+ * (each row is one reference), because "Edit reference" has to mean a specific one.
+ */
+export function CiteRefMenu({
+  info, refs, pageEl, onView, onEdit, onOpenPdf, onGoToReferences, onRemove, onClose,
+}) {
+  const pos = info && anchorUnder(info.rect, pageEl, 268);
+  if (!info || !pos) return null;
+  const list = Array.isArray(refs) ? refs : [];
+  const btn = {
+    ...btnS('ghost'), width: '100%', justifyContent: 'flex-start', fontSize: 11.5,
+    padding: '5px 8px', border: '1px solid transparent', background: 'transparent',
+  };
+  const multi = list.length > 1;
+  return (
+    <>
+      <div onMouseDown={(e) => { e.preventDefault(); onClose && onClose(); }}
+        style={{ position: 'fixed', inset: 0, zIndex: 5, background: 'transparent' }} />
+      <div role="dialog" aria-label="Citation actions"
+        data-testid="stitch-manuscript-cite-menu"
+        onMouseDown={(e) => e.preventDefault()}
+        style={{ ...popoverBox, top: pos.top, left: pos.left, width: 268, padding: 8 }}>
+        <div style={{ fontSize: 10, letterSpacing: 0.4, textTransform: 'uppercase', color: C.muted, padding: '0 4px 5px' }}>
+          {info.broken ? 'Citation not found' : info.label}
+        </div>
+        {list.length === 0 ? (
+          <div style={{ fontSize: 11, color: C.txt2, padding: '2px 6px 6px', lineHeight: 1.5 }}
+            data-testid="stitch-manuscript-cite-menu-missing">
+            The reference this points at is not in the library.
+          </div>
+        ) : list.map((r) => (
+          <div key={r.id} style={{ marginBottom: multi ? 6 : 0 }}>
+            {multi && (
+              <div style={{ fontSize: 10.5, fontWeight: 700, color: C.txt, padding: '3px 6px 1px' }}>
+                {authorYearLabel(r)}
+              </div>
+            )}
+            <button type="button" style={btn} data-testid={`stitch-manuscript-cite-view-${r.id}`}
+              onClick={() => onView && onView(r.id)}>View reference</button>
+            <button type="button" style={btn} data-testid={`stitch-manuscript-cite-edit-${r.id}`}
+              onClick={() => onEdit && onEdit(r.id)}>Edit reference</button>
+            {r.pdfAttachmentId && (
+              <button type="button" style={btn} data-testid={`stitch-manuscript-cite-pdf-${r.id}`}
+                onClick={() => onOpenPdf && onOpenPdf(r.id)}>Open PDF</button>
+            )}
+            {multi && (
+              <button type="button" style={{ ...btn, color: C.red }}
+                data-testid={`stitch-manuscript-cite-remove-${r.id}`}
+                onClick={() => onRemove && onRemove(r.id)}>Remove this reference</button>
+            )}
+          </div>
+        ))}
+        <button type="button" style={btn} data-testid="stitch-manuscript-cite-goto-references"
+          onClick={onGoToReferences}>Go to References</button>
+        <button type="button" style={{ ...btn, color: C.red }}
+          data-testid="stitch-manuscript-cite-remove"
+          onClick={() => onRemove && onRemove(null)}>Remove citation</button>
+        <div style={{ fontSize: 10, color: C.muted, padding: '4px 6px 1px', lineHeight: 1.45 }}>
+          Removing the citation leaves the reference in your library.
+        </div>
+      </div>
+    </>
+  );
+}
+
 /**
  * 117.md §11 — the delete confirmation for a table that is cited.
  *
@@ -1120,7 +1246,7 @@ export function TableDeleteDialog({ info, onConfirm, onCancel }) {
   );
 }
 
-export function EditorPanel({ m, exporters, sectionRequest, onOpenAssetPanel }) {
+export function EditorPanel({ m, exporters, sectionRequest, onOpenAssetPanel, onOpenReference }) {
   const [sel, setSel] = useState('title');
   const [genNotice, setGenNotice] = useState(null); // { only:null|[id], skipped:[...], skippedLocked:[...] }
   const [toolsOpen, setToolsOpen] = useState(true);
@@ -1170,10 +1296,18 @@ export function EditorPanel({ m, exporters, sectionRequest, onOpenAssetPanel }) 
     return `${fam}${r.ref && r.ref.year ? ` ${r.ref.year}` : ''}`;
   };
   // inline-citation numbering (includes the unsaved buffer)
+  // 117.md §32/§36 — alias-resolved, so a citation of a merged-away reference numbers
+  // as its survivor rather than falling out of the sequence.
+  const citeAliases = m.referenceAliases || null;
+  // 117.md §39 — an unresolvable citation takes no number, so the chips stay in step
+  // with the bibliography instead of shifting after a typo.
+  const citeKnownIds = m.referenceKnownIds || null;
   const orderMap = useMemo(() => {
     const texts = draftSectionTexts(m.activeDraft).map((t, i) => (SECTION_IDS[i] === sel ? buf : t));
-    return collectCitationOrder(texts).orderMap;
-  }, [m.activeDraft, sel, buf]);
+    return collectCitationOrder(texts, { aliases: citeAliases, knownIds: citeKnownIds }).orderMap;
+  }, [m.activeDraft, sel, buf, citeAliases, citeKnownIds]);
+  // 117.md §34 — the searchable picker items (author/title/DOI/PMID/journal/year/keyword).
+  const citeItems = useMemo(() => citeRefs.map((r) => citeItemOf(r, refLabel)), [citeRefs]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // 85.md B2 — asset-chip numbering for the WYSIWYG surface. Gated on settle:
   // until the live sources resolve, availability (and therefore numbers) may
@@ -1220,14 +1354,35 @@ export function EditorPanel({ m, exporters, sectionRequest, onOpenAssetPanel }) 
   const [chipHover, setChipHover] = useState(null);
   const [relinking, setRelinking] = useState(false);
   const [tableDelete, setTableDelete] = useState(null); // {tableId,label,count}
+  // 117.md §38 — the citation chip's own popovers ({ids,label,broken,rect}).
+  const [citeMenu, setCiteMenu] = useState(null);
+  const [citeHover, setCiteHover] = useState(null);
   // A section switch invalidates every anchored popover (the rects are gone).
-  useEffect(() => { setChipMenu(null); setChipHover(null); setRelinking(false); setTableDelete(null); }, [sel, m.activeId, lastGen]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    setChipMenu(null); setChipHover(null); setRelinking(false); setTableDelete(null);
+    setCiteMenu(null); setCiteHover(null);
+  }, [sel, m.activeId, lastGen]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const closeChipMenu = () => {
     const api = getApi();
     if (api && api.clearActiveCrossRef) api.clearActiveCrossRef();
     setChipMenu(null);
     setRelinking(false);
+  };
+
+  const closeCiteMenu = () => {
+    const api = getApi();
+    if (api && api.clearActiveCitation) api.clearActiveCitation();
+    setCiteMenu(null);
+  };
+
+  /** 117.md §38 — the reference objects behind a chip's ids (alias-resolved). */
+  const refsOf = (info) => {
+    const by = m.refsById;
+    if (!info || !by) return [];
+    return (info.ids || [])
+      .map((id) => (typeof by.get === 'function' ? by.get(id) : by[id]))
+      .filter(Boolean);
   };
 
   // MS-11: derive sub-entries from headings at render time — no model change.
@@ -1388,7 +1543,20 @@ export function EditorPanel({ m, exporters, sectionRequest, onOpenAssetPanel }) 
     setGenNotice(null);
   };
 
-  const insertCitation = (refId) => { if (locked) return; const api = getApi(); if (api && refId) api.insertCitation(refId); };
+  // 117.md §34/§35 — one or MANY ids; the editor turns them into ONE chip.
+  const insertCitation = (refIds) => {
+    if (locked) return;
+    const api = getApi();
+    const ids = Array.isArray(refIds) ? refIds : [refIds];
+    if (api && ids.filter(Boolean).length) api.insertCitation(ids.filter(Boolean));
+  };
+
+  /** 117.md §38 — remove one id from the active chip (null → the whole chip). */
+  const removeCitation = (refId) => {
+    const api = getApi();
+    if (api && api.removeCitation) api.removeCitation(refId);
+    setCiteMenu(null);
+  };
   // MS-8: insert the generated study-selection paragraph as normal editable text.
   // 85.md B2 — token variant ONLY when the draft already uses structured tokens
   // (no silent mixed mode; a legacy draft keeps the legacy "(Figure 1)" text and
@@ -1666,7 +1834,9 @@ export function EditorPanel({ m, exporters, sectionRequest, onOpenAssetPanel }) 
         {!isTitle && (
           <RichToolbar getApi={getApi} citeRefs={citeRefs} refLabel={refLabel} disabled={locked}
             /* 117.md §9 — Insert → Cross-reference, at the caret, with search. */
-            crossRefs={crossRefItems} onInsertCrossRef={insertAssetRef} />
+            crossRefs={crossRefItems} onInsertCrossRef={insertAssetRef}
+            /* 117.md §34/§35 — Insert → Citation, searchable + multi-select. */
+            onInsertCitation={insertCitation} />
         )}
 
         <div style={{ display: 'flex', justifyContent: 'center' }}>
@@ -1734,6 +1904,12 @@ export function EditorPanel({ m, exporters, sectionRequest, onOpenAssetPanel }) 
                 onAssetChipMenu={(info) => { setChipHover(null); setRelinking(false); setChipMenu(info); }}
                 onAssetChipHover={setChipHover}
                 onTableMeta={m.setTableMeta}
+                // 117.md §37/§38/§39 — the citation layer: style-aware chip labels,
+                // the reference metadata behind them, and the two chip callbacks.
+                citationStyle={m.activeDraft.citationStyle}
+                refsById={m.refsById}
+                onCiteChipMenu={(info) => { setCiteHover(null); setCiteMenu(info); }}
+                onCiteChipHover={setCiteHover}
                 ariaLabel={(SECTION_TYPES.find((s) => s.id === sel) || {}).label || 'Section'}
                 placeholder="Write this section here, or generate it from your project data. Use the toolbar for headings, lists and citations." />
             )}
@@ -1745,6 +1921,19 @@ export function EditorPanel({ m, exporters, sectionRequest, onOpenAssetPanel }) 
             {/* 117.md §10 — hover preview, suppressed while the action menu is open */}
             {!isTitle && !chipMenu && chipHover && (
               <AssetRefHoverCard info={chipHover} asset={hoverAsset} pageEl={pageRef.current} />
+            )}
+            {/* 117.md §38 — citation hover preview + action menu, same rules */}
+            {!isTitle && !citeMenu && citeHover && (
+              <CiteHoverCard info={citeHover} refs={refsOf(citeHover)} pageEl={pageRef.current} />
+            )}
+            {!isTitle && citeMenu && (
+              <CiteRefMenu info={citeMenu} refs={refsOf(citeMenu)} pageEl={pageRef.current}
+                onView={(id) => { closeCiteMenu(); onOpenReference && onOpenReference(id, 'view'); }}
+                onEdit={(id) => { closeCiteMenu(); onOpenReference && onOpenReference(id, 'edit'); }}
+                onOpenPdf={(id) => { closeCiteMenu(); onOpenReference && onOpenReference(id, 'pdf'); }}
+                onGoToReferences={() => { closeCiteMenu(); onOpenReference && onOpenReference(null, 'list'); }}
+                onRemove={removeCitation}
+                onClose={closeCiteMenu} />
             )}
             {/* 117.md §10/§11 — the chip action menu (and its relink picker) */}
             {!isTitle && chipMenu && (
@@ -1800,16 +1989,14 @@ export function EditorPanel({ m, exporters, sectionRequest, onOpenAssetPanel }) 
 
           <ToolsGroup id="insert" title="Insert">
             <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-              {citeRefs.length > 0 ? (
-                <select value="" disabled={isTitle || locked}
-                  aria-label="Insert citation" title="Insert a numbered citation at the cursor"
-                  data-testid="stitch-manuscript-tools-cite"
-                  onChange={(e) => { insertCitation(e.target.value); e.target.value = ''; }}
-                  style={{ ...inp, cursor: (isTitle || locked) ? 'default' : 'pointer', fontSize: 11, paddingRight: 22, opacity: (isTitle || locked) ? 0.5 : 1 }}>
-                  <option value="">+ Insert citation…</option>
-                  {citeRefs.map((r) => <option key={r.id} value={r.id}>{refLabel(r)}</option>)}
-                </select>
-              ) : (
+              {/* 117.md §34/§35 — the Tools entry point to the SAME searchable,
+                  multi-select picker the toolbar uses. It replaces the old bare
+                  <select>, which could not search and could not express a
+                  multi-reference citation. */}
+              <CiteRefPicker items={citeItems} disabled={isTitle || locked} block
+                testIdPrefix="stitch-manuscript-tools-cite"
+                label="+ Insert citation…" onInsert={insertCitation} />
+              {citeRefs.length === 0 && (
                 <div style={{ fontSize: 10.5, color: C.muted }}>References appear here once your project has included studies.</div>
               )}
               <button onClick={insertPrisma} disabled={isTitle || locked}
@@ -2268,12 +2455,423 @@ export function FiguresPanel({ m }) {
   );
 }
 
-/* ════════════ 5. REFERENCES ════════════ */
-export function ReferencesPanel({ m }) {
+/* ════════════ 5. REFERENCES — 117.md §26-§33 the library manager ════════════ */
+
+/**
+ * §28/§29 — Add / Edit Reference.
+ *
+ * One dialog for both, because "add a reference by hand" and "correct a reference"
+ * are the same form over the same fields; the only difference is what it starts
+ * from and what the save button says. The TYPE selector drives which fields exist
+ * (§28), so a Book never asks for a journal volume and a Website always asks for an
+ * accessed date.
+ *
+ * Smart lookup (§29) fills the form and stops — the researcher confirms. Fields the
+ * researcher has typed are marked and a later lookup leaves them alone, which is
+ * where "do not overwrite user-corrected metadata unexpectedly" is enforced in the
+ * UI; the engine enforces it again on the write path.
+ */
+export const LOOKUP_KINDS = [
+  { id: 'doi', label: 'DOI', placeholder: '10.1056/NEJMoa2035389' },
+  { id: 'pmid', label: 'PMID', placeholder: '33301246' },
+  { id: 'pmcid', label: 'PMCID', placeholder: 'PMC7745181' },
+  { id: 'title', label: 'Title', placeholder: 'Safety and efficacy of…' },
+];
+
+export const LOOKUP_UNVERIFIED_NOTE = 'Looked-up metadata comes from CrossRef / PubMed — check it against the article before saving.';
+
+export function AddReferenceDialog({ initial, onSave, onCancel, onLookup, saveLabel = 'Add reference' }) {
+  const [type, setType] = useState((initial && initial.type) || DEFAULT_REFERENCE_TYPE);
+  const [values, setValues] = useState(() => {
+    const v = {};
+    for (const f of fieldsForType((initial && initial.type) || DEFAULT_REFERENCE_TYPE)) {
+      const raw = initial ? initial[f.key] : '';
+      v[f.key] = Array.isArray(raw) ? raw.join('; ') : (raw == null ? '' : String(raw));
+    }
+    if (initial && initial.authorsRaw && !v.authors) v.authors = initial.authorsRaw;
+    return v;
+  });
+  // Fields the researcher edited BY HAND in this dialog — a lookup never touches them.
+  const [touched, setTouched] = useState(() => new Set((initial && initial.corrected) || []));
+  const [lookupKind, setLookupKind] = useState('doi');
+  const [lookupValue, setLookupValue] = useState('');
+  const [lookupState, setLookupState] = useState(null); // null | 'loading' | 'error'
+  const [lookupError, setLookupError] = useState('');
+  const [candidates, setCandidates] = useState(null);   // title search → choose one
+  const [filled, setFilled] = useState(false);
+
+  const fields = fieldsForType(type);
+  const set = (key, val) => {
+    setValues((v) => ({ ...v, [key]: val }));
+    setTouched((t) => { const n = new Set(t); n.add(key); return n; });
+  };
+
+  /** Apply a looked-up record WITHOUT overwriting anything typed by hand (§29). */
+  const applyLookup = (rec) => {
+    if (!rec) return;
+    if (rec.referenceType) setType(rec.referenceType);
+    const next = { ...values };
+    const target = fieldsForType(rec.referenceType || type);
+    for (const f of target) {
+      if (touched.has(f.key)) continue;
+      const incoming = f.key === 'authors' ? rec.authors : rec[f.key];
+      if (incoming != null && String(incoming).trim()) next[f.key] = String(incoming).trim();
+    }
+    setValues(next);
+    setCandidates(null);
+    setFilled(true);
+  };
+
+  const runLookup = async () => {
+    if (!onLookup || !lookupValue.trim()) return;
+    setLookupState('loading');
+    setLookupError('');
+    setCandidates(null);
+    try {
+      const res = await onLookup(lookupKind, lookupValue.trim());
+      setLookupState(null);
+      if (Array.isArray(res)) {
+        if (!res.length) { setLookupState('error'); setLookupError('No matching record was found.'); return; }
+        if (res.length === 1) { applyLookup(res[0]); return; }
+        setCandidates(res);
+        return;
+      }
+      applyLookup(res);
+    } catch (e) {
+      setLookupState('error');
+      setLookupError((e && e.message) || 'Lookup failed.');
+    }
+  };
+
+  const submit = () => {
+    const out = { type };
+    for (const f of fields) {
+      const v = values[f.key];
+      if (v != null && String(v).trim()) out[f.key] = String(v).trim();
+    }
+    out.corrected = [...touched].filter((k) => k === 'type' || fields.some((f) => f.key === k));
+    if (onSave) onSave(out);
+  };
+
+  const label = { fontSize: 10, fontWeight: 700, color: C.muted, letterSpacing: 0.5, textTransform: 'uppercase' };
+
+  return (
+    <div role="dialog" aria-modal="true" aria-label={saveLabel}
+      data-testid="stitch-manuscript-add-reference"
+      style={{
+        position: 'fixed', inset: 0, zIndex: 60, display: 'flex', alignItems: 'center',
+        justifyContent: 'center', background: 'rgba(15,23,42,0.35)', padding: 16,
+      }}>
+      <div style={{
+        background: C.card, border: `1px solid ${C.brd}`, borderRadius: 12, padding: 18,
+        maxWidth: 620, width: '100%', maxHeight: '86vh', overflowY: 'auto',
+      }}>
+        <h3 style={{ margin: '0 0 10px', fontSize: 14, fontWeight: 700, color: C.txt }}>{saveLabel}</h3>
+
+        {/* §29 — smart lookup. It FILLS the form; the user confirms. */}
+        {onLookup && (
+          <div style={{ border: `1px solid ${C.brd}`, borderRadius: 9, padding: 10, marginBottom: 14 }}>
+            <div style={{ ...label, marginBottom: 6 }}>Look up by identifier</div>
+            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
+              <Select value={lookupKind} onChange={(e) => { setLookupKind(e.target.value); setCandidates(null); }}
+                data-testid="stitch-manuscript-lookup-kind">
+                {LOOKUP_KINDS.map((k) => <option key={k.id} value={k.id}>{k.label}</option>)}
+              </Select>
+              <input value={lookupValue} onChange={(e) => setLookupValue(e.target.value)}
+                onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); runLookup(); } }}
+                placeholder={(LOOKUP_KINDS.find((k) => k.id === lookupKind) || {}).placeholder}
+                aria-label="Identifier to look up"
+                data-testid="stitch-manuscript-lookup-value"
+                style={{ ...inp, flex: '1 1 220px', fontSize: 11.5 }} />
+              <button type="button" onClick={runLookup} disabled={lookupState === 'loading' || !lookupValue.trim()}
+                data-testid="stitch-manuscript-lookup-run"
+                style={{ ...btnS('ghost'), fontSize: 11.5, opacity: (lookupState === 'loading' || !lookupValue.trim()) ? 0.5 : 1 }}>
+                {lookupState === 'loading' ? 'Looking up…' : 'Look up'}
+              </button>
+            </div>
+            {lookupState === 'error' && (
+              <div data-testid="stitch-manuscript-lookup-error" style={{ marginTop: 6, fontSize: 11, color: C.red }}>
+                {lookupError}
+              </div>
+            )}
+            {filled && !candidates && (
+              <div data-testid="stitch-manuscript-lookup-filled" style={{ marginTop: 6, fontSize: 11, color: C.txt2, lineHeight: 1.5 }}>
+                {LOOKUP_UNVERIFIED_NOTE}
+              </div>
+            )}
+            {candidates && (
+              <div data-testid="stitch-manuscript-lookup-candidates" style={{ marginTop: 8, display: 'flex', flexDirection: 'column', gap: 4 }}>
+                <div style={{ fontSize: 11, color: C.txt2 }}>Choose the right record:</div>
+                {candidates.map((c, i) => (
+                  <button key={c.doi || i} type="button" onClick={() => applyLookup(c)}
+                    data-testid={`stitch-manuscript-lookup-candidate-${i}`}
+                    style={{
+                      ...btnS('ghost'), justifyContent: 'flex-start', textAlign: 'left',
+                      fontSize: 11.5, lineHeight: 1.45, whiteSpace: 'normal', height: 'auto', padding: '6px 8px',
+                    }}>
+                    <span>
+                      <strong style={{ color: C.txt }}>{c.title}</strong>
+                      <span style={{ color: C.muted }}>{` — ${[c.journal, c.year].filter(Boolean).join(', ')}`}</span>
+                    </span>
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+
+        <div style={{ marginBottom: 12 }}>
+          <div style={{ ...label, marginBottom: 4 }}>Reference type</div>
+          <Select value={type} data-testid="stitch-manuscript-reference-type"
+            onChange={(e) => { setType(e.target.value); setTouched((t) => { const n = new Set(t); n.add('type'); return n; }); }}>
+            {REFERENCE_TYPES.map((t) => <option key={t.id} value={t.id}>{t.label}</option>)}
+          </Select>
+        </div>
+
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(180px, 1fr))', gap: 10 }}>
+          {fields.map((f) => (
+            <label key={f.key}
+              style={{ display: 'flex', flexDirection: 'column', gap: 3, gridColumn: (f.kind === 'textarea' || f.key === 'title') ? '1 / -1' : undefined }}>
+              <span style={label}>{f.label}</span>
+              {f.kind === 'textarea' ? (
+                <textarea value={values[f.key] || ''} onChange={(e) => set(f.key, e.target.value)}
+                  aria-label={f.label} rows={3}
+                  data-testid={`stitch-manuscript-reffield-${f.key}`}
+                  style={{ ...inp, fontSize: 11.5, resize: 'vertical', fontFamily: 'inherit' }} />
+              ) : (
+                <input value={values[f.key] || ''} onChange={(e) => set(f.key, e.target.value)}
+                  aria-label={f.label} placeholder={f.hint || ''}
+                  data-testid={`stitch-manuscript-reffield-${f.key}`}
+                  style={{ ...inp, fontSize: 11.5 }} />
+              )}
+            </label>
+          ))}
+        </div>
+
+        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 16 }}>
+          <button onClick={onCancel} data-testid="stitch-manuscript-reference-cancel"
+            style={{ ...btnS('ghost'), fontSize: 11.5 }}>Cancel</button>
+          <button onClick={submit} data-testid="stitch-manuscript-reference-save"
+            style={{ ...btnS('primary'), fontSize: 11.5 }}>{saveLabel}</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * §30 — the import dialog: paste or drop a RIS / BibTeX / EndNote XML / NBIB / CSV
+ * export, see a DEDUP PREVIEW against the references already in the library, and
+ * land only what is genuinely new. The parsing is the EXISTING screening importer
+ * (parsers.js) — one format vocabulary for the whole app.
+ */
+export const IMPORT_HINT = 'Paste RIS, BibTeX, EndNote XML, PubMed nbib or CSV, or choose a file. Records that already exist are matched and skipped by default.';
+
+export function ImportReferencesDialog({ onImport, onCancel }) {
+  const [text, setText] = useState('');
+  const [fileName, setFileName] = useState('');
+  const [preview, setPreview] = useState(null); // { format, rows:[{record,match,verdict}] }
+  const [skip, setSkip] = useState(() => new Set());
+  const [err, setErr] = useState('');
+
+  const parse = async () => {
+    setErr('');
+    try {
+      const [{ detectAndParse }, { previewReferenceImport }] = await Promise.all([
+        import('../../research-engine/import-export/parsers.js'),
+        import('../../research-engine/manuscript/referenceLibrary.js'),
+      ]);
+      const { records, format } = detectAndParse(text, fileName);
+      if (!records.length) { setErr('No references could be read from that text.'); setPreview(null); return; }
+      const rows = previewReferenceImport(records, (onImport && onImport.existing) || []);
+      setPreview({ format, rows });
+      setSkip(new Set(rows.filter((r) => r.match).map((r) => r.index)));
+    } catch (e) { setErr((e && e.message) || 'Could not read that file.'); }
+  };
+
+  const readFile = async (file) => {
+    if (!file) return;
+    setFileName(file.name || '');
+    try { setText(await file.text()); } catch { setErr('Could not read that file.'); }
+  };
+
+  const confirm = () => {
+    if (!preview) return;
+    const keep = preview.rows.filter((r) => !skip.has(r.index)).map((r) => r.record);
+    if (onImport && onImport.run) onImport.run(keep);
+  };
+
+  const dupCount = preview ? preview.rows.filter((r) => r.match).length : 0;
+  const keepCount = preview ? preview.rows.length - skip.size : 0;
+
+  return (
+    <div role="dialog" aria-modal="true" aria-label="Import references"
+      data-testid="stitch-manuscript-import-references"
+      style={{
+        position: 'fixed', inset: 0, zIndex: 60, display: 'flex', alignItems: 'center',
+        justifyContent: 'center', background: 'rgba(15,23,42,0.35)', padding: 16,
+      }}>
+      <div style={{
+        background: C.card, border: `1px solid ${C.brd}`, borderRadius: 12, padding: 18,
+        maxWidth: 640, width: '100%', maxHeight: '86vh', overflowY: 'auto',
+      }}>
+        <h3 style={{ margin: '0 0 6px', fontSize: 14, fontWeight: 700, color: C.txt }}>Import references</h3>
+        <p style={{ margin: '0 0 12px', fontSize: 11.5, color: C.txt2, lineHeight: 1.55 }}>{IMPORT_HINT}</p>
+
+        <input type="file" accept=".ris,.bib,.nbib,.xml,.csv,.tsv,.txt,.ciw"
+          aria-label="Reference file"
+          data-testid="stitch-manuscript-import-file"
+          onChange={(e) => readFile(e.target.files && e.target.files[0])}
+          style={{ fontSize: 11.5, marginBottom: 8 }} />
+        <textarea value={text} onChange={(e) => { setText(e.target.value); setPreview(null); }}
+          aria-label="Reference text" rows={7}
+          data-testid="stitch-manuscript-import-text"
+          style={{ ...inp, width: '100%', fontSize: 11.5, fontFamily: "'IBM Plex Mono',monospace", resize: 'vertical' }} />
+
+        {err && <InfoBox color={C.red}>{err}</InfoBox>}
+
+        {preview && (
+          <div data-testid="stitch-manuscript-import-preview" style={{ marginTop: 10 }}>
+            <div style={{ fontSize: 11.5, color: C.txt2, marginBottom: 6 }}>
+              Read <strong style={{ color: C.txt }}>{preview.rows.length}</strong> {preview.format} record{preview.rows.length === 1 ? '' : 's'};
+              {' '}<strong style={{ color: C.txt }}>{dupCount}</strong> already look like references you have.
+            </div>
+            <div style={{ maxHeight: 210, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 3 }}>
+              {preview.rows.map((row) => (
+                <label key={row.index}
+                  style={{ display: 'flex', gap: 7, alignItems: 'flex-start', fontSize: 11.5, color: C.txt2, lineHeight: 1.45 }}>
+                  <input type="checkbox" checked={!skip.has(row.index)}
+                    data-testid={`stitch-manuscript-import-keep-${row.index}`}
+                    onChange={() => setSkip((s) => {
+                      const n = new Set(s);
+                      if (n.has(row.index)) n.delete(row.index); else n.add(row.index);
+                      return n;
+                    })}
+                    style={{ marginTop: 2 }} />
+                  <span style={{ flex: 1, minWidth: 0 }}>
+                    <span style={{ color: C.txt }}>{row.record.title || '(untitled)'}</span>
+                    {row.match && (
+                      <span style={{ ...tagS('yellow'), marginLeft: 6 }}>
+                        Duplicate of “{(row.match.title || row.match.id).slice(0, 40)}”
+                      </span>
+                    )}
+                  </span>
+                </label>
+              ))}
+            </div>
+          </div>
+        )}
+
+        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 14 }}>
+          <button onClick={onCancel} data-testid="stitch-manuscript-import-cancel"
+            style={{ ...btnS('ghost'), fontSize: 11.5 }}>Cancel</button>
+          {!preview ? (
+            <button onClick={parse} disabled={!text.trim()}
+              data-testid="stitch-manuscript-import-parse"
+              style={{ ...btnS('primary'), fontSize: 11.5, opacity: text.trim() ? 1 : 0.5 }}>Read references</button>
+          ) : (
+            <button onClick={confirm} disabled={!keepCount}
+              data-testid="stitch-manuscript-import-confirm"
+              style={{ ...btnS('primary'), fontSize: 11.5, opacity: keepCount ? 1 : 0.5 }}>
+              Add {keepCount} reference{keepCount === 1 ? '' : 's'}
+            </button>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/** §33 — the row rendered per reference. Split out so the list can be windowed. */
+function ReferenceRow({ row, onEdit, onSuppress, onDelete, onInsert, onMergeWith, highlight }) {
+  const r = row.ref || {};
+  return (
+    <li value={row.index} data-testid={`stitch-manuscript-reference-${row.id}`}
+      data-reference-current={highlight ? 'true' : undefined}
+      style={{
+        fontSize: 12.5, color: C.txt2, lineHeight: 1.6, marginBottom: 8,
+        ...(highlight ? { background: alpha(C.acc, '12'), borderRadius: 6, padding: '4px 6px' } : {}),
+      }}>
+      <div>{row.text}</div>
+      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center', marginTop: 3 }}>
+        {row.cited
+          ? <span style={tagS('green')}>Cited</span>
+          : <span style={tagS('yellow')} data-testid={`stitch-manuscript-reference-uncited-${row.id}`}>Not cited</span>}
+        <span style={tagS('blue')}>{referenceTypeLabel(r.type || DEFAULT_REFERENCE_TYPE)}</span>
+        {r.origin === 'study' && <span style={tagS('purple')}>From included study</span>}
+        {(r.tags || []).map((t) => <span key={t} style={tagS('blue')}>{t}</span>)}
+        <span style={{ flex: 1 }} />
+        <button onClick={() => onInsert && onInsert(row.id)} style={{ ...btnS('ghost'), fontSize: 10.5 }}
+          data-testid={`stitch-manuscript-reference-cite-${row.id}`}>Cite</button>
+        <button onClick={() => onEdit && onEdit(row.id)} style={{ ...btnS('ghost'), fontSize: 10.5 }}
+          data-testid={`stitch-manuscript-reference-edit-${row.id}`}>Edit</button>
+        {onMergeWith && (
+          <button onClick={() => onMergeWith(row.id)} style={{ ...btnS('ghost'), fontSize: 10.5 }}
+            data-testid={`stitch-manuscript-reference-merge-${row.id}`}>Merge…</button>
+        )}
+        {r.origin === 'library' ? (
+          <button onClick={() => onDelete && onDelete(row.id)} style={{ ...btnS('ghost'), fontSize: 10.5, color: C.red }}
+            data-testid={`stitch-manuscript-reference-delete-${row.id}`}>Delete</button>
+        ) : (
+          <button onClick={() => onSuppress && onSuppress(row.id)} style={{ ...btnS('ghost'), fontSize: 10.5 }}
+            data-testid={`stitch-manuscript-reference-hide-${row.id}`}>Hide</button>
+        )}
+      </div>
+    </li>
+  );
+}
+
+/** §33 — above this many rows the list windows (renders a slice) to stay fast. */
+export const REFERENCE_WINDOW_SIZE = 200;
+
+export function ReferencesPanel({ m, onInsertCitation, focusReference }) {
   const [copied, setCopied] = useState(false);
   const [err, setErr] = useState('');
+  const [notice, setNotice] = useState('');
+  const [adding, setAdding] = useState(false);
+  const [editingId, setEditingId] = useState(null);
+  const [importing, setImporting] = useState(false);
+  const [mergeFrom, setMergeFrom] = useState(null);
+  const [shown, setShown] = useState(REFERENCE_WINDOW_SIZE);
+  const [q, setQ] = useState('');
+  const [filters, setFilters] = useState({ cited: 'all', type: '', year: '', journal: '', tag: '' });
+  const [sort, setSort] = useState('order');
+
   const refs = m.references || [];
   const missing = refs.filter((r) => !(r.ref && (r.ref.doi || r.ref.pmid))).length;
+  const suppressed = m.suppressedReferences || [];
+  const dupes = (m.duplicateReferences && m.duplicateReferences.pairs) || [];
+
+  // §33 — the filter vocabularies come from the data, so a filter can never offer a
+  // value that matches nothing.
+  const years = useMemo(() => [...new Set(refs.map((r) => (r.ref || {}).year).filter(Boolean))].sort().reverse(), [refs]);
+  const journals = useMemo(() => [...new Set(refs.map((r) => (r.ref || {}).journal).filter(Boolean))].sort(), [refs]);
+  const types = useMemo(() => [...new Set(refs.map((r) => (r.ref || {}).type || DEFAULT_REFERENCE_TYPE))], [refs]);
+  const tags = useMemo(() => collectReferenceTags(refs.map((r) => r.ref)), [refs]);
+
+  const visible = useMemo(
+    () => sortReferences(filterReferenceRows(refs, { ...filters, q }), sort),
+    [refs, filters, q, sort],
+  );
+  useEffect(() => { setShown(REFERENCE_WINDOW_SIZE); }, [q, filters, sort]);
+
+  /* 117.md §38 — a citation chip asked for a specific reference. "Edit" opens the
+     dialog straight away; "View" clears the filters so the reference is definitely
+     on screen and highlights it. `at` changes on every request, so repeating the
+     same action from the chip re-triggers it. */
+  const [highlightId, setHighlightId] = useState(null);
+  useEffect(() => {
+    if (!focusReference || !focusReference.id) return;
+    setQ('');
+    setFilters({ cited: 'all', type: '', year: '', journal: '', tag: '' });
+    setHighlightId(focusReference.id);
+    if (focusReference.action === 'edit') setEditingId(focusReference.id);
+    if (focusReference.action === 'pdf') {
+      setNotice('Open the linked PDF from the Files tab — reference attachments are managed there.');
+    }
+  }, [focusReference]);
+
+  const editing = editingId ? (refs.find((r) => r.id === editingId) || {}).ref : null;
 
   const onCopy = async () => {
     setErr('');
@@ -2295,10 +2893,50 @@ export function ReferencesPanel({ m }) {
     } catch (e) { setErr((e && e.message) || 'Export failed.'); }
   };
 
+  /** §29 — the smart lookup, routed through the same-origin proxy (CSP: no direct fetch). */
+  const doLookup = async (kind, value) => {
+    const svc = await import('../../frontend/services/aiService.js');
+    if (kind === 'doi') return svc.fetchByDOI(value);
+    if (kind === 'pmid') return svc.fetchByPMID(value);
+    if (kind === 'pmcid') return svc.fetchByPMCID(value);
+    return svc.searchCitationsByTitle(value);
+  };
+
+  const saveNew = (entry) => {
+    const id = m.addReference && m.addReference(entry);
+    setAdding(false);
+    if (id) setNotice('Reference added to the library.');
+  };
+  const saveEdit = (patch) => {
+    if (editingId && m.editReference) m.editReference(editingId, patch);
+    setEditingId(null);
+    setNotice('Reference updated — your corrections are kept when the project data refreshes.');
+  };
+
   return (
     <div>
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, marginBottom: 14, flexWrap: 'wrap' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+      {adding && (
+        <AddReferenceDialog onSave={saveNew} onCancel={() => setAdding(false)} onLookup={doLookup} />
+      )}
+      {editing && (
+        <AddReferenceDialog initial={editing} saveLabel="Save reference"
+          onSave={saveEdit} onCancel={() => setEditingId(null)} onLookup={doLookup} />
+      )}
+      {importing && (
+        <ImportReferencesDialog
+          onCancel={() => setImporting(false)}
+          onImport={{
+            existing: refs.map((r) => r.ref),
+            run: (records) => {
+              const n = m.importReferences ? m.importReferences(records) : 0;
+              setImporting(false);
+              setNotice(`${n} reference${n === 1 ? '' : 's'} imported.`);
+            },
+          }} />
+      )}
+
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, marginBottom: 12, flexWrap: 'wrap' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
           <span style={{ fontSize: 12.5, color: C.txt2 }}><strong style={{ color: C.txt }}>{refs.length}</strong> reference{refs.length === 1 ? '' : 's'}</span>
           <Labeled label="Style">
             <Select value={m.activeDraft.citationStyle} onChange={(e) => m.setMeta({ citationStyle: e.target.value })}>
@@ -2307,24 +2945,150 @@ export function ReferencesPanel({ m }) {
           </Labeled>
         </div>
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+          <button onClick={() => setAdding(true)} style={btnS('primary')}
+            data-testid="stitch-manuscript-add-reference-open"><Icon name="plus" size={12} /> Add reference</button>
+          <button onClick={() => setImporting(true)} style={btnS('ghost')}
+            data-testid="stitch-manuscript-import-open"><Icon name="upload" size={12} /> Import</button>
           <button onClick={onCopy} style={btnS('ghost')}><Icon name="copy" size={12} /> {copied ? 'Copied' : 'Copy reference list'}</button>
           <button onClick={() => onExport('bib')} style={btnS('ghost')}><Icon name="download" size={12} /> BibTeX</button>
           <button onClick={() => onExport('ris')} style={btnS('ghost')}><Icon name="download" size={12} /> RIS</button>
         </div>
       </div>
 
+      {/* §31 — say out loud that included studies are already here. */}
+      <InfoBox color={C.acc}>
+        <span data-testid="stitch-manuscript-references-derived-note">
+          Every included study is already a reference — they appear here automatically and stay in step with your extracted data.
+          Add anything else (guidelines, methods papers, books) with Add reference or Import.
+        </span>
+      </InfoBox>
+
+      {notice && <InfoBox color={C.grn}>{notice}</InfoBox>}
       {err && <InfoBox color={C.red}>{err}</InfoBox>}
       {missing > 0 && <InfoBox color={C.yel}>{missing} reference{missing === 1 ? '' : 's'} lack a DOI or PMID — verify these citations before submission.</InfoBox>}
 
+      {/* §32 — probable duplicates, offered as merges. A merge keeps every citation. */}
+      {dupes.length > 0 && (
+        <Card style={{ marginBottom: 12 }} data-testid="stitch-manuscript-reference-duplicates">
+          <div style={{ fontSize: 11, fontWeight: 700, color: C.txt, marginBottom: 6 }}>
+            {dupes.length} possible duplicate{dupes.length === 1 ? '' : 's'}
+          </div>
+          {dupes.slice(0, 5).map((p) => (
+            <div key={`${p.a.id}|${p.b.id}`}
+              style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', fontSize: 11.5, color: C.txt2, marginBottom: 5 }}>
+              <span style={{ flex: 1, minWidth: 200 }}>
+                “{p.a.title || p.a.id}” and “{p.b.title || p.b.id}” — {p.verdict.reasons.slice(0, 2).join(', ')}
+              </span>
+              <button onClick={() => m.mergeReferences && m.mergeReferences(p.a.id, p.b.id)}
+                data-testid={`stitch-manuscript-merge-${p.a.id}-${p.b.id}`}
+                style={{ ...btnS('ghost'), fontSize: 10.5 }}>Merge into the first</button>
+            </div>
+          ))}
+          <div style={{ fontSize: 10.5, color: C.muted, marginTop: 4, lineHeight: 1.5 }}>
+            Merging keeps every citation you have already written: the merged reference’s id stays valid and points at the survivor.
+          </div>
+        </Card>
+      )}
+
+      {/* §33 — search, filters, sort. */}
+      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'flex-end', marginBottom: 12 }}>
+        <input value={q} onChange={(e) => setQ(e.target.value)}
+          placeholder="Search author, title, DOI, PMID, journal, year, keyword…"
+          aria-label="Search references"
+          data-testid="stitch-manuscript-reference-search"
+          style={{ ...inp, flex: '1 1 240px', fontSize: 11.5 }} />
+        <Labeled label="Cited">
+          <Select value={filters.cited} data-testid="stitch-manuscript-reference-filter-cited"
+            onChange={(e) => setFilters((f) => ({ ...f, cited: e.target.value }))}>
+            <option value="all">All</option>
+            <option value="cited">Cited</option>
+            <option value="uncited">Not cited</option>
+          </Select>
+        </Labeled>
+        <Labeled label="Type">
+          <Select value={filters.type} data-testid="stitch-manuscript-reference-filter-type"
+            onChange={(e) => setFilters((f) => ({ ...f, type: e.target.value }))}>
+            <option value="">All</option>
+            {types.map((t) => <option key={t} value={t}>{referenceTypeLabel(t)}</option>)}
+          </Select>
+        </Labeled>
+        <Labeled label="Year">
+          <Select value={filters.year} data-testid="stitch-manuscript-reference-filter-year"
+            onChange={(e) => setFilters((f) => ({ ...f, year: e.target.value }))}>
+            <option value="">All</option>
+            {years.map((y) => <option key={y} value={y}>{y}</option>)}
+          </Select>
+        </Labeled>
+        <Labeled label="Journal">
+          <Select value={filters.journal} data-testid="stitch-manuscript-reference-filter-journal"
+            onChange={(e) => setFilters((f) => ({ ...f, journal: e.target.value }))}>
+            <option value="">All</option>
+            {journals.map((j) => <option key={j} value={j}>{j}</option>)}
+          </Select>
+        </Labeled>
+        {tags.length > 0 && (
+          <Labeled label="Tag">
+            <Select value={filters.tag} data-testid="stitch-manuscript-reference-filter-tag"
+              onChange={(e) => setFilters((f) => ({ ...f, tag: e.target.value }))}>
+              <option value="">All</option>
+              {tags.map((t) => <option key={t} value={t}>{t}</option>)}
+            </Select>
+          </Labeled>
+        )}
+        <Labeled label="Sort">
+          <Select value={sort} data-testid="stitch-manuscript-reference-sort"
+            onChange={(e) => setSort(e.target.value)}>
+            {REFERENCE_SORTS.map((s) => <option key={s.id} value={s.id}>{s.label}</option>)}
+          </Select>
+        </Labeled>
+      </div>
+
       {refs.length ? (
         <Card>
-          <ol style={{ margin: 0, paddingLeft: 22, display: 'flex', flexDirection: 'column', gap: 8 }}>
-            {refs.map((r) => (
-              <li key={r.id || r.index} value={r.index} style={{ fontSize: 12.5, color: C.txt2, lineHeight: 1.6 }}>{r.text}</li>
+          <ol style={{ margin: 0, paddingLeft: 22, display: 'flex', flexDirection: 'column' }}>
+            {visible.slice(0, shown).map((r) => (
+              <ReferenceRow key={r.id || r.index} row={r}
+                highlight={highlightId === r.id}
+                onEdit={setEditingId}
+                onInsert={(id) => (onInsertCitation ? onInsertCitation(id) : null)}
+                onMergeWith={mergeFrom
+                  ? ((id) => { if (id !== mergeFrom) { m.mergeReferences && m.mergeReferences(id, mergeFrom); setNotice('References merged — every citation still resolves.'); } setMergeFrom(null); })
+                  : ((id) => { setMergeFrom(id); setNotice('Now choose the reference to merge INTO this one.'); })}
+                onSuppress={(id) => m.suppressReference && m.suppressReference(id)}
+                onDelete={(id) => m.deleteReference && m.deleteReference(id)} />
             ))}
           </ol>
+          {visible.length > shown && (
+            <button onClick={() => setShown((n) => n + REFERENCE_WINDOW_SIZE)}
+              data-testid="stitch-manuscript-reference-more"
+              style={{ ...btnS('ghost'), fontSize: 11, marginTop: 8 }}>
+              Show {Math.min(REFERENCE_WINDOW_SIZE, visible.length - shown)} more of {visible.length}
+            </button>
+          )}
+          {!visible.length && (
+            <div data-testid="stitch-manuscript-reference-nomatch" style={{ fontSize: 11.5, color: C.muted }}>
+              No reference matches these filters.
+            </div>
+          )}
         </Card>
       ) : <InfoBox color={C.muted}>No references yet. References are collected from your included studies and imported records.</InfoBox>}
+
+      {/* §31 — suppressed derived entries stay restorable, never silently gone. */}
+      {suppressed.length > 0 && (
+        <Card style={{ marginTop: 12 }} data-testid="stitch-manuscript-reference-hidden">
+          <div style={{ fontSize: 11, fontWeight: 700, color: C.txt, marginBottom: 6 }}>
+            {suppressed.length} hidden reference{suppressed.length === 1 ? '' : 's'}
+          </div>
+          {suppressed.map((r) => (
+            <div key={r.id} style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 11.5, color: C.txt2, marginBottom: 4 }}>
+              <span style={{ flex: 1, minWidth: 0 }}>{r.title || r.id}</span>
+              <button onClick={() => m.restoreReference && m.restoreReference(r.id)}
+                data-testid={`stitch-manuscript-reference-restore-${r.id}`}
+                style={{ ...btnS('ghost'), fontSize: 10.5 }}>Restore</button>
+            </div>
+          ))}
+        </Card>
+      )}
     </div>
   );
 }

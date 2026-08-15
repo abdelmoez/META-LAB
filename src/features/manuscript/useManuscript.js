@@ -33,7 +33,8 @@ import {
   computePrismaCounts,
   buildStudyCharacteristicsTable, buildSummaryOfFindingsTable, buildPrismaCountsTable,
   buildRobTable, buildSearchStrategyTable,
-  generateReferenceList, referencesFromProject, orderReferencesForManuscript,
+  generateReferenceList, orderReferencesForManuscript,
+  collectCitationOrder, draftSectionTexts, citationToken, CITATION_TOKEN_RE,
   computeReadiness, smartInsights,
   evaluateStaleness, primaryAnalysis, allAnalyses,
   computeSectionInputsHashes, checkConsistency,
@@ -62,7 +63,19 @@ import {
   setPrismaOverride, prismaOverrideOf, prismaOverrideMatches, prismaOverrideLabel,
   // 102.md — manual-input placeholder detection, counts, grouping and navigation.
   collectPlaceholders, placeholderCounts, groupPlaceholders, stepPlaceholder,
+  // 117.md §32/§35/§36 — the alias-aware citation usage scan that the References
+  // panel, the chip renumbering and the §39 integrity checks all read.
+  collectCitationUsage,
 } from '../../research-engine/manuscript/index.js';
+/* 117.md §26-§33 — THE reference resolver seam + its pure overlay writers. Imported
+   directly rather than through the manuscript barrel: the library is a PROJECT-level
+   concern (it outlives any one draft), and the direct path keeps that visible. */
+import {
+  resolveReferenceLibrary, materializeReferenceLibrary, readReferenceLibrary,
+  libraryAddEntry, libraryEditReference, librarySuppress, libraryRestore,
+  libraryDeleteEntry, libraryMerge, recordToReferenceEntry, usedReferenceIds,
+  suggestReferenceDuplicates,
+} from '../../research-engine/manuscript/referenceLibrary.js';
 import { generateDraft } from '../../research-engine/manuscript/draft.js';
 import { gradeCertaintyEnabled, sofCertaintyMap } from '../../frontend/workspace/gradeApi.js';
 // 108.md §§2/§6 — the project-wide history. Inert outside a provider (the hook
@@ -512,14 +525,9 @@ export function useManuscript(project, upd) {
     rob: buildRobTable(project, sources.robAssessments ? { assessments: sources.robAssessments } : {}),
     search: buildSearchStrategyTable(project, sources.perSource ? { perSource: sources.perSource } : {}),
   }), [project, genOpts, prismaCounts, sources]);
-  const references = useMemo(() => {
-    const refs = (activeDraft && activeDraft.references && activeDraft.references.length)
-      ? activeDraft.references : referencesFromProject(project);
-    const style = (activeDraft && activeDraft.citationStyle) || 'vancouver';
-    // order by inline-citation appearance when the draft uses inline citations
-    const ordered = activeDraft ? orderReferencesForManuscript(activeDraft, refs) : refs;
-    return generateReferenceList(ordered, style);
-  }, [project, activeDraft]);
+  /* 117.md §26-§33 — the reference library is derived below, after `liveDraft`
+     exists: "which references are cited" and "in what order" are properties of the
+     text the researcher can SEE, not of the last autosaved copy. */
   const readiness = useMemo(
     () => (activeDraft ? computeReadiness(project, activeDraft, { ...genOpts, prismaCounts, primary }) : null),
     [project, activeDraft, genOpts, prismaCounts, primary],
@@ -577,6 +585,114 @@ export function useManuscript(project, upd) {
    * regex pass per keystroke instead of a full re-derivation, and no per-character
    * churn through the editor's in-place renumbering effect.
    */
+  /* ══════════ 117.md §26-§33 — THE reference library ══════════
+   *
+   * ONE resolver seam. `resolveReferenceLibrary` derives the included studies (§31),
+   * applies the project-level overlay (manual/imported entries, per-field
+   * corrections, merges, suppressions) and hands back an alias map that EVERY
+   * citation path resolves through — so a `[[cite:oldId]]` written before a merge or
+   * a dedupe still points at the right reference (§32).
+   *
+   * `activeDraft.references` is LEGACY-ONLY: when a pre-117 blob actually carries a
+   * frozen list it still wins (behaviour unchanged), and nothing here ever writes it.
+   */
+  const refLibrary = useMemo(() => resolveReferenceLibrary(project), [project]);
+
+  const legacyDraftRefs = !!(activeDraft && activeDraft.references && activeDraft.references.length);
+
+  /** The resolved reference objects, before ordering/formatting. */
+  const libraryRefs = useMemo(
+    () => (legacyDraftRefs ? activeDraft.references : refLibrary.refs),
+    [legacyDraftRefs, activeDraft, refLibrary],
+  );
+
+  /** Alias map (empty for a legacy draft, which has no library to alias into). */
+  const refAliases = useMemo(
+    () => (legacyDraftRefs ? {} : refLibrary.aliases),
+    [legacyDraftRefs, refLibrary],
+  );
+
+  /**
+   * 117.md §37/§38/§39 — reference metadata by id, ALIAS KEYS INCLUDED. The editor
+   * needs it for author-year chip labels and to tell a live citation from a broken
+   * one; the panel needs it to render the §38 preview.
+   */
+  const refsById = useMemo(() => {
+    if (!legacyDraftRefs) return refLibrary.byId;
+    return new Map((activeDraft.references || []).map((r) => [r.id, r]));
+  }, [legacyDraftRefs, activeDraft, refLibrary]);
+
+  /**
+   * 117.md §33/§36/§40 — the CITATION signature of the live draft: every
+   * `[[cite:…]]` token, in order. Exactly the `refSignature` pattern used below for
+   * manuscript objects, and for the same reason: §40 wants the bibliography to
+   * update "immediately as citations are added, removed, or reordered", but §33
+   * wants a review with a thousand references to stay fast. Typing a word does not
+   * change this string, so the bibliography (which formats every reference in the
+   * chosen style) is rebuilt only when the citation SET or ORDER actually moves —
+   * one cheap regex pass per keystroke instead of a full re-format.
+   */
+  const citeSignature = useMemo(() => {
+    if (!liveDraft) return '';
+    const re = new RegExp(CITATION_TOKEN_RE.source, 'g');
+    let sig = '';
+    for (const s of SECTION_IDS) {
+      const c = (liveDraft.sections && liveDraft.sections[s] && liveDraft.sections[s].content) || '';
+      if (c.indexOf('[[cite:') === -1) continue;
+      sig += `${s}:${(c.match(re) || []).join(',')};`;
+    }
+    const st = (liveDraft.statements && typeof liveDraft.statements === 'object') ? liveDraft.statements : {};
+    for (const k of Object.keys(st)) {
+      const c = String(st[k] || '');
+      if (c.indexOf('[[cite:') === -1) continue;
+      sig += `@${k}:${(c.match(re) || []).join(',')};`;
+    }
+    return sig;
+  }, [liveDraft]);
+
+  /** The draft the citation layer reads: the LIVE one, re-taken only when the
+      citation structure changes (or the stored draft commits). */
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const citationDraft = useMemo(() => liveDraft, [citeSignature, activeDraft]);
+
+  /** 117.md §36/§40 — every citation token, alias-resolved, over the live text. */
+  const citationUsage = useMemo(
+    () => collectCitationUsage(citationDraft, { aliases: refAliases }),
+    [citationDraft, refAliases],
+  );
+
+  /**
+   * 117.md §36/§39 — numbering by first appearance, alias-resolved, never stored.
+   * `knownIds` is the library itself: a citation that resolves to nothing takes NO
+   * number, so a typo shows as "[?]" instead of silently shifting every later
+   * marker out of step with the bibliography.
+   */
+  const citationKnownIds = useMemo(
+    () => new Set(libraryRefs.map((r) => r.id)),
+    [libraryRefs],
+  );
+  const citationOrder = useMemo(
+    () => collectCitationOrder(draftSectionTexts(citationDraft), { aliases: refAliases, knownIds: citationKnownIds }),
+    [citationDraft, refAliases, citationKnownIds],
+  );
+
+  const references = useMemo(() => {
+    const style = (activeDraft && activeDraft.citationStyle) || 'vancouver';
+    const ordered = citationDraft
+      ? orderReferencesForManuscript(citationDraft, libraryRefs, { aliases: refAliases })
+      : libraryRefs;
+    const list = generateReferenceList(ordered, style);
+    // §33/§39 — "cited" is a property of the MANUSCRIPT, not of the reference, so it
+    // is attached here from the one usage scan rather than recomputed per consumer.
+    return list.map((row) => ({ ...row, cited: citationUsage.cited.has(row.id) }));
+  }, [activeDraft, citationDraft, libraryRefs, refAliases, citationUsage]);
+
+  /** §32 — probable-duplicate pairs the panel offers to merge (bounded scan). */
+  const duplicateReferences = useMemo(
+    () => suggestReferenceDuplicates(libraryRefs),
+    [libraryRefs],
+  );
+
   const refSignature = useMemo(() => {
     if (!liveDraft) return '';
     const re = /\[\[(?:tblcap|table|figure):[a-z0-9:-]+\]\]/g;
@@ -838,10 +954,22 @@ export function useManuscript(project, upd) {
     });
     const numb = resolveNumbering({ sections: exportDraft, assets: asts });
     const plc = computePlacements({ sections: exportDraft, numbering: numb, assets: asts });
+    /* 117.md §39/§41 — the reference library is resolved on the SAME fresh project
+       the rest of this model was built from, so the validation, the bibliography and
+       the exported .docx all describe one library. */
+    const lib = resolveReferenceLibrary(proj);
+    const legacyRefs = (exportDraft.references && exportDraft.references.length) ? exportDraft.references : null;
+    const refObjs = legacyRefs || lib.refs;
+    const refAls = legacyRefs ? {} : lib.aliases;
+    const refList = generateReferenceList(
+      orderReferencesForManuscript(exportDraft, refObjs, { aliases: refAls }),
+      exportDraft.citationStyle,
+    );
     const validation = validateExport({
       project: proj, draft: exportDraft, assets: asts, numbering: numb, placements: plc,
       saveState: saveStateRef.current, sourcesSettled: true,
       freshness, dataStatus: fresh.dataStatus,
+      references: refObjs, aliases: refAls, removedIds: legacyRefs ? new Set() : lib.removedIds,
     });
     return {
       draft: exportDraft, fetchedAt,
@@ -849,6 +977,9 @@ export function useManuscript(project, upd) {
       assets: asts, numbering: numb, placements: plc, validation,
       robAssessments: fresh.robAssessments, robByStudyId: fresh.robByStudyId,
       screening: fresh.screening,
+      // 117.md §41 — the docx builder takes the resolved list + aliases so it never
+      // re-derives a DIFFERENT bibliography than the one just validated.
+      references: refList, referenceAliases: refAls,
     };
   }, [flushPending, refreshSources, gradeByOutcome, staleAssets, freshness, activeDraft]);
 
@@ -1114,6 +1245,106 @@ export function useManuscript(project, upd) {
     });
   }, [mutateActive]);
 
+  /* ══════════ 117.md §28-§32 — the reference-library write path ══════════
+   *
+   * The overlay lives at PROJECT level, so it goes through `upd('referenceLibrary')`
+   * rather than the manuscript's per-draft queue — a reference belongs to the
+   * review, not to one draft of its write-up.
+   *
+   * Every writer is the same three steps, which is why they share `writeLibrary`:
+   *   1. read the FRESHEST committed overlay (projectRef, never a render closure);
+   *   2. run the PURE writer from referenceLibrary.js (returns null on a no-op);
+   *   3. materialize — which strips empty containers and returns `undefined` for an
+   *      empty library, so a project that never used the feature keeps a blob with
+   *      no `referenceLibrary` key at all (the byte-stability rule).
+   */
+  const writeLibrary = useCallback((mutator) => {
+    const cur = readReferenceLibrary(projectRef.current);
+    const next = mutator(cur);
+    if (!next) return false;
+    setSaveState('saving');
+    try {
+      const r = upd('referenceLibrary', materializeReferenceLibrary(next));
+      if (r && typeof r.then === 'function') {
+        r.then(() => { setSaveState('saved'); setLastError(null); })
+          .catch((e) => { setSaveState('error'); setLastError((e && e.message) || 'Could not save the reference library.'); });
+      } else { setSaveState('saved'); setLastError(null); }
+    } catch (e) {
+      setSaveState('error');
+      setLastError((e && e.message) || 'Could not save the reference library.');
+      return false;
+    }
+    return true;
+  }, [upd]);
+
+  /** §28/§29 — add a reference (manual entry or a confirmed smart lookup). */
+  const addReference = useCallback((entry) => {
+    let newId = null;
+    const ok = writeLibrary((lib) => {
+      const used = usedReferenceIds(projectRef.current, lib);
+      const next = libraryAddEntry(lib, entry, { usedIds: used, nowIso: new Date().toISOString() });
+      if (next) newId = next.entries[next.entries.length - 1].id;
+      return next;
+    });
+    return ok ? newId : null;
+  }, [writeLibrary]);
+
+  /**
+   * §29 — edit a reference. A DERIVED (included-study) reference records a patch, so
+   * the study record is untouched and a refresh can never win over the correction;
+   * an added reference is rewritten in place. Both mark the touched fields
+   * user-corrected, which is what stops a later lookup clobbering them.
+   */
+  const editReference = useCallback((id, patch, opts = {}) => writeLibrary(
+    (lib) => libraryEditReference(lib, id, patch, { ...opts, nowIso: new Date().toISOString() }),
+  ), [writeLibrary]);
+
+  /** §31 — hide a derived reference from the bibliography (restorable). */
+  const suppressReference = useCallback((id) => writeLibrary((lib) => librarySuppress(lib, id)), [writeLibrary]);
+  const restoreReference = useCallback((id) => writeLibrary((lib) => libraryRestore(lib, id)), [writeLibrary]);
+  /** Delete an ADDED reference outright (a derived one can only be suppressed). */
+  const deleteReference = useCallback((id) => writeLibrary((lib) => libraryDeleteEntry(lib, id)), [writeLibrary]);
+
+  /**
+   * §32 — merge two references. The losing id becomes an ALIAS of the survivor, so
+   * every citation already written keeps resolving; metadata fills blanks only and
+   * notes/tags/PDF/screening links are preserved.
+   */
+  const mergeReferences = useCallback((survivorId, mergedId) => writeLibrary(
+    (lib) => libraryMerge(lib, {
+      survivorId,
+      mergedId,
+      refs: resolveReferenceLibrary(projectRef.current, { library: lib }).refs,
+      nowIso: new Date().toISOString(),
+    }),
+  ), [writeLibrary]);
+
+  /**
+   * §30 — land imported records in the LIBRARY. The caller has already shown the
+   * dedup preview and decided what to keep, so this is a plain append; records that
+   * matched an existing reference simply are not passed in.
+   */
+  const importReferences = useCallback((records) => {
+    const list = Array.isArray(records) ? records.filter(Boolean) : [];
+    if (!list.length) return 0;
+    let added = 0;
+    writeLibrary((lib) => {
+      let next = lib;
+      const used = usedReferenceIds(projectRef.current, lib);
+      const nowIso = new Date().toISOString();
+      for (const rec of list) {
+        const entry = recordToReferenceEntry(rec, { linkRecordId: true });
+        const step = libraryAddEntry(next, entry, { usedIds: used, nowIso });
+        if (!step) continue;
+        next = step;
+        used.add(step.entries[step.entries.length - 1].id);
+        added += 1;
+      }
+      return added ? next : null;
+    });
+    return added;
+  }, [writeLibrary]);
+
   // 85.md B2 — "Insert reference" from the Tables/Figures panels: no editor is
   // mounted there, so the token is appended to the END of Results (the caller
   // tells the researcher so). Returns false when Results is locked.
@@ -1126,6 +1357,25 @@ export function useManuscript(project, upd) {
       const cur = String(sec.content || '');
       ok = true;
       return MS.setSection(d, 'results', `${cur.replace(/\s+$/, '')}${cur.trim() ? '\n\n' : ''}${assetToken(assetId)}`);
+    });
+    return ok;
+  }, [mutateActive]);
+
+  /**
+   * 117.md §34 — "Cite" from the References panel. No editor is mounted there, so
+   * the token is appended to the END of Results and the caller sends the researcher
+   * to the editor. Mirrors insertAssetReference exactly (same rule, same failure
+   * mode: false when Results is locked).
+   */
+  const insertCitationReference = useCallback((refId) => {
+    if (!refId) return false;
+    let ok = false;
+    mutateActive((d) => {
+      const sec = (d.sections && d.sections.results) || {};
+      if (sec.locked) return null;
+      const cur = String(sec.content || '');
+      ok = true;
+      return MS.setSection(d, 'results', `${cur.replace(/\s+$/, '')}${cur.trim() ? ' ' : ''}${citationToken(refId)}`);
     });
     return ok;
   }, [mutateActive]);
@@ -1452,6 +1702,21 @@ export function useManuscript(project, upd) {
     runMeta,
     gradeByOutcome,
     prismaCounts, primary, tables, references, readiness, insights, staleness,
+    /* 117.md §26-§39 — the reference-library surface. `references` above is the
+       ORDERED, formatted bibliography (each row carrying `cited`); everything here
+       is what the library manager, the citation picker and the chip menu need. */
+    referenceLibrary: refLibrary,
+    referenceAliases: refAliases,
+    referenceKnownIds: citationKnownIds,
+    refsById,
+    citationUsage,
+    citationOrderMap: citationOrder.orderMap,
+    duplicateReferences,
+    suppressedReferences: refLibrary.suppressed,
+    referencesAreLegacy: legacyDraftRefs,
+    addReference, editReference, mergeReferences,
+    suppressReference, restoreReference, deleteReference, importReferences,
+    insertCitationReference,
     // 73.md Parts 8/9 — live data wiring + provenance/outdated/lock surface.
     genOpts,
     sourcesSettled,

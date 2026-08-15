@@ -170,26 +170,67 @@ export function fileToBase64(file){
 /* ════════════ CITATION LOOKUP (via same-origin /api/citation proxy) ════════════ */
 /* The proxy passes CrossRef/NCBI responses through verbatim, so parsing here is
    unchanged — but the browser only ever talks to its own origin, keeping the
-   strict CSP `connect-src 'self'` intact (prompt 51). */
+   strict CSP `connect-src 'self'` intact (prompt 51).
+
+   117.md §29 — the "smart reference lookup" behind Add Reference resolves DOI,
+   PMID, PMCID and TITLE through these same functions. Two rules apply throughout:
+     - every field returned is one the upstream registry actually stated. Nothing is
+       inferred, completed or guessed — a missing volume comes back as "", so the
+       Add Reference preview can show honestly that it is missing.
+     - the caller applies the result as an `auto` patch, which by contract never
+       overwrites a field the researcher already corrected by hand. */
+
+/* 117.md §29 — CrossRef `type` → our §28 reference taxonomy. Only unambiguous
+   mappings; anything else is left unset so the library keeps its own default. */
+const CROSSREF_TYPE_TO_REFERENCE_TYPE = {
+  "journal-article": "journal-article",
+  "posted-content": "preprint",
+  "book": "book", "monograph": "book", "reference-book": "book",
+  "book-chapter": "book-chapter", "book-section": "book-chapter", "book-part": "book-chapter",
+  "proceedings-article": "conference-proceeding",
+  "report": "report", "report-component": "report",
+  "dissertation": "thesis",
+  "dataset": "dataset",
+  "component": "other", "standard": "guideline", "peer-review": "other",
+};
+
+/** Map one CrossRef `message` object onto the reference shape. Pure. */
+export function crossrefToReference(m, doiHint){
+  const msg=m||{};
+  const auth=(msg.author||[]).map(a=>[a.family,a.given].filter(Boolean).join(" ")).filter(Boolean);
+  const yr=(msg.issued&&msg.issued["date-parts"]&&msg.issued["date-parts"][0]&&msg.issued["date-parts"][0][0])||
+    (msg["published-print"]&&msg["published-print"]["date-parts"]&&msg["published-print"]["date-parts"][0][0])||
+    (msg["published-online"]&&msg["published-online"]["date-parts"]&&msg["published-online"]["date-parts"][0][0])||"";
+  const out={
+    title:(msg.title&&msg.title[0])||"",
+    authors:auth.join("; "),
+    author:auth.length?(auth[0].split(" ").slice(-1)[0]+(auth.length>1?" et al.":"")):"",
+    journal:(msg["container-title"]&&msg["container-title"][0])||"",
+    year:yr?String(yr):"",
+    doi:String(doiHint||msg.DOI||"").trim().replace(/^https?:\/\/(dx\.)?doi\.org\//i,""),
+    // 117.md §27 — the fields the manuscript's Vancouver/JAMA/APA formatters need.
+    volume:msg.volume?String(msg.volume):"",
+    issue:msg.issue?String(msg.issue):"",
+    pages:msg.page?String(msg.page):"",
+    articleNumber:msg["article-number"]?String(msg["article-number"]):"",
+    publisher:msg.publisher||"",
+    isbn:(Array.isArray(msg.ISBN)&&msg.ISBN[0])||"",
+    url:msg.URL||"",
+    language:msg.language||"",
+    abstract:(msg.abstract||"").replace(/<[^>]+>/g," ").replace(/\s+/g," ").trim(),
+  };
+  const t=CROSSREF_TYPE_TO_REFERENCE_TYPE[String(msg.type||"").toLowerCase()];
+  if(t) out.referenceType=t;
+  return out;
+}
+
 /* DOI → CrossRef (proxied) */
 export async function fetchByDOI(doi){
   const clean=String(doi).trim().replace(/^https?:\/\/(dx\.)?doi\.org\//i,"");
   const resp=await fetch("/api/citation/crossref?doi="+encodeURIComponent(clean),{headers:{Accept:"application/json"},credentials:"include"});
   if(!resp.ok) throw new Error("CrossRef returned HTTP "+resp.status+" for that DOI.");
   const data=await resp.json();
-  const m=data.message||{};
-  const auth=(m.author||[]).map(a=>[a.family,a.given].filter(Boolean).join(" ")).filter(Boolean);
-  const yr=(m.issued&&m.issued["date-parts"]&&m.issued["date-parts"][0]&&m.issued["date-parts"][0][0])||
-    (m["published-print"]&&m["published-print"]["date-parts"]&&m["published-print"]["date-parts"][0][0])||"";
-  return {
-    title:(m.title&&m.title[0])||"",
-    authors:auth.join("; "),
-    author:auth.length?(auth[0].split(" ").slice(-1)[0]+(auth.length>1?" et al.":"")):"",
-    journal:(m["container-title"]&&m["container-title"][0])||"",
-    year:yr?String(yr):"",
-    doi:clean,
-    abstract:(m.abstract||"").replace(/<[^>]+>/g," ").replace(/\s+/g," ").trim(),
-  };
+  return crossrefToReference(data.message||{},clean);
 }
 /* PMID → NCBI E-utilities (esummary for citation, efetch for abstract), proxied. */
 export async function fetchByPMID(pmid){
@@ -207,16 +248,55 @@ export async function fetchByPMID(pmid){
     const abResp=await fetch(`/api/citation/pubmed/efetch?id=${id}`,{credentials:"include"});
     if(abResp.ok){ abstract=(await abResp.text()).replace(/\s+/g," ").trim().slice(0,4000); }
   }catch(_){}
+  // 117.md §27 — esummary states volume/issue/pages/language/PMCID/publication type
+  // in fields this parser used to ignore; the reference library needs all of them.
+  const pmcid=(rec.articleids||[]).filter(a=>a&&a.idtype==="pmcid").map(a=>String(a.value||"").trim())[0]||"";
+  const doiId=(rec.articleids||[]).filter(a=>a&&a.idtype==="doi").map(a=>String(a.value||"").trim())[0]||"";
   return {
     title:rec.title||"",
     authors:auth.join("; "),
     author:auth.length?(auth[0].split(" ")[0]+(auth.length>1?" et al.":"")):"",
     journal:rec.fulljournalname||rec.source||"",
     year:yr?yr[0]:"",
-    doi:(rec.elocationid||"").replace(/^doi:\s*/i,""),
+    doi:doiId||(rec.elocationid||"").replace(/^doi:\s*/i,""),
     pmid:id,
+    pmcid:(pmcid.match(/PMC\d+/i)||[""])[0],
+    volume:rec.volume?String(rec.volume):"",
+    issue:rec.issue?String(rec.issue):"",
+    pages:rec.pages?String(rec.pages):"",
+    language:(Array.isArray(rec.lang)?rec.lang[0]:rec.lang)||"",
+    publicationType:(Array.isArray(rec.pubtype)?rec.pubtype.join("; "):"")||"",
     abstract,
   };
+}
+/* 117.md §29 — PMCID → PMID/DOI via the ID Converter, then the normal record
+   lookup. Returns the SAME shape as fetchByPMID/fetchByDOI so every caller (and
+   the Add Reference preview) treats all four lookup kinds identically. */
+export async function fetchByPMCID(pmcid){
+  const digits=String(pmcid).trim().replace(/^PMC/i,"").replace(/[^0-9]/g,"");
+  if(!digits) throw new Error("Enter a PubMed Central ID (e.g. PMC1234567).");
+  const resp=await fetch(`/api/citation/pmcid?id=PMC${digits}`,{credentials:"include"});
+  if(!resp.ok) throw new Error("PubMed Central returned HTTP "+resp.status+".");
+  const data=await resp.json();
+  const rec=(data&&Array.isArray(data.records)?data.records[0]:null)||null;
+  if(!rec||rec.status==="error") throw new Error("No record found for PMC"+digits+".");
+  const pmid=String(rec.pmid||"").replace(/[^0-9]/g,"");
+  const doi=String(rec.doi||"").trim();
+  if(pmid){ const out=await fetchByPMID(pmid); return { ...out, pmcid:`PMC${digits}` }; }
+  if(doi){ const out=await fetchByDOI(doi); return { ...out, pmcid:`PMC${digits}` }; }
+  throw new Error("PMC"+digits+" has no linked PubMed record or DOI.");
+}
+/* 117.md §29 — TITLE → CrossRef bibliographic match. Returns CANDIDATES, never a
+   silent pick: a title is ambiguous by nature, so the user confirms which record
+   is theirs before anything is written. */
+export async function searchCitationsByTitle(title){
+  const q=String(title||"").trim();
+  if(q.length<6) throw new Error("Enter at least a few words of the title.");
+  const resp=await fetch("/api/citation/crossref/search?q="+encodeURIComponent(q),{headers:{Accept:"application/json"},credentials:"include"});
+  if(!resp.ok) throw new Error("CrossRef returned HTTP "+resp.status+" for that title.");
+  const data=await resp.json();
+  const items=(data&&data.message&&Array.isArray(data.message.items))?data.message.items:[];
+  return items.map(m=>crossrefToReference(m)).filter(r=>r.title);
 }
 
 export async function testClaudeConnection() {

@@ -63,8 +63,23 @@ export function normTitle(t) {
  * @param {object} r  Raw parsed fields: { title, authors, year, journal, doi, pmid, abstract, source, sourceDb }
  * @returns {object}  Canonical record
  */
+/**
+ * 117.md §27/§30 — BIBLIOGRAPHIC fields beyond the screening core.
+ *
+ * They are attached ONLY when the source file actually carried them. That is not a
+ * style choice: a screening record is persisted, so adding always-present keys would
+ * change the shape of every imported record in every existing project. Present-only
+ * keeps the screening import byte-identical while letting the reference library read
+ * a real volume/issue/pages/publisher/ISBN/URL instead of a dead end.
+ */
+export const EXTRA_RECORD_FIELDS = Object.freeze([
+  "volume", "issue", "pages", "publisher", "place", "edition", "isbn", "url",
+  "language", "publicationType", "pmcid", "articleNumber", "keywords", "bookTitle",
+  "editors", "conference", "institution", "referenceType",
+]);
+
 export function mkRecord(r) {
-  return {
+  const rec = {
     id:        uid(),
     title:     r.title    || "",
     authors:   r.authors  || "",
@@ -84,6 +99,11 @@ export function mkRecord(r) {
     notes:     "",
     dupOf:     null,
   };
+  for (const f of EXTRA_RECORD_FIELDS) {
+    const v = String(r[f] == null ? "" : r[f]).trim();
+    if (v) rec[f] = v;
+  }
+  return rec;
 }
 
 // 59.md Change 1 — accepted screening-decision labels (the four states export writes).
@@ -122,6 +142,40 @@ export function normalizeImportedDecision(v) {
  * @param {string} text  Raw file content
  * @returns {Array}      Array of canonical record objects
  */
+/**
+ * 117.md §30 — the RIS reference TYPE tag (`TY`) → our §28 taxonomy. Only mappings
+ * we are sure of; anything else stays undefined so the library falls back to its
+ * own default rather than mislabelling a record.
+ */
+const RIS_TYPE_TO_REFERENCE_TYPE = {
+  JOUR: "journal-article", EJOUR: "journal-article", ABST: "conference-abstract",
+  BOOK: "book", EBOOK: "book", CHAP: "book-chapter", ECHAP: "book-chapter",
+  CONF: "conference-abstract", CPAPER: "conference-proceeding",
+  RPRT: "report", THES: "thesis", ELEC: "website", ICOMM: "website",
+  DATA: "dataset", COMP: "software", STAND: "guideline", GOVDOC: "government-publication",
+  UNPB: "preprint", PREPRINT: "preprint", GEN: "other",
+};
+
+/**
+ * 117.md §27/§30 — RIS `SN` and EndNote `<isbn>` carry an ISSN for journals and an
+ * ISBN for books, in the same field. Length is what separates them: an ISBN has 10
+ * or 13 digits, an ISSN exactly 8. Claiming an ISSN as an ISBN would print a
+ * fabricated book identifier in a reference, so the test is on the digit count, not
+ * on the punctuation. Pure.
+ */
+export function looksLikeIsbn(value) {
+  const compact = String(value == null ? "" : value).replace(/[^0-9Xx]/g, "");
+  return compact.length === 10 || compact.length === 13;
+}
+
+/** Join RIS SP/EP into a page range ("100-110"), tolerating either alone. Pure. */
+function risPages(sp, ep) {
+  const a = String(sp == null ? "" : sp).trim();
+  const b = String(ep == null ? "" : ep).trim();
+  if (a && b) return `${a}-${b}`;
+  return a || b || "";
+}
+
 export function parseRIS(text) {
   const recs = [];
   let cur = null;
@@ -133,8 +187,14 @@ export function parseRIS(text) {
       return;
     }
     const tag = m[1], val = (m[2] || "").trim();
-    if (tag === "TY") { cur = { authors: [], _last: null }; recs.push(cur); return; }
-    if (!cur) { cur = { authors: [], _last: null }; recs.push(cur); }
+    if (tag === "TY") {
+      cur = { authors: [], keywords: [], _last: null };
+      // 117.md §30 — remember the declared reference type (see the map above).
+      if (RIS_TYPE_TO_REFERENCE_TYPE[val.toUpperCase()]) cur.referenceType = RIS_TYPE_TO_REFERENCE_TYPE[val.toUpperCase()];
+      recs.push(cur);
+      return;
+    }
+    if (!cur) { cur = { authors: [], keywords: [], _last: null }; recs.push(cur); }
     if (tag === "ER") { cur = null; return; }
 
     if (tag === "AU" || tag === "A1" || tag === "A2") {
@@ -158,6 +218,38 @@ export function parseRIS(text) {
       // database in the standard `DB` tag. Kept only when the vocabulary
       // recognises it (below); an unrecognised value stays out of sourceDb.
       if (!cur.db) cur.db = val; cur._last = null;
+    /* 117.md §27/§30 — the bibliographic tags the parser used to DROP on the floor.
+       Volume/issue/pages are what makes a Vancouver reference complete, and
+       publisher/ISBN/URL are what makes a book or a website citable at all. */
+    } else if (tag === "VL") {
+      if (!cur.volume) cur.volume = val; cur._last = null;
+    } else if (tag === "IS" || tag === "CP") {
+      if (!cur.issue) cur.issue = val; cur._last = null;
+    } else if (tag === "SP") {
+      if (!cur.sp) cur.sp = val; cur._last = null;
+    } else if (tag === "EP") {
+      if (!cur.ep) cur.ep = val; cur._last = null;
+    } else if (tag === "PB") {
+      if (!cur.publisher) cur.publisher = val; cur._last = null;
+    } else if (tag === "CY" || tag === "PP") {
+      if (!cur.place) cur.place = val; cur._last = null;
+    } else if (tag === "ET") {
+      if (!cur.edition) cur.edition = val; cur._last = null;
+    } else if (tag === "SN") {
+      // SN carries ISSN for journals and ISBN for books — only an ISBN-shaped
+      // value is claimed as an ISBN, so a journal's ISSN is never mislabelled.
+      if (!cur.isbn && looksLikeIsbn(val)) cur.isbn = val;
+      cur._last = null;
+    } else if (tag === "UR" || tag === "L1" || tag === "LK") {
+      if (!cur.url) cur.url = val; cur._last = null;
+    } else if (tag === "LA") {
+      if (!cur.language) cur.language = val; cur._last = null;
+    } else if (tag === "M3") {
+      if (!cur.publicationType) cur.publicationType = val; cur._last = null;
+    } else if (tag === "C7" || tag === "AR") {
+      if (!cur.articleNumber) cur.articleNumber = val; cur._last = null;
+    } else if (tag === "KW") {
+      if (val) cur.keywords.push(val); cur._last = null;
     } else {
       cur._last = null;
     }
@@ -168,7 +260,13 @@ export function parseRIS(text) {
   // record's original database.
   return recs
     .filter(r => r.title || r.authors.length)
-    .map(r => mkRecord({ ...r, authors: r.authors.join("; "), sourceDb: recognizedDatabase(r.db) }));
+    .map(r => mkRecord({
+      ...r,
+      authors: r.authors.join("; "),
+      pages: r.pages || risPages(r.sp, r.ep),
+      keywords: (r.keywords || []).join("; "),
+      sourceDb: recognizedDatabase(r.db),
+    }));
 }
 
 /**
@@ -189,8 +287,8 @@ export function parseNBIB(text) {
     if (!m) return;
     const tag = m[1], val = (m[2] || "").trim();
 
-    if (tag === "PMID") { cur = { authors: [] }; recs.push(cur); cur.pmid = val; last = null; return; }
-    if (!cur) { cur = { authors: [] }; recs.push(cur); }
+    if (tag === "PMID") { cur = { authors: [], keywords: [] }; recs.push(cur); cur.pmid = val; last = null; return; }
+    if (!cur) { cur = { authors: [], keywords: [] }; recs.push(cur); }
 
     if (tag === "TI")       { cur.title   = val; last = "title"; }
     else if (tag === "AU")  { cur.authors.push(val); last = null; }
@@ -202,6 +300,15 @@ export function parseNBIB(text) {
       if (d && !cur.doi) cur.doi = d[1];
       last = null;
     }
+    /* 117.md §27/§30 — MEDLINE's own bibliographic tags: volume, issue, pagination,
+       PMCID, language, publication type and MeSH-ish keywords. */
+    else if (tag === "VI")  { if (!cur.volume) cur.volume = val; last = null; }
+    else if (tag === "IP")  { if (!cur.issue) cur.issue = val; last = null; }
+    else if (tag === "PG")  { if (!cur.pages) cur.pages = val; last = null; }
+    else if (tag === "PMC") { if (!cur.pmcid) cur.pmcid = val; last = null; }
+    else if (tag === "LA")  { if (!cur.language) cur.language = val; last = null; }
+    else if (tag === "PT")  { if (!cur.publicationType) cur.publicationType = val; last = null; }
+    else if (tag === "OT")  { cur.keywords.push(val); last = null; }
     else last = null;
   });
 
@@ -210,7 +317,12 @@ export function parseNBIB(text) {
     // nbib is PubMed's OWN export format, so "PubMed" here is genuine database
     // detection, not invention (116.md §14) — carried as sourceDb, not as a
     // format token in `source`.
-    .map(r => mkRecord({ ...r, authors: r.authors.join("; "), sourceDb: "PubMed" }));
+    .map(r => mkRecord({
+      ...r,
+      authors: r.authors.join("; "),
+      keywords: (r.keywords || []).join("; "),
+      sourceDb: "PubMed",
+    }));
 }
 
 /**
@@ -221,12 +333,29 @@ export function parseNBIB(text) {
  * @param {string} text  Raw file content
  * @returns {Array}      Array of canonical record objects
  */
+/** 117.md §30 — BibTeX entry type → our §28 taxonomy (unmapped → library default). */
+const BIB_TYPE_TO_REFERENCE_TYPE = {
+  article: "journal-article", book: "book", booklet: "book",
+  incollection: "book-chapter", inbook: "book-chapter",
+  inproceedings: "conference-proceeding", conference: "conference-proceeding",
+  proceedings: "conference-proceeding",
+  techreport: "report", phdthesis: "thesis", mastersthesis: "thesis",
+  electronic: "website", online: "website", software: "software",
+  dataset: "dataset", unpublished: "preprint", misc: "other",
+};
+
 export function parseBibTeX(text) {
   const recs = [];
+  // 117.md §30 — keep the entry TYPE that precedes each brace (`@book{`), which the
+  // old split discarded; it is the only reliable type signal a .bib file carries.
+  const types = (String(text).match(/@(\w+)\s*\{/g) || [])
+    .map(t => (t.match(/@(\w+)/) || [])[1] || "");
   const entries = text.split(/@\w+\s*\{/).slice(1);
 
-  entries.forEach(block => {
+  entries.forEach((block, bi) => {
     const rec = {};
+    const bibType = BIB_TYPE_TO_REFERENCE_TYPE[String(types[bi] || "").toLowerCase()];
+    if (bibType) rec.referenceType = bibType;
     const grab = field => {
       const re = new RegExp(field + "\\s*=\\s*[{\"]", "i");
       const m  = re.exec(block);
@@ -252,6 +381,21 @@ export function parseBibTeX(text) {
     rec.abstract = grab("abstract");
     const auth  = grab("author");
     rec.authors = auth ? auth.split(/\s+and\s+/).join("; ") : "";
+    // 117.md §27/§30 — the bibliographic fields BibTeX has always carried and this
+    // parser has always thrown away. `number` is BibTeX's name for the issue.
+    rec.volume    = grab("volume");
+    rec.issue     = grab("number");
+    rec.pages     = grab("pages").replace(/--/g, "-");
+    rec.publisher = grab("publisher");
+    rec.place     = grab("address");
+    rec.edition   = grab("edition");
+    rec.isbn      = grab("isbn");
+    rec.url       = grab("url") || grab("howpublished").replace(/^\\url\{?/, "");
+    rec.language  = grab("language");
+    rec.editors   = grab("editor");
+    rec.institution = grab("institution") || grab("school");
+    if (grab("booktitle") && grab("journal")) rec.bookTitle = grab("booktitle");
+    if (grab("keywords")) rec.keywords = grab("keywords");
 
     // 116.md §14 — no format token: BibTeX has no reliable database field.
     if (rec.title || rec.authors) recs.push(mkRecord(rec));
@@ -290,6 +434,19 @@ export function parseEndNoteXML(text) {
         journal: txt("periodical full-title") || txt("titles secondary-title"),
         doi:     txt("electronic-resource-num"),
         abstract: txt("abstract"),
+        // 117.md §27/§30 — EndNote's own bibliographic elements. `pages` is a plain
+        // element; `isbn` doubles as ISSN in EndNote, so it is claimed only when it
+        // looks like an ISBN (same rule as the RIS `SN` tag).
+        volume:  txt("volume"),
+        issue:   txt("number"),
+        pages:   txt("pages"),
+        publisher: txt("publisher"),
+        place:   txt("pub-location"),
+        edition: txt("edition"),
+        isbn:    (looksLikeIsbn(txt("isbn")) ? txt("isbn") : ""),
+        url:     txt("urls related-urls url") || txt("urls web-urls url"),
+        language: txt("language"),
+        publicationType: txt("work-type"),
         // 116.md §14 — EndNote records carry the database they were fetched from
         // in <remote-database-name>; kept only when recognised. No format token.
         sourceDb: recognizedDatabase(txt("remote-database-name")),
@@ -316,6 +473,17 @@ const CSV_FIELD_SYNONYMS = {
   abstract: ["abstract", "ab", "summary"],
   url:      ["url", "link", "fulltext url", "full text url", "full-text url"],
   keywords: ["keywords", "keyword", "author keywords", "de", "index keywords", "id"],
+  // 117.md §27/§30 — the bibliographic columns every reference exporter writes and
+  // this importer used to ignore. Reading them is what makes an imported reference
+  // citable in Vancouver ("2020;12(3):100-110") instead of half-blank.
+  volume:   ["volume", "vol", "vl"],
+  issue:    ["issue", "number", "no", "is", "ip"],
+  pages:    ["pages", "page numbers", "page range", "pagination", "pg", "bp-ep"],
+  publisher: ["publisher", "publisher name", "pu"],
+  isbn:     ["isbn", "bn"],
+  language: ["language", "languages", "la"],
+  publicationType: ["publication type", "document type", "type", "dt", "pt"],
+  pmcid:    ["pmcid", "pmc", "pmc id"],
   // 116.md §14 — an explicit database column (recognized-only; a Scopus "Source"
   // column stays a journal via the mapping above, which is correct for Scopus).
   sourceDb: ["database", "source database", "database name", "database provider"],
@@ -396,6 +564,15 @@ function rowToRecord(map, cells) {
     doi:      get("doi"),
     pmid,
     abstract: get("abstract"),
+    // 117.md §27/§30 — bibliographic columns (present-only inside mkRecord).
+    volume:   get("volume"),
+    issue:    get("issue"),
+    pages:    get("pages"),
+    publisher: get("publisher"),
+    isbn:     get("isbn"),
+    language: get("language"),
+    publicationType: get("publicationType"),
+    pmcid:    get("pmcid"),
     // 116.md §14 — no format token; only a recognized explicit database column.
     sourceDb: recognizedDatabase(get("sourceDb")),
     decision: get("decision"), // 59.md Change 1 — round-trip the screening decision
@@ -493,6 +670,16 @@ export function parseCIW(text) {
       case "PY": { const y = (val.match(/\d{4}/) || [])[0]; if (y) cur.year = y; break; }
       case "DI": cur.doi = val; break;
       case "PM": if (/^\d+$/.test(val)) cur.pmid = val; break;
+      // 117.md §27/§30 — WoS volume / issue / start-end page / publisher / ISBN.
+      case "VL": if (!cur.volume) cur.volume = val; break;
+      case "IS": if (!cur.issue) cur.issue = val; break;
+      case "BP": if (!cur.bp) cur.bp = val; break;
+      case "EP": if (!cur.ep) cur.ep = val; break;
+      case "AR": if (!cur.articleNumber) cur.articleNumber = val; break;
+      case "PU": if (!cur.publisher) cur.publisher = val; break;
+      case "BN": if (!cur.isbn) cur.isbn = val; break;
+      case "LA": if (!cur.language) cur.language = val; break;
+      case "DT": if (!cur.publicationType) cur.publicationType = val; break;
       case "DE": case "ID": if (val) cur.keywords.push(val); break;
       case "U1": case "URL": if (!cur.url) cur.url = val; break;
       case "ER": case "EF": cur = null; tag = null; break;
@@ -508,6 +695,10 @@ export function parseCIW(text) {
         title: r.title, authors, year: r.year,
         // 116.md §14 — no format token ("CIW" is a file format, not a source).
         journal: r.journal, doi: r.doi, pmid: r.pmid, abstract: r.abstract,
+        // 117.md §27/§30 — the bibliographic tags WoS exports carry.
+        volume: r.volume, issue: r.issue, pages: risPages(r.bp, r.ep),
+        articleNumber: r.articleNumber, publisher: r.publisher, isbn: r.isbn,
+        language: r.language, publicationType: r.publicationType,
       });
       if (r.url) rec.url = r.url;
       if (r.keywords && r.keywords.length) rec.keywords = r.keywords.join("; ");

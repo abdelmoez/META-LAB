@@ -31,7 +31,6 @@ import {
   buildRobTable,
   buildSearchStrategyTable,
   generateReferenceList,
-  referencesFromProject,
   orderReferencesForManuscript,
   collectCitationOrder,
   draftSectionTexts,
@@ -51,6 +50,8 @@ import {
   ASSET_KIND_ALTERNATION, TABLE_CAPTION_LINE_RE, TABLE_CAPTION_TOKEN_RE,
   formatAssetLabel, formatAssetCaption,
 } from '../../../research-engine/manuscript/refTokens.js';
+// 117.md §26/§32 — the ONE reference resolver seam (see its module header).
+import { resolveReferenceLibrary } from '../../../research-engine/manuscript/referenceLibrary.js';
 import { parsePipeTable } from '../richEditor/mdDom.js';
 import { forestPng, prismaPng, funnelPng, robPng } from './figures.js';
 
@@ -435,14 +436,41 @@ export async function buildManuscriptDocx(project, draft, opts = {}) {
   const figTotal = includeFigures ? (numbering.orderFigures || []).length : 0;
   let figStep = 0;
 
-  const baseRefs = (draft.references && draft.references.length) ? draft.references : referencesFromProject(project);
-  const refList = opts.references || generateReferenceList(orderReferencesForManuscript(draft, baseRefs), draft.citationStyle);
+  /* 117.md §26/§32/§41 — the bibliography comes from the ONE resolver seam. The
+     caller (useManuscript.prepareExport) normally passes the already-resolved,
+     already-validated list; this fallback is for a direct/legacy invocation and
+     must resolve the SAME way, aliases included, or the exported document would
+     disagree with the editor about what it cites. `draft.references` stays the
+     legacy override it always was. */
+  const legacyRefs = (draft.references && draft.references.length) ? draft.references : null;
+  const resolvedLib = legacyRefs ? null : resolveReferenceLibrary(project);
+  const refAliases = opts.referenceAliases || (resolvedLib ? resolvedLib.aliases : {});
+  const baseRefs = legacyRefs || (resolvedLib ? resolvedLib.refs : []);
+  const refList = opts.references
+    || generateReferenceList(orderReferencesForManuscript(draft, baseRefs, { aliases: refAliases }), draft.citationStyle);
+  // 117.md §37 — author-year styles need the reference objects at marker time.
+  const refsById = new Map();
+  for (const r of refList) {
+    refsById.set(r.id, r.ref);
+    if (r.ref && r.ref.id && r.ref.id !== r.id) refsById.set(r.ref.id, r.ref);
+  }
+  for (const from of Object.keys(refAliases || {})) {
+    const target = refsById.get(refAliases[from]);
+    if (target && !refsById.has(from)) refsById.set(from, target);
+  }
 
   // Inline-citation numbering: map [[cite:id]] tokens → [n] by order of appearance.
+  // 117.md §32/§35 — alias-resolved and multi-cite aware: `[[cite:a,b,c]]` renders
+  // one marker ("[1,2,5]", collapsing runs of 3+ to a range), and a citation of a
+  // merged-away id numbers as its survivor.
   // Asset tokens SURVIVE renderInlineMarkers (verified: CITATION_TOKEN_RE only
   // matches [[cite:…]]) and are resolved inside parseInline via mdCtx.inline.
-  const { orderMap } = collectCitationOrder(draftSectionTexts(draft));
-  const secMd = (id) => renderInlineMarkers((draft.sections[id] && draft.sections[id].content) || '', orderMap, draft.citationStyle);
+  // 117.md §39 — the reference list is the known-id set, so an unresolvable citation
+  // exports as "[?]" rather than taking a number the bibliography does not have.
+  const citeKnownIds = new Set(refList.map((r) => r.id));
+  const { orderMap } = collectCitationOrder(draftSectionTexts(draft), { aliases: refAliases, knownIds: citeKnownIds });
+  const citeOpts = { aliases: refAliases, refsById };
+  const secMd = (id) => renderInlineMarkers((draft.sections[id] && draft.sections[id].content) || '', orderMap, draft.citationStyle, citeOpts);
   // 117.md §4 — manual tables are emitted INLINE by markdownToParagraphs (they are
   // prose blocks), so the inline context carries their registry entries: caption
   // text, extra caption paragraph and notes all come from the same derived asset
@@ -621,7 +649,7 @@ export async function buildManuscriptDocx(project, draft, opts = {}) {
     children.push(h1('Declarations', D));
     for (const st of filledStatements) {
       children.push(new Paragraph({ heading: HeadingLevel.HEADING_2, text: st.label, spacing: { before: 120, after: 40 } }));
-      children.push(...markdownToParagraphs(renderInlineMarkers(draft.statements[st.id], orderMap, draft.citationStyle), D, mdCtx));
+      children.push(...markdownToParagraphs(renderInlineMarkers(draft.statements[st.id], orderMap, draft.citationStyle, citeOpts), D, mdCtx));
     }
   }
 
@@ -631,7 +659,10 @@ export async function buildManuscriptDocx(project, draft, opts = {}) {
     for (const r of refList) {
       const runs = [new TextRun({ text: `${r.index}. `, bold: true })];
       const segs = (r.segments && r.segments.length) ? r.segments : [{ text: r.text }];
-      for (const seg of segs) runs.push(new TextRun({ text: seg.text, italics: !!seg.italics }));
+      // 117.md §37/§41 — a segment may now be BOLD as well as italic (Nature bolds
+      // the volume). Unknown flags are simply absent for every other style, so the
+      // four original styles produce identical runs.
+      for (const seg of segs) runs.push(new TextRun({ text: seg.text, italics: !!seg.italics, bold: !!seg.bold }));
       children.push(new Paragraph({ spacing: { after: 60 }, children: runs }));
     }
   } else {

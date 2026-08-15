@@ -40,7 +40,9 @@
  * fact chip obeys it too: the TOKEN is what persists, never the resolved text (§5).
  */
 
-import { CITATION_TOKEN_RE } from '../../../research-engine/manuscript/citations.js';
+import {
+  CITATION_TOKEN_RE, formatCitationMarker, isAuthorYearStyle,
+} from '../../../research-engine/manuscript/citations.js';
 // 117.md §69 — one kind registry + one caption formatter for every renderer.
 import {
   ASSET_TOKEN_RE, TABLE_CAPTION_LINE_RE, TABLE_CAPTION_TOKEN_RE, MANUAL_TABLE_ID_RE,
@@ -90,9 +92,66 @@ function unescapeEntities(s) {
 
 /* ════════════ markdown → HTML ════════════ */
 
-/** The atomic, non-editable citation chip. `id` raw; `n` 1-based or null → [?]. */
-export function citeChipHtml(id, n) {
-  return `<span class="${CITE_CHIP_CLASS}" data-cite="${escapeAttr(id)}" contenteditable="false">[${n == null ? '?' : n}]</span>`;
+/**
+ * The atomic, non-editable citation chip.
+ *
+ * 117.md §35/§38 — the chip may carry SEVERAL ids (`data-cite="a,b,c"`, one chip,
+ * one marker "[1,2]"), and it is INTERACTIVE: role="button" + tabindex so the §38
+ * hover preview and the action menu (View / Edit / Open PDF / Go to References /
+ * Remove citation) are reachable by keyboard as well as by mouse. Same island
+ * mechanics as the cross-reference chip, so undo, copy/paste and autosave behave
+ * identically for both.
+ *
+ * @param idOrIds  one id, a comma list, or an array of ids
+ * @param nOrLabel a 1-based number (legacy single-cite call → "[n]"), a ready-made
+ *                 label string ("[1,2]", "(Smith, 2020)"), or null → "[?]"
+ * @param opts     { broken?:boolean } — no reference in the library resolves
+ */
+export function citeChipAria(label, broken) {
+  return broken
+    ? `Broken citation: ${label}. Activate for citation actions.`
+    : `Citation: ${label}. Activate for citation actions.`;
+}
+
+export function citeChipHtml(idOrIds, nOrLabel, opts = {}) {
+  const ids = (Array.isArray(idOrIds) ? idOrIds : String(idOrIds == null ? '' : idOrIds).split(','))
+    .map((s) => String(s).trim()).filter(Boolean);
+  const label = typeof nOrLabel === 'string'
+    ? nOrLabel
+    : `[${nOrLabel == null ? '?' : nOrLabel}]`;
+  const broken = !!(opts && opts.broken);
+  const aria = citeChipAria(label, broken);
+  return `<span class="${CITE_CHIP_CLASS}" data-cite="${escapeAttr(ids.join(','))}"`
+    + (broken ? ' data-cite-broken="true"' : '')
+    + ` role="button" tabindex="0" aria-label="${escapeAttr(aria)}"`
+    + ` contenteditable="false">${escapeHtml(label)}</span>`;
+}
+
+/**
+ * 117.md §35/§37 — the visible label for a citation chip: the numeric marker with
+ * range collapse, or the author-year form for author-year styles. ONE function, so
+ * the first render (mdToHtml) and the in-place renumbering effect can never
+ * disagree about what a chip should say.
+ *
+ * `orderMap` may be a Map or a plain object; `refsById` is only consulted by
+ * author-year styles. An id that resolves to nothing yields `broken:true` so the
+ * chip can say so instead of silently renumbering to something wrong (§39).
+ */
+export function citeChipLabel(idOrIds, orderMap, style, refsById) {
+  const ids = (Array.isArray(idOrIds) ? idOrIds : String(idOrIds == null ? '' : idOrIds).split(','))
+    .map((s) => String(s).trim()).filter(Boolean);
+  const label = formatCitationMarker(ids, orderMap, style || 'vancouver', { refsById });
+  const known = (id) => {
+    if (isAuthorYearStyle(style)) {
+      if (!refsById) return true;
+      return !!(typeof refsById.get === 'function' ? refsById.get(id) : refsById[id]);
+    }
+    if (!orderMap) return true;
+    const n = typeof orderMap.get === 'function' ? orderMap.get(id) : orderMap[id];
+    return n != null;
+  };
+  const broken = ids.length > 0 && ids.some((id) => !known(id));
+  return { label, broken, ids };
 }
 
 /**
@@ -278,9 +337,12 @@ function inlineHtml(escText, orderMap, assetNumbers, factOpts, refOpts) {
   // as a manual field. The classifier's deny rules stay the second line of defence.
   t = replaceInputPlaceholders(t);
   t = t.replace(new RegExp(CITATION_TOKEN_RE.source, 'g'), (_m, idEsc) => {
-    const id = unescapeEntities(idEsc);
-    const n = orderMap && typeof orderMap.get === 'function' ? orderMap.get(id) : null;
-    return citeChipHtml(id, n);
+    // 117.md §35/§37 — one chip per TOKEN, whatever number of ids it carries, and
+    // the label comes from the ONE style-aware formatter the renumbering effect
+    // also uses.
+    const raw = unescapeEntities(idEsc);
+    const { label, broken } = citeChipLabel(raw, orderMap, ro.citationStyle, ro.refsById);
+    return citeChipHtml(raw, label, { broken });
   });
   t = t.replace(new RegExp(ASSET_TOKEN_RE.source, 'g'), (_m, kind, suffix) => {
     const id = `${kind}:${suffix}`;
@@ -427,12 +489,22 @@ function tableHtml(escLines, orderMap, assetNumbers, factOpts, refOpts) {
 const EMPTY_FACT_OPTS = { facts: null, overrides: null, changes: new Map(), showChanges: false };
 
 /** Neutral cross-reference options — no registry knowledge, default caption format. */
-const EMPTY_REF_OPTS = { knownAssetIds: null, templateId: null };
+const EMPTY_REF_OPTS = {
+  knownAssetIds: null, templateId: null, citationStyle: null, refsById: null,
+};
 
-/** Normalize the cross-reference slice of opts once per render (117.md §8/§11). */
+/** Normalize the cross-reference slice of opts once per render (117.md §8/§11/§37). */
 function refOptsOf(opts) {
-  if (!opts || (!opts.knownAssetIds && !opts.templateId)) return EMPTY_REF_OPTS;
-  return { knownAssetIds: opts.knownAssetIds || null, templateId: opts.templateId || null };
+  if (!opts || (!opts.knownAssetIds && !opts.templateId && !opts.citationStyle && !opts.refsById)) return EMPTY_REF_OPTS;
+  return {
+    knownAssetIds: opts.knownAssetIds || null,
+    templateId: opts.templateId || null,
+    // 117.md §37 — the chip's own label depends on the style (numeric vs author-year).
+    citationStyle: opts.citationStyle || null,
+    // 117.md §37/§38 — reference metadata, needed by author-year labels and by the
+    // "is this citation resolvable at all" check.
+    refsById: opts.refsById || null,
+  };
 }
 
 /** Normalize the fact-related slice of opts once per render (101.md §16 — every
@@ -908,7 +980,8 @@ export function extractOutline(md) {
 }
 
 export default {
-  escapeHtml, mdToHtml, htmlToMd, citeChipHtml, assetChipHtml, assetChipLabel,
+  escapeHtml, mdToHtml, htmlToMd, citeChipHtml, citeChipLabel, citeChipAria,
+  assetChipHtml, assetChipLabel,
   tableCaptionHtml, factChipHtml,
   factChipText, factOf, parsePipeTable, serializePipeTable, escapePipeCell,
   extractOutline, stripInlineMd,

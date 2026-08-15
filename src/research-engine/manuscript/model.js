@@ -67,13 +67,28 @@ export const DATA_BLOCK_TYPES = [
 
 export const DATA_BLOCK_IDS = DATA_BLOCK_TYPES.map((b) => b.id);
 
+/**
+ * 117.md §37 — citation FORMATTING is a layer over the reference metadata, never a
+ * property of it, so a style is an entry here plus a branch in
+ * formatCitation/formatCitationSegments (citations.js). `marker` states how the
+ * in-text citation reads, which is what the editor chip, the export markers and the
+ * bibliography all consult: 'numeric' → [1] / [1–4]; 'author-year' → (Smith, 2020).
+ */
 export const CITATION_STYLES = [
-  { id: 'vancouver', label: 'Vancouver' },
-  { id: 'jama', label: 'JAMA' },
-  { id: 'ama', label: 'AMA' },
-  { id: 'apa', label: 'APA' },
+  { id: 'vancouver', label: 'Vancouver', marker: 'numeric' },
+  { id: 'jama', label: 'JAMA', marker: 'numeric' },
+  { id: 'ama', label: 'AMA', marker: 'numeric' },
+  { id: 'apa', label: 'APA', marker: 'numeric' },
+  { id: 'harvard', label: 'Harvard', marker: 'author-year' },
+  { id: 'nature', label: 'Nature', marker: 'numeric' },
+  { id: 'nejm', label: 'NEJM', marker: 'numeric' },
 ];
 export const CITATION_STYLE_IDS = CITATION_STYLES.map((s) => s.id);
+
+/** The style descriptor for an id (unknown → Vancouver). Pure. */
+export function citationStyleOf(id) {
+  return CITATION_STYLES.find((s) => s.id === id) || CITATION_STYLES[0];
+}
 
 /**
  * Journal templates. These are formatting AIDS — they steer abstract format,
@@ -286,6 +301,15 @@ export function normalizeDraft(raw, nowIso = null) {
       stale: r.stale !== false,
     };
   }
+  /* 117.md §26/§27 — LEGACY-ONLY FIELD.
+   *
+   * `draft.references` was a frozen snapshot: whenever it happened to be non-empty
+   * it FROZE the bibliography (nothing else ever wrote it, so it could never catch
+   * up with the project). The reference library now lives in ONE place — the
+   * project-level `referenceLibrary` overlay resolved by
+   * research-engine/manuscript/referenceLibrary.js — and NO new code writes here.
+   * The field is still read (and still wins) when a legacy blob carries content, so
+   * an old draft behaves exactly as it did; it is simply never created any more. */
   out.references = Array.isArray(raw.references) ? raw.references : [];
   out.keywords = Array.isArray(raw.keywords) ? raw.keywords : [];
   out.prismaOverrides = (raw.prismaOverrides && typeof raw.prismaOverrides === 'object') ? raw.prismaOverrides : {};
@@ -377,6 +401,7 @@ export default {
   STATEMENT_TYPES,
   DATA_BLOCK_TYPES,
   CITATION_STYLES,
+  citationStyleOf,
   JOURNAL_TEMPLATES,
   SCHEMA_VERSION,
   makeManuscriptDraft,

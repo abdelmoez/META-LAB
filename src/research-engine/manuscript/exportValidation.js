@@ -21,6 +21,10 @@ import {
   orderedSections, TABLE_CAPTION_LINE_RE, assetKindLabel, ASSET_KIND_IDS,
 } from './refTokens.js';
 import { sectionBlocks } from './placement.js';
+// 117.md §39 — citation integrity reads the SAME usage scan the numbering and the
+// References panel read, so the export dialog can never disagree with the page.
+import { collectCitationUsage } from './citations.js';
+import { suggestReferenceDuplicates } from './referenceLibrary.js';
 
 /* Small bounded Levenshtein for closest-id suggestions on typo'd references. */
 function editDistance(a, b) {
@@ -52,6 +56,108 @@ export function closestAssetId(id, knownIds) {
   return bestD <= Math.max(3, Math.floor(String(id || '').length / 2)) ? best : null;
 }
 
+/** 117.md §39 — closest known REFERENCE id to a citation that resolves to nothing. */
+export function closestReferenceId(id, knownIds) {
+  const list = Array.isArray(knownIds) ? knownIds : [...(knownIds || [])];
+  let best = null;
+  let bestD = Infinity;
+  for (const k of list) {
+    const d = editDistance(id, k);
+    if (d < bestD) { bestD = d; best = k; }
+  }
+  return bestD <= Math.max(3, Math.floor(String(id || '').length / 2)) ? best : null;
+}
+
+/** Metadata a CITED reference must carry before it is submission-ready (§39). */
+const KEY_REFERENCE_FIELDS = [
+  { key: 'title', label: 'title' },
+  { key: 'authorsRaw', label: 'authors' },
+  { key: 'year', label: 'year' },
+];
+
+/**
+ * 117.md §39/§40 — citation integrity.
+ *
+ * Split out so it is unit-testable on its own and so `validateExport` stays a
+ * composition rather than one long function. Severities follow the §39 contract:
+ *   ERROR    a citation resolves to no reference (typo, deleted study, id drift) —
+ *            or to a reference the researcher SUPPRESSED. Either way the exported
+ *            marker would point at a bibliography entry that is not there.
+ *   WARNING  a CITED reference is missing key metadata, or two library entries look
+ *            like the same work.
+ *   INFO     a library entry that is never cited (perfectly legal while drafting —
+ *            it is awareness, not a defect).
+ *
+ * @param {object} args { draft, references, aliases, removedIds, library }
+ * @returns {{errors:[], warnings:[], info:[]}}  Pure.
+ */
+export function validateCitations(args = {}) {
+  const { draft, references, aliases, removedIds } = args;
+  const errors = [];
+  const warnings = [];
+  const info = [];
+  const push = (arr, code, message, action) => arr.push({ code, message, action });
+  const refs = Array.isArray(references) ? references : [];
+  if (!draft) return { errors, warnings, info };
+
+  const byId = new Map(refs.map((r) => [r.id, r]));
+  const knownIds = refs.map((r) => r.id);
+  const suppressed = removedIds instanceof Set ? removedIds : new Set(removedIds || []);
+  const usage = collectCitationUsage(draft, { aliases });
+
+  // 1. citations that resolve to nothing (§39: "citation nodes pointing to missing
+  //    references"). Deduped per id, with a closest-match suggestion.
+  const seen = new Set();
+  for (const tk of usage.tokens) {
+    for (let i = 0; i < tk.resolved.length; i += 1) {
+      const id = tk.resolved[i];
+      const raw = tk.ids[i];
+      if (byId.has(id) || seen.has(id)) continue;
+      seen.add(id);
+      if (suppressed.has(id)) {
+        push(errors, 'cite-suppressed',
+          `The manuscript cites "${raw}" in ${tk.sectionId}, but that reference is hidden from the library.`,
+          'Restore the reference in the References tab, or remove the citation.');
+        continue;
+      }
+      const near = closestReferenceId(id, knownIds);
+      const nearRef = near ? byId.get(near) : null;
+      push(errors, 'cite-unknown',
+        `The manuscript cites "${raw}" in ${tk.sectionId}, which is not in the reference library${nearRef ? ` — the closest match is "${nearRef.title || near}"` : ''}.`,
+        nearRef ? 'Re-point the citation from its chip menu, or remove it.' : 'Add the reference to the library, or remove the citation.');
+    }
+  }
+
+  // 2. cited references missing metadata a bibliography entry needs (§39).
+  for (const r of refs) {
+    if (!usage.cited.has(r.id)) continue;
+    const missing = KEY_REFERENCE_FIELDS.filter((f) => !String(r[f.key] || '').trim()).map((f) => f.label);
+    if (!missing.length) continue;
+    push(warnings, 'cited-ref-incomplete',
+      `Cited reference "${r.title || r.id}" is missing its ${missing.join(' and ')}.`,
+      'Complete the reference in the References tab before submission.');
+  }
+
+  // 3. library entries nobody cites — INFO, never a warning: an uncited reference
+  //    is a normal state of a manuscript in progress.
+  const uncited = refs.filter((r) => !usage.cited.has(r.id));
+  if (uncited.length && usage.cited.size) {
+    push(info, 'uncited-references',
+      `${uncited.length} reference${uncited.length === 1 ? '' : 's'} in the library ${uncited.length === 1 ? 'is' : 'are'} never cited in the text — ${uncited.length === 1 ? 'it' : 'they'} will still be listed in the bibliography.`,
+      'Cite them where they belong, or hide them from the References tab.');
+  }
+
+  // 4. probable duplicate bibliography entries (§39). Bounded scan (§33).
+  const dup = suggestReferenceDuplicates(refs);
+  for (const p of dup.pairs.slice(0, 5)) {
+    push(warnings, 'duplicate-references',
+      `"${p.a.title || p.a.id}" and "${p.b.title || p.b.id}" look like the same work (${p.verdict.reasons.slice(0, 2).join(', ')}).`,
+      'Merge them in the References tab — citations to either one keep working.');
+  }
+
+  return { errors, warnings, info };
+}
+
 /**
  * @param {object} args {
  *   project, draft,
@@ -61,7 +167,11 @@ export function closestAssetId(id, knownIds) {
  *   saveState   'saved'|'saving'|'error' (useManuscript),
  *   sourcesSettled boolean,
  *   freshness   computeFreshness output ({status,label,counts}),
- *   dataStatus  {[sourceKey]: 'ok'|'error'|…} (manuscriptData honesty map)
+ *   dataStatus  {[sourceKey]: 'ok'|'error'|…} (manuscriptData honesty map),
+ *   // 117.md §39 — the resolved reference library (resolveReferenceLibrary output
+ *   // fields). Optional: omitted → the citation checks simply do not run, which is
+ *   // the pre-117 behaviour for any caller that has not been updated.
+ *   references, aliases, removedIds
  * }
  * @returns {{ errors:[{code,message,action}], warnings:[...], info:[...] }}
  */
@@ -69,6 +179,7 @@ export function validateExport(args = {}) {
   const {
     project, draft, assets, numbering, placements,
     saveState, sourcesSettled, freshness, dataStatus,
+    references, aliases, removedIds,
   } = args;
   const list = Array.isArray(assets) ? assets : [];
   const num = numbering || {};
@@ -261,7 +372,15 @@ export function validateExport(args = {}) {
       'Export NMA figures from the Analysis tab and insert them in Word if needed.');
   }
 
+  /* ── 117.md §39/§40 — citation integrity, folded in at the same severities ── */
+  if (Array.isArray(references)) {
+    const cit = validateCitations({ draft, references, aliases, removedIds });
+    errors.push(...cit.errors);
+    warnings.push(...cit.warnings);
+    info.push(...cit.info);
+  }
+
   return { errors, warnings, info };
 }
 
-export default { validateExport, closestAssetId };
+export default { validateExport, validateCitations, closestAssetId, closestReferenceId };

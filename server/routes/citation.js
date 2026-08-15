@@ -20,6 +20,10 @@ const router = express.Router();
 
 const CROSSREF = 'https://api.crossref.org/works/';
 const NCBI = 'https://eutils.ncbi.nlm.nih.gov/entrez/eutils/';
+// 117.md §29 — PMCID → PMID/DOI. Same public NCBI ID Converter the OA PDF resolver
+// already uses (server/services/pmidToDoi.js); reusing the endpoint keeps one
+// external contract instead of two.
+const IDCONV = 'https://www.ncbi.nlm.nih.gov/pmc/utils/idconv/v1.0/';
 // CrossRef "polite pool" identification (no secret; an email improves rate limits).
 const CONTACT = process.env.APP_CONTACT_EMAIL || 'support@pecanrev.com';
 const UA = `PecanRev/1.0 (mailto:${CONTACT})`;
@@ -74,6 +78,40 @@ router.get('/pubmed/efetch', (req, res) => {
   const id = String(req.query.id || '').replace(/[^0-9]/g, '');
   if (!id || id.length > 20) return res.status(400).json({ error: 'Invalid PMID' });
   return passthrough(res, `${NCBI}efetch.fcgi?db=pubmed&id=${id}&rettype=abstract&retmode=text${ncbiKey()}`, { text: true });
+});
+
+/**
+ * 117.md §29 — PMCID → the record's other identifiers (PMID, DOI).
+ *
+ * The proxy stays a pass-through: the CLIENT turns the returned ids into a PubMed
+ * or CrossRef lookup, exactly as it does for a typed PMID. Input is normalised to
+ * `PMC<digits>` before it reaches the URL, so nothing user-controlled can escape
+ * the query — the same rule the DOI and PMID routes follow.
+ */
+router.get('/pmcid', (req, res) => {
+  const digits = String(req.query.id || '').trim().replace(/^PMC/i, '').replace(/[^0-9]/g, '');
+  if (!digits || digits.length > 20) return res.status(400).json({ error: 'Invalid PMCID' });
+  return passthrough(res, `${IDCONV}?ids=${encodeURIComponent(`PMC${digits}`)}&format=json`);
+});
+
+/**
+ * 117.md §29 — TITLE → CrossRef bibliographic search.
+ *
+ * `query.bibliographic` is CrossRef's own free-form citation matcher, which is the
+ * right tool for "I have the title, find the record". Bounded to 5 rows: this is a
+ * lookup to CONFIRM, never a literature search (that is the Search engine's job),
+ * and an unbounded row count would turn a citation proxy into a scraping relay.
+ */
+router.get('/crossref/search', (req, res) => {
+  const q = String(req.query.q || '').trim().replace(/[\r\n]+/g, ' ');
+  if (q.length < 6 || q.length > 512) return res.status(400).json({ error: 'Invalid search title' });
+  const rowsRaw = parseInt(String(req.query.rows || '5'), 10);
+  const rows = Number.isFinite(rowsRaw) ? Math.min(Math.max(rowsRaw, 1), 5) : 5;
+  const select = 'DOI,title,author,container-title,issued,volume,issue,page,publisher,ISBN,URL,type,abstract';
+  return passthrough(
+    res,
+    `${CROSSREF}?query.bibliographic=${encodeURIComponent(q)}&rows=${rows}&select=${encodeURIComponent(select)}`,
+  );
 });
 
 export default router;
