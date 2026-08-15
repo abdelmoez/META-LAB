@@ -36,6 +36,8 @@ import { C, FONT, MONO, alpha } from '../ui/theme.js';
 import { SCREENING_MODAL_ATTR } from '../ui/components.jsx';
 import { KEYWORD_ORIGIN } from '../../../research-engine/screening/keywordModel.js';
 import { placeMenu } from '../../../research-engine/interaction/menuPosition.js';
+// 117.md §44 (r2 fix) — this menu consumes Escape; see onKeyDown below.
+import { markOverlayEscape } from '../../focus/overlayEscapeLatch.js';
 
 /** Menu geometry — the measured height replaces this estimate on the first layout. */
 const MENU_WIDTH = 232;
@@ -155,6 +157,8 @@ export default function KeywordContextMenu({
     if (e.key === 'Escape') {
       // Consume it only because it really closed something (the 99.md layered-dismissal
       // convention) — otherwise Focus Mode's Escape exit would never fire from here.
+      // 117.md §44 (r2 fix) — and claim the fullscreen exit the same press causes.
+      markOverlayEscape();
       e.stopPropagation();
       e.preventDefault();
       onClose?.(true);

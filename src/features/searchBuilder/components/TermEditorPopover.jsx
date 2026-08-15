@@ -19,6 +19,10 @@ import { useEffect, useRef, useState } from 'react';
 import { C, FONT, MONO, alpha } from '../../../frontend/theme/tokens.js';
 import { splitTermInput } from '../../../research-engine/searchBuilder/termEntry.js';
 import { DUP_RED_BORDER, DUP_RED_BG } from './TermChipRow.jsx';
+// 117.md §44 (r2 fix) — an overlay that CONSUMES Escape must claim the browser
+// fullscreen exit the same press causes; otherwise §44 reads it as "the researcher left
+// full screen" and drops the whole Focus Mode layout. Dependency-free module.
+import { markOverlayEscape } from '../../../frontend/focus/overlayEscapeLatch.js';
 
 function Section({ label, children, help }) {
   return (
@@ -88,7 +92,8 @@ export default function TermEditorPopover({
   }, []);
 
   const onKeyDown = (e) => {
-    if (e.key === 'Escape') { e.stopPropagation(); onClose && onClose(); }
+    // 117.md §44 (r2 fix) — mark before consuming.
+    if (e.key === 'Escape') { markOverlayEscape(); e.stopPropagation(); onClose && onClose(); }
   };
 
   const targets = Array.isArray(moveTargets) ? moveTargets : [];

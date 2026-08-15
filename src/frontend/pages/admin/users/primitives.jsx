@@ -11,6 +11,8 @@
 import { useEffect, useRef, useState } from 'react';
 import { C, FONT, MONO, alpha } from '../../../theme/tokens.js';
 import { initialsFor } from './fmt.js';
+// 117.md §44 (r2 fix) — the drawer consumes Escape; see the key handler below.
+import { markOverlayEscape } from '../../../focus/overlayEscapeLatch.js';
 
 /* Shared input/select/button styles (legacy tokens). */
 export const inputStyle = {
@@ -111,7 +113,8 @@ export function useFocusTrap(panelRef, onClose) {
   }, []);
   useEffect(() => {
     const onKey = (e) => {
-      if (e.key === 'Escape') { e.stopPropagation(); onClose?.(); return; }
+      // 117.md §44 (r2 fix) — mark before consuming (see overlayEscapeLatch.js).
+      if (e.key === 'Escape') { markOverlayEscape(); e.stopPropagation(); onClose?.(); return; }
       if (e.key === 'Tab' && panelRef.current) {
         const f = Array.from(panelRef.current.querySelectorAll(FOCUSABLE)).filter((el) => !el.disabled && el.offsetParent !== null);
         if (f.length === 0) return;

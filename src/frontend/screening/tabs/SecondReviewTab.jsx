@@ -51,6 +51,11 @@ import {
 import { renderAbstract } from '../ui/highlightRender.jsx';
 import PdfViewer from '../components/PdfViewer.jsx';
 import { screeningApi } from '../api-client/screeningApi.js';
+// 117.md §13/§67 (r2 fix) — Final Review is a COLLABORATIVE surface with a compare-and-set
+// behind every button, and it had no live channel at all: it reloaded only after its own
+// writes. A leader who left the tab open while a co-leader decided saw stale rows, and
+// every action taken from them was a guaranteed 409. See the subscription below.
+import { useRealtime } from '../../hooks/useRealtime.js';
 import { SCOPE_SCREENING } from '../../../research-engine/interaction/projectScopes.js';
 import { useProjectHistory } from '../../history/HistoryContext.jsx';
 import { useUndoFeedback } from '../../history/useUndoFeedback.jsx';
@@ -67,6 +72,10 @@ const FullTextPanel = lazy(() => import('../../../features/fullText/FullTextPane
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 const ABSTRACT_CLAMP = 420; // chars before "show more"
+
+/** 117.md §13 (r2 fix) — realtime poke debounce. Same window as PrismaFlowDiagram, so a
+ *  burst of collaborator writes costs ONE list refetch on every surface. */
+const REALTIME_DEBOUNCE_MS = 1200;
 
 /** The refusal shown when this reviewer's screening permission is gone (108.md §8). */
 const DECISION_PERMISSION_REFUSAL =
@@ -225,6 +234,54 @@ export default function SecondReviewTab({ pid, project, access = {}, refreshProj
   }, [pid]);
 
   useEffect(() => { load(); }, [load]);
+
+  /* ── 117.md §13 (r2 fix) — the live channel this tab was missing ─────────────
+   *
+   * The three events that can change what this page shows, all of them emitted by
+   * the very endpoints its own buttons call:
+   *   handoff.updated — a co-leader finalized / reverted / retried a handoff
+   *   decision.saved  — a reviewer's full-text vote changed the chips and the quorum
+   *   record.updated  — a metadata edit, or the finalize/revert poke's second half
+   *
+   * DEBOUNCED at 1.2s, the same window PrismaFlowDiagram uses, so a burst (a leader
+   * working down a list, a bulk import settling) collapses into ONE list refetch, and
+   * `{silent:true}` so the page never flashes its loading state under the reader.
+   * The poke carries ids only (global invariant 8) — this refetches through the
+   * authorized endpoint rather than trusting anything on the wire.
+   *
+   * Why it matters beyond freshness: every write from this tab sends `expect`, and
+   * the server now claims the row atomically. Acting on a stale list is therefore not
+   * a silent clobber any more — it is a 409 the user has to read. Keeping the list
+   * live is what stops those 409s from being the normal case.
+   */
+  const loadRef = useRef(load);
+  loadRef.current = load;
+  const pokeTimer = useRef(null);
+  const onPoke = useCallback(() => {
+    if (pokeTimer.current) clearTimeout(pokeTimer.current);
+    pokeTimer.current = setTimeout(() => {
+      pokeTimer.current = null;
+      loadRef.current({ silent: true });
+    }, REALTIME_DEBOUNCE_MS);
+  }, []);
+  useRealtime({
+    'handoff.updated': onPoke,
+    'decision.saved': onPoke,
+    'record.updated': onPoke,
+  });
+  // A poke landing 1.2s before the tab closes must not refetch into an unmounted tree.
+  useEffect(() => () => {
+    if (pokeTimer.current) { clearTimeout(pokeTimer.current); pokeTimer.current = null; }
+  }, []);
+
+  /**
+   * 117.md §54 (r2 fix) — a refusal is only half an answer. The server's 409 says "the
+   * final decision on this record changed since — reload to see the current state";
+   * leaving the reader to do that by hand means the note is followed by the same stale
+   * row that caused it, and the obvious next click 409s again. Every refusal path
+   * therefore reloads immediately, silently.
+   */
+  const reloadAfterConflict = useCallback(() => { loadRef.current({ silent: true }); }, []);
 
   useEffect(() => {
     if (!toast) return;
@@ -420,11 +477,19 @@ export default function SecondReviewTab({ pid, project, access = {}, refreshProj
       return { ok: true, resp, entryId: stamped ? stamped.id : '' };
     } catch (e) {
       if (finalWrites.currentSeq(rid) === mySeq) patchRecord(rid, () => ({ ...prev }));
+      // 117.md §54 (r2 fix) — the rollback above restores what this CLIENT believed
+      // before the click, which is exactly the belief the failure calls into question.
+      // A 409 says the stored row moved; a network failure leaves it unknown. Either
+      // way the queued undo entry (recorded at issue time, 108.md §26) would now be
+      // validated against a guess. Reload the truth immediately and silently, so the
+      // error the user is about to read is followed by the real state rather than by
+      // the same stale row that produced it.
+      reloadAfterConflict();
       return { ok: false, status: e?.status, detail: e?.message || '' };
     } finally {
       setFinalizing(p => { const n = { ...p }; delete n[rid]; return n; });
     }
-  }, [patchRecord, writeFinalState, finalWrites, load, notify, notifyUndoable]);
+  }, [patchRecord, writeFinalState, finalWrites, load, notify, notifyUndoable, reloadAfterConflict]);
 
   const handleAccept = useCallback(async (rec, restoreSnapshot = true) => {
     if (finalizingRef.current[rec.id]) return;
@@ -550,6 +615,11 @@ export default function SecondReviewTab({ pid, project, access = {}, refreshProj
       // a REFUSAL (the entry goes back on its stack and the user is told why), not a
       // persistence failure — and the server's sentence is the accurate one.
       if (e && e.status === 409) {
+        // 117.md §54 (r2 fix) — the refusal names a state this client does not have.
+        // Reload it, so "the final decision on that record changed since — reload to
+        // see the current state" is immediately TRUE on screen instead of an
+        // instruction. The reload is silent and does not change the outcome below.
+        reloadAfterConflict();
         return { ok: false, reason: 'refused', detail: e.message || refusalText(FINALIZE_REFUSE.STATUS) };
       }
       if (e && e.status === 403) {
@@ -562,7 +632,7 @@ export default function SecondReviewTab({ pid, project, access = {}, refreshProj
     await load({ silent: true });
     if (refreshProjectRef.current) await refreshProjectRef.current();
     return true;
-  }, [patchRecord, writeFinalState, finalWrites, load]);
+  }, [patchRecord, writeFinalState, finalWrites, load, reloadAfterConflict]);
 
   useEffect(
     () => registerExecutor(SCREENING_KIND.FINALIZE, finalizeExecutor),
@@ -761,7 +831,7 @@ export default function SecondReviewTab({ pid, project, access = {}, refreshProj
           <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10, marginTop: 18 }}>
             <Button variant="ghost" disabled={!!finalizing[rejectFor.id]}
               onClick={() => { setRejectFor(null); setRejectReason(''); }}>Cancel</Button>
-            <Button variant="danger" disabled={!!finalizing[rejectFor.id]}
+            <Button variant="danger" disabled={!!finalizing[rejectFor.id]} testId="final-review-exclude-confirm"
               onClick={submitReject}>{finalizing[rejectFor.id] ? 'Excluding…' : 'Exclude record'}</Button>
           </div>
         </Modal>
@@ -822,6 +892,7 @@ export default function SecondReviewTab({ pid, project, access = {}, refreshProj
               onClick={() => setRevertFor(null)}>Cancel</Button>
             <Button variant="primary" disabled={!!finalizing[revertFor.id]}
               style={{ background: C.gold, color: C.bg }}
+              testId="final-review-reopen-confirm"
               onClick={submitRevert}>
               {finalizing[revertFor.id]
                 ? 'Reverting…'
@@ -1017,7 +1088,13 @@ function RecordCard({
                   const active = myDecision === opt.value;
                   const busy = savingDecision === opt.value;
                   return (
+                    // 117.md §79 (r2 fix) — the reviewer's VOTE and the leader's
+                    // VERDICT both render as "Include"/"Exclude" on the same card for
+                    // an owner (who is both), so a name-based locator matched two
+                    // buttons and every Playwright click on it was a strict-mode
+                    // violation. The two roles get distinct, stable testids.
                     <button key={opt.value} type="button" disabled={!!savingDecision}
+                      data-testid={`final-review-vote-${opt.value}`}
                       onClick={() => onDecision(rec, opt.value)}
                       style={{
                         fontFamily: FONT, fontSize: 12.5, fontWeight: 600, padding: '7px 16px', borderRadius: 7,
@@ -1048,10 +1125,12 @@ function RecordCard({
               </div>
               <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
                 <Button variant="primary" disabled={finalizing} style={{ background: C.grn, color: C.bg }}
+                  testId="final-review-accept"
                   onClick={() => onAccept(rec)} title="Accept and send to Data Extraction">
                   {finalizing ? 'Finalizing…' : 'Accept → Data Extraction'}
                 </Button>
                 <Button variant="danger" disabled={finalizing} onClick={onRejectClick}
+                  testId="final-review-exclude"
                   title="Exclude this record at final review">
                   Exclude
                 </Button>
@@ -1068,6 +1147,7 @@ function RecordCard({
             {sent ? 'This study is in Data Extraction.' : 'This study is accepted, not yet in Data Extraction.'}
           </span>
           <Button variant="ghost" disabled={finalizing} onClick={() => onRevert(rec)}
+            testId="final-review-reopen"
             title="Return to pending Final Review (safe — extracted data is kept and restorable)">
             {finalizing ? 'Working…' : '↩ Return to Final Review'}
           </Button>
@@ -1083,6 +1163,7 @@ function RecordCard({
             This record is excluded at final review.
           </span>
           <Button variant="ghost" disabled={finalizing} onClick={() => onRevert(rec)}
+            testId="final-review-reopen"
             title="Reopen this record for Final Review (the exclusion stays in the audit trail)">
             {finalizing ? 'Working…' : '↩ Reopen for Final Review'}
           </Button>

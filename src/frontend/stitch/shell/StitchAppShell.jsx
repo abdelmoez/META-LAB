@@ -97,9 +97,20 @@ function DefaultFocusBar({ breadcrumb }) {
 /** Width of the revealed drawer — the same as the mobile off-canvas nav, so the
  *  same rail renders at the same size wherever it appears as a drawer. */
 const FOCUS_NAV_W = 288;
-/** The hover zone. 6px: reachable by throwing the pointer at the screen edge (the
- *  edge is an infinitely tall target) without stealing clicks from the workspace. */
+/** The hover threshold. 6px: reachable by throwing the pointer at the screen edge (the
+ *  edge is an infinitely tall target).
+ *
+ *  117.md §42 (r2 fix) — this used to be the width of a `position:fixed` DIV with
+ *  pointer handlers on it, which meant the leftmost 6px of every focused page were
+ *  DEAD: a scrollbar, a resize handle, a table's first column, a text selection that
+ *  started at the margin — all of them landed on an invisible overlay instead. The
+ *  threshold is now measured from a document-level `pointermove` and the visual strip
+ *  is `pointer-events:none`, so nothing is intercepted and the reveal still fires. */
 const EDGE_ZONE_W = 6;
+/** How often the document-level pointermove is allowed to re-evaluate the threshold.
+ *  A trailing flush guarantees the LAST position is always processed, so a single
+ *  synthetic move straight to x=1 (what the e2e does) can never be dropped. */
+const EDGE_SAMPLE_MS = 40;
 /** How long the pointer must REST at the edge before the drawer opens. 117.md §42
  *  — "do not make it irritatingly sensitive". A pointer merely travelling past is
  *  long gone before this elapses. */
@@ -166,6 +177,10 @@ function FocusNavOverlay({ renderRail, contextRail }) {
 
   const onPanelEnter = useCallback(() => { clearDwell(); clearHide(); }, [clearDwell, clearHide]);
 
+  // Which side of the threshold the pointer was on at the last sample. A ref, not
+  // state: crossing the edge must not re-render the whole shell.
+  const inZone = useRef(false);
+
   const startAutoHide = useCallback(() => {
     clearHide();
     if (navPinned) return;               // pinned is exactly "auto-hide does not apply"
@@ -176,10 +191,55 @@ function FocusNavOverlay({ renderRail, contextRail }) {
   // triggered up in the bar's own row (above the panel) would otherwise stay open
   // forever, because the pointer never entered the panel to leave it. Moving from
   // the zone INTO the panel fires this and then onPanelEnter, which cancels it.
-  const onZoneLeave = useCallback(() => {
+  // 117.md §42 (r2 fix) — `target` is the element the sampled move was over. A move
+  // that left the threshold INTO the open drawer must not arm auto-hide: the panel's
+  // own pointerenter has already cancelled it (pointerover/enter are dispatched before
+  // pointermove), and re-arming here would hide the drawer under the pointer.
+  const onZoneLeave = useCallback((target) => {
     clearDwell();
+    const panel = panelRef.current;
+    if (panel && target && typeof panel.contains === 'function' && panel.contains(target)) return;
     if (navOpen) startAutoHide();
   }, [clearDwell, navOpen, startAutoHide]);
+
+  /**
+   * 117.md §42 (r2 fix) — the edge reveal, WITHOUT an interactive element in the way.
+   *
+   * One passive, capture-phase `pointermove` on the document decides which side of
+   * EDGE_ZONE_W the pointer is on and fires the same enter/leave logic the zone div
+   * used to. Sampling is throttled to EDGE_SAMPLE_MS with a TRAILING flush, so a burst
+   * of moves costs one evaluation while the final resting position is never dropped —
+   * which is what keeps a single scripted `mouse.move(1, y)` working.
+   */
+  useEffect(() => {
+    if (typeof document === 'undefined') return undefined;
+    let last = 0;
+    let pending = null;
+    let trailing = null;
+    const flush = () => {
+      trailing = null;
+      if (!pending) return;
+      const { x, target } = pending;
+      pending = null;
+      last = Date.now();
+      const near = x <= EDGE_ZONE_W;
+      if (near === inZone.current) return;
+      inZone.current = near;
+      if (near) onZoneEnter(); else onZoneLeave(target);
+    };
+    const onMove = (e) => {
+      pending = { x: e.clientX, target: e.target };
+      const now = Date.now();
+      const wait = EDGE_SAMPLE_MS - (now - last);
+      if (wait <= 0) { if (trailing) { clearTimeout(trailing); trailing = null; } flush(); return; }
+      if (!trailing) trailing = setTimeout(flush, wait);
+    };
+    document.addEventListener('pointermove', onMove, { capture: true, passive: true });
+    return () => {
+      document.removeEventListener('pointermove', onMove, true);
+      if (trailing) clearTimeout(trailing);
+    };
+  }, [onZoneEnter, onZoneLeave]);
 
   // A click anywhere else dismisses a temporarily-open drawer — the behaviour any
   // overlay menu owes. The hamburger is excluded, or the click that closes the
@@ -223,12 +283,16 @@ function FocusNavOverlay({ renderRail, contextRail }) {
 
   return (
     <>
+      {/* 117.md §42 (r2 fix) — a MARKER, not a hit target. It carries no handlers and
+          `pointer-events:none`, so the leftmost 6px of the workspace still belong to
+          the workspace (scrollbars, first table column, a selection begun at the
+          margin). The reveal is driven by the document-level pointermove above; this
+          element only marks where the threshold is, for tests and for any future
+          affordance that wants to draw there. */}
       <div
         data-testid="focus-edge-zone"
         aria-hidden="true"
-        onPointerEnter={onZoneEnter}
-        onPointerLeave={onZoneLeave}
-        style={{ position: 'fixed', left: 0, top: 0, bottom: 0, width: EDGE_ZONE_W, zIndex: 44 }}
+        style={{ position: 'fixed', left: 0, top: 0, bottom: 0, width: EDGE_ZONE_W, zIndex: 44, pointerEvents: 'none' }}
       />
       <aside
         id={FOCUS_NAV_DRAWER_ID}

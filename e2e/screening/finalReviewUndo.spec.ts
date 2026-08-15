@@ -91,15 +91,30 @@ async function openFinalReview(page: Page, projectId: string): Promise<Screening
   return sift;
 }
 
-/* The Modal renders inline but carries role="dialog", so every confirmation locator
-   is scoped to it — the card button and the modal button share their wording. */
+/* LOCATORS — 117.md §79 (r2 fix). These were written by ACCESSIBLE NAME, and on this
+   page that is ambiguous by construction: the project owner is both a reviewer and the
+   leader, so a pending card renders a reviewer VOTE button reading "Exclude" AND a
+   leader VERDICT button reading "Exclude". `getByRole('button', {name: /^Exclude$/})`
+   therefore resolved to two elements and every click on it was a Playwright
+   strict-mode violation — the exclude tests below could not run at all for an owner.
+   The card button and the modal confirmation shared their wording too ("Reopen for
+   Final Review"), which the `dialog` scoping papered over but did not remove.
+
+   Every control now has an explicit testid naming its ROLE, not its label, so the
+   ambiguity cannot come back with a copy change. `acceptButton` was audited for the
+   same defect: the reviewer's vote reads "Include" and the leader's reads
+   "Accept → Data Extraction", so it was never ambiguous — it moves to a testid anyway
+   so both halves of one decision are located the same way. */
 const dialog = (sift: ScreeningPage) => sift.page.getByRole('dialog');
-const excludeButton = (sift: ScreeningPage) => sift.main.getByRole('button', { name: /^Exclude$/ });
-const confirmExclude = (sift: ScreeningPage) => dialog(sift).getByRole('button', { name: /Exclude record/ });
+const excludeButton = (sift: ScreeningPage) => sift.main.getByTestId('final-review-exclude');
+const confirmExclude = (sift: ScreeningPage) => dialog(sift).getByTestId('final-review-exclude-confirm');
 const reasonBox = (sift: ScreeningPage) => dialog(sift).getByPlaceholder(/Wrong population/);
-const acceptButton = (sift: ScreeningPage) => sift.main.getByRole('button', { name: /Accept → Data Extraction/ });
-const reopenButton = (sift: ScreeningPage) => sift.main.getByRole('button', { name: /Reopen for Final Review/ });
-const confirmReopen = (sift: ScreeningPage) => dialog(sift).getByRole('button', { name: /Reopen for Final Review/ });
+const acceptButton = (sift: ScreeningPage) => sift.main.getByTestId('final-review-accept');
+const reopenButton = (sift: ScreeningPage) => sift.main.getByTestId('final-review-reopen');
+const confirmReopen = (sift: ScreeningPage) => dialog(sift).getByTestId('final-review-reopen-confirm');
+/** The REVIEWER's own full-text vote — the other half of the ambiguity above. */
+const voteButton = (sift: ScreeningPage, v: 'include' | 'exclude' | 'maybe') =>
+  sift.main.getByTestId(`final-review-vote-${v}`);
 
 test.describe('Final Review — exclude undo/redo (117.md §52-§56)', () => {
   test('@smoke Exclude → Ctrl+Z clears the status AND the reason → Ctrl+Shift+Z restores both', async ({
@@ -110,6 +125,13 @@ test.describe('Final Review — exclude undo/redo (117.md §52-§56)', () => {
     const rid = await promoteOne(request, normalContext.request, screeningProject.siftId);
 
     const sift = await openFinalReview(page, screeningProject.project.id);
+    // 117.md §79 (r2 fix) — the two "Exclude" controls really are both on screen for an
+    // owner. Asserting it here is what keeps the locators above honest: if the leader
+    // verdict ever loses its testid, this fails loudly rather than clicking the vote.
+    await expect(voteButton(sift, 'exclude')).toBeVisible();
+    await expect(excludeButton(sift)).toBeVisible();
+    await expect(sift.main.getByRole('button', { name: /^Exclude$/ })).toHaveCount(2);
+
     await excludeButton(sift).click();
     await reasonBox(sift).fill('Wrong population');
     await confirmExclude(sift).click();
@@ -219,6 +241,13 @@ test.describe('Final Review — accept undo (117.md §52/§53)', () => {
     const rid = await promoteOne(request, normalContext.request, screeningProject.siftId);
 
     const sift = await openFinalReview(page, screeningProject.project.id);
+    // The accept half of the §79 (r2) audit: the leader verdict and the reviewer's
+    // "Include" vote are DIFFERENT names, so this one was never ambiguous — pinned so
+    // a future copy change ("Include → Data Extraction") cannot make it so silently.
+    await expect(acceptButton(sift)).toBeVisible();
+    await expect(voteButton(sift, 'include')).toBeVisible();
+    await expect(sift.main.getByRole('button', { name: /^Include$/ })).toHaveCount(1);
+
     await acceptButton(sift).click();
     await expect.poll(async () => (await finalRecord(request, screeningProject.siftId, rid)).finalStatus)
       .toBe('accepted');

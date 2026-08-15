@@ -29,6 +29,10 @@ import { C, FONT, alpha } from '../../../frontend/theme/tokens.js';
 import { CONCEPT_STATUS_LABELS } from '../../../research-engine/searchBuilder/searchState.js';
 import { liveTermsOf } from '../../../research-engine/searchBuilder/termLiveness.js';
 import { conceptAccent, CONCEPT_STATUS_GLYPH } from './uiShared.js';
+// 117.md §44 (r2 fix) — an overlay that CONSUMES Escape must claim the browser
+// fullscreen exit the same press causes; otherwise §44 reads it as "the researcher left
+// full screen" and drops the whole Focus Mode layout. Dependency-free module.
+import { markOverlayEscape } from '../../../frontend/focus/overlayEscapeLatch.js';
 
 export default function ActiveConceptPanel({
   concept, conceptIndex, status, readOnly, onRename, onRenameCommit, onRenameBegin, onUpdateSourcePhrase, onRequestSplit, children,
@@ -132,7 +136,8 @@ export default function ActiveConceptPanel({
           /* 99.md review (a11y) — layered dismissal: Escape inside a text field must
              not collapse the card out from under an active edit. This input is always
              visible (there is no editor layer to close), so Escape simply stops here. */
-          onKeyDown={(e) => { if (e.key === 'Escape') e.stopPropagation(); }}
+          /* 117.md §44 (r2 fix) — mark before consuming. */
+          onKeyDown={(e) => { if (e.key === 'Escape') { markOverlayEscape(); e.stopPropagation(); } }}
           aria-label={`Concept name: ${c.label || ''}`}
           readOnly={!!readOnly} aria-disabled={readOnly || undefined}
           title={readOnly ? 'Read-only access — ask a project editor to rename this concept' : 'Rename this concept'}
@@ -219,7 +224,7 @@ export default function ActiveConceptPanel({
           {phraseEditing && (
             <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
               <input value={phraseDraft} onChange={(e) => setPhraseDraft(e.target.value)}
-                onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); savePhrase(); } if (e.key === 'Escape') { e.stopPropagation(); setPhraseEditing(false); } /* 99.md — layered dismissal: closing the phrase editor must not also collapse the card */ }}
+                onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); savePhrase(); } if (e.key === 'Escape') { markOverlayEscape(); e.stopPropagation(); setPhraseEditing(false); } /* 99.md — layered dismissal: closing the phrase editor must not also collapse the card; 117.md §44 (r2 fix) — mark before consuming */ }}
                 aria-label={`New phrase for ${c.label || 'this concept'}`} placeholder="phrase from the question…" autoFocus
                 style={{ background: C.surf, border: `1px solid ${C.brd}`, borderRadius: 7, padding: '4px 8px', color: C.txt, fontFamily: FONT, fontSize: 11, width: 220 }} />
               <button type="button" onClick={savePhrase} disabled={!phraseDraft.trim()}

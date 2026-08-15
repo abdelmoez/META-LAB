@@ -37,6 +37,8 @@ import { createPortal } from 'react-dom';
 import { C, FONT, MONO, alpha } from '../theme/tokens.js';
 import { PRESETS, validateCustomSize } from './exportCore.js';
 import { DECIMAL_OPTIONS, DEFAULT_DECIMALS } from '../../research-engine/format/precision.js';
+// 117.md §44 (r2 fix) — see the Escape effect below.
+import { markOverlayEscape } from '../focus/overlayEscapeLatch.js';
 
 const sectionLabel = {
   fontSize: 10, fontFamily: MONO, fontWeight: 700, letterSpacing: '0.12em',
@@ -63,7 +65,15 @@ function Spinner({ size = 13 }) {
 // precision selector applies to report/figure-style outputs (SVG/PNG/table text).
 const MACHINE_FORMATS = new Set(['csv', 'json', 'ris', 'bib']);
 
-export default function ExportDialog({ open, onClose, item, precision }) {
+export default function ExportDialog({ open, onClose, item, precision: projectPrecision }) {
+  // 117.md §24/§41 (r2 fix) — an item may DEFAULT the selector to something narrower
+  // than the project setting. The forest exports pass the figure's own per-figure
+  // decimals, so the dialog opens showing what that figure is actually configured to
+  // print: leaving it alone exports the figure's value, and changing it beats the
+  // figure's value (`exportFigureOpts`). Without this seed, making the dialog
+  // authoritative would have silently downgraded every per-figure override to the
+  // project default. Purely a DEFAULT — the user's choice always wins.
+  const precision = (item && item.precision) || projectPrecision;
   const [format, setFormat]           = useState(null);
   const [presetId, setPresetId]       = useState(PRESETS[0].id);
   const [customPx, setCustomPx]       = useState('1600');
@@ -99,12 +109,23 @@ export default function ExportDialog({ open, onClose, item, precision }) {
   const close = useCallback(() => { if (!running) onClose?.(); }, [running, onClose]);
 
   // Escape closes (no-op while an export is running).
+  //
+  // 117.md §44 (r2 fix) — document/CAPTURE + stopPropagation + markOverlayEscape when
+  // the key REALLY closes the dialog. While an export is running Escape closes nothing,
+  // so it is not consumed and not marked (the 99.md layered-dismissal convention:
+  // consume only what you actually handled) — otherwise a running export would swallow
+  // the key and leave the researcher with no way out of Focus Mode.
   useEffect(() => {
     if (!open) return undefined;
-    const onKey = e => { if (e.key === 'Escape') close(); };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [open, close]);
+    const onKey = e => {
+      if (e.key !== 'Escape' || running) return;
+      markOverlayEscape();
+      e.stopPropagation();
+      close();
+    };
+    document.addEventListener('keydown', onKey, true);
+    return () => document.removeEventListener('keydown', onKey, true);
+  }, [open, close, running]);
 
   if (!open || !item) return null;
 

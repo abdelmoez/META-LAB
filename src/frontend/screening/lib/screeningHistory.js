@@ -350,14 +350,32 @@ export function sameFinalizeState(a, b) {
  * use. `expect.finalStatus` is re-validated locally AND sent to the server as a
  * compare-and-set, so a collaborator's verdict produces a refusal, never a clobber.
  *
- * `restoreSnapshot` rides on the ACCEPT side only. Undoing back to 'accepted' always
- * restores (the extracted data is the thing worth keeping); redoing an accept replays
- * the operator's original restore-vs-start-fresh choice.
+ * `restoreSnapshot` rides on the ACCEPT side only, and BOTH directions always restore.
+ *
+ * 117.md §52/§54 (r2 fix) — RE-PINNED DELIBERATELY. The redo used to replay the
+ * operator's original restore-vs-start-fresh choice (`restoreSnapshot !== false`), and
+ * that is lossy in the one sequence undo/redo exists for:
+ *
+ *   accept "start fresh"  →  the server DROPS the old snapshot and hands off a blank
+ *                            study; the reviewer extracts data into it
+ *   Ctrl+Z                →  revert snapshots THAT work onto the record
+ *   Ctrl+Shift+Z          →  replaying "start fresh" would delete the snapshot the
+ *                            undo had just taken — the reviewer's extraction, gone,
+ *                            with no inverse anywhere in the system
+ *
+ * The original choice was made when there was nothing to lose (the snapshot it
+ * discarded belonged to an earlier, already-abandoned extraction). By redo time there
+ * is: undo/redo must be lossless (108.md), so the redo restores, unconditionally. The
+ * parameter is kept in the signature because the FORWARD write still honours it — it
+ * is the entry's replay that must not.
  */
 export function finalizeEntry({ recordId, prev, next, currentStage, title, restoreSnapshot }) {
   if (!recordId || !prev || !next) return null;
   if (sameFinalizeState(prev, next)) return null;
   const stage = currentStage || FULL_TEXT_STAGE;
+  // Recorded, never replayed (see above): the trail can still say what the operator
+  // chose at the time without the redo acting on it.
+  const chose = restoreSnapshot === false ? 'fresh' : 'restore';
   return {
     kind: SCREENING_KIND.FINALIZE,
     label: SCREENING_LABEL.FINALIZE,
@@ -372,9 +390,16 @@ export function finalizeEntry({ recordId, prev, next, currentStage, title, resto
       recordId,
       target: { ...next },
       expect: { finalStatus: prev.finalStatus || '', currentStage: stage },
-      restoreSnapshot: restoreSnapshot !== false,
+      // 117.md §52/§54 (r2 fix) — ALWAYS true; see the header for why replaying a
+      // historical "start fresh" is lossy. The `restoreSnapshot` PARAMETER still
+      // governs the forward write (runFinalize → finalizeRequest); it is only this
+      // replay that must not honour it.
+      restoreSnapshot: true,
     },
-    meta: { recordId, title: typeof title === 'string' ? title : '', status: next.finalStatus || '' },
+    meta: {
+      recordId, title: typeof title === 'string' ? title : '', status: next.finalStatus || '',
+      snapshotChoice: chose,
+    },
   };
 }
 

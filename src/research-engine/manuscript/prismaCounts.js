@@ -297,6 +297,115 @@ export function computePrismaCounts(project, opts = {}) {
   };
 }
 
+/* ════════ 117.md §17 (r2 fix) — the identities an OVERRIDE can break ════════
+ *
+ * The engine's own reconciliation runs over record-derived counts. An override is a
+ * typed number laid on top of them AFTER that check, so the checked object and the
+ * reported object are not the same object — which is precisely how "Override makes
+ * records screened (2,164) exceed records identified (100)" can reach a Methods
+ * paragraph without a single warning anywhere.
+ *
+ * This re-checks the POST-override counts against the basic PRISMA 2020 stage
+ * identities. Deliberately narrow:
+ *   · only pairs where BOTH sides resolved to a number are compared — a missing count
+ *     is already reported by its own channel and must not be inferred as 0;
+ *   · every message names the identity AND both numbers, because "counts do not
+ *     reconcile" is not something a reviewer can act on;
+ *   · nothing is repaired. The override stands; the contradiction is stated.
+ *
+ * `identified − removed = screened` is checked as an equality only when the removal
+ * count is known, and as an inequality (`screened ≤ identified`) otherwise, because
+ * §16 allows workflows that record no dedup step at all.
+ * Pure; exported for the unit suite.
+ */
+export function overrideCoherenceWarnings(counts) {
+  const c = counts || {};
+  const n = (k) => (typeof c[k] === 'number' && Number.isFinite(c[k]) ? c[k] : null);
+  const fmt = (v) => Number(v).toLocaleString('en-US');
+  const out = [];
+
+  const identified = n('identified');
+  const dedupe = n('dedupe');
+  const screened = n('screened');
+  const excludedScreen = n('excludedScreen');
+  const sought = n('sought');
+  const notRetrieved = n('notRetrieved');
+  const assessed = n('reportsAssessed');
+  const reportsExcluded = n('reportsExcluded');
+  const included = n('included');
+  const includedQuant = n('includedQuant');
+
+  // No stage can be negative, whoever typed it.
+  const NEG = [
+    ['identified', 'Records identified'], ['dedupe', 'Duplicates removed'],
+    ['screened', 'Records screened'], ['excludedScreen', 'Records excluded (screening)'],
+    ['sought', 'Reports sought for retrieval'], ['notRetrieved', 'Reports not retrieved'],
+    ['reportsAssessed', 'Reports assessed for eligibility'], ['reportsExcluded', 'Reports excluded (full text)'],
+    ['included', 'Studies included in review'], ['includedQuant', 'Studies in meta-analysis'],
+  ];
+  for (const [key, label] of NEG) {
+    const v = n(key);
+    if (v != null && v < 0) out.push(`Override makes ${label.toLowerCase()} negative (${fmt(v)}) — no PRISMA stage can hold fewer than zero records.`);
+  }
+
+  if (identified != null && screened != null) {
+    if (screened > identified) {
+      // The headline impossibility, stated first and on its own: no dedup count can
+      // make this legal, so it is reported whether or not one is known. Reporting the
+      // equality break as well would be two sentences about one mistake.
+      out.push(`Override makes records screened (${fmt(screened)}) exceed records identified (${fmt(identified)}).`);
+    } else if (dedupe != null) {
+      const expect = identified - dedupe;
+      if (screened !== expect) {
+        out.push(
+          `Override breaks records identified − duplicates removed = records screened `
+          + `(${fmt(identified)} − ${fmt(dedupe)} = ${fmt(expect)}, but records screened is ${fmt(screened)}).`,
+        );
+      }
+    }
+  }
+  if (identified != null && dedupe != null && dedupe > identified) {
+    out.push(`Override makes duplicates removed (${fmt(dedupe)}) exceed records identified (${fmt(identified)}).`);
+  }
+  if (screened != null && excludedScreen != null && excludedScreen > screened) {
+    out.push(`Override makes records excluded at screening (${fmt(excludedScreen)}) exceed records screened (${fmt(screened)}).`);
+  }
+  if (screened != null && sought != null && sought > screened) {
+    out.push(`Override makes reports sought for retrieval (${fmt(sought)}) exceed records screened (${fmt(screened)}).`);
+  }
+  if (sought != null && notRetrieved != null && notRetrieved > sought) {
+    out.push(`Override makes reports not retrieved (${fmt(notRetrieved)}) exceed reports sought for retrieval (${fmt(sought)}).`);
+  }
+  if (sought != null && notRetrieved != null && assessed != null) {
+    const expect = sought - notRetrieved;
+    if (assessed !== expect) {
+      out.push(
+        `Override breaks reports sought − reports not retrieved = reports assessed `
+        + `(${fmt(sought)} − ${fmt(notRetrieved)} = ${fmt(expect)}, but reports assessed is ${fmt(assessed)}).`,
+      );
+    }
+  }
+  if (screened != null && assessed != null && excludedScreen != null && sought == null) {
+    const expect = screened - excludedScreen;
+    if (assessed !== expect) {
+      out.push(
+        `Override breaks records screened − records excluded = reports assessed `
+        + `(${fmt(screened)} − ${fmt(excludedScreen)} = ${fmt(expect)}, but reports assessed is ${fmt(assessed)}).`,
+      );
+    }
+  }
+  if (assessed != null && reportsExcluded != null && reportsExcluded > assessed) {
+    out.push(`Override makes reports excluded at full text (${fmt(reportsExcluded)}) exceed reports assessed for eligibility (${fmt(assessed)}).`);
+  }
+  if (assessed != null && included != null && included > assessed) {
+    out.push(`Override makes studies included (${fmt(included)}) exceed reports assessed for eligibility (${fmt(assessed)}).`);
+  }
+  if (included != null && includedQuant != null && includedQuant > included) {
+    out.push(`Override makes studies in the meta-analysis (${fmt(includedQuant)}) exceed studies included in the review (${fmt(included)}).`);
+  }
+  return out;
+}
+
 /**
  * 103.md §10 — adapt the canonical record-derived flow to this module's legacy
  * output shape, so every existing consumer (the counts table, the SVG, the
@@ -379,6 +488,16 @@ function adaptFlow(flow, opts = {}) {
   }
   const overriddenKeys = Object.keys(overrides);
   if (overriddenKeys.length) {
+    // 117.md §17 (r2 fix) — THE OVERRIDDEN NUMBERS GET THE SAME AUDIT THE DERIVED
+    // ONES DO. `flow.reconciliation` above was computed by the PRISMA engine over the
+    // RECORD-derived counts; the overlay then replaces some of them, and nothing
+    // re-checked the result. A reviewer could type 2164 into "records screened" on a
+    // review that identified 100 records and the counts table, the narrative and the
+    // export would all print it without a word. §17 is explicit: "do not silently
+    // render impossible PRISMA diagrams" — so the post-override counts are checked
+    // against the stage identities and every broken one is NAMED with its numbers.
+    for (const w of overrideCoherenceWarnings(counts)) warnings.push(w);
+
     // Never silent (§21). The DIAGRAM is deliberately left alone: every box in it is
     // a record set a reviewer can click into (§12), and a typed number has no records
     // behind it — redrawing the figure from an override would destroy exactly the
@@ -520,6 +639,7 @@ export function countsToPrismaShape(result) {
 export default {
   computePrismaCounts,
   countsToPrismaShape,
+  overrideCoherenceWarnings,
   PRISMA_OVERRIDE_FIELDS,
   PRISMA_OVERRIDE_KEYS,
   PRISMA_OVERRIDE_LOG_CAP,

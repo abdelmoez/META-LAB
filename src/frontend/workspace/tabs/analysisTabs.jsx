@@ -43,7 +43,11 @@ import { isExcludedFromAnalysis } from "../../../research-engine/statistics/stud
 // degrades gracefully until the engine is wired in. Once landed it "just works".
 import * as MonolithStats from "../../../research-engine/statistics/monolithStats.js";
 import { openExportDialog } from "../exportDialogBridge.js";
-import { SVG_XML_HEADER, presetTag, liveSvgToString, buildPubForestSVG, esMeasureName } from "../charts/svgBuilders.js";
+// 117.md §44 (r2 fix) — an overlay that CONSUMES Escape must claim the browser
+// fullscreen exit the same press causes; otherwise §44 reads it as "the researcher left
+// full screen" and drops the whole Focus Mode layout. Dependency-free module.
+import { markOverlayEscape } from "../../focus/overlayEscapeLatch.js";
+import { SVG_XML_HEADER, presetTag, liveSvgToString, buildPubForestSVG, esMeasureName, exportFigureOpts } from "../charts/svgBuilders.js";
 // 116.md §26/§32 — ONE resolver for every forest surface's text + no-effect authority.
 // 117.md §23-§25/§81 — the same resolver now returns the whole PRESENTATION record
 // (subtitle/note/column visibility/decimals/bounded geometry), and owns the ONE bounds
@@ -755,7 +759,7 @@ export function InlineLabelEdit({label,value,placeholder,onCommit,width=190,hint
     <span style={{whiteSpace:"nowrap"}}>{label}</span>
     {editing?(
       <input autoFocus value={draft} placeholder={placeholder||""} onChange={e=>setDraft(e.target.value)}
-        onKeyDown={e=>{ if(e.key==="Enter"){e.preventDefault();commit();} else if(e.key==="Escape"){e.preventDefault();cancel();} }}
+        onKeyDown={e=>{ if(e.key==="Enter"){e.preventDefault();commit();} else if(e.key==="Escape"){markOverlayEscape();/* 117.md §44 (r2 fix) */e.preventDefault();cancel();} }}
         onBlur={commit} aria-label={label}
         style={{...inp,width,fontSize:11,padding:"3px 6px"}}/>
     ):(
@@ -805,7 +809,7 @@ export function PlotSizeInput({name,value,onCommit}){
     <input type="number" value={shown} min={b.min} max={b.max} step={b.step}
       placeholder={String(b.defaultLive)} aria-label={`${b.label} (${b.min}–${b.max} ${b.unit})`}
       onChange={e=>setDraft(e.target.value)}
-      onKeyDown={e=>{ if(e.key==="Enter"){e.preventDefault();e.currentTarget.blur();} else if(e.key==="Escape"){e.preventDefault();setDraft(null);} }}
+      onKeyDown={e=>{ if(e.key==="Enter"){e.preventDefault();e.currentTarget.blur();} else if(e.key==="Escape"){markOverlayEscape();/* 117.md §44 (r2 fix) */e.preventDefault();setDraft(null);} }}
       onBlur={commit}
       style={{...inp,width:76,fontSize:11,padding:"3px 6px"}}/>
     <span style={{color:C.dim,whiteSpace:"nowrap"}}>{b.min}–{b.max} {b.unit}</span>
@@ -2087,17 +2091,27 @@ export function ResearchExport({result,esType,method,studies,prec,proportionFilt
           formats:[{id:"png",label:"PNG (raster)"},{id:"svg",label:"SVG (vector)"}],
           sizing:true,
           defaults:{format:"png",presetId:"journal-1col"},
+          // 117.md §24/§41 (r2 fix) — the dialog OPENS on the figure's own decimals, so
+          // "leave it alone" still exports what the reviewer configured for this figure,
+          // and any change they make in the dialog beats it (exportFigureOpts below).
+          precision:{...normalizePrecision(prec),...(figure.decimals==null?{}:{decimals:figure.decimals})},
           run:async(choice)=>{
             // prompt32 Task 8 — the export dialog's decimal selector (choice.precision)
             // must drive the exported figure, not the render-time project precision.
             const ep=choice.precision||prec;
+            // 117.md §24/§41 (r2 fix) — …and it must beat the PER-FIGURE decimals too:
+            // `{...figure, prec:ep}` left `decimals` in the object, which the builder
+            // merges on top of `prec`, so the dialog's selector was silently ignored
+            // whenever the figure carried an override. On-screen renders below still
+            // pass pubOpts unwrapped and keep the per-figure value.
+            const expOpts=exportFigureOpts(pubOpts,choice.precision);
             if(choice.format==="svg"){
-              const built=buildPubForestSVG(result,{...pubOpts,prec:ep});
+              const built=buildPubForestSVG(result,{...expOpts,prec:ep});
               if(!built) throw new Error("Not enough studies to draw the figure.");
               downloadText(SVG_XML_HEADER+built.svg,"forest_publication.svg","image/svg+xml;charset=utf-8");
               return;
             }
-            const built=buildPubForestSVG(result,{...pubOpts,prec:ep,noBg:!!choice.transparent});
+            const built=buildPubForestSVG(result,{...expOpts,prec:ep,noBg:!!choice.transparent});
             if(!built) throw new Error("Not enough studies to draw the figure.");
             const blob=await rasterizeSvg(built.svg,built.W,built.H,
               {targetWidthPx:choice.widthPx,transparent:choice.transparent,background:"#ffffff"});
@@ -2425,6 +2439,8 @@ export function ForestTab({project,updateProject,onApplyPrecisionToAll}){
             sizing:true,
             variants:[{id:"light",label:"Light (publication)"},{id:"dark",label:"Dark (screen)"}],
             defaults:{format:"png",presetId:"journal-1col",variantId:"light"},
+            // 117.md §24/§41 (r2 fix) — open on the figure's own decimals; see below.
+            precision:{...normalizePrecision(prec),...(figure.decimals==null?{}:{decimals:figure.decimals})},
             run:async(choice)=>{
               if(choice.variantId==="dark"){
                 // Serialize the LIVE dark plot with computed colors inlined —
@@ -2442,14 +2458,18 @@ export function ForestTab({project,updateProject,onApplyPrecisionToAll}){
                 return;
               }
               // prompt32 Task 8 — honor the dialog's decimal selector for the export.
+              // 117.md §24/§41 (r2 fix) — including over the per-figure `decimals`
+              // override; see exportFigureOpts. The PREVIEW below is unwrapped on
+              // purpose: on screen the per-figure value is still the authority.
               const ep=choice.precision||prec;
+              const expOpts=exportFigureOpts(pubOpts,choice.precision);
               if(choice.format==="svg"){
-                const built=buildPubForestSVG(result,{...pubOpts,prec:ep});
+                const built=buildPubForestSVG(result,{...expOpts,prec:ep});
                 if(!built) throw new Error("Not enough studies to draw the figure.");
                 downloadText(SVG_XML_HEADER+built.svg,exportName+".svg","image/svg+xml;charset=utf-8");
                 return;
               }
-              const built=buildPubForestSVG(result,{...pubOpts,prec:ep,noBg:!!choice.transparent});
+              const built=buildPubForestSVG(result,{...expOpts,prec:ep,noBg:!!choice.transparent});
               if(!built) throw new Error("Not enough studies to draw the figure.");
               const blob=await rasterizeSvg(built.svg,built.W,built.H,
                 {targetWidthPx:choice.widthPx,transparent:choice.transparent,background:"#ffffff"});

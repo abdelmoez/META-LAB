@@ -40,6 +40,11 @@ vi.mock('../../../server/store.js', () => ({
 }));
 
 // One ScreenRecord row + the updates applied to it.
+//
+// 117.md §54 (r2 fix) — the mock now implements `updateMany` WITH ITS WHERE CLAUSE,
+// because that is the compare-and-set the handlers rely on: a `finalStatus` in the
+// where that does not match the stored row must write nothing and report `count: 0`.
+// A mock that ignored the predicate would make the race test pass vacuously.
 const db = { record: null, updates: [] };
 const prismaMock = {
   screenRecord: {
@@ -52,6 +57,17 @@ const prismaMock = {
       if (db.record && db.record.id === where.id) db.record = { ...db.record, ...data };
       return { ...db.record };
     }),
+    updateMany: vi.fn(async ({ where, data }) => {
+      const r = db.record;
+      const hit = !!r
+        && r.id === where.id
+        && r.projectId === where.projectId
+        && String(r.finalStatus || '') === String(where.finalStatus == null ? '' : where.finalStatus);
+      if (!hit) return { count: 0 };
+      db.updates.push(data);
+      db.record = { ...r, ...data };
+      return { count: 1 };
+    }),
   },
   project: { findFirst: vi.fn(async () => null) },
 };
@@ -61,6 +77,7 @@ const { finalizeRecord, revertFinalReview, FINAL_REVIEW_CONFLICT_MESSAGE, finalS
   await import('../../../server/controllers/screeningReviewController.js');
 const { getProjectAccess, writeAudit } = await import('../../../server/screening/access.js');
 const { emitToProjectMembers } = await import('../../../server/realtime/bus.js');
+const { mutateProjectBlob } = await import('../../../server/store.js');
 
 const PID = 'sp1';
 const RID = 'rec1';
@@ -94,10 +111,21 @@ const callRevert = async (body) => {
   return res;
 };
 const lastUpdate = () => db.updates[db.updates.length - 1];
+/**
+ * 117.md §54 (r2 fix) — RE-PINNED DELIBERATELY. A handler no longer writes one row: it
+ * CLAIMS the decision columns conditionally and then writes the side-effect columns it
+ * has earned. `applied()` is the union of everything the request wrote, which is the
+ * property these assertions always meant (`lastUpdate()` happened to be the same object
+ * only while there was exactly one write).
+ */
+const applied = () => Object.assign({}, ...db.updates);
 const auditCalls = () => writeAudit.mock.calls.map(([, , action, opts]) => ({ action, ...opts }));
 
 beforeEach(() => {
   vi.clearAllMocks();
+  // clearAllMocks drops implementations too, so the shared prisma stubs are re-armed.
+  prismaMock.project.findFirst.mockResolvedValue(null);
+  mutateProjectBlob.mockResolvedValue(null);
   getProjectAccess.mockResolvedValue({
     project: { id: PID, ownerId: 'u1', linkedMetaLabProjectId: null },
     isLeader: true, canResolveConflicts: true,
@@ -110,8 +138,8 @@ describe('§52 — an EXCLUDED record is reversible', () => {
     seed({ finalStatus: 'rejected', rejectedReason: 'wrong population' });
     const res = await callRevert({});
     expect(res.statusCode).toBe(200);
-    expect(lastUpdate().finalStatus).toBe('');
-    expect(lastUpdate().rejectedReason).toBe('');
+    expect(applied().finalStatus).toBe('');
+    expect(applied().rejectedReason).toBe('');
     expect(res.body.reverted.from).toBe('rejected');
     // No extraction entry ever existed for a rejected record.
     expect(res.body.reverted.removedFromExtraction).toBe(false);
@@ -122,9 +150,9 @@ describe('§52 — an EXCLUDED record is reversible', () => {
     const res = await callRevert({});
     expect(res.statusCode).toBe(200);
     expect(res.body.reverted.from).toBe('accepted');
-    expect(lastUpdate().revertedExtractionSnapshot).toBe('{"id":"s1"}');
-    expect(lastUpdate().handoffStatus).toBe('');
-    expect(lastUpdate().acceptedAt).toBeNull();
+    expect(applied().revertedExtractionSnapshot).toBe('{"id":"s1"}');
+    expect(applied().handoffStatus).toBe('');
+    expect(applied().acceptedAt).toBeNull();
   });
 
   it('refuses a record that has no final decision to revert', async () => {
@@ -141,15 +169,15 @@ describe('§52 — accepting clears a stale exclusion reason', () => {
     seed({ finalStatus: 'rejected', rejectedReason: 'no full text' });
     const res = await callFinalize({ decision: 'accept' });
     expect(res.statusCode).toBe(200);
-    expect(lastUpdate().finalStatus).toBe('accepted');
-    expect(lastUpdate().rejectedReason).toBe('');
+    expect(applied().finalStatus).toBe('accepted');
+    expect(applied().rejectedReason).toBe('');
   });
 
   it('writes the reason on the reject branch, capped', async () => {
     const res = await callFinalize({ decision: 'reject', reason: 'x'.repeat(900) });
     expect(res.statusCode).toBe(200);
-    expect(lastUpdate().finalStatus).toBe('rejected');
-    expect(lastUpdate().rejectedReason.length).toBe(500);
+    expect(applied().finalStatus).toBe('rejected');
+    expect(applied().rejectedReason.length).toBe(500);
   });
 });
 
@@ -187,6 +215,124 @@ describe('§54 — the optional compare-and-set', () => {
     // '' is a real expectation, not an absent one.
     expect(finalStatusMismatch({ finalStatus: 'accepted' }, { expect: { finalStatus: '' } })).toBe(true);
     expect(finalStatusMismatch({ finalStatus: null }, { expect: { finalStatus: '' } })).toBe(false);
+  });
+});
+
+/**
+ * 117.md §54 (r2 fix) — THE RACE, not the courtesy check.
+ *
+ * `{ expect: { finalStatus } }` is a check-then-act against a row that was READ, and
+ * both handlers then did slow asynchronous work before an unconditional `update`. Two
+ * leaders deciding the same record in the same second therefore BOTH passed the check
+ * and both wrote — the second silently overwriting the first, with the accept's study
+ * already sitting in Data Extraction. The fix is that the decision write is now a
+ * conditional `updateMany` on `finalStatus`, which the database resolves atomically.
+ */
+describe('§54 (r2) — two racing finalizes cannot both win', () => {
+  it('exactly one of a concurrent accept and exclude commits; the other 409s having written nothing', async () => {
+    seed();                                   // pending: both requests read finalStatus ''
+    const [a, b] = await Promise.all([
+      callFinalize({ decision: 'accept' }),
+      callFinalize({ decision: 'reject', reason: 'wrong population' }),
+    ]);
+
+    const codes = [a.statusCode, b.statusCode].sort();
+    expect(codes).toEqual([200, 409]);
+
+    // The stored row holds ONE verdict, and it is the winner's.
+    const winner = a.statusCode === 200 ? a : b;
+    const loser = a.statusCode === 200 ? b : a;
+    expect(db.record.finalStatus).toBe(winner.body.record.finalStatus);
+    expect(['accepted', 'rejected']).toContain(db.record.finalStatus);
+
+    // The loser is told what the record actually holds now — not merely refused.
+    expect(loser.body.conflict).toBe(true);
+    expect(loser.body.error).toBe(FINAL_REVIEW_CONFLICT_MESSAGE);
+    expect(loser.body.record.finalStatus).toBe(db.record.finalStatus);
+
+    // …and it left NO trace: one decision, one audit row for it.
+    const decisions = auditCalls().filter(r => r.action === 'RECORD_ACCEPTED' || r.action === 'RECORD_REJECTED');
+    expect(decisions).toHaveLength(1);
+    // No update carries the loser's verdict.
+    const wrote = db.updates.map(u => u.finalStatus).filter(v => v != null);
+    expect(new Set(wrote).size).toBe(1);
+  });
+
+  it('a finalize and a revert racing on the same row resolve to one winner', async () => {
+    seed({ finalStatus: 'accepted' });
+    const [fin, rev] = await Promise.all([
+      callFinalize({ decision: 'reject', reason: 'r' }),
+      callRevert({}),
+    ]);
+    expect([fin.statusCode, rev.statusCode].sort()).toEqual([200, 409]);
+    expect(auditCalls().filter(r => r.action !== 'HANDOFF_RETRY')).toHaveLength(1);
+  });
+
+  it('an accept that LOSES the claim never reaches Data Extraction', async () => {
+    // A collaborator's write lands between this request's read and its claim — the
+    // exact window the old check-then-act could not see. Modelled by mutating the row
+    // as the read returns.
+    getProjectAccess.mockResolvedValue({
+      project: { id: PID, ownerId: 'u1', linkedMetaLabProjectId: 'ml1' },
+      isLeader: true, canResolveConflicts: true,
+    });
+    prismaMock.project.findFirst.mockResolvedValue({ id: 'ml1' });
+    seed();
+    prismaMock.screenRecord.findFirst.mockImplementationOnce(async () => {
+      const asRead = { ...db.record };
+      db.record = { ...db.record, finalStatus: 'rejected', rejectedReason: 'got there first' };
+      return asRead;
+    });
+
+    const res = await callFinalize({ decision: 'accept' });
+    expect(res.statusCode).toBe(409);
+    // The whole point: the handoff is BEHIND the claim, so a losing accept cannot
+    // plant a study in another project's extraction table.
+    expect(mutateProjectBlob).not.toHaveBeenCalled();
+    expect(writeAudit).not.toHaveBeenCalled();
+    expect(emitToProjectMembers).not.toHaveBeenCalled();
+    // Nothing was written, and the collaborator's verdict stands untouched.
+    expect(db.updates).toHaveLength(0);
+    expect(db.record.finalStatus).toBe('rejected');
+    expect(res.body.record.finalStatus).toBe('rejected');
+  });
+
+  it('a revert that LOSES the claim never pulls the study out of extraction', async () => {
+    getProjectAccess.mockResolvedValue({
+      project: { id: PID, ownerId: 'u1', linkedMetaLabProjectId: 'ml1' },
+      isLeader: true, canResolveConflicts: true,
+    });
+    prismaMock.project.findFirst.mockResolvedValue({ id: 'ml1' });
+    seed({ finalStatus: 'accepted', handoffStudyId: 's1' });
+    prismaMock.screenRecord.findFirst.mockImplementationOnce(async () => {
+      const asRead = { ...db.record };
+      db.record = { ...db.record, finalStatus: 'rejected' };
+      return asRead;
+    });
+
+    const res = await callRevert({});
+    expect(res.statusCode).toBe(409);
+    expect(mutateProjectBlob).not.toHaveBeenCalled();
+    expect(db.updates).toHaveLength(0);
+  });
+
+  it('an accept whose handoff THROWS still records the decision, with failure semantics', async () => {
+    // The claim already succeeded, so the record IS accepted; the delivery is what
+    // failed, and it must land as a retryable `failed` handoff rather than a 500 that
+    // leaves the row accepted with no handoff state at all.
+    getProjectAccess.mockResolvedValue({
+      project: { id: PID, ownerId: 'u1', linkedMetaLabProjectId: 'ml1' },
+      isLeader: true, canResolveConflicts: true,
+    });
+    prismaMock.project.findFirst.mockResolvedValue({ id: 'ml1' });
+    mutateProjectBlob.mockRejectedValueOnce(new Error('blob write failed'));
+    seed();
+
+    const res = await callFinalize({ decision: 'accept' });
+    expect(res.statusCode).toBe(200);
+    expect(db.record.finalStatus).toBe('accepted');
+    expect(applied().handoffStatus).toBe('failed');
+    expect(res.body.handoff.handoffStatus).toBe('failed');
   });
 });
 

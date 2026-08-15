@@ -91,6 +91,10 @@ import {
   StrategyStudioPanel, RecallReportPanel, strategyStudioFlagEnabled,
 } from '../searchWizard/index.js';
 import { Card, Note } from '../pecanSearch/components/parts.jsx';
+// 117.md §44 (r2 fix) — an overlay that CONSUMES Escape must claim the browser
+// fullscreen exit the same press causes; otherwise §44 reads it as "the researcher left
+// full screen" and drops the whole Focus Mode layout. Dependency-free module.
+import { markOverlayEscape } from '../../frontend/focus/overlayEscapeLatch.js';
 
 /* STAGES / stagesFor / stageAfterModeChange now live in ./searchStages.js (75.md) —
    imported above and re-exported via index.js. */
@@ -790,7 +794,8 @@ export function InlineQuestionEditor({ pico, updNested, readOnly, lockCtx, onClo
         autoFocus={focusOnMount !== false} /* 98.md review (M15) — focus once per open-session, not per stage re-entry */
         onFocus={() => { focusedRef.current = true; ed.onFocus(); }}
         onBlur={() => { focusedRef.current = false; commit(draftRef.current); ed.onBlur(); }}
-        onKeyDown={(e) => { if (e.key === 'Escape') { e.preventDefault(); done(); } }}
+        /* 117.md §44 (r2 fix) — mark before consuming. */
+        onKeyDown={(e) => { if (e.key === 'Escape') { markOverlayEscape(); e.preventDefault(); done(); } }}
         placeholder="e.g. Do SGLT2 inhibitors reduce hospital readmission in adults with heart failure?"
         rows={2}
         style={{

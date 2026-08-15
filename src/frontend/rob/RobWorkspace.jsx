@@ -29,6 +29,10 @@ import { StarTotalPill } from './NosStarProfile.jsx';
 import { screeningApi } from '../screening/api-client/screeningApi.js';
 import { studyDocApi } from '../../features/extraction/unified/studyDocApi.js';
 import { extractStudyFullText } from './robFullText.js';
+// 117.md §44 (r2 fix) — an overlay that CONSUMES Escape must claim the browser
+// fullscreen exit the same press causes; otherwise §44 reads it as "the researcher left
+// full screen" and drops the whole Focus Mode layout. Dependency-free module.
+import { markOverlayEscape } from '../focus/overlayEscapeLatch.js';
 import {
   ROB2, getInstrument, isReachable, proposeDomain, proposeOverall, completeness,
   isScoringInstrument, nosScoreAssessment, robDesignLabel,
@@ -1647,7 +1651,8 @@ function OverrideModal({ info, judgmentLevels, onCancel, onSubmit }) {
   // Escape closes; focus returns to the element that opened the modal on unmount.
   useEffect(() => {
     const opener = (typeof document !== 'undefined') ? document.activeElement : null;
-    function onKey(e) { if (e.key === 'Escape') { e.preventDefault(); onCancel(); } }
+    // 117.md §44 (r2 fix) — mark before consuming.
+    function onKey(e) { if (e.key === 'Escape') { markOverlayEscape(); e.preventDefault(); onCancel(); } }
     document.addEventListener('keydown', onKey, true);
     return () => { document.removeEventListener('keydown', onKey, true); try { opener && opener.focus && opener.focus(); } catch { /* ignore */ } };
   }, [onCancel]);

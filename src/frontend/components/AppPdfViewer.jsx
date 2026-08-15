@@ -45,6 +45,10 @@ import PdfAnnotationPageLayer, { NO_ANNOTATIONS } from './PdfAnnotationLayer.jsx
 // re-observed. They live in the model module so they are unit-testable without a browser.
 import { endOfContentPlacement, clampRenderDpr, dprMediaQuery } from './pdfAnnotationModel.js';
 import { usePdfAnnotationUndoShortcut } from './pdfAnnotationShortcut.js';
+// 117.md §44 (r2 fix) — an overlay that CONSUMES Escape must claim the browser
+// fullscreen exit the same press causes; otherwise §44 reads it as "the researcher left
+// full screen" and drops the whole Focus Mode layout. Dependency-free module.
+import { markOverlayEscape } from '../focus/overlayEscapeLatch.js';
 // 116.md §95 — the session-only byte cache. Screening → Conflict → Extraction for the
 // same paper mounts three viewers on the same URL; without this each mount re-downloads
 // the whole file (every consumer mounts with key={url}). Server side, the same §95 fix
@@ -123,6 +127,22 @@ const TEXTLAYER_CSS = `
 .mlpdf-tl{position:absolute;inset:0;overflow:hidden;overflow:clip;line-height:1;text-align:initial;
   transform-origin:0 0;forced-color-adjust:none;z-index:2;text-size-adjust:none;}
 .mlpdf-tl :is(span,br){color:transparent;position:absolute;white-space:pre;transform-origin:0% 0%;}
+/* 117.md §46/§47 (r2 fix) — THE MISSING HALF OF THE END-OF-CONTENT PORT. pdf_viewer.css
+   pairs the sink's \`z-index:0\` with \`.textLayer > :not(.markedContent) { z-index:1 }\`;
+   only the sink half was ported. With the glyph spans left at \`auto\` (paint order,
+   i.e. DOM order) the sink — a LATER sibling — sits on top of them the moment it
+   expands to cover the page, so every hit during a drag lands on an empty div: the
+   selection stops extending, and on WebKit it collapses outright. Lifting the spans to
+   z-index 1 makes the expanded sink a BACKSTOP that only catches the gaps between
+   glyph runs, which is the whole point of it. The \`:not(.markedContent)\` shape is
+   pdf.js's own and is kept verbatim so a marked-content wrapper (which is a positioning
+   parent, not a hit target) does not create a stacking context around its children.
+   The sink rule below is deliberately LATER in source order — equal specificity, so it
+   wins for \`.mlpdf-eoc\` and keeps its own z-index:0. Search <mark> elements are
+   CHILDREN of the spans (see the highlight effect), so they inherit the lifted span's
+   stacking context and are never buried either. */
+.mlpdf-tl > :not(.markedContent),
+.mlpdf-tl .markedContent span:not(.markedContent){z-index:1;}
 .mlpdf-tl[data-main-rotation="90"]{transform:rotate(90deg) translateY(-100%);}
 .mlpdf-tl[data-main-rotation="180"]{transform:rotate(180deg) translate(-100%,-100%);}
 .mlpdf-tl[data-main-rotation="270"]{transform:rotate(270deg) translateX(-100%);}
@@ -788,7 +808,8 @@ export default function AppPdfViewer({
     if (e.target && /^(INPUT|TEXTAREA)$/.test(e.target.tagName)) return;
     if (e.key === 'ArrowLeft' || e.key === 'PageUp') { prev(); e.preventDefault(); }
     else if (e.key === 'ArrowRight' || e.key === 'PageDown') { next(); e.preventDefault(); }
-    else if (e.key === 'Escape' && reveal && onRevealDismiss) { onRevealDismiss(); e.preventDefault(); }
+    // 117.md §44 (r2 fix) — mark before consuming.
+    else if (e.key === 'Escape' && reveal && onRevealDismiss) { markOverlayEscape(); onRevealDismiss(); e.preventDefault(); }
   }
 
   /* ── Live search scan: find every match across ALL pages (rendered or not) ── */
@@ -844,7 +865,8 @@ export default function AppPdfViewer({
 
   function onSearchKey(e) {
     if (e.key === 'Enter') { e.preventDefault(); cycleMatch(e.shiftKey ? -1 : 1); }
-    else if (e.key === 'Escape') { e.preventDefault(); closeSearch(); }
+    // 117.md §44 (r2 fix) — mark before consuming.
+    else if (e.key === 'Escape') { markOverlayEscape(); e.preventDefault(); closeSearch(); }
   }
   const openSearch = () => setSearchOpen(true);
   const closeSearch = () => { setSearchOpen(false); setTerm(''); setMatches([]); setMatchIdx(0); scanToken.current++; };

@@ -17,6 +17,10 @@
  * only once ARMED (hover threshold — accidental merges stay hard).
  */
 import { useEffect, useRef, useState, useCallback } from 'react';
+// 117.md §44 (r2 fix) — an overlay that CONSUMES Escape must claim the browser
+// fullscreen exit the same press causes; otherwise §44 reads it as "the researcher left
+// full screen" and drops the whole Focus Mode layout. Dependency-free module.
+import { markOverlayEscape } from '../../../frontend/focus/overlayEscapeLatch.js';
 import {
   shouldStartDrag, resolveDropTarget, trackMergeHover, mergeArmed,
 } from './dndModel.js';
@@ -137,7 +141,8 @@ export default function useChipDrag({ getGeometry, onDrop, onCancel, disabled, m
         endSession(false);
       };
       s.onKey = (ev) => {
-        if (ev.key === 'Escape') { ev.stopPropagation(); endSession(false); }
+        // 117.md §44 (r2 fix) — mark before consuming.
+        if (ev.key === 'Escape') { markOverlayEscape(); ev.stopPropagation(); endSession(false); }
       };
       sessionRef.current = s;
       try {

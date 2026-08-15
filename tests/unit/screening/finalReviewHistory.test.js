@@ -91,14 +91,42 @@ describe('finalizeEntry — one semantic entry per leader verdict', () => {
     expect(e.redoOp.expect).toEqual({ finalStatus: '', currentStage: FT });
   });
 
-  it('carries the operator’s restore-vs-fresh choice on the REDO of an accept only', () => {
+  it('RESTORES on both directions — a redo never replays "start fresh"', () => {
+    // 117.md §52/§54 (r2 fix) — RE-PINNED DELIBERATELY. This used to assert
+    // `redoOp.restoreSnapshot === false`, i.e. that the redo replayed the operator's
+    // original restore-vs-start-fresh choice. That choice is only safe to replay while
+    // it is still true that there is nothing to lose, and by redo time it never is:
+    //
+    //   accept "start fresh"  → server drops the old snapshot, hands off a BLANK study
+    //   (reviewer extracts data into it)
+    //   Ctrl+Z                → revert snapshots THAT work onto the record
+    //   Ctrl+Shift+Z          → replaying "start fresh" deletes the snapshot the undo
+    //                           just took. The reviewer's extraction is destroyed, and
+    //                           nothing in the system can bring it back.
+    //
+    // Undo/redo must be lossless, so both directions restore. The FORWARD write still
+    // honours the operator's choice — see finalizeRequest below.
     const e = finalizeEntry({
       recordId: 'r1', prev: PENDING, next: ACCEPTED, currentStage: FT, restoreSnapshot: false,
     });
-    expect(e.redoOp.restoreSnapshot).toBe(false);
-    // Undoing BACK to accepted always restores — the extracted data is the thing
-    // worth keeping, and the operator never asked to throw it away.
+    expect(e.redoOp.restoreSnapshot).toBe(true);
     expect(e.undoOp.restoreSnapshot).toBe(true);
+    // The choice is not forgotten, it is just not replayed: the entry records it so the
+    // trail can still say what the operator asked for at the time.
+    expect(e.meta.snapshotChoice).toBe('fresh');
+    expect(finalizeEntry({ recordId: 'r1', prev: PENDING, next: ACCEPTED, currentStage: FT }).meta.snapshotChoice)
+      .toBe('restore');
+  });
+
+  it('so the redo REQUEST asks the server to restore, whatever the original click chose', () => {
+    const e = finalizeEntry({
+      recordId: 'r1', prev: PENDING, next: ACCEPTED, currentStage: FT, restoreSnapshot: false,
+    });
+    expect(finalizeRequest(e.redoOp, VIA.REDO).body).toEqual({
+      via: 'redo', expect: { finalStatus: '' }, decision: 'accept', restoreSnapshot: true,
+    });
+    // …while a plain forward accept still carries a deliberate "start fresh".
+    expect(finalizeRequest({ target: ACCEPTED, restoreSnapshot: false }).body.restoreSnapshot).toBe(false);
   });
 
   it('records nothing when the verdict did not change (108.md §12)', () => {

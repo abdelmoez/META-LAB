@@ -24,6 +24,10 @@ import { alpha as themeAlpha } from '../../../frontend/theme/tokens.js';
 import { Icon } from '../../../frontend/components/icons.jsx';
 import { StatTile, StatusPill, Note, Btn, Disclosure } from './parts.jsx';
 import { computeRunProgress, providerLabel } from '../../../research-engine/search/runProgress.js';
+// 117.md §44 (r2 fix) — an overlay that CONSUMES Escape must claim the browser
+// fullscreen exit the same press causes; otherwise §44 reads it as "the researcher left
+// full screen" and drops the whole Focus Mode layout. Dependency-free module.
+import { markOverlayEscape } from '../../../frontend/focus/overlayEscapeLatch.js';
 
 /* Ported focus-trap (matches stitch/primitives/overlay.jsx) on the legacy palette:
    focus first control on open, wrap Tab, Escape→onClose (minimise), lock body scroll,
@@ -43,7 +47,8 @@ function useFocusTrap(active, onClose) {
     };
     const t = setTimeout(focusFirst, 0);
     const onKey = (e) => {
-      if (e.key === 'Escape') { e.stopPropagation(); if (onClose) onClose(); return; }
+      // 117.md §44 (r2 fix) — mark before consuming.
+      if (e.key === 'Escape') { markOverlayEscape(); e.stopPropagation(); if (onClose) onClose(); return; }
       if (e.key !== 'Tab') return;
       const f = Array.from((node && node.querySelectorAll(sel)) || []).filter((el) => el.offsetParent !== null);
       if (!f.length) return;

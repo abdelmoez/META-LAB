@@ -72,6 +72,10 @@ import {
 import ConverterPanel from './ConverterPanel.jsx';
 import CaseFieldsPanel from './CaseFieldsPanel.jsx';
 import ProjectFieldsPanel from './ProjectFieldsPanel.jsx';
+// 117.md §44 (r2 fix) — an overlay that CONSUMES Escape must claim the browser
+// fullscreen exit the same press causes; otherwise §44 reads it as "the researcher left
+// full screen" and drops the whole Focus Mode layout. Dependency-free module.
+import { markOverlayEscape } from '../../../frontend/focus/overlayEscapeLatch.js';
 
 const RATIO_MEASURES = ['OR', 'RR', 'HR', 'IRR'];
 const ES_TYPES = [['', '—'], ['OR', 'Odds ratio'], ['RR', 'Risk ratio'], ['HR', 'Hazard ratio'], ['IRR', 'Incidence-rate ratio'], ['SMD', 'Std. mean diff'], ['MD', 'Mean difference'], ['PROP', 'Proportion'], ['COR', 'Correlation'], ['DIAG', 'Diagnostic 2×2']];
@@ -426,6 +430,7 @@ export default function ArticleWorkspace({
     if (!revealActive) return undefined;
     const onKey = (e) => {
       if (e.key !== 'Escape') return;
+      markOverlayEscape();          // 117.md §44 (r2 fix) — mark before consuming
       e.stopPropagation();
       e.preventDefault();
       dismissReveal();

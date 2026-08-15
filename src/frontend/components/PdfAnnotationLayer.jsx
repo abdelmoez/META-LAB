@@ -57,10 +57,44 @@ import {
   canMutateAnnotation, sortForList, MAX_COMMENT,
   captureSelectionRects, selectionCaptureDelay,
 } from './pdfAnnotationModel.js';
+// 117.md §44 (r2 fix) — the note popover consumes Escape; see AnnotationPopover.
+import { markOverlayEscape } from '../focus/overlayEscapeLatch.js';
 
 const EMPTY = Object.freeze([]);
 /** Shared empty slice so a page with no annotations keeps a STABLE prop identity. */
 export const NO_ANNOTATIONS = EMPTY;
+
+/**
+ * 117.md §46 (r2 fix) — may the control-held latch survive THIS pointer release?
+ *
+ * `controlHeldRef` is set on pointerdown ANYWHERE in the control group and cleared by
+ * `commit`/`clearPending`. A press that lands on the group's PADDING (or on the divider,
+ * or that starts on a button and is dragged off it) produces no `click`, so nothing
+ * clears it: `engagingControl()` keeps returning true and `captureSelection` — the only
+ * path to the Highlight control — stands down for the rest of the session. A reviewer
+ * whose thumb clipped the edge of the toolbar could not highlight anything again until
+ * they clicked somewhere else entirely.
+ *
+ * The release cannot be unconditional, or it would undo the fix it lives inside: a
+ * release ON a control button is immediately followed by that button's `click` →
+ * `commit`, and WebKit does not focus buttons on click, so with the latch already gone
+ * `engagingControl()` would fall through to `activeElement`, find nothing, and let the
+ * collapsed-selection teardown unmount the control before the click landed — §46's
+ * original bug, exactly. So the button case is left to `commit`, and every other
+ * release frees the latch. `pointercancel` always frees it: no click can follow one.
+ *
+ * @param {EventTarget|null} target  the release's target
+ * @param {Element|null} controlBox  the control group element
+ * @param {boolean} cancelled        true for pointercancel
+ * Pure; exported for the unit suite.
+ */
+export function releasesControlLatch(target, controlBox, cancelled = false) {
+  if (cancelled) return true;
+  if (!controlBox || !target || typeof target.closest !== 'function') return true;
+  if (typeof controlBox.contains === 'function' && !controlBox.contains(target)) return true;
+  const btn = target.closest('button');
+  return !(btn && typeof controlBox.contains === 'function' && controlBox.contains(btn));
+}
 
 /* ── One page's highlight overlay ─────────────────────────────────────────── */
 
@@ -207,6 +241,26 @@ function PdfAnnotationPageLayerBase({
   // invariant, stated once, rather than a clear() at every teardown site.
   useEffect(() => {
     if (!pending) { controlHeldRef.current = false; latchedRef.current = null; }
+  }, [pending]);
+
+  // 117.md §46 (r2 fix) — …and the gesture that set the latch must be able to END it
+  // even when it produces no click. The invariant above only fires when `pending` goes
+  // away, which is precisely what an aborted press PREVENTS. Document capture, so a
+  // release outside the page still counts; the predicate is pure and explained on
+  // `releasesControlLatch`. `latchedRef` is intentionally untouched — it is the commit
+  // payload, and dropping it here would reintroduce the empty-commit race §46 fixed.
+  useEffect(() => {
+    if (!pending || typeof document === 'undefined') return undefined;
+    const release = (e) => {
+      const cancelled = e.type === 'pointercancel';
+      if (releasesControlLatch(e.target, controlRef.current, cancelled)) controlHeldRef.current = false;
+    };
+    document.addEventListener('pointerup', release, true);
+    document.addEventListener('pointercancel', release, true);
+    return () => {
+      document.removeEventListener('pointerup', release, true);
+      document.removeEventListener('pointercancel', release, true);
+    };
   }, [pending]);
 
   const commit = useCallback((colorKey) => {
@@ -371,9 +425,17 @@ function AnnotationPopover({ annotation, pageDims, scale, own, canMutate, onClos
   useEffect(() => { try { boxRef.current && boxRef.current.focus({ preventScroll: true }); } catch { /* noop */ } }, [annotation.id]);
   useEffect(() => {
     if (typeof document === 'undefined') return undefined;
-    const onKey = (e) => { if (e.key === 'Escape') { e.stopPropagation(); onClose && onClose(); } };
-    document.addEventListener('keydown', onKey);
-    return () => document.removeEventListener('keydown', onKey);
+    // 117.md §44 (r2 fix) — this popover CONSUMES Escape, so it must claim the
+    // fullscreen exit the same press causes; without the mark, closing an annotation
+    // note in Focus Mode drops the whole workspace layout.
+    const onKey = (e) => {
+      if (e.key !== 'Escape') return;
+      markOverlayEscape();
+      e.stopPropagation();
+      onClose && onClose();
+    };
+    document.addEventListener('keydown', onKey, true);
+    return () => document.removeEventListener('keydown', onKey, true);
   }, [onClose]);
   if (!bounds || !pageDims || !(+scale > 0)) return null;
   const left = Math.max(0, bounds.x0 * scale);

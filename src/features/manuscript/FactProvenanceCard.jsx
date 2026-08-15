@@ -25,6 +25,10 @@ import { C, btnS } from '../../frontend/workspace/ui/styles.js';
 import { alpha } from '../../frontend/theme/tokens.js';
 import { describeChange } from '../../research-engine/manuscript/factProvenance.js';
 import { engineStyle, formatChangeDate, SHOW_CHANGES_CSS } from './showChanges.js';
+// 117.md §44 (r2 fix) — an overlay that CONSUMES Escape must claim the browser
+// fullscreen exit the same press causes; otherwise §44 reads it as "the researcher left
+// full screen" and drops the whole Focus Mode layout. Dependency-free module.
+import { markOverlayEscape } from '../../frontend/focus/overlayEscapeLatch.js';
 
 /** The small engine badge: colour + glyph + label, so colour is never alone (§7). */
 export function EngineBadge({ engine, size = 'sm', title }) {
@@ -95,7 +99,8 @@ export function FactProvenanceCard({ change, fact, sections, onRevert, onKeep, o
       role="group"
       aria-label={`Provenance for ${field}`}
       data-testid="stitch-manuscript-fact-provenance"
-      onKeyDown={(e) => { if (e.key === 'Escape' && onClose) { e.stopPropagation(); onClose(); } }}
+      /* 117.md §44 (r2 fix) — mark before consuming. */
+      onKeyDown={(e) => { if (e.key === 'Escape' && onClose) { markOverlayEscape(); e.stopPropagation(); onClose(); } }}
       style={{
         width: 340, maxWidth: '100%', boxSizing: 'border-box',
         background: C.card, border: `1px solid ${C.brd}`, borderRadius: 12, padding: 14,

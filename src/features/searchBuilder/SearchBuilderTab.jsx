@@ -88,6 +88,10 @@ import SearchMeaningPanel from "./components/SearchMeaningPanel.jsx";
 import SaveStatusIndicator from "./components/SaveStatusIndicator.jsx";
 import UndoSnackbar from "./components/UndoSnackbar.jsx";
 import { Disclosure } from "../pecanSearch/components/parts.jsx"; // native-<details> pattern
+// 117.md §44 (r2 fix) — an overlay that CONSUMES Escape must claim the browser
+// fullscreen exit the same press causes; otherwise §44 reads it as "the researcher left
+// full screen" and drops the whole Focus Mode layout. Dependency-free module.
+import { markOverlayEscape } from "../../frontend/focus/overlayEscapeLatch.js";
 
 /* ════════════════════════════════════════════════════════════════════════════
    SEARCH BUILDER TAB  ·  production component for the META·LAB SaaS app
@@ -3212,7 +3216,7 @@ export default function SearchBuilderTab({projectId,question:questionProp,pico,a
               /* 99.md §8 — Escape collapses the working card from anywhere inside the
                  board that did not already consume it (popovers stopPropagation their
                  own Escape; the add box preventDefaults while its layers dismiss). */
-              onKeyDown={(e)=>{ if(e.key==="Escape"&&!e.defaultPrevented&&activeConcept){ e.preventDefault(); collapseBoard({refocus:true}); } }}
+              onKeyDown={(e)=>{ if(e.key==="Escape"&&!e.defaultPrevented&&activeConcept){ markOverlayEscape(); /* 117.md §44 (r2 fix) */ e.preventDefault(); collapseBoard({refocus:true}); } }}
               style={{display:'flex',flexWrap:'wrap',alignItems:'stretch',gap:10,marginBottom:4}}>
               {concepts.map((c,cIdx)=>{
                 const active=!!(activeConcept&&activeConcept.id===c.id);
@@ -3349,7 +3353,7 @@ export default function SearchBuilderTab({projectId,question:questionProp,pico,a
                     <button type="button" onClick={()=>moveConceptBy(c.id,-1)} disabled={cIdx===0} aria-label={`Move ${c.label} up`} title="Move this concept earlier in the search" style={{...btn("ghost"),fontSize:10,padding:"3px 9px",opacity:cIdx===0?0.45:1}}>↑ Move up</button>
                     <button type="button" onClick={()=>moveConceptBy(c.id,1)} disabled={cIdx>=concepts.length-1} aria-label={`Move ${c.label} down`} title="Move this concept later in the search" style={{...btn("ghost"),fontSize:10,padding:"3px 9px",opacity:cIdx>=concepts.length-1?0.45:1}}>↓ Move down</button>
                     <span style={{position:"relative",display:"inline-block"}}
-                      onKeyDown={(e)=>{ if(e.key==="Escape"&&mergeOpen){ e.stopPropagation(); setMergeOpen(false); } /* 99.md — layered dismissal */ }}>
+                      onKeyDown={(e)=>{ if(e.key==="Escape"&&mergeOpen){ markOverlayEscape(); e.stopPropagation(); setMergeOpen(false); } /* 99.md — layered dismissal; 117.md §44 (r2 fix) — mark before consuming */ }}>
                       <button type="button" onClick={()=>{setMergeOpen(o=>!o);setSplitDraft(null);setConfirmDeleteId(null);}} aria-expanded={mergeOpen} aria-label={`Merge ${c.label} into another concept`} disabled={concepts.length<2} style={{...btn("ghost"),fontSize:10,padding:"3px 9px",opacity:concepts.length<2?0.45:1}}>⇄ Merge into…</button>
                       {mergeOpen&&(
                         <span style={{position:"absolute",zIndex:75,top:"100%",left:0,marginTop:4,background:C.card,border:`1px solid ${C.brd2}`,borderRadius:8,boxShadow:"0 14px 40px var(--t-shadow)",overflow:"hidden",minWidth:200}}>
@@ -3376,7 +3380,7 @@ export default function SearchBuilderTab({projectId,question:questionProp,pico,a
                          unmounted by this very swap, which otherwise drops focus to
                          <body> and strands the keyboard user (WCAG 2.4.3). */
                       <span style={{display:"inline-flex",alignItems:"center",gap:6,marginLeft:"auto"}}
-                        onKeyDown={(e)=>{ if(e.key==="Escape"){ e.stopPropagation(); restoreDeleteFocusRef.current=true; setConfirmDeleteId(null); } }}>
+                        onKeyDown={(e)=>{ if(e.key==="Escape"){ markOverlayEscape(); /* 117.md §44 (r2 fix) */ e.stopPropagation(); restoreDeleteFocusRef.current=true; setConfirmDeleteId(null); } }}>
                         <span style={{fontSize:10.5,color:C.yel}}>
                           Delete “{c.label}”{(()=>{const n=(c.terms||[]).filter(t=>(t.text||"").trim()).length;return n?` and its ${n} term${n===1?"":"s"}`:"";})()}?
                         </span>
@@ -3396,7 +3400,7 @@ export default function SearchBuilderTab({projectId,question:questionProp,pico,a
                 )}
                 {splitDraft&&splitDraft.cid===c.id&&(
                   <div data-testid="sb-split-panel"
-                    onKeyDown={(e)=>{ if(e.key==="Escape"){ e.stopPropagation(); setSplitDraft(null); } /* 99.md — layered dismissal */ }}
+                    onKeyDown={(e)=>{ if(e.key==="Escape"){ markOverlayEscape(); e.stopPropagation(); setSplitDraft(null); } /* 99.md — layered dismissal; 117.md §44 (r2 fix) — mark before consuming */ }}
                     style={{background:C.surf,border:`1px solid ${C.brd2}`,borderRadius:8,padding:"9px 11px",marginBottom:10}}>
                     <div style={{fontSize:10.5,fontWeight:700,color:C.muted,letterSpacing:.4,textTransform:"uppercase",marginBottom:6}}>Move selected terms to a new concept</div>
                     <div style={{display:"flex",flexWrap:"wrap",gap:6,marginBottom:8}}>

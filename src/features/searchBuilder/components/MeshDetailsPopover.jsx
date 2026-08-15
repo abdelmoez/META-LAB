@@ -19,6 +19,10 @@ import { C, FONT, MONO, alpha } from '../../../frontend/theme/tokens.js';
 // receives for this heading (compileStrategy on a one-term strategy; pure, no fetch).
 import { compileStrategy } from '../../../research-engine/searchBuilder/compilers/index.js';
 import { getDatabase } from '../../../research-engine/searchBuilder/databases.js';
+// 117.md §44 (r2 fix) — an overlay that CONSUMES Escape must claim the browser
+// fullscreen exit the same press causes; otherwise §44 reads it as "the researcher left
+// full screen" and drops the whole Focus Mode layout. Dependency-free module.
+import { markOverlayEscape } from '../../../frontend/focus/overlayEscapeLatch.js';
 
 function Row({ label, children }) {
   if (!children) return null;
@@ -66,7 +70,8 @@ export default function MeshDetailsPopover({ term, addedTexts, onAddEntryTerm, o
 
   return (
     <div ref={rootRef} data-testid="sb-mesh-popover" role="dialog" aria-label={`MeSH details for ${descriptor}`}
-      onKeyDown={(e) => { if (e.key === 'Escape') { e.stopPropagation(); onClose && onClose(); } }}
+      /* 117.md §44 (r2 fix) — mark before consuming. */
+      onKeyDown={(e) => { if (e.key === 'Escape') { markOverlayEscape(); e.stopPropagation(); onClose && onClose(); } }}
       style={{
         position: 'absolute', zIndex: 72, width: 320, maxWidth: 'calc(100vw - 24px)',
         ...(pos.flipUp ? { bottom: 'calc(100% + 6px)' } : { top: 'calc(100% + 6px)' }),

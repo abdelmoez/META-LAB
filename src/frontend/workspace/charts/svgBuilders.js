@@ -168,6 +168,32 @@ export const esMeasureName = layoutMeasureName;
  * (`resolveForestFigure`) that every caller spreads; nothing here can move a
  * statistical value, which is exactly the separation §23 asks for.
  */
+/**
+ * 117.md §24/§41 (r2 fix) — EXPORT PRECISION BEATS THE PER-FIGURE OVERRIDE.
+ *
+ * `buildPubForestSVG` merges `o.decimals` (the reviewer's persisted per-figure choice)
+ * ON TOP of `o.prec`, which is right on screen and wrong at export time: the export
+ * dialog's decimal selector is a per-export, explicitly-made choice, and every caller
+ * assembled `{...figure, prec: choice.precision}` — so the dialog said "2 decimals" and
+ * the file came out with the figure's 4. A dialog that does not govern what it exports
+ * is worse than no dialog.
+ *
+ * The precedence is therefore: explicit export choice > per-figure decimals > project
+ * precision. Passing the export precision through here DROPS the per-figure override
+ * for that one build; on-screen renders call the builder without an export precision
+ * and keep it. Nothing is lost either way, because the callers seed the dialog's
+ * default FROM the figure — so "unchanged" still exports the figure's own value.
+ *
+ * `exportPrecision` falsy → the options are returned untouched (identity), which is
+ * what makes this safe to wrap around every export call site.
+ * Pure.
+ */
+export function exportFigureOpts(figureOpts,exportPrecision){
+  const o=figureOpts||{};
+  if(!exportPrecision) return o;
+  return {...o,prec:exportPrecision,decimals:null};
+}
+
 export function buildPubForestSVG(result,opts){
   if(!result) return null;
   const o=opts||{};

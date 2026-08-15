@@ -40,6 +40,8 @@ import { C, FONT, MONO, alpha } from '../../theme/tokens.js';
 import { useRealtime } from '../../hooks/useRealtime.js';
 import Icon from '../icons.jsx';
 import { canPostChatFlat, chatPostBlockReasonFlat, chatBlockMessage } from '../../../research-engine/screening/chatPolicy.js';
+// 117.md §44 (r2 fix) — see the Escape effect below.
+import { markOverlayEscape } from '../../focus/overlayEscapeLatch.js';
 
 const POLL_MS = 4000;
 const HEALTHY_POLL_MS = 30000;
@@ -262,11 +264,21 @@ export default function ChatDrawer({
   }, [messages.length, open]);
 
   // Escape closes the drawer.
+  //
+  // 117.md §44 (r2 fix) — document/CAPTURE + stopPropagation + markOverlayEscape, the
+  // same contract every other overlay follows: the nearest overlay owns the key, and
+  // the browser's uncancellable fullscreen exit for this press is attributed to the
+  // drawer rather than read as "the researcher left full screen".
   useEffect(() => {
     if (!open) return undefined;
-    const onKey = e => { if (e.key === 'Escape') onClose?.(); };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
+    const onKey = e => {
+      if (e.key !== 'Escape') return;
+      markOverlayEscape();
+      e.stopPropagation();
+      onClose?.();
+    };
+    document.addEventListener('keydown', onKey, true);
+    return () => document.removeEventListener('keydown', onKey, true);
   }, [open, onClose]);
 
   // 78.md #2 / 81.md — read-only state comes from the SERVER's resolved verdict

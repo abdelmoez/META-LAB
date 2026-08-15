@@ -17,7 +17,7 @@
  * the hit-target overlay is positioned in FRACTIONAL coordinates, so browser zoom
  * and responsive scaling can never desync a click target from its drawn box.
  */
-import { useCallback, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { C } from '../../frontend/workspace/ui/styles.js';
 import { buildPrismaFlowSVG, boxMeta } from '../../research-engine/prisma/index.js';
 import { useRealtime } from '../../frontend/hooks/useRealtime.js';
@@ -114,6 +114,15 @@ export function PrismaFlowDiagram({
     'decision.saved': onRecordPoke,
     'handoff.updated': onRecordPoke,
   });
+  /* 117.md §13 (r2 fix) — cancel the debounce on unmount. A poke that arrives ~1.2s
+   * before the diagram is closed (navigating away from Screening, closing the
+   * manuscript panel) would otherwise fire `setSyncKey` and `onChanged` against an
+   * unmounted tree: a React state-update warning at best, and at worst a refetch
+   * whose response lands on a component nobody is looking at. The ref is the only
+   * handle on the timer, so the cleanup belongs with the ref, not with the callback. */
+  useEffect(() => () => {
+    if (pokeTimer.current) { clearTimeout(pokeTimer.current); pokeTimer.current = null; }
+  }, []);
 
   const built = useMemo(
     () => (flow ? buildPrismaFlowSVG(flow, { title, perSource, updated }) : null),

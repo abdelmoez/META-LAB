@@ -27,6 +27,10 @@ import { useEffect, useRef, useState } from 'react';
 import { C, FONT, MONO, alpha } from '../../../frontend/theme/tokens.js';
 import { termDisplay, termMicroBadges } from './uiShared.js';
 import MeshDetailsPopover from './MeshDetailsPopover.jsx';
+// 117.md §44 (r2 fix) — an overlay that CONSUMES Escape must claim the browser
+// fullscreen exit the same press causes; otherwise §44 reads it as "the researcher left
+// full screen" and drops the whole Focus Mode layout. Dependency-free module.
+import { markOverlayEscape } from '../../../frontend/focus/overlayEscapeLatch.js';
 
 /* Dark-red duplicate palette — deliberately fixed (not theme-tinted) so the
    "strong dark red" 97.md requires stays high-contrast in day AND night themes.
@@ -239,7 +243,7 @@ export default function TermChipRow({
                   aria-expanded={meshOpenId === t.id}
                   onFocus={() => setMeshOpenId(t.id)}
                   onClick={() => setMeshOpenId(t.id)}
-                  onKeyDown={(e) => { if (e.key === 'Escape' && meshOpenId === t.id) { e.stopPropagation(); setMeshOpenId(null); } /* 99.md — layered dismissal: consume Escape only when it actually closed the popover */ }}
+                  onKeyDown={(e) => { if (e.key === 'Escape' && meshOpenId === t.id) { markOverlayEscape(); e.stopPropagation(); setMeshOpenId(null); } /* 99.md — layered dismissal: consume Escape only when it actually closed the popover; 117.md §44 (r2 fix) — mark before consuming */ }}
                   onBlur={(e) => {
                     const wrap = e.currentTarget && e.currentTarget.parentNode;
                     const to = e.relatedTarget;

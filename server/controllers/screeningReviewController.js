@@ -55,6 +55,44 @@ function conflict(res, rec) {
 }
 
 /**
+ * 117.md §52/§54 (r2 fix) — CLAIM THE ROW, DON'T ASK IT.
+ *
+ * `finalStatusMismatch` compares a row that was READ, and both handlers then did slow
+ * asynchronous work (settings lookup, project lookup, the Data-Extraction handoff,
+ * a whole blob CAS) before an UNCONDITIONAL `update`. That is check-then-act: two
+ * leaders clicking Accept and Exclude in the same second BOTH pass the check, both do
+ * their side effects, and the second write silently overwrites the first — with the
+ * study already appended to Data Extraction by the accept that "lost".
+ *
+ * The claim below is the whole fix. `updateMany` with `finalStatus` in the WHERE clause
+ * is a single atomic compare-and-set at the database: exactly one of two racing writers
+ * gets `count: 1`, the other gets `count: 0` and writes nothing. It is compared against
+ * the value this request OBSERVED, not merely against the client's optional `expect`,
+ * so an unsuspecting caller (the plain UI buttons, any pre-117 client) is protected too.
+ *
+ * `finalStatus` is `String @default("")` in both schemas — never null — so '' is a real,
+ * matchable value and a pending row is claimable like any other.
+ *
+ * Returns true when this request owns the transition.
+ */
+async function claimFinalStatus(recordId, projectId, expected, data) {
+  const r = await prisma.screenRecord.updateMany({
+    where: { id: recordId, projectId, finalStatus: String(expected == null ? '' : expected) },
+    data,
+  });
+  return !!(r && r.count > 0);
+}
+
+/** The row as it stands NOW — what a losing CAS sends back so the client can reconcile. */
+async function freshRecord(recordId, projectId) {
+  try {
+    return await prisma.screenRecord.findFirst({ where: { id: recordId, projectId } });
+  } catch {
+    return null;
+  }
+}
+
+/**
  * 117.md §53 — "All dependent systems should revert too … PRISMA, counts, manuscript
  * flow". Nothing is stored twice: the PRISMA engine DERIVES the flow at read from
  * `finalStatus`/`rejectedReason`, so reverting the record IS reverting the diagram —
@@ -251,14 +289,21 @@ export async function finalizeRecord(req, res) {
       return res.status(400).json({ error: "decision must be 'accept' or 'reject'" });
     }
     // 117.md §52/§54 — optional compare-and-set, then the claimed provenance marker.
+    // This is the FAST refusal (a stale client, refused before any work); the atomic
+    // guarantee is `claimFinalStatus` below, which no caller can opt out of.
     if (finalStatusMismatch(rec, req.body)) return conflict(res, rec);
     const via = normalizeFinalReviewVia((req.body || {}).via);
+    const observed = String(rec.finalStatus || '');
 
     if (decision === 'reject') {
-      const updated = await prisma.screenRecord.update({
-        where: { id: rec.id },
-        data: { finalStatus: 'rejected', rejectedReason: String(reason).slice(0, 500) },
+      // 117.md §54 (r2 fix) — conditional. A concurrent accept that got here first
+      // moved `finalStatus` and this write matches nothing: 0 rows, no audit row, no
+      // poke, and the CURRENT row travels back in the 409.
+      const claimed = await claimFinalStatus(rec.id, access.project.id, observed, {
+        finalStatus: 'rejected', rejectedReason: String(reason).slice(0, 500),
       });
+      if (!claimed) return conflict(res, await freshRecord(rec.id, access.project.id));
+      const updated = await freshRecord(rec.id, access.project.id);
       const row = finalReviewAuditRow('reject', { via, recordId: rec.id, details: { reason } });
       await writeAudit(access.project.id, req.user, row.action, {
         entityType: row.entityType, entityId: row.entityId, details: row.details,
@@ -273,23 +318,45 @@ export async function finalizeRecord(req, res) {
     // (restoreSnapshot:false) instead of restoring the prior extracted data — drop
     // the snapshot so handoffToMetaLab builds a blank study.
     if (restoreSnapshot === false) rec.revertedExtractionSnapshot = null;
-    const handoff = await handoffToMetaLab(access.project, rec, req.user);
+
+    // 117.md §54 (r2 fix) — CLAIM FIRST, SIDE EFFECTS SECOND. The handoff appends a
+    // study to another project's blob; doing that before the row is claimed means a
+    // losing accept still plants a study in Data Extraction for a record it does not
+    // own. Claiming first makes the side effect unreachable for the loser.
+    //
+    // 117.md §52 — the claim also clears `rejectedReason`: a record excluded and then
+    // accepted (exactly what an undo/redo pair produces) stayed accepted while still
+    // carrying "Reason: wrong population", which the inspector, the export and the
+    // PRISMA exclusion breakdown all read.
+    const claimed = await claimFinalStatus(rec.id, access.project.id, observed, {
+      finalStatus: 'accepted', acceptedAt: new Date(), rejectedReason: '',
+    });
+    if (!claimed) return conflict(res, await freshRecord(rec.id, access.project.id));
+
+    // A throw here must not leave an accepted record with no handoff state at all, so
+    // it lands on the SAME failure semantics a returned failure has: handoffStatus
+    // 'failed' plus the reason, retryable from the card (`retryHandoff`).
+    let handoff;
+    try {
+      handoff = await handoffToMetaLab(access.project, rec, req.user);
+    } catch (err) {
+      console.error('[screening] finalizeRecord handoff:', err && err.message);
+      handoff = { handed: false, reason: String((err && err.message) || 'unknown').slice(0, 200) };
+    }
     const mapped = mapHandoff(handoff);
-    const updated = await prisma.screenRecord.update({
+    // The bookkeeping half of the transition we already own. `finalStatus` is
+    // deliberately NOT re-asserted here: re-writing it would resurrect this accept
+    // over a revert that landed in between.
+    await prisma.screenRecord.update({
       where: { id: rec.id },
       data: {
-        finalStatus: 'accepted', acceptedAt: new Date(),
-        // 117.md §52 — an accept did NOT clear the exclusion reason, so a record
-        // excluded and then accepted (which is exactly what a redo/undo pair does)
-        // stayed accepted while still carrying "Reason: wrong population" — the
-        // inspector, the export and the PRISMA breakdown all read that column.
-        rejectedReason: '',
         handoffStatus: mapped.handoffStatus, handoffAt: new Date(),
         handoffStudyId: mapped.handoffStudyId, handoffError: mapped.handoffError,
         // Snapshot consumed once it is back in Data Extraction (restored or fresh).
         revertedExtractionSnapshot: handoff.handed ? null : rec.revertedExtractionSnapshot,
       },
     });
+    const updated = await freshRecord(rec.id, access.project.id);
     const row = finalReviewAuditRow('accept', {
       via, recordId: rec.id, details: { ...handoff, handoffStatus: mapped.handoffStatus },
     });
@@ -383,6 +450,21 @@ export async function revertFinalReview(req, res) {
     const via = normalizeFinalReviewVia((req.body || {}).via);
     const wasAccepted = rec.finalStatus === 'accepted';
 
+    // 117.md §54 (r2 fix) — CLAIM FIRST, then pull the study back. Same argument as
+    // finalize: the extraction splice is a write to ANOTHER project's blob, and a
+    // revert that lost the race must not perform it. The claim carries the whole
+    // record-side transition except `revertedExtractionSnapshot`, which is only known
+    // after the splice — so a crash between the two leaves a coherent PENDING record
+    // (only the snapshot would be missing), never a half-reverted one.
+    const claimed = await claimFinalStatus(rec.id, access.project.id, rec.finalStatus, {
+      // 117.md §52 — the record goes back to PENDING, whichever decision it held.
+      // `rejectedReason` is part of that state: leaving it behind would keep an
+      // exclusion reason attached to a record that is no longer excluded.
+      finalStatus: '', rejectedReason: '', acceptedAt: null,
+      handoffStatus: '', handoffStudyId: '', handoffAt: null, handoffError: '',
+    });
+    if (!claimed) return conflict(res, await freshRecord(rec.id, access.project.id));
+
     // Pull the study back out of the linked META·LAB project's active extraction,
     // snapshotting it first (only studies THIS record created — matched by
     // handoffStudyId / screeningRecordId — are ever touched). A rejected record never
@@ -417,17 +499,12 @@ export async function revertFinalReview(req, res) {
       }
     }
 
-    const updated = await prisma.screenRecord.update({
+    // The snapshot half of the transition we already own (see the claim above).
+    await prisma.screenRecord.update({
       where: { id: rec.id },
-      data: {
-        // 117.md §52 — the record goes back to PENDING, whichever decision it held.
-        // `rejectedReason` is part of that state: leaving it behind would keep an
-        // exclusion reason attached to a record that is no longer excluded.
-        finalStatus: '', rejectedReason: '', acceptedAt: null,
-        handoffStatus: '', handoffStudyId: '', handoffAt: null, handoffError: '',
-        revertedExtractionSnapshot: snapshot,
-      },
+      data: { revertedExtractionSnapshot: snapshot },
     });
+    const updated = await freshRecord(rec.id, access.project.id);
     const row = finalReviewAuditRow('revert', {
       via,
       recordId: rec.id,

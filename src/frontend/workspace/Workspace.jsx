@@ -80,13 +80,19 @@ import { openExportDialog, registerExportDialog } from "./exportDialogBridge.js"
    buildPrismaSVG / buildPubForestSVG extracted VERBATIM to
    src/frontend/workspace/charts/svgBuilders.js (prompt46 Phase 4) and imported
    here. ForestPlot / FunnelPlot live in the sibling charts.jsx. */
-import { SVG_XML_HEADER, presetTag, liveSvgToString, buildPrismaSVG, buildPubForestSVG } from "./charts/svgBuilders.js";
+import { SVG_XML_HEADER, presetTag, liveSvgToString, buildPrismaSVG, buildPubForestSVG, exportFigureOpts } from "./charts/svgBuilders.js";
 // 117.md §12/§57 — the canonical PRISMA 2020 builder. The report HTML and the journal
 // ZIP used the legacy single-column `buildPrismaSVG(project.prisma)` unconditionally,
 // so a screening-linked project shipped a figure drawn from the stale summary blob
 // while Screening and the Manuscript Editor drew the record-derived one. Same builder,
 // same derivation, everywhere the figure appears.
 import { buildPrismaFlowSVG } from "../../research-engine/prisma/svg.js";
+// 117.md §14 (r2 fix) — the ONE adapter that turns the canonical flow into reportable
+// counts. The journal ZIP's methods-text.md was still describing the legacy
+// `project.prisma` blob while the SAME ZIP's figure and report.html were drawn from the
+// record-derived flow, so one package could state "231 records identified" beside a
+// diagram saying 2,481. §14 forbids exactly that ("there must not be different counts").
+import { computePrismaCounts } from "../../research-engine/manuscript/prismaCounts.js";
 // 116.md §26/§32 — ONE resolver for every forest surface's text + no-effect authority.
 import { resolveForestFigure } from "../../research-engine/charts/forestFigureConfig.js";
 import { ForestPlot, FunnelPlot } from "./charts/charts.jsx";
@@ -718,7 +724,11 @@ export default function MetaLab({ initialProjectId = null, initialTab = null, on
     /* 117.md §81 — the two hard-coded column flags that used to follow the spread beat
        the reviewer's own persisted choice, so the report printed columns the Forest tab
        was told to hide. The resolved record is now the whole opinion. */
-    const forest=res?buildPubForestSVG(res,{esType,...resolveForestFigure(p,_pooled.pair),prec}):null;
+    /* 117.md §24/§41 (r2 fix) — an EXPLICIT export-dialog decimal choice beats the
+       per-figure `decimals` override, which the builder would otherwise merge on top
+       of `prec` and quietly ignore the selector with. `precOverride` is absent for the
+       on-screen/print-preview path, where the per-figure value rightly still wins. */
+    const forest=res?buildPubForestSVG(res,exportFigureOpts({esType,...resolveForestFigure(p,_pooled.pair),prec},precOverride)):null;
     const prismaFig=flow?buildPrismaFlowSVG(flow,{title:"",perSource:true}):buildPrismaSVG(pr,{title:""});
     const grade=p.grade||{};
     const gradeRows=GRADE_DOMAINS.map(d=>{const o=GRADE_OPTIONS.find(x=>x.v===grade[d.id]);return `<tr><td>${esc(d.label)}</td><td>${o?esc(o.label):"—"}</td></tr>`;}).join("");
@@ -842,7 +852,9 @@ export default function MetaLab({ initialProjectId = null, initialTab = null, on
       // layout derives ONE name for every surface.
       // 117.md §81 — same fix as the report path: the persisted record wins, not two
       // literals appended after the spread.
-      const built=buildPubForestSVG(result,{esType,...resolveForestFigure(project,pair,{defaultTitle:pair.label||""}),prec,noBg:transparent});
+      // 117.md §24/§41 (r2 fix) — the ZIP is an EXPORT: the dialog's decimal choice
+      // governs it, over the per-figure override. Same rule as the report above.
+      const built=buildPubForestSVG(result,exportFigureOpts({esType,...resolveForestFigure(project,pair,{defaultTitle:pair.label||""}),prec,noBg:transparent},prec));
       if(!built){ warnings.push(`Forest plot for "${pair.label}" skipped (not enough studies to draw).`); continue; }
       let slug=jsSafeName(pair.label,`outcome-${forestN+1}`);
       if(usedForestSlugs.has(slug)) slug=`${slug}-${forestN+1}`; // distinct labels can slugify identically → keep unique
@@ -864,14 +876,25 @@ export default function MetaLab({ initialProjectId = null, initialTab = null, on
       // 116.md §124 — the methods text describes the SAME resolved analysis the figures draw.
       const primary=pairs.length?runMeta(jsFilterStudies(studies,pairs[0]),zipAnalysis.model,{tau2Method:zipAnalysis.tau2Method}):null;
       const esType0=pairs.length?((jsFilterStudies(studies,pairs[0]).map(s=>s.esType).filter(Boolean)[0])||pairs[0].esType||""):"";
+      // 117.md §14 (r2 fix) — the METHODS TEXT reads the same numbers as the figure.
+      // `canonicalFlow` is the exact object `figures/prisma-diagram.svg` and report.html
+      // were built from a few steps above, so when the project is screening-linked the
+      // three artefacts in this ZIP are structurally incapable of disagreeing. Absent a
+      // flow (a manuscript-only project, or the screening endpoint unreachable) the
+      // legacy blob arithmetic stands EXACTLY as before — the same soft fallback the
+      // figure takes on the same condition, so no project loses its methods paragraph.
       const idTotal=(+pr.dbs||0)+(+pr.reg||0)+(+pr.other||0);
+      const zipCounts=canonicalFlow?computePrismaCounts(project,{flow:canonicalFlow}).counts:null;
+      const prismaBlock=zipCounts
+        ?{identified:zipCounts.identified,deduped:zipCounts.duplicatesRemoved,included:zipCounts.included}
+        :{identified:idTotal||null,deduped:(+pr.dedupe||null),included:(+pr.included||null)};
       const md=jsMethodsMarkdown({
         projectName:project.name,
         generatedAt:new Date(authInfo.generatedAt).toLocaleDateString(),
         software:authInfo.appVersion?`PecanRev ${authInfo.appVersion}`:"PecanRev",
         pico:project.pico||{},
         registration:(project.pico&&project.pico.prosperoId)||"",
-        prisma:{identified:idTotal||null,deduped:(+pr.dedupe||null),included:(+pr.included||null)},
+        prisma:prismaBlock,
         screening:{},
         measure:(ES_TYPES[esType0]&&ES_TYPES[esType0].label)||"",
         model:zipAnalysis.model,

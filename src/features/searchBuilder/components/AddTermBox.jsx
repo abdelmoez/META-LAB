@@ -21,6 +21,10 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { C, FONT, MONO, alpha } from '../../../frontend/theme/tokens.js';
 import { localMeshSuggestions, meshConfidence } from '../../../research-engine/searchBuilder/meshSuggest.js';
 import { splitTermInput } from '../../../research-engine/searchBuilder/termEntry.js';
+// 117.md §44 (r2 fix) — an overlay that CONSUMES Escape must claim the browser
+// fullscreen exit the same press causes; otherwise §44 reads it as "the researcher left
+// full screen" and drops the whole Focus Mode layout. Dependency-free module.
+import { markOverlayEscape } from '../../../frontend/focus/overlayEscapeLatch.js';
 
 const SUGG_BADGE = { mesh: 'MeSH', keyword: 'keyword', synonym: 'synonym' };
 const SUGG_WHY = {
@@ -88,8 +92,10 @@ export default function AddTermBox({
       // 99.md — layered dismissal: Escape closes the suggestion list first, then
       // clears a non-empty draft, and only a "free" Escape (nothing to dismiss
       // here) bubbles on to the board's collapse handler.
-      if (open) { e.preventDefault(); e.stopPropagation(); setOpen(false); setHi(0); }
-      else if (String(value || '').trim()) { e.stopPropagation(); onClear && onClear(); }
+      // 117.md §44 (r2 fix) — both CONSUMING branches mark the latch; the third
+      // one below consumes nothing and deliberately does not.
+      if (open) { markOverlayEscape(); e.preventDefault(); e.stopPropagation(); setOpen(false); setHi(0); }
+      else if (String(value || '').trim()) { markOverlayEscape(); e.stopPropagation(); onClear && onClear(); }
       else { onClear && onClear(); }
     }
   };

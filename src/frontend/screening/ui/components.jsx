@@ -7,6 +7,11 @@
  */
 import { useEffect, useRef } from 'react';
 import { C, FONT, MONO, alpha, DECISION_COLORS, DECISION_GLYPH, GLOBAL_CSS } from './theme.js';
+// 117.md §44 (r2 fix) — an overlay that CONSUMES Escape must say so, or the browser's
+// own fullscreen exit (which the same press causes and no page can prevent) reads as
+// "the researcher left full screen" and the whole workspace layout is dropped.
+// Dependency-free module; safe to import from the screening layer.
+import { markOverlayEscape } from '../../focus/overlayEscapeLatch.js';
 
 /** Inject fonts + keyframes once at the shell root. */
 export function GlobalStyle() {
@@ -105,7 +110,13 @@ export function DecisionChip({ decision, size = 'sm', label }) {
   );
 }
 
-export function Button({ children, onClick, variant = 'primary', disabled, type = 'button', style, title, full }) {
+/**
+ * 117.md §77 (r2 fix) — `testId` is an explicit prop rather than a `...rest` spread:
+ * two Final Review buttons legitimately read "Exclude" (the reviewer's vote and the
+ * leader's verdict), so the e2e needs an unambiguous handle, and a blanket spread on a
+ * primitive this widely used is how stray DOM attributes get shipped.
+ */
+export function Button({ children, onClick, variant = 'primary', disabled, type = 'button', style, title, full, testId }) {
   const base = {
     fontSize: 13, fontWeight: 600, fontFamily: FONT, borderRadius: 8, cursor: disabled ? 'not-allowed' : 'pointer',
     padding: '8px 18px', transition: 'background 0.15s, border-color 0.15s, color 0.15s', opacity: disabled ? 0.55 : 1,
@@ -119,7 +130,7 @@ export function Button({ children, onClick, variant = 'primary', disabled, type 
     subtle:  { background: C.card, border: `1px solid ${C.brd}`, color: C.txt },
   };
   return (
-    <button type={type} onClick={onClick} disabled={disabled} title={title}
+    <button type={type} onClick={onClick} disabled={disabled} title={title} data-testid={testId}
       style={{ ...base, ...variants[variant], ...style }}
       onMouseEnter={e => { if (!disabled && variant === 'primary') e.currentTarget.style.background = C.acc; }}
       onMouseLeave={e => { if (!disabled && variant === 'primary') e.currentTarget.style.background = C.acc2; }}
@@ -274,7 +285,9 @@ export function Modal({ children, onClose, width = 480, label = 'Dialog' }) {
       else node?.focus();
     }, 0);
     const onKey = e => {
-      if (e.key === 'Escape') { e.stopPropagation(); onClose?.(); return; }
+      // 117.md §44 (r2 fix) — mark BEFORE consuming, so the fullscreenchange the
+      // browser queues for this same press is already explained when it arrives.
+      if (e.key === 'Escape') { markOverlayEscape(); e.stopPropagation(); onClose?.(); return; }
       if (e.key !== 'Tab') return;
       // Cyclic focus trap over the dialog's visible focusables.
       const f = Array.from(node?.querySelectorAll(sel) || []).filter(el => el.offsetParent !== null);

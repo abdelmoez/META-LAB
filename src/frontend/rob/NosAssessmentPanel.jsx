@@ -39,6 +39,10 @@ import Icon from '../components/icons.jsx';
 import { decodeNosResponse } from './robApi.js';
 import NosStarProfile, { StarTotalPill, NosThresholdNote, STAR, EMPTY_STAR, SR_ONLY } from './NosStarProfile.jsx';
 import { nosScoreAssessment } from '../../research-engine/rob/index.js';
+// 117.md §44 (r2 fix) — an overlay that CONSUMES Escape must claim the browser
+// fullscreen exit the same press causes; otherwise §44 reads it as "the researcher left
+// full screen" and drops the whole Focus Mode layout. Dependency-free module.
+import { markOverlayEscape } from '../focus/overlayEscapeLatch.js';
 
 /* ════════════ pure helpers (exported for tests) ════════════ */
 
@@ -590,7 +594,8 @@ function ProtocolField({ field, value, editable, onChange, reduced }) {
           onChange={e => setDraft(e.target.value)}
           onKeyDown={(e) => {
             if (e.key === 'Enter') { e.preventDefault(); onChange(field.key, draft.trim()); setDraft(null); }
-            else if (e.key === 'Escape') { e.preventDefault(); setDraft(null); }
+            // 117.md §44 (r2 fix) — mark before consuming.
+            else if (e.key === 'Escape') { markOverlayEscape(); e.preventDefault(); setDraft(null); }
           }}
           style={{ flex: '1 1 180px', minWidth: 120, padding: '6px 9px', background: C.surf, border: `1px solid ${C.brd2}`, borderRadius: 7, color: C.txt, fontSize: 12.5, fontFamily: FONT }}
         />

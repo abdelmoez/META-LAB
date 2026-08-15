@@ -1,5 +1,7 @@
 import React, { useEffect } from "react";
 import { C, alpha } from "../theme/tokens.js";
+// 117.md §44 (r2 fix) — see the Escape effect below.
+import { markOverlayEscape } from "../focus/overlayEscapeLatch.js";
 
 /**
  * Generic modal dialog with a blurred backdrop.
@@ -13,12 +15,26 @@ import { C, alpha } from "../theme/tokens.js";
  *   width    – panel width in px (default: 440)
  */
 export default function Modal({ open, onClose, title, children, width = 440 }) {
-  // Close on Escape key
+  // Close on Escape key.
+  //
+  // 117.md §44 (r2 fix) — THREE things changed here, and they are one fix:
+  //   · CAPTURE phase on `document`, so the nearest overlay sees the key before the
+  //     Focus Mode provider's window/bubble listener does (the repo-wide convention —
+  //     see stitch/primitives/overlay.jsx and screening/ui/components.jsx);
+  //   · stopPropagation, so dismissing this dialog does not ALSO leave Focus Mode;
+  //   · markOverlayEscape, so the fullscreen exit the browser performs for this same
+  //     press (uncancellable) is recognised as the dialog's, not the researcher's, and
+  //     the workspace layout survives instead of being dropped back to full chrome.
   useEffect(() => {
     if (!open) return;
-    const handler = (e) => { if (e.key === "Escape") onClose?.(); };
-    document.addEventListener("keydown", handler);
-    return () => document.removeEventListener("keydown", handler);
+    const handler = (e) => {
+      if (e.key !== "Escape") return;
+      markOverlayEscape();
+      e.stopPropagation();
+      onClose?.();
+    };
+    document.addEventListener("keydown", handler, true);
+    return () => document.removeEventListener("keydown", handler, true);
   }, [open, onClose]);
 
   if (!open) return null;
