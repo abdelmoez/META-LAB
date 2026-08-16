@@ -80,9 +80,13 @@ export function ManuscriptWorkspace({ project, upd, initialSubtab, onSubtabChang
   /* ── 118.md §12/§45 — the editing VIEW ───────────────────────────────────────
      ONE piece of view state and NO manuscript state: both views render the same
      draft through the same hook (§13). First paint resolves URL → stored per-user
-     preference → 'sections', so a shared `?msv=continuous` link opens the continuous
-     document even for someone whose own preference is Section View, while a plain
-     reload keeps the workflow they chose (§12). */
+     preference → DEFAULT_MANUSCRIPT_VIEW, so a shared `?msv=` link opens the view it
+     names even for someone whose own preference differs, while a plain reload keeps
+     the workflow they chose (§12).
+     119.md §3 — that middle step is the whole of "existing users with an explicitly
+     saved view preference retain that preference": the default moved to Continuous
+     View, and a stored 'sections' still wins over it. Nothing is written here, so a
+     researcher who never chose is never given a preference they did not make. */
   const auth = useOptionalAuth();
   const userId = (auth && auth.user && auth.user.id) || null;
   const prefKey = viewPrefKey(userId);
@@ -162,11 +166,13 @@ export function ManuscriptWorkspace({ project, upd, initialSubtab, onSubtabChang
   }, [m, userId]);
 
   /* §47/§48 — once this session has PUT the view in the URL, the URL is
-     authoritative in both directions, so Back/Forward walks view changes exactly
-     (an absent `?msv=` then means Section View, because that is the value the href
-     builder omits). Before the first toggle an absent param means "the URL does not
-     express a view" and the stored preference above stands — otherwise every fresh
-     load would silently overwrite the researcher's saved workflow with the default. */
+     authoritative in both directions, so Back/Forward walks view changes exactly.
+     119.md §3 — an absent `?msv=` then means DEFAULT_MANUSCRIPT_VIEW, because that is
+     precisely the value manuscriptSubHref omits; the two rules are symmetric and flip
+     together, which is why this reads the constant rather than naming a view.
+     Before the first toggle an absent param means "the URL does not express a view"
+     and the stored preference above stands — otherwise every fresh load would
+     silently overwrite the researcher's saved workflow with the default. */
   useEffect(() => {
     if (typeof hostNavRef.current !== 'function') return;
     if (initialView == null && !viewTouched.current) return;

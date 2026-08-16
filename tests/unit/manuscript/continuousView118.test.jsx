@@ -31,6 +31,9 @@ import {
   DEFAULT_MANUSCRIPT_VIEW, normalizeManuscriptView, MANUSCRIPT_TOOLBAR_CSS,
 } from '../../../src/features/manuscript/ManuscriptToolbar.jsx';
 import { viewPrefKey, readStoredView } from '../../../src/features/manuscript/ManuscriptWorkspace.jsx';
+// 119.md §3 — the href builder is asserted BEHAVIOURALLY as well as by source text:
+// the symmetric omit-the-default rule is what Back/Forward depends on.
+import { manuscriptSubHref } from '../../../src/frontend/stitch/nav/navConfig.js';
 import { makeManuscriptDraft, normalizeDraft, SECTION_TYPES } from '../../../src/research-engine/manuscript/model.js';
 
 const noop = () => {};
@@ -425,7 +428,9 @@ describe('118.md §12 — the view switcher', () => {
     expect(MANUSCRIPT_VIEWS.map((v) => v.label)).toEqual(['Section View', 'Continuous View']);
     expect(html).toContain('Section View');
     expect(html).toContain('Continuous View');
-    expect(DEFAULT_MANUSCRIPT_VIEW).toBe('sections');
+    // 119.md §3 (re-pinned from 'sections') — a manuscript is ONE document, and the
+    // view that shows it as one is what a researcher with no stored preference opens.
+    expect(DEFAULT_MANUSCRIPT_VIEW).toBe('continuous');
   });
 
   it('is ONE setting with two exclusive states (radiogroup), not two toggles', () => {
@@ -455,10 +460,14 @@ describe('118.md §12 — the view switcher', () => {
   });
 
   it('an unknown stored/URL value resolves to the default view', () => {
+    // A KNOWN value is always honoured — that is how an explicitly saved 'sections'
+    // preference keeps winning after the 119.md §3 default flip.
     expect(normalizeManuscriptView('continuous')).toBe('continuous');
     expect(normalizeManuscriptView('sections')).toBe('sections');
-    expect(normalizeManuscriptView('nonsense')).toBe('sections');
-    expect(normalizeManuscriptView(undefined)).toBe('sections');
+    // …and only the unknown/absent cases follow the default (re-pinned, §3).
+    expect(normalizeManuscriptView('nonsense')).toBe('continuous');
+    expect(normalizeManuscriptView(undefined)).toBe('continuous');
+    expect(normalizeManuscriptView('nonsense')).toBe(DEFAULT_MANUSCRIPT_VIEW);
   });
 
   it('lives in the toolbar, and ONLY on the Editor destination', () => {
@@ -553,7 +562,17 @@ describe('118.md §12/§47 — the view preference is remembered, per user', () 
 
   it('§47 — the URL carries the view only when it is not the default', () => {
     const nav = readSource('src/frontend/stitch/nav/navConfig.js');
-    expect(nav).toContain("const view = ctx.view === 'continuous' ? '&msv=continuous' : '';");
+    /* 119.md §3 (re-pinned) — the builder omits the DEFAULT view and emits the other
+       one. The reconcile effect reads an absent `?msv=` as the default, so these two
+       rules are one contract: if they ever disagreed, browser Back/Forward would
+       resolve a researcher's own history entries to the wrong view. The assertion is
+       byte-exact on purpose — a loosened match would let them drift apart again. */
+    expect(nav).toContain("const view = ctx.view === 'sections' ? '&msv=sections' : '';");
+    expect(nav).not.toContain("'&msv=continuous'");
+    expect(manuscriptSubHref('editor', { projectId: 'p1', view: DEFAULT_MANUSCRIPT_VIEW }))
+      .not.toContain('msv=');
+    expect(manuscriptSubHref('editor', { projectId: 'p1', view: 'sections' }))
+      .toContain('&msv=sections');
     expect(nav).toContain('export function readManuscriptViewParam(search)');
     // absent ≠ "sections": absent means the URL does not express a view at all, so
     // the stored preference still wins on a plain load (§12).

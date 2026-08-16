@@ -45,6 +45,8 @@ import {
   mintManualTableId, remintDuplicateCaptions, formatCaptionPrefix, tableCaptionLine,
 } from '../../../research-engine/manuscript/refTokens.js';
 import { SHOW_CHANGES_CSS, indexFactChanges, factChipTitle } from '../showChanges.js';
+// 117.md §44 — an overlay that consumes an Escape owns the fullscreen exit it causes.
+import { markOverlayEscape } from '../../../frontend/focus/overlayEscapeLatch.js';
 
 /* Page-scoped CSS: the paper is LITERAL white in both themes (a printed page),
    so the ink colors are fixed — theme tokens on purpose only OUTSIDE the page. */
@@ -105,6 +107,15 @@ export const RICH_EDITOR_CSS = `
 .ms-page-body .${TABLE_CAPTION_TITLE_CLASS}{outline:none;display:inline;border-radius:3px;padding:0 2px;}
 .ms-page-body .${TABLE_CAPTION_TITLE_CLASS}:empty::before{content:attr(data-placeholder);color:#98a1b3;
   font-style:italic;}
+/* 119.md §2 — an EMPTY title is a zero-width INLINE editing island nested inside a
+   contenteditable="false" caption, and WebKit cannot derive a caret from a click on
+   such a box: focus lands on the span, but the typing goes nowhere (reproduced in
+   Playwright WebKit; identical steps type fine in Blink and Gecko). Giving the empty
+   state real caret geometry is one half of the fix — the delegated caret placement in
+   onCaptionMouseDown below is the other half, and neither one sniffs a user agent.
+   Scoped to :empty so a title with text keeps display:inline and still wraps inside
+   the caption line like the prose it is. */
+.ms-page-body .${TABLE_CAPTION_TITLE_CLASS}:empty{display:inline-block;min-width:4px;}
 .ms-page-body .${TABLE_CAPTION_TITLE_CLASS}:hover{background:rgba(30,122,70,0.07);}
 .ms-page-body .${TABLE_CAPTION_TITLE_CLASS}:focus{background:rgba(30,122,70,0.12);}
 .ms-page-body .${TABLE_CAPTION_CLASS}[data-tblcap-current="true"]{box-shadow:0 0 0 2px rgba(30,122,70,0.40);
@@ -504,6 +515,84 @@ export const RichSectionEditor = forwardRef(function RichSectionEditor({
     onPlaceholderFocusRef.current && onPlaceholderFocusRef.current(chip.getAttribute('data-input') || '');
   };
 
+  /* ══════════ 119.md §2 — the table-title caret (the "Safari" defect) ══════════
+   *
+   * The title is an editing ISLAND: `<span contenteditable="true">` inside a
+   * `<div contenteditable="false">` caption inside the editable root. Every new
+   * table starts with an EMPTY title, and an empty inline island has no caret
+   * geometry — WebKit focuses the span on click but never establishes a caret, so
+   * the next keystroke is discarded. This is a standards/lifecycle problem, not a
+   * browser to detect: when a click lands in a caption and the browser has not put
+   * a caret inside the title, we place the collapsed range ourselves. Engines that
+   * already got it right never reach the override, because a click inside a
+   * NON-empty title is deliberately left to the browser (click-to-position must
+   * keep working, and every engine does that part correctly).
+   */
+
+  /** The caption island owning a node, scoped to this editor root. */
+  const captionFromNode = (node) => {
+    let el = node && (node.nodeType === 1 ? node : node.parentElement);
+    while (el && el !== rootRef.current) {
+      if (el.classList && el.classList.contains(TABLE_CAPTION_CLASS)) return el;
+      el = el.parentElement;
+    }
+    return null;
+  };
+
+  const captionTitleOf = (cap) => (cap ? cap.querySelector(`span.${TABLE_CAPTION_TITLE_CLASS}`) : null);
+
+  /** Place a collapsed caret inside `titleEl`, honouring the click point when the
+      title has text to aim at (a rename must be able to click mid-word). */
+  const placeCaretInTitle = (titleEl, clientX, clientY) => {
+    if (!titleEl || typeof window === 'undefined' || !window.getSelection) return false;
+    const sel = window.getSelection();
+    if (!sel) return false;
+    let r = null;
+    const hasText = (titleEl.textContent || '').length > 0;
+    if (hasText && typeof clientX === 'number' && typeof clientY === 'number') {
+      // Standard two-name API: WebKit/Blink expose caretRangeFromPoint, Gecko
+      // caretPositionFromPoint. A point outside the title is discarded rather than
+      // trusted, so a click on the number can never drop the caret in the prose.
+      if (typeof document.caretRangeFromPoint === 'function') {
+        r = document.caretRangeFromPoint(clientX, clientY);
+      } else if (typeof document.caretPositionFromPoint === 'function') {
+        const p = document.caretPositionFromPoint(clientX, clientY);
+        if (p && p.offsetNode) { r = document.createRange(); r.setStart(p.offsetNode, p.offset); }
+      }
+      if (r && !titleEl.contains(r.startContainer)) r = null;
+    }
+    if (r) r.collapse(true);
+    else { r = document.createRange(); r.selectNodeContents(titleEl); r.collapse(false); }
+    titleEl.focus();
+    sel.removeAllRanges();
+    sel.addRange(r);
+    savedRange.current = r.cloneRange();
+    return true;
+  };
+
+  /**
+   * 119.md §2 — one delegated entry point for every click inside a caption.
+   *
+   * Clicking the derived NUMBER (or the caption's padding) is a dead end today: the
+   * wrapper is contenteditable="false" and the number is user-select:none, so the
+   * click does nothing at all. Routing it to the title makes the whole caption
+   * behave like the one editable thing it contains, in every engine.
+   */
+  const onCaptionMouseDown = (e) => {
+    const cap = captionFromNode(e.target);
+    if (!cap) return false;
+    const titleEl = captionTitleOf(cap);
+    if (!titleEl) return false;
+    const inTitle = titleEl === e.target || titleEl.contains(e.target);
+    const empty = !(titleEl.textContent || '').length;
+    // A click inside a title that HAS text is the browser's job — it positions the
+    // caret at the glyph, which is exactly what the researcher aimed at.
+    if (inTitle && !empty) return false;
+    e.preventDefault();
+    placeCaretInTitle(titleEl, e.clientX, e.clientY);
+    return true;
+  };
+
   /** One mousedown entry point: reference chips, then cross-refs, then placeholders. */
   const onEditorMouseDown = (e) => {
     // 117.md §38 — a click on a citation opens its action menu without moving the
@@ -516,7 +605,12 @@ export const RichSectionEditor = forwardRef(function RichSectionEditor({
       openChipMenu(chip);
       return;
     }
-    if (!readOnly) onPlaceholderMouseDown(e);
+    if (readOnly) return;
+    // 119.md §2 — the caption caret comes before the placeholder pass: a caption
+    // never contains a placeholder chip, and the click must not fall through to a
+    // handler that would move the caret back out of the island.
+    if (onCaptionMouseDown(e)) return;
+    onPlaceholderMouseDown(e);
   };
 
   const readOnlyRef = useRef(readOnly);
@@ -595,10 +689,137 @@ export const RichSectionEditor = forwardRef(function RichSectionEditor({
     return (prev && prev.classList && prev.classList.contains(TABLE_CAPTION_CLASS)) ? prev : null;
   };
 
+  /**
+   * 119.md §2 — a table context built from a KNOWN table element instead of the
+   * caret. A whole-table SELECTION has no cell to read a caret out of (its start
+   * can sit before the caption), and `deleteTable` ignores gridRow/col anyway.
+   */
+  const contextForTable = (table) => {
+    if (!table || !rootRef.current || !rootRef.current.contains(table)) return null;
+    const trs = Array.from(table.querySelectorAll('tr'));
+    const rowCells = trs[0] ? Array.from(trs[0].querySelectorAll('th,td')) : [];
+    return { table, cell: rowCells[0] || null, gridRow: 0, col: 0, rows: trs.length, cols: rowCells.length };
+  };
+
+  /** Children that carry meaning — whitespace-only text nodes do not, and engines
+      sprinkle them freely between blocks. */
+  const significantChildren = (el) => (el
+    ? Array.from(el.childNodes).filter((n) => !(n.nodeType === 3 && !String(n.textContent || '').trim()))
+    : []);
+
+  /** The top-level block of this root that contains `node` (climbing out of any
+      caption island / cell / list it is nested in). */
+  const topBlockOf = (node) => {
+    const el = rootRef.current;
+    let top = node;
+    if (!el || !top || !el.contains(top)) return null;
+    while (top.parentElement && top.parentElement !== el) top = top.parentElement;
+    return top.parentElement === el ? top : null;
+  };
+
+  /**
+   * 119.md §2 — HOIST the insertion point out of an editing island before a BLOCK
+   * insertion.
+   *
+   * insertTable deliberately parks the caret inside the new caption's title (§4:
+   * the one thing only the researcher can supply is the name). Inserting a second
+   * table with the caret still parked there made execCommand('insertHTML') splice
+   * the new caption+table INSIDE the previous title span — which the reader sees as
+   * "one click inserted two tables", and which htmlToMd then silently DELETES on
+   * the next round trip because the pipe grammar cannot express a table nested in a
+   * caption. The same trap fires for an insert with the caret inside a TD.
+   *
+   * The grammar is the model: nothing may create DOM the grammar cannot round-trip.
+   * So a block insertion always lands AFTER the whole enclosing object, never inside
+   * it. Returns true when the point was moved.
+   */
+  const hoistInsertionPoint = () => {
+    const el = rootRef.current;
+    if (!el || typeof window === 'undefined' || !window.getSelection) return false;
+    const sel = window.getSelection();
+    if (!sel || !sel.rangeCount) return false;
+    const r = sel.getRangeAt(0);
+    if (!el.contains(r.commonAncestorContainer)) return false;
+    let anchor = null;
+    const cap = captionFromNode(r.commonAncestorContainer);
+    if (cap) {
+      // A caption belongs to the table that follows it: they are ONE object, so the
+      // insertion clears both.
+      const next = cap.nextElementSibling;
+      anchor = (next && next.tagName === 'TABLE') ? next : cap;
+    } else {
+      const cell = cellFromNode(r.commonAncestorContainer);
+      const table = cell && typeof cell.closest === 'function' ? cell.closest('table') : null;
+      if (table && el.contains(table)) anchor = table;
+    }
+    const top = anchor ? topBlockOf(anchor) : null;
+    if (!top) return false;
+    const nr = document.createRange();
+    nr.setStartAfter(top);
+    nr.collapse(true);
+    sel.removeAllRanges();
+    sel.addRange(nr);
+    savedRange.current = nr.cloneRange();
+    return true;
+  };
+
+  /**
+   * 119.md §2 — the table the current selection covers ENTIRELY, or null.
+   *
+   * "Entirely" is deliberately two-sided, and both sides are expressed with
+   * `intersectsNode` rather than boundary-point arithmetic: engines normalise a
+   * table drag-selection to wildly different boundary containers (a text node, a
+   * cell, a row, the table's parent), and a rule written against those would be a
+   * rule that works in one browser.
+   *
+   *  - EVERY cell of the table is touched. A drag that stops short of one cell is a
+   *    partial selection, and §2 is explicit that a partial one must do exactly what
+   *    it says — so it stays with the browser, untouched.
+   *  - NOTHING outside the object is touched. A selection that also covers the
+   *    prose around the table is a broader edit the browser owns; deleting only the
+   *    table there would be less than the researcher asked for.
+   *
+   * Exactly one table may be involved — a range across two tables is the browser's.
+   */
+  const fullySelectedTable = () => {
+    const el = rootRef.current;
+    if (!el || typeof window === 'undefined' || !window.getSelection) return null;
+    const sel = window.getSelection();
+    if (!sel || !sel.rangeCount || sel.isCollapsed) return null;
+    const r = sel.getRangeAt(0);
+    if (typeof r.intersectsNode !== 'function') return null;
+    if (!el.contains(r.commonAncestorContainer)) return null;
+    try {
+      const touched = Array.from(el.querySelectorAll('table')).filter((t) => r.intersectsNode(t));
+      if (touched.length !== 1) return null;
+      const table = touched[0];
+      const cells = Array.from(table.querySelectorAll('th,td'));
+      if (!cells.length) return null;
+      const coversAllCells = cells.every((c) => r.intersectsNode(c));
+      if (!coversAllCells) return null;
+      const own = new Set([topBlockOf(table), topBlockOf(captionForTable(table))].filter(Boolean));
+      const straysOutside = Array.from(el.children).some((n) => !own.has(n) && r.intersectsNode(n));
+      return straysOutside ? null : table;
+    } catch { return null; }
+  };
+
   // Notify the parent when the caret enters/moves within/leaves a table. Only
   // the leave transition sends null (once), so a caret outside any table costs
   // nothing per keystroke.
   const wasInTable = useRef(false);
+  /** 119.md §2 — the last table the caret owned (see notifyTableFocus). */
+  const lastTableRef = useRef(null);
+
+  /** The table belonging to a caption id, or null when that object is gone. */
+  const tableForCaptionId = (id) => {
+    const el = rootRef.current;
+    const safe = String(id == null ? '' : id).replace(/[^a-z0-9-]/gi, '');
+    if (!el || !safe) return null;
+    const cap = el.querySelector(`div.${TABLE_CAPTION_CLASS}[data-tblcap="${safe}"]`);
+    const next = cap && cap.nextElementSibling;
+    return (next && next.tagName === 'TABLE') ? next : null;
+  };
+
   const notifyTableFocus = () => {
     const cb = onTableFocusRef.current;
     if (!cb) return;
@@ -608,6 +829,15 @@ export const RichSectionEditor = forwardRef(function RichSectionEditor({
       return;
     }
     wasInTable.current = true;
+    /* 119.md §2 — remember the table the caret last owned.
+       The floating table controls and the §11 delete confirmation are real focus
+       targets, and WebKit DROPS the document selection when focus leaves the editing
+       host (Blink keeps it). Reading the target off the live selection therefore made
+       every table op a no-op in Safari the moment a dialog stood between the click
+       and the command — "✕ Table does nothing", reproduced under webkit-manuscript.
+       The controls only exist while this ref is fresh (the parent hides them on the
+       leave notification), so acting on it is acting on what the researcher sees. */
+    lastTableRef.current = { table: ctx.table, gridRow: ctx.gridRow, col: ctx.col };
     const cap = captionForTable(ctx.table);
     cb({
       gridRow: ctx.gridRow,
@@ -621,11 +851,35 @@ export const RichSectionEditor = forwardRef(function RichSectionEditor({
     });
   };
 
+  /**
+   * 119.md §2 — re-stamp the caption island's editability.
+   *
+   * A native UNDO restores the caption's markup as the engine recorded it, and
+   * WebKit drops the `contenteditable` attributes on the way through. A restored
+   * caption without them is an editable block whose derived NUMBER the caret can
+   * walk into and type over — the one thing 117.md §4 guarantees can never happen.
+   * These are attribute writes on non-content structure, so they cost nothing to
+   * the undo stack (setAttr writes only on a genuine difference), and they run
+   * where every mutation already passes: the emit path, which an undo triggers.
+   */
+  const repairCaptionIslands = (el) => {
+    const caps = el.querySelectorAll(`div.${TABLE_CAPTION_CLASS}[data-tblcap]`);
+    for (const cap of caps) {
+      setAttr(cap, 'contenteditable', 'false');
+      const title = cap.querySelector(`span.${TABLE_CAPTION_TITLE_CLASS}`);
+      if (title) setAttr(title, 'contenteditable', 'true');
+    }
+  };
+
   const emit = useCallback(() => {
     if (readOnlyRef.current) return;
     const el = rootRef.current;
     if (!el) return;
-    onChangeRef.current && onChangeRef.current(htmlToMd(el.innerHTML));
+    repairCaptionIslands(el);
+    /* 119.md §2 — the ONE place the orphan-caption repair runs: a caption whose
+       table a native selection-delete removed is dropped as the section is
+       serialized. Undo-safe by construction (see dropOrphanCaptionBlocks). */
+    onChangeRef.current && onChangeRef.current(htmlToMd(el.innerHTML, { dropOrphanCaptions: true }));
   }, []);
 
   const selectionInRoot = () => {
@@ -635,6 +889,9 @@ export const RichSectionEditor = forwardRef(function RichSectionEditor({
   };
 
   const apiRef = useRef(null);
+  /* 119.md §2 — applied table-insertion operation ids (opId → minted table id).
+     See api.insertTable for why this is idempotency rather than debouncing. */
+  const insertOpIds = useRef(new Map());
 
   const rememberSelection = () => {
     const sel = typeof window !== 'undefined' && window.getSelection && window.getSelection();
@@ -657,12 +914,24 @@ export const RichSectionEditor = forwardRef(function RichSectionEditor({
   const focusWithSelection = () => {
     const el = rootRef.current;
     if (!el) return false;
-    if (selectionInRoot()) return true;
+    /* 119.md §2 — the caret can be inside this root while DOM FOCUS sits on a
+       toolbar control the researcher reached with the KEYBOARD (the mouse path
+       preventDefaults its mousedown and never moves focus, but Tab/Enter genuinely
+       does). execCommand acts on the focused editing host, so "the selection is in
+       root" is not on its own enough: restore focus too, carrying the live range
+       across so the insertion still lands where the researcher left the caret. */
+    const inside = typeof document !== 'undefined' && document.activeElement
+      && (document.activeElement === el || el.contains(document.activeElement));
+    const live = selectionInRoot();
+    if (inside && live) return true;
+    const sel0 = typeof window !== 'undefined' && window.getSelection && window.getSelection();
+    const keep = (live && sel0 && sel0.rangeCount) ? sel0.getRangeAt(0).cloneRange() : null;
     el.focus();
     const sel = window.getSelection();
     if (!sel) return true;
     sel.removeAllRanges();
-    if (savedRange.current && el.contains(savedRange.current.commonAncestorContainer)) {
+    if (keep) sel.addRange(keep);
+    else if (savedRange.current && el.contains(savedRange.current.commonAncestorContainer)) {
       sel.addRange(savedRange.current);
     } else {
       const r = document.createRange();
@@ -680,8 +949,19 @@ export const RichSectionEditor = forwardRef(function RichSectionEditor({
     emit();
   }, [emit]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const insertHtml = useCallback((html) => {
+  /**
+   * @param {string} html
+   * @param {object} [opts]
+   * @param {boolean} [opts.hoistFromIslands] 119.md §2 — the html contains BLOCK
+   *   content the pipe grammar cannot nest (a table, a captioned table, a
+   *   paragraph). Move the insertion point out of any caption island / table cell
+   *   first, so the insertion can never produce DOM that htmlToMd would then throw
+   *   away. Inline insertions (citation and cross-reference chips) never set it:
+   *   a chip inside a cell is legal, and hoisting one would be a caret bug.
+   */
+  const insertHtml = useCallback((html, opts) => {
     if (!focusWithSelection()) return;
+    if (opts && opts.hoistFromIslands) hoistInsertionPoint();
     let ok = false;
     try { ok = document.execCommand('insertHTML', false, html); } catch { ok = false; }
     if (!ok) {
@@ -708,12 +988,29 @@ export const RichSectionEditor = forwardRef(function RichSectionEditor({
 
   /** 116.md §61 — apply a pure table op by whole-table replacement (see the
       table header comment above). Returns true when a table op was applied. */
-  const runTableOp = (opId, ctxOverride) => {
+  const runTableOp = (opId, ctxOverride, forcedTable) => {
     if (readOnlyRef.current) return false;
-    const ctx = tableDomContext();
+    /* 119.md §2 — resolving WHICH table, in falling order of certainty:
+       `forcedTable`   a whole-table selection (Delete/Backspace/Cut) hands the node
+                       straight in, so the key runs the very same op the ✕ Table menu
+                       runs rather than a second deletion that would orphan a caption;
+       `ctxOverride.tableId`  the caller named the object (the §11 delete confirmation
+                       knows the id it warned about, and by the time the researcher
+                       confirms, the caret is long gone);
+       the live caret; and finally the last table the caret owned — the fallback that
+       makes the floating controls work in Safari at all (see notifyTableFocus). */
+    const { tableId: overrideId, ...opCtx } = ctxOverride || {};
+    const named = overrideId ? tableForCaptionId(overrideId) : null;
+    const lr = lastTableRef.current;
+    const rememberedBase = lr ? contextForTable(lr.table) : null;
+    // The remembered cell matters: 'rowAbove' on the row the caret was in is a
+    // different edit from 'rowAbove' on row 0.
+    const remembered = rememberedBase ? { ...rememberedBase, gridRow: lr.gridRow, col: lr.col } : null;
+    const ctx = contextForTable(forcedTable) || contextForTable(named)
+      || tableDomContext() || remembered;
     if (!ctx) return false;
     const res = applyTableOp(opId, htmlToMd(ctx.table.outerHTML), {
-      gridRow: ctx.gridRow, col: ctx.col, ...(ctxOverride || {}),
+      gridRow: ctx.gridRow, col: ctx.col, ...opCtx,
     });
     if (!res) return false;
     const sel = window.getSelection();
@@ -725,18 +1022,82 @@ export const RichSectionEditor = forwardRef(function RichSectionEditor({
     // selects the caption too, so the id disappears with the data instead of
     // leaving an orphan caption that would keep numbering an empty slot. One
     // native undo restores both, which is exactly why identity lives in the prose.
-    if (res.md == null && cap) r.setStartBefore(cap); else r.setStartBefore(ctx.table);
+    /* 119.md §2 — select the WHOLE object (caption + table). Rebuildable, because
+       the WebKit retry below needs the same range a second time. */
+    const selectObject = () => {
+      /* …and the selection climbs out of any wrapper that holds NOTHING
+         but this object first. Engines disagree about the START of a replacement
+         range: WebKit PRESERVES the block the range begins in, so a range starting
+         before a caption that a wrapper <div> holds left the caption element behind
+         as an empty husk — the "Delete does not delete the table" report, in Safari,
+         through the ✕ Table menu as much as through the key. Selecting the wrapper
+         itself is the same edit expressed one level up, it is what Blink was already
+         doing implicitly, and one native undo still restores everything. The guard
+         is what keeps it safe: we only climb while the parent contains this object
+         and nothing else. */
+      let startNode = cap || ctx.table;
+      let endNode = ctx.table;
+      const owns = cap ? 2 : 1;
+      while (startNode.parentElement && startNode.parentElement !== rootRef.current
+        && endNode.parentElement === startNode.parentElement
+        && significantChildren(startNode.parentElement).length === owns) {
+        startNode = startNode.parentElement;
+        endNode = startNode;
+      }
+      const rr = document.createRange();
+      rr.setStartBefore(startNode);
+      rr.setEndAfter(endNode);
+      sel.removeAllRanges();
+      sel.addRange(rr);
+      savedRange.current = rr.cloneRange();
+    };
+    if (res.md == null) {
+      selectObject();
+      // delete-table → an empty paragraph keeps a caret target; htmlToMd drops
+      // it again, so the persisted markdown stays clean
+      insertHtml('<p><br></p>');
+      /* 119.md §2 — the last engine difference, handled by RETRY rather than by a
+         branch on the engine.
+         WebKit's replacement machinery treats a contenteditable="false" element at
+         the START of the range as immovable. Depending on what precedes the object it
+         either makes the whole command a NO-OP — "✕ Table does nothing in Safari",
+         exactly as reported, whenever the table opens the section — or it keeps the
+         caption element as an empty husk with its number and title deleted. Blink
+         does neither, and the cases WebKit already handles must not be disturbed, so
+         the fix only runs when the first attempt provably did not finish.
+         Releasing the attribute is a write to non-content STRUCTURE, not a content
+         edit: the grammar re-derives it on every mount and repairCaptionIslands
+         re-stamps it on the emit that follows (including the emit an undo triggers),
+         so no caret can ever reach the derived number. */
+      const stillThere = () => rootRef.current && rootRef.current.contains(ctx.table);
+      if (stillThere() && cap) {
+        cap.removeAttribute('contenteditable');
+        selectObject();
+        insertHtml('<p><br></p>');
+      }
+      /* …and whatever caption WebKit left standing goes too — but only once the
+         TABLE is provably gone, so a command that failed outright can never turn
+         into "the caption disappeared and the data stayed". The orphan test is the
+         same one the markdown repair uses (a caption whose next sibling is not its
+         table), which covers both shapes WebKit leaves: an emptied husk and a
+         complete caption. It goes through the same execCommand path everything else
+         uses, never a removeChild. */
+      if (!stillThere() && cap && rootRef.current && rootRef.current.contains(cap)) {
+        const next = cap.nextElementSibling;
+        if (!next || next.tagName !== 'TABLE') {
+          cap.removeAttribute('contenteditable');
+          replaceNode(cap, null);
+        }
+      }
+      notifyTableFocus();
+      return true;
+    }
+    // A STRUCTURAL op replaces the table node in place; the caption is untouched.
+    r.setStartBefore(ctx.table);
     r.setEndAfter(ctx.table);
     sel.removeAllRanges();
     sel.addRange(r);
     savedRange.current = r.cloneRange();
-    if (res.md == null) {
-      // delete-table → an empty paragraph keeps a caret target; htmlToMd drops
-      // it again, so the persisted markdown stays clean
-      insertHtml('<p><br></p>');
-      notifyTableFocus();
-      return true;
-    }
     const html = mdToHtml(res.md, {
       orderMap: orderMapRef.current, assetNumbers: assetNumbersRef.current,
       ...factOptsRef.current, ...refOptsRef.current,
@@ -803,15 +1164,35 @@ export const RichSectionEditor = forwardRef(function RichSectionEditor({
      */
     insertTable: (rows, cols, tblOpts = {}) => {
       if (readOnlyRef.current) return null;
+      /* 119.md §2 — ONE insertion intent produces exactly ONE table. The caller
+         stamps a per-gesture operation id; a re-entrant call carrying an id this
+         editor has already applied returns the SAME table id and mutates nothing.
+         That is structural idempotency, not a debounce: a doubled listener, a
+         StrictMode double-invoke, a click+keyboard pair on the same grid cell or a
+         retried gesture all collapse to the first insertion, and a genuinely new
+         gesture (a new id) always inserts. */
+      const opId = tblOpts.opId ? String(tblOpts.opId) : '';
+      if (opId && insertOpIds.current.has(opId)) return insertOpIds.current.get(opId);
       const id = mintManualTableId(usedTableIds());
       const md = makeCaptionedTableMd(id, tblOpts.title || '', rows, cols);
       const html = mdToHtml(md, {
         orderMap: orderMapRef.current, assetNumbers: assetNumbersRef.current,
         ...factOptsRef.current, ...refOptsRef.current,
       }).replace('<table>', '<table data-ms-new="1">');
+      if (opId) {
+        insertOpIds.current.set(opId, id);
+        // Bounded: this is a re-entrancy guard for one gesture, not a history.
+        if (insertOpIds.current.size > 64) {
+          const oldest = insertOpIds.current.keys().next();
+          if (!oldest.done) insertOpIds.current.delete(oldest.value);
+        }
+      }
       // the trailing empty paragraph gives a caret target below a table inserted
-      // at the section end; htmlToMd drops it, so the markdown stays clean
-      insertHtml(`${html}<p><br></p>`);
+      // at the section end; htmlToMd drops it, so the markdown stays clean.
+      // 119.md §2 — hoisted: the previous insertion parked the caret in a caption
+      // title, and inserting there nested a table inside a caption (visible
+      // duplicate + silent htmlToMd data loss on the next round trip).
+      insertHtml(`${html}<p><br></p>`, { hoistFromIslands: true });
       const root = rootRef.current;
       const nt = root && root.querySelector('table[data-ms-new="1"]');
       if (nt) nt.removeAttribute('data-ms-new');
@@ -1088,6 +1469,57 @@ export const RichSectionEditor = forwardRef(function RichSectionEditor({
     return true;
   };
 
+  /**
+   * 119.md §2 — Delete/Backspace over a WHOLE table.
+   *
+   * Left to the browser, a drag over every cell deletes the <table> node and leaves
+   * the contenteditable="false" caption standing: an orphan "Table 1." that keeps
+   * numbering an empty slot and round-trips as a [[tblcap:]] line — which is what
+   * "selecting the table and pressing Delete does not delete it" actually is. The
+   * key is therefore claimed ONLY for a selection that covers a whole table (see
+   * fullySelectedTable), and it routes to the SAME deleteTable op the ✕ Table menu
+   * runs: caption + table leave together, in one native undo step, through the one
+   * selection→execCommand mutation path, so undo restores the data, the title, the
+   * identity and every cross-reference, redo removes it again, and autosave sees a
+   * normal input event.
+   *
+   * Everything else stays native on purpose: a partial cell selection, a row or
+   * column selection, a selection that also covers surrounding prose, and any
+   * MODIFIED chord (claiming one would steal it from the 108.md §23 shortcut router).
+   */
+  const onTableDeleteKey = (e) => {
+    if (e.key !== 'Delete' && e.key !== 'Backspace') return false;
+    if (e.ctrlKey || e.metaKey || e.altKey || e.shiftKey) return false;
+    const table = fullySelectedTable();
+    if (!table) return false;
+    e.preventDefault();
+    runTableOp('deleteTable', null, table);
+    return true;
+  };
+
+  /**
+   * 119.md §2 — Cut over a whole table: the clipboard gets usable content (the
+   * caption+table HTML and its markdown), then the SAME deleteTable op removes it.
+   * An engine that refuses the synthetic clipboard write keeps the browser default
+   * rather than deleting into a void.
+   */
+  const onCut = (e) => {
+    if (readOnlyRef.current) return;
+    const table = fullySelectedTable();
+    if (!table || !e.clipboardData) return;
+    const cap = captionForTable(table);
+    const html = `${cap ? cap.outerHTML : ''}${table.outerHTML}`;
+    let ok = false;
+    try {
+      e.clipboardData.setData('text/html', html);
+      e.clipboardData.setData('text/plain', htmlToMd(html));
+      ok = true;
+    } catch { ok = false; }
+    if (!ok) return;
+    e.preventDefault();
+    runTableOp('deleteTable', null, table);
+  };
+
   const onKeyDown = (e) => {
     // 117.md §38 — the citation chip first (it is the innermost target).
     if (onCiteKeyDown(e)) return;
@@ -1101,6 +1533,8 @@ export const RichSectionEditor = forwardRef(function RichSectionEditor({
     // 116.md §61 — Tab moves between table cells (and never leaves the editor
     // while inside a table).
     if (onTableTab(e)) return;
+    // 119.md §2 — Delete/Backspace over a whole table removes table + caption.
+    if (onTableDeleteKey(e)) return;
     if (!(e.ctrlKey || e.metaKey)) return;
     const k = String(e.key || '').toLowerCase();
     if (k === 'b') { e.preventDefault(); exec('bold'); }
@@ -1122,10 +1556,16 @@ export const RichSectionEditor = forwardRef(function RichSectionEditor({
     // table, never a second claimant to the original's identity. Moving a table
     // (cut → paste) keeps its id, so its cross-references survive the move.
     const { md } = remintDuplicateCaptions(htmlToMd(html), usedTableIds());
+    // 119.md §2 — pasting a TABLE while the caret sits in a caption title (or a
+    // cell) would nest one table inside another object, which the pipe grammar
+    // cannot round-trip: the same hoist insertTable uses applies. A paste with no
+    // table in it is ordinary inline/prose content and keeps the caret exactly
+    // where the researcher put it.
+    const hasBlockTable = /^\s*\|/m.test(md) || /\[\[tblcap:/.test(md);
     insertHtml(mdToHtml(md, {
       orderMap: orderMapRef.current, assetNumbers: assetNumbersRef.current,
       ...factOptsRef.current, ...refOptsRef.current,
-    }));
+    }), { hoistFromIslands: hasBlockTable });
   };
 
   return (
@@ -1160,6 +1600,9 @@ export const RichSectionEditor = forwardRef(function RichSectionEditor({
       onMouseLeave={(onAssetChipHover || onCiteChipHover) ? onChipMouseLeave : undefined}
       onFocus={rememberSelection}
       onPaste={onPaste}
+      /* 119.md §2 — cutting a whole table removes table + caption together and
+         leaves usable content on the clipboard; partial selections stay native. */
+      onCut={onCut}
       dangerouslySetInnerHTML={{ __html: html0.current }}
     />
   );
@@ -1185,26 +1628,115 @@ const TB_BUTTONS = [
  * insertHtml (native undo + autosave emit).
  */
 const TABLE_GRID_MAX = 6;
+
+/**
+ * 119.md §2 — the id of ONE table-insertion INTENT.
+ *
+ * It is minted where the intent begins (the picker opening), not where the DOM
+ * mutation happens, which is the whole point: every re-entrant path that could
+ * reach `insertTable` for the same gesture carries the same id, and the editor
+ * turns the second call into a no-op returning the first table's id. Exported so
+ * other insertion surfaces can join the same contract.
+ */
+let tableOpSeq = 0;
+export function newTableOpId() {
+  tableOpSeq += 1;
+  try {
+    if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+      return `tblop-${crypto.randomUUID()}`;
+    }
+  } catch { /* no WebCrypto here — the counter below is enough for one client */ }
+  return `tblop-${Date.now().toString(36)}-${tableOpSeq}`;
+}
+
+const GRID_ARROWS = {
+  ArrowRight: [0, 1], ArrowLeft: [0, -1], ArrowDown: [1, 0], ArrowUp: [-1, 0],
+};
+
 export function TableGridPicker({ getApi, disabled, onInserted }) {
   const [open, setOpen] = useState(false);
   const [hover, setHover] = useState({ r: 0, c: 0 });
-  const insert = (r, c) => {
+  /* 119.md §2 — the keyboard focus point (APG roving tabindex): exactly one cell is
+     tabbable, arrows move it, Enter/Space on it inserts. Before this the cells were
+     all tabIndex={-1}, so a table could not be created by keyboard AT ALL. */
+  const [active, setActive] = useState({ r: 1, c: 1 });
+  const btnRef = useRef(null);
+  const gridRef = useRef(null);
+  const kbRef = useRef(false);
+  /* ONE gesture = ONE table. `opRef` is the intent id (minted on open, re-checked by
+     the editor); `doneRef` closes the gesture locally on the first insertion. A
+     doubled listener, a click arriving alongside a keyboard activation, a re-render
+     mid-gesture or a rapid double-click therefore all collapse to one table —
+     structurally, not by debouncing a button (§2 forbids that). */
+  const opRef = useRef('');
+  const doneRef = useRef(false);
+
+  const openPicker = (fromKeyboard) => {
+    opRef.current = newTableOpId();
+    doneRef.current = false;
+    kbRef.current = !!fromKeyboard;
+    setHover({ r: 0, c: 0 });
+    setActive({ r: 1, c: 1 });
+    setOpen(true);
+  };
+  const closePicker = (restoreFocus) => {
     setOpen(false);
     setHover({ r: 0, c: 0 });
+    if (restoreFocus && btnRef.current && btnRef.current.focus) btnRef.current.focus();
+  };
+
+  /* A keyboard-opened picker has to put focus somewhere reachable; a mouse-opened
+     one must NOT move focus (that would throw away the editor caret the whole
+     preventDefault dance exists to preserve). */
+  useEffect(() => {
+    if (!open || !kbRef.current || !gridRef.current) return;
+    const cell = gridRef.current.querySelector('[data-tblgrid-active="true"]');
+    if (cell && cell.focus) cell.focus();
+  }, [open]);
+
+  const insert = (r, c) => {
+    if (doneRef.current) return;
+    doneRef.current = true;
+    // Focus is NOT restored to the button here: insertTable parks the caret in the
+    // new caption's title so the researcher can name the table immediately (§4).
+    closePicker(false);
     const api = getApi && getApi();
     if (!(api && api.insertTable)) return;
     // 117.md §4 — insertTable returns the new object's stable id so the parent can
-    // record its creation stamp / focus it.
-    const id = api.insertTable(r, c);
+    // record its creation stamp / focus it. 119.md §2 — carrying the gesture id.
+    const id = api.insertTable(r, c, { opId: opRef.current });
     if (onInserted) onInserted(id);
   };
+
+  const onGridKeyDown = (e) => {
+    /* 117.md §44 — this popup CONSUMES the Escape, so it takes ownership of the
+       fullscreen exit the browser queues alongside it: without the latch, dismissing
+       the size picker in Focus Mode would also drop the whole workspace layout. */
+    if (e.key === 'Escape') { markOverlayEscape(); e.preventDefault(); closePicker(true); return; }
+    // A MODIFIED chord is never claimed (108.md §23 — it belongs to the router).
+    if (e.ctrlKey || e.metaKey || e.altKey) return;
+    const d = GRID_ARROWS[e.key];
+    if (!d) return;
+    e.preventDefault();
+    const r = Math.min(TABLE_GRID_MAX, Math.max(1, active.r + d[0]));
+    const c = Math.min(TABLE_GRID_MAX, Math.max(1, active.c + d[1]));
+    kbRef.current = true;
+    setActive({ r, c });
+    setHover({ r, c });
+    const cell = gridRef.current
+      && gridRef.current.querySelector(`[data-testid="stitch-manuscript-table-grid-${r}-${c}"]`);
+    if (cell && cell.focus) cell.focus();
+  };
+
   return (
     <span style={{ position: 'relative', display: 'inline-flex' }}>
-      <button type="button" aria-label="Insert table" title="Insert a table"
+      <button type="button" ref={btnRef} aria-label="Insert table" title="Insert a table"
         disabled={disabled} aria-haspopup="true" aria-expanded={open}
         data-testid="stitch-manuscript-tb-table"
         onMouseDown={(e) => e.preventDefault()}
-        onClick={() => setOpen((v) => !v)}
+        /* `detail === 0` is the standard "this click came from the keyboard" signal
+           (Enter/Space on a button synthesises a click with no pointer detail). */
+        onClick={(e) => { if (open) closePicker(false); else openPicker(e.detail === 0); }}
         style={{
           ...btnS('ghost'), padding: '5px 9px', fontSize: 11.5, border: '1px solid transparent',
           background: 'transparent', color: C.txt2, opacity: disabled ? 0.5 : 1,
@@ -1214,27 +1746,30 @@ export function TableGridPicker({ getApi, disabled, onInserted }) {
       {open && !disabled && (
         <>
           {/* click-away backdrop; preventDefault keeps the editor selection */}
-          <div onMouseDown={(e) => { e.preventDefault(); setOpen(false); }}
+          <div onMouseDown={(e) => { e.preventDefault(); closePicker(false); }}
             style={{ position: 'fixed', inset: 0, zIndex: 40, background: 'transparent' }} />
           <div role="dialog" aria-label="Table size"
             data-testid="stitch-manuscript-table-grid"
             onMouseDown={(e) => e.preventDefault()}
+            onKeyDown={onGridKeyDown}
             style={{
               position: 'absolute', top: '100%', left: 0, marginTop: 4, zIndex: 41,
               background: C.card, border: `1px solid ${C.brd}`, borderRadius: 10,
               padding: 10, boxShadow: '0 10px 26px rgba(15,23,42,0.18)',
             }}>
-            <div style={{ display: 'grid', gridTemplateColumns: `repeat(${TABLE_GRID_MAX}, 16px)`, gap: 3 }}>
+            <div ref={gridRef} style={{ display: 'grid', gridTemplateColumns: `repeat(${TABLE_GRID_MAX}, 16px)`, gap: 3 }}>
               {Array.from({ length: TABLE_GRID_MAX * TABLE_GRID_MAX }, (_, i) => {
                 const r = Math.floor(i / TABLE_GRID_MAX) + 1;
                 const c = (i % TABLE_GRID_MAX) + 1;
                 const on = r <= hover.r && c <= hover.c;
+                const isActive = r === active.r && c === active.c;
                 return (
-                  <button key={i} type="button" tabIndex={-1}
+                  <button key={i} type="button" tabIndex={isActive ? 0 : -1}
                     aria-label={`Insert ${r} by ${c} table`}
                     data-testid={`stitch-manuscript-table-grid-${r}-${c}`}
+                    data-tblgrid-active={isActive ? 'true' : undefined}
                     onMouseEnter={() => setHover({ r, c })}
-                    onFocus={() => setHover({ r, c })}
+                    onFocus={() => { setHover({ r, c }); setActive({ r, c }); }}
                     onClick={() => insert(r, c)}
                     style={{
                       width: 16, height: 16, padding: 0, cursor: 'pointer', borderRadius: 3,

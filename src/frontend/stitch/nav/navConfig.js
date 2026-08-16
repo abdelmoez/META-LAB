@@ -221,10 +221,15 @@ export function manuscriptSubHref(subtabId, ctx = {}) {
   const pid = encodeURIComponent(ctx.projectId || '');
   const id = encodeURIComponent(subtabId || 'overview'); // the manuscript workspace home
   /* 118.md §12/§47 — the Editor's VIEW is URL state too, but only when it is not
-     the default: `?msv=continuous` makes a continuous-document link shareable and
-     lets Back/Forward walk view changes, while Section View leaves the URL exactly
-     as short as it was before this existed (and every pre-118 link keeps working). */
-  const view = ctx.view === 'continuous' ? '&msv=continuous' : '';
+     the default, so a plain link stays exactly as short as it was before this
+     existed and every pre-118 link keeps working.
+     119.md §3 — the default is now Continuous View, and this rule is SYMMETRIC with
+     it by construction: the param is emitted for the non-default view and omitted
+     for the default one. The omission is not cosmetic — the workspace's reconcile
+     effect reads an absent `?msv=` as "the default", so if this builder and
+     DEFAULT_MANUSCRIPT_VIEW ever disagreed, browser Back/Forward would resolve a
+     researcher's history entries to the wrong view. They flip together, here. */
+  const view = ctx.view === 'sections' ? '&msv=sections' : '';
   return `/app/project/${pid}?tab=manuscript&ms=${id}${view}`;
 }
 

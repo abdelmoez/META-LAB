@@ -76,11 +76,15 @@ test.describe('Manuscript continuous document view (118.md §10-§19)', () => {
     await desktop(page);
     await openManuscript(page, tmpProject.id);
 
-    // One control, two exclusive states — and Section View is the default (§12).
+    /* One control, two exclusive states — and 119.md §3 flips which one a researcher
+       with NO stored preference lands in: the manuscript opens as one document.
+       (Re-pinned from "Section View is the default".) */
     const switcher = page.getByTestId('stitch-manuscript-view-switcher');
     await expect(switcher).toHaveAttribute('role', 'radiogroup');
-    await expect(page.getByTestId('stitch-manuscript-view-sections')).toHaveAttribute('aria-checked', 'true');
-    await expect(page.getByTestId('stitch-manuscript-continuous')).toHaveCount(0);
+    await expect(page.getByTestId('stitch-manuscript-view-continuous')).toHaveAttribute('aria-checked', 'true');
+    await expect(page.getByTestId('stitch-manuscript-continuous')).toBeVisible({ timeout: 15_000 });
+    // …and the default is not in the URL: a plain link stays as short as it was.
+    await expect(page).not.toHaveURL(/msv=/);
 
     // It means nothing on the other destinations, so it is not there.
     await page.getByTestId('stitch-manuscript-subtab-tables').click();
@@ -88,38 +92,48 @@ test.describe('Manuscript continuous document view (118.md §10-§19)', () => {
     await page.getByTestId('stitch-manuscript-subtab-editor').click();
     await expect(switcher).toBeVisible();
 
-    // Switching is real URL state (§47) …
-    await toContinuous(page);
-    await expect(page).toHaveURL(/msv=continuous/);
-    await expect(page.getByTestId('stitch-manuscript-view-continuous')).toHaveAttribute('aria-checked', 'true');
+    /* Switching is real URL state (§47), and 119.md §3 made the rule SYMMETRIC: the
+       param names the NON-default view, which is now Section View. */
+    await toSections(page);
+    await expect(page).toHaveURL(/msv=sections/);
+    await expect(page.getByTestId('stitch-manuscript-view-sections')).toHaveAttribute('aria-checked', 'true');
 
     // … it survives a destination change, and comes back with it (§46/§48).
     await page.getByTestId('stitch-manuscript-subtab-references').click();
-    await expect(page).toHaveURL(/msv=continuous/);
+    await expect(page).toHaveURL(/msv=sections/);
     await page.getByTestId('stitch-manuscript-subtab-editor').click();
-    await expect(page.getByTestId('stitch-manuscript-continuous')).toBeVisible();
+    await expect(page.getByTestId('stitch-manuscript-continuous')).toHaveCount(0);
 
     // …a reload keeps it (the URL carries it) …
     await page.reload();
-    await expect(page.getByTestId('stitch-manuscript-continuous')).toBeVisible({ timeout: 20_000 });
+    await expect(page.getByTestId('stitch-manuscript-workspace')).toBeVisible({ timeout: 20_000 });
+    await expect(page.getByTestId('stitch-manuscript-continuous')).toHaveCount(0);
 
-    // …and so does a fresh visit with NO view in the URL: the preference was stored
-    // per user, which is the whole of "refreshing does not reset their workflow".
+    /* …and so does a fresh visit with NO view in the URL. This is the §3 promise that
+       matters most: the deliberate choice just made BEATS the new default, because it
+       was stored per user. "Do not overwrite a deliberate saved choice." */
     await page.goto(`/app/project/${tmpProject.id}?tab=manuscript&ms=editor`);
-    await expect(page.getByTestId('stitch-manuscript-continuous')).toBeVisible({ timeout: 20_000 });
+    await expect(page.getByTestId('stitch-manuscript-workspace')).toBeVisible({ timeout: 20_000 });
+    await expect(page.getByTestId('stitch-manuscript-view-sections')).toHaveAttribute('aria-checked', 'true');
+    await expect(page.getByTestId('stitch-manuscript-continuous')).toHaveCount(0);
 
-    // Back to Section View — one section at a time, exactly as before.
-    await toSections(page);
+    // Section View still works exactly as before — one section at a time.
     await expect(page.getByTestId('stitch-manuscript-rich-editor')).toHaveCount(0); // title section is an input
     await page.getByTestId('stitch-manuscript-section-methods').click();
     await expect(page.getByTestId('stitch-manuscript-rich-editor')).toBeVisible();
+
+    // …and going back to the default drops the param again (the symmetric half).
+    await toContinuous(page);
+    await expect(page).not.toHaveURL(/msv=/);
   });
 
   /* ── §45: switching views must never lose work ─────────────────────────────── */
 
   test('§45: type in Section View → switch → the edit is there → keep editing → switch back → refresh', async ({ page, request, tmpProject }) => {
     await desktop(page);
-    await openManuscript(page, tmpProject.id);
+    // 119.md §3 — this test is about the SECTION → CONTINUOUS transition, so it names
+    // the view it starts in rather than depending on the default.
+    await openManuscript(page, tmpProject.id, '&msv=sections');
 
     // 1-2. Type, then switch IMMEDIATELY — both debounces (600 ms field patch →
     // 800 ms blob autosave) are still armed. The toggle must flush them.
@@ -170,10 +184,13 @@ test.describe('Manuscript continuous document view (118.md §10-§19)', () => {
     await desktop(page);
     await openManuscript(page, tmpProject.id);
 
-    // Put a `?msv=` in the history: Section View → Continuous View → Section View.
-    // Back now walks a real VIEW change, which is the path that skipped the flush.
+    /* Put a real VIEW change in the history: Continuous (the 119.md §3 default) →
+       Section → Continuous → Section. Back then walks a view change, which is the
+       path that skipped the flush. The `?msv=` the history carries is now
+       `msv=sections`, because the builder omits the default (§3, symmetric rule). */
+    await toSections(page);
+    await expect(page).toHaveURL(/msv=sections/);
     await toContinuous(page);
-    await expect(page).toHaveURL(/msv=continuous/);
     await toSections(page);
 
     // Type in Section View and press Back IMMEDIATELY — inside both debounces.
@@ -206,10 +223,17 @@ test.describe('Manuscript continuous document view (118.md §10-§19)', () => {
       expect(blob).toContain(second.trim());
     }).toPass({ timeout: 25_000 });
 
-    // …and a reload proves it is really persisted, in one section, in order.
+    /* …and a reload proves it is really persisted, in one section, in order.
+       119.md §3 — the URL Back landed on carries no `?msv=` (it is the default view
+       now, and the builder omits the default), so the reload resolves through the
+       STORED preference — 'sections', written by the last deliberate toggle above.
+       That is the §3 promise working, not a detour: an explicit choice outlives both
+       the new default and a history walk that never asked for a view. */
     await page.reload();
     await expect(page.getByTestId('stitch-manuscript-workspace')).toBeVisible({ timeout: 20_000 });
-    const intro = page.getByTestId('stitch-manuscript-rich-editor-introduction');
+    await expect(page.getByTestId('stitch-manuscript-view-sections')).toHaveAttribute('aria-checked', 'true');
+    await page.getByTestId('stitch-manuscript-section-introduction').click();
+    const intro = page.getByTestId('stitch-manuscript-rich-editor');
     await expect(intro).toContainText(first, { timeout: 20_000 });
     await expect(intro).toContainText(second.trim());
   });

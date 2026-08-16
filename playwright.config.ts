@@ -56,6 +56,16 @@ export default defineConfig({
     // exists precisely because the older file drives selection through a synthetic
     // Range, which no engine can get wrong — only a real mouse drag can.
     { name: 'webkit-pdf', use: { ...devices['Desktop Safari'] }, testMatch: '**/files/pdf-annotations*.spec.ts' },
+    // 119.md §2 — the manuscript TABLE files run in FULL under WebKit. The reported
+    // defect IS a WebKit one: an empty table title is an inline editing island nested
+    // in a contenteditable="false" caption, and WebKit alone fails to derive a caret
+    // from a click on it — the click focuses the span, and every keystroke after it is
+    // discarded. Nothing in Blink can reproduce that, so "Safari is fixed" was
+    // previously an untestable claim (the webkit project ran @smoke only, and no
+    // manuscript spec carries that tag). Whole-table Delete and the caption/table
+    // insertion geometry ride along for the same reason: they are selection and
+    // execCommand behaviour, which is exactly where engines differ.
+    { name: 'webkit-manuscript', use: { ...devices['Desktop Safari'] }, testMatch: '**/manuscript/manuscript-table*.spec.ts' },
     // Responsive projects only run the responsive specs (which assert layout at size).
     { name: 'mobile-chrome', use: { ...devices['Pixel 5'] }, testMatch: '**/responsive/**/*.spec.ts' },
     { name: 'tablet', use: { ...devices['iPad (gen 7) landscape'] }, testMatch: '**/responsive/**/*.spec.ts' },

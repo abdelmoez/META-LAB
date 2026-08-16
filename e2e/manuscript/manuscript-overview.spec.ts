@@ -19,7 +19,9 @@
 import { test, expect, Page } from '../fixtures/stitch-test';
 
 async function openManuscript(page: Page, projectId: string, ms?: string) {
-  await page.goto(`/app/project/${projectId}?tab=manuscript${ms ? `&ms=${ms}` : ''}`);
+  // 119.md §3 — Section View is now the non-default view, so the specs that drive
+  // the single-section editor name it in the URL.
+  await page.goto(`/app/project/${projectId}?tab=manuscript${ms ? `&ms=${ms}` : ''}&msv=sections`);
   await expect(page.getByTestId('stitch-manuscript-workspace')).toBeVisible({ timeout: 20_000 });
   await expect(page.getByTestId('stitch-manuscript-header')).toBeVisible({ timeout: 20_000 });
 }

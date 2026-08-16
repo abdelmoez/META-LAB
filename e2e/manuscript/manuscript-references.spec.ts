@@ -93,7 +93,9 @@ async function stubCrossref(page: Page) {
 }
 
 async function openManuscript(page: Page, projectId: string) {
-  await page.goto(`/app/project/${projectId}?tab=manuscript`);
+  // 119.md §3 — Section View is the non-default view now; this file drives the
+  // single-section editor, so it asks for it by name.
+  await page.goto(`/app/project/${projectId}?tab=manuscript&msv=sections`);
   await expect(page.getByTestId('stitch-manuscript-workspace')).toBeVisible({ timeout: 20_000 });
 }
 

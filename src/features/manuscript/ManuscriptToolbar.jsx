@@ -525,7 +525,23 @@ export const MANUSCRIPT_VIEWS = [
 ];
 
 export const MANUSCRIPT_VIEW_IDS = MANUSCRIPT_VIEWS.map((v) => v.id);
-export const DEFAULT_MANUSCRIPT_VIEW = 'sections';
+/**
+ * 119.md §3 — the default view is the CONTINUOUS document.
+ *
+ * A manuscript is one document, and this is the view that shows it as one: new
+ * users and new projects open reading the paper they are writing, not one section
+ * of it. This is the only constant that decides it — the URL builder omits the
+ * default and the reconcile effect resolves an absent `?msv=` to it, so both sides
+ * of the deep-link contract follow this line automatically.
+ *
+ * §3 is equally explicit about what does NOT change: a researcher who has ever
+ * chosen a view has that choice in localStorage, it still wins over this default,
+ * and nothing is written for anyone who never chose (the flip is a default, not a
+ * migration). Someone who has always used Section View WITHOUT touching the
+ * switcher has no stored preference and will land in Continuous View — the switch
+ * is right there, and using it stores their choice for good.
+ */
+export const DEFAULT_MANUSCRIPT_VIEW = 'continuous';
 
 /** 118.md §12/§47 — an unknown stored/URL value resolves to the default view. */
 export function normalizeManuscriptView(id) {

@@ -17,7 +17,11 @@
 import { test, expect } from '../fixtures/stitch-test';
 
 async function openManuscript(page: import('@playwright/test').Page, projectId: string) {
-  await page.goto(`/app/project/${projectId}?tab=manuscript`);
+  // 119.md §3 — Continuous View is now the DEFAULT, so a spec about the SECTION
+  // editor asks for Section View explicitly instead of relying on what a user with
+  // no stored preference happens to get. (`msv=sections` is the param the href
+  // builder emits for the non-default view.)
+  await page.goto(`/app/project/${projectId}?tab=manuscript&msv=sections`);
   await expect(page.getByTestId('stitch-manuscript-workspace')).toBeVisible({ timeout: 20_000 });
 }
 

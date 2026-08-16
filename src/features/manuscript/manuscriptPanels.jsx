@@ -884,9 +884,16 @@ export function TableDeleteDialog({ info, onConfirm, onCancel }) {
           {TABLE_DELETE_UNDO_NOTE}
         </p>
         <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+          {/* 119.md §2 — the same selection-preserving mousedown every editor control
+              uses. WebKit drops a contentEditable's selection the moment focus lands
+              on a real button, and the op behind "Delete anyway" runs against the
+              document the researcher was just editing: without this, confirming
+              deleted nothing at all in Safari. */}
           <button onClick={onCancel} data-testid="stitch-manuscript-table-delete-cancel"
+            onMouseDown={(e) => e.preventDefault()}
             style={{ ...btnS('ghost'), fontSize: 11.5 }}>Keep table</button>
           <button onClick={onConfirm} data-testid="stitch-manuscript-table-delete-confirm-btn"
+            onMouseDown={(e) => e.preventDefault()}
             style={{ ...btnS('danger'), fontSize: 11.5 }}>Delete anyway</button>
         </div>
       </div>
@@ -1535,18 +1542,30 @@ export function EditorPanel({ m, exporters, sectionRequest, onOpenAssetPanel, on
     const api = apiFor(ctx && ctx.sectionId) || getApi();
     if (!tableId) { if (api && api.tableOp) api.tableOp('deleteTable'); return; }
     const count = countAssetMentions(liveDraft, `table:${tableId}`);
-    if (!count) { if (api && api.tableOp) api.tableOp('deleteTable'); return; }
+    // 119.md §2 — name the object. WebKit drops the editor's selection the moment
+    // focus reaches this button, so an op that reads the caret is a no-op in Safari.
+    if (!count) { if (api && api.tableOp) api.tableOp('deleteTable', { tableId }); return; }
     const a = assetById.get(`table:${tableId}`) || null;
     setTableDelete({ tableId, count, sectionId: ctx && ctx.sectionId, label: a ? assetNumberLabel(m, a) : 'this table' });
   };
 
   const confirmDeleteTable = () => {
     const api = apiFor(tableDelete && tableDelete.sectionId) || getApi();
-    if (api && api.tableOp) api.tableOp('deleteTable');
-    // The prose is the source of truth: the caption goes with the table, so the
-    // side-metadata entry must go too (undo restores the prose; a stale stamp for
-    // a table that no longer exists would just be noise).
-    if (tableDelete && m.setTableMeta) m.setTableMeta(tableDelete.tableId, { createdAt: null, updatedAt: null, origin: null });
+    /* 119.md §2 — the confirmation names the table it warned about. By the time the
+       researcher confirms, the caret has been through a dialog; WebKit does not keep
+       a selection across that, so reading the target off the caret deleted nothing in
+       Safari (reproduced under the webkit-manuscript project). */
+    if (api && api.tableOp) api.tableOp('deleteTable', { tableId: tableDelete && tableDelete.tableId });
+    /* 119.md §2 — the stamps are NOT nulled here any more.
+       "Undo must restore the table with its data, title, number, formatting,
+       PROVENANCE and cross-references" — and the deletion's undo is the browser's
+       native one, which restores the prose only. Side metadata lives outside that
+       stack, so nulling it made `createdAt`/`origin` the one thing Ctrl+Z could not
+       bring back: the table came home with its provenance permanently erased.
+       Keeping the entry costs a few inert bytes for a table that may never return
+       (the registry derives from the PROSE, so an entry no caption claims is never
+       read or rendered); erasing it costs the researcher a fact about their own
+       manuscript that nothing can recover. */
     setTableDelete(null);
   };
 

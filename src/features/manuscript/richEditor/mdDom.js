@@ -941,10 +941,46 @@ function walkBlocks(nodes, blocks) {
  * Word/Docs — down to the markdown subset. Everything outside the subset is
  * reduced to its text content; scripts/styles are dropped entirely.
  */
-export function htmlToMd(html) {
+/**
+ * 119.md §2 — drop caption markers whose TABLE is gone.
+ *
+ * A caption and its table are one object, but the caption is a
+ * `contenteditable="false"` island: a browser-native selection delete over every
+ * cell removes the <table> and leaves the island standing. The result is an orphan
+ * "Table 1." that keeps numbering an empty slot and round-trips forever. Repairing
+ * at SERIALIZATION time (rather than by mutating the DOM) is what makes it
+ * undo-safe: a native undo brings the table back into the DOM, and the very next
+ * serialization emits caption + table again, untouched.
+ *
+ * Deliberately opt-in: every other htmlToMd consumer (paste sanitisation, table-op
+ * round trips, the pinned mdDom tests) stays byte-identical.
+ */
+function dropOrphanCaptionBlocks(blocks) {
+  const out = [];
+  for (let i = 0; i < blocks.length; i += 1) {
+    const b = blocks[i];
+    if (TABLE_CAPTION_LINE_RE.test(b)) {
+      const next = blocks[i + 1];
+      // The grammar puts the pipe table immediately after its marker line.
+      if (!(typeof next === 'string' && /^\s*\|/.test(next))) continue;
+    }
+    out.push(b);
+  }
+  return out;
+}
+
+/**
+ * @param {string} html
+ * @param {object} [opts]
+ * @param {boolean} [opts.dropOrphanCaptions] 119.md §2 — see above. Set by the live
+ *   editor's emit path only, so a repair can never happen anywhere the user is not
+ *   actively editing the section it repairs.
+ */
+export function htmlToMd(html, opts) {
   const blocks = [];
   walkBlocks(parseHtml(html).children, blocks);
-  return blocks.join('\n\n');
+  const kept = (opts && opts.dropOrphanCaptions) ? dropOrphanCaptionBlocks(blocks) : blocks;
+  return kept.join('\n\n');
 }
 
 /* ════════════ outline (MS-11) ════════════ */
