@@ -15,6 +15,8 @@ import { recordEvent, recordFirstEvent } from '../services/analytics.js';
 import { getVersion } from '../version.js';
 import { sendTierLimit } from '../services/entitlementService.js';
 import { requireProjectExport, settleProjectExport, EXPORT_TYPES } from '../services/projectExportGuard.js';
+// 119.md §8 — project Logbook: export generation is a §8 "Files and exports" event.
+import { recordLogEvent, logbookActor } from '../logbook/logbookService.js';
 
 /** Read the featureFlags SiteSetting — best-effort, defaults to {} (= all on). */
 async function getFeatureFlags() {
@@ -148,9 +150,26 @@ export async function exportProject(req, res) {
       res.send(body);
       // Confirm the reservation (succeeded) with the real payload size.
       settleProjectExport(reservation.reservationId, { status: 'succeeded', fileSize: Buffer.byteLength(body) });
+      // 119.md §8 "Export generation and download" — project exports left only a
+      // GLOBAL UsageEvent row, which is not project-queryable, so a leader could
+      // not see who had taken a copy of the project. Best-effort project-scoped row.
+      void recordLogEvent({
+        action: 'EXPORT_GENERATED',
+        summary: `Exported the project as JSON (${Buffer.byteLength(body)} bytes)`,
+        resourceType: 'export', resourceId: `project-json:${req.params.id}`, resourceLabel: project.name || '',
+        after: { format: 'json', bytes: Buffer.byteLength(body) },
+        metadata: { exportType: EXPORT_TYPES.PROJECT_JSON },
+      }, { ...logbookActor(req, null, { metaLabProjectId: req.params.id }) });
     } catch (e) {
       // Serialisation/transport failure → refund the allowance (failed export).
       settleProjectExport(reservation.reservationId, { status: 'failed', failureReason: e?.message });
+      void recordLogEvent({
+        action: 'EXPORT_FAILED',
+        status: 'failure',
+        summary: 'Project JSON export failed',
+        resourceType: 'export', resourceId: `project-json:${req.params.id}`,
+        metadata: { reason: String(e?.message || 'unknown').slice(0, 300) },
+      }, { ...logbookActor(req, null, { metaLabProjectId: req.params.id }) });
       throw e;
     }
   } catch (err) {

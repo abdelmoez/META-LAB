@@ -28,6 +28,20 @@ export const CAPABILITIES = Object.freeze({
     label: 'Manage members & roles', restriction: 'leader_only', perm: 'canManageMembers', edit: true,
     message: (r) => `Only project owners and leaders can add, remove, or change members. Your role is ${r || 'a member'}.`,
   }),
+  // 119.md §8 — the project Logbook is Owner/Leader ONLY, enforced at nav
+  // visibility (this entry), route guard, API authorization, database queries,
+  // export authorization and real-time subscriptions. Deliberately NO `perm`:
+  // unlike manageMembers, no per-member permission flag can grant it — only the
+  // owner/leader role does, so a contributor with canManageMembers still cannot
+  // read the audit trail.
+  viewLogbook: cap('viewLogbook', {
+    label: 'View the project Logbook', restriction: 'leader_only', edit: false,
+    message: (r) => `The Logbook is limited to the project owner and leaders. Your role is ${r || 'a member'}.`,
+  }),
+  exportLogbook: cap('exportLogbook', {
+    label: 'Export the project Logbook', restriction: 'leader_only', edit: false,
+    message: (r) => `Exporting the Logbook is limited to the project owner and leaders. Your role is ${r || 'a member'}.`,
+  }),
   deleteProject: cap('deleteProject', {
     label: 'Delete this project', restriction: 'owner_only', edit: true,
     message: (r) => `Only the project owner can delete this project. You are currently a ${r || 'member'} — contact the owner if it should be deleted.`,

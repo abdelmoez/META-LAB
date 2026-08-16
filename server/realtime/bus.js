@@ -139,6 +139,38 @@ export function emitToProjectMembers(projectId, event, { exclude } = {}) {
 }
 
 /**
+ * 119.md §8 — emit one event to the project's OWNER AND LEADERS ONLY.
+ *
+ * The Logbook is leader-only at every layer, and "real-time subscriptions" is
+ * one of those layers: a member/contributor/viewer must not even learn that
+ * Logbook activity happened. The recipient set is resolved from the DB at emit
+ * time (same contract as emitToProjectMembers) and narrowed to
+ * role ∈ {owner, leader} + the workspace owner, so a demotion takes effect on
+ * the very next emit with no registry ACL to invalidate.
+ *
+ * Payload stays content-free ("poke, don't payload"): the client refetches
+ * through GET /api/logbook/..., which re-checks leadership per request.
+ * Fire-and-forget — never throws, never awaited.
+ */
+export function emitToProjectLeaders(projectId, event, { exclude } = {}) {
+  if (!projectId || connections.size === 0) return;
+  (async () => {
+    const [project, leaders] = await Promise.all([
+      prisma.screenProject.findUnique({ where: { id: projectId }, select: { ownerId: true, deletedAt: true } }),
+      prisma.screenProjectMember.findMany({
+        where: { projectId, status: 'active', userId: { not: null }, role: { in: ['owner', 'leader'] } },
+        select: { userId: true },
+      }),
+    ]);
+    if (!project || project.deletedAt) return;
+    const ids = new Set(leaders.map(m => m.userId));
+    ids.add(project.ownerId);
+    if (exclude) ids.delete(exclude);
+    if (ids.size) writeFrame([...ids], { ...event, projectId });
+  })().catch(() => { /* emits are best-effort */ });
+}
+
+/**
  * Emit one event for a META·LAB project save/update. Recipients are resolved
  * via the LINKED ScreenProject(s): active members + workspace owner, honoring
  * the link invariant (ScreenProject.ownerId === Project.userId) via

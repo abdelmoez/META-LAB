@@ -55,6 +55,7 @@ import citationMiningRouter from './routes/citationMining.js';
 import extractionRouter     from './routes/extraction.js';
 import extractionEngineRouter from './routes/extractionEngine.js';
 import provenanceRouter     from './routes/provenance.js';
+import logbookRouter        from './routes/logbook.js';
 import aiExtractRouter      from './routes/aiExtract.js';
 import livingReviewRouter   from './routes/livingReview.js';
 import publicSynthesisRouter from './routes/publicSynthesis.js';
@@ -360,6 +361,18 @@ const pecanSearchLimiter = rateLimit({
 const extractionEngineLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: process.env.NODE_ENV === 'production' ? 900 : 4000,
+  message: { error: 'Too many requests, please try again later' },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
+// ── 119.md §8 — Logbook limiter. Reads are leader-only and cheap, but the EXPORT
+// walks the cursor over up to 20k merged rows across five tables, so the router
+// gets a bound. Generous enough that scrolling a long timeline never trips it,
+// tight enough that the export cannot be used as an amplification lever. ────────
+const logbookLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: process.env.NODE_ENV === 'production' ? 600 : 4000,
   message: { error: 'Too many requests, please try again later' },
   standardHeaders: true,
   legacyHeaders: false,
@@ -685,6 +698,13 @@ app.use('/api/extraction-engine', requireAuth, extractionEngineLimiter, extracti
 // append-only Project History across search/screening/extraction/RoB/analysis/
 // manuscript. Reads are membership-scoped; reason/invalidate are leadership-scoped.
 app.use('/api/provenance', requireAuth, provenanceRouter);
+
+// ── Project LOGBOOK (119.md §8) — requireAuth at the mount; the router's own
+// requireProjectLeader guard then restricts EVERY path to the project owner and
+// leaders (members/contributors/viewers get 403, strangers 404) before any
+// handler or query runs. Read-only by construction: the append-only
+// ProjectLogEvent table is written solely by server/logbook/logbookService.js.
+app.use('/api/logbook', requireAuth, logbookLimiter, logbookRouter);
 
 // ── AI extraction (server-proxied LLM) — requireAuth at the mount; the POST
 // handler gates on the `aiExtraction` flag (default OFF → 404). The Anthropic

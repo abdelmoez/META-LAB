@@ -19,6 +19,8 @@ import { getProjectAccess, writeAudit } from '../screening/access.js';
 import { getMetaSiftSettings } from '../screening/settings.js';
 import { extractDoiFromPdfBuffer, sha256, hashStoredPdf } from '../screening/pdfStorage.js';
 import { setInlinePdfFramingHeaders } from '../screening/pdfFraming.js';
+// 119.md §8 — project Logbook: PDF READS (uploads/removals already had audit rows).
+import { recordSessionEvent, logbookActor } from '../logbook/logbookService.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const STORAGE_ROOT = path.join(__dirname, '..', 'storage', 'screening-pdfs');
@@ -203,6 +205,21 @@ export async function downloadPdf(req, res) {
     }
     // Allow the same-origin SPA to embed this PDF inline (see INLINE_PDF_CSP).
     setInlinePdfFramingHeaders(res);
+
+    /* 119.md §8 "PDF upload, replacement, association, download, or removal" —
+     * uploads/removals were audited, DOWNLOADS were not, so a leader could not
+     * see who had read which full text. Recorded via the COALESCING writer on
+     * purpose: a browser PDF viewer issues dozens of Range requests for one
+     * document, and 40 rows for one reader opening one paper would be noise, not
+     * a record. One session row per reader per document per 5 minutes, with the
+     * request count in its metadata. Fire-and-forget; a 304 revalidation returns
+     * above this point and is deliberately NOT logged as a fresh read. */
+    void recordSessionEvent({
+      action: 'FILE_DOWNLOADED',
+      summary: `Opened the PDF "${att.fileName || 'document.pdf'}"`,
+      resourceType: 'pdfAttachment', resourceId: att.id, resourceLabel: att.fileName || '',
+      metadata: { recordId: req.params.rid, bytes: total, ranged: !!req.headers.range },
+    }, logbookActor(req, access, { projectId: access.project.id, metaLabProjectId: access.project.linkedMetaLabProjectId || '' }));
 
     const onErr = () => { if (!res.headersSent) res.status(500); try { res.end(); } catch {} };
 

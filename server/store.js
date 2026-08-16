@@ -222,6 +222,29 @@ function captureProvenance(projectId, before, after, userId) {
   import('./provenance/mutateWithEvents.js')
     .then((m) => m.recordBlobDiff(projectId, before, after, { actorUserId: userId, origin: 'user_action' }))
     .catch((e) => { console.error('[provenance] autosave capture failed', e?.message || e); });
+  // 119.md §8 — the MANUSCRIPT half of the same autosave. The manuscript engine
+  // had no project-scoped audit store at all; rather than one row per autosave
+  // (thousands of meaningless entries), the section-level diff is folded into a
+  // coalesced per-author edit SESSION row. Fire-and-forget, same as above.
+  captureLogbookSession(projectId, before, after, userId);
+}
+
+/**
+ * 119.md §8 — fire-and-forget Logbook capture on a successful autosave.
+ * Deliberately separate from captureProvenance: the provenance ledger records
+ * SCIENTIFIC change, the Logbook records WHO WAS WORKING. Never throws, adds no
+ * latency (not awaited), and no-ops when the manuscript slice did not change.
+ */
+function captureLogbookSession(projectId, before, after, userId) {
+  Promise.all([
+    import('./logbook/manuscriptSession.js'),
+    import('./logbook/logbookService.js'),
+  ])
+    .then(async ([ms, svc]) => {
+      const actor = await svc.resolveActorIdentity(userId);
+      return ms.captureManuscriptSession(projectId, before, after, actor);
+    })
+    .catch((e) => { console.error('[logbook] autosave capture failed', e?.message || e); });
 }
 
 /** Typed SAVE_CONFLICT when another autosave landed after the client's baseline rev. */

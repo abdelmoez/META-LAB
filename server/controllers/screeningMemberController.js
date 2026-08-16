@@ -21,6 +21,10 @@ import { recordUsage, USAGE } from '../utils/usage.js';
 // 67.md — product-tier enforcement: the member quota binds to the PROJECT
 // OWNER's tier (a leader adding members shares the owner's plan capacity).
 import { requireLimit, sendTierLimit, loadUserForTier } from '../services/entitlementService.js';
+// 119.md §8 — project Logbook. Membership/ownership changes are CRITICAL actions:
+// their log rows are written inside the same transaction as the mutation.
+import { withLoggedTransaction, recordLogEventTx, logbookActor } from '../logbook/logbookService.js';
+import { MIRROR_SCREEN_AUDIT } from '../logbook/vocabulary.js';
 
 /** Read the admin appSettings blob — best-effort, defaults to {}. */
 async function getAppSettings() {
@@ -215,26 +219,45 @@ export async function addMember(req, res) {
         : 14;
       inviteExpiresAt = new Date(Date.now() + days * 24 * 60 * 60 * 1000);
     }
-    const member = await prisma.screenProjectMember.create({
-      data: {
-        projectId: req.params.pid,
-        userId: user ? user.id : null,
-        name: user?.name || '',
-        email: normEmail,
-        role: ROLES.includes(role) ? role : 'reviewer',
-        status: user ? 'active' : 'pending',
-        permissionPreset: presetName,
-        canScreen: !!perms.canScreen,
-        canChat: !!perms.canChat,
-        canResolveConflicts: !!perms.canResolveConflicts,
-        ...Object.fromEntries(PERMISSION_KEYS.map(k => [k, !!perms[k]])),
-        ...(user ? {} : {
-          invitedByUserId: req.user.id,
-          inviteTokenHash: crypto.createHash('sha256').update(inviteToken).digest('hex'),
-          inviteExpiresAt,
-        }),
-      },
-    });
+    // 119.md §8 — membership is a CRITICAL action, so its Logbook row is written
+    // TRANSACTIONALLY with the member row: a successful add can never silently
+    // lose its audit record (and a failed audit rolls the add back). The legacy
+    // writeAudit below is untouched — it still feeds the existing screening
+    // audit view; the Logbook reader cuts ScreenAuditLog over at the first
+    // native row so the change is shown once (logbookQuery.cutoverAt).
+    const member = await withLoggedTransaction(
+      (tx) => tx.screenProjectMember.create({
+        data: {
+          projectId: req.params.pid,
+          userId: user ? user.id : null,
+          name: user?.name || '',
+          email: normEmail,
+          role: ROLES.includes(role) ? role : 'reviewer',
+          status: user ? 'active' : 'pending',
+          permissionPreset: presetName,
+          canScreen: !!perms.canScreen,
+          canChat: !!perms.canChat,
+          canResolveConflicts: !!perms.canResolveConflicts,
+          ...Object.fromEntries(PERMISSION_KEYS.map(k => [k, !!perms[k]])),
+          ...(user ? {} : {
+            invitedByUserId: req.user.id,
+            inviteTokenHash: crypto.createHash('sha256').update(inviteToken).digest('hex'),
+            inviteExpiresAt,
+          }),
+        },
+      }),
+      (m) => ({
+        action: 'MEMBER_ADDED',
+        mirrors: MIRROR_SCREEN_AUDIT,
+        summary: user
+          ? `Added ${normEmail} as ${role} (${presetName})`
+          : `Invited ${normEmail} as ${role} (${presetName})`,
+        resourceType: 'member', resourceId: m.id, resourceLabel: normEmail,
+        after: { role, preset: presetName, status: user ? 'active' : 'pending' },
+        metadata: { pending: !user },
+      }),
+      logbookActor(req, access, { projectId: req.params.pid, metaLabProjectId: access.project.linkedMetaLabProjectId || '' }),
+    );
     await writeAudit(req.params.pid, req.user, 'MEMBER_ADDED', {
       entityType: 'member', entityId: member.id, details: { email: normEmail, role, preset: presetName, pending: !user },
     });
@@ -398,7 +421,23 @@ export async function updateMember(req, res) {
       data[k] = !!req.body[k];
     }
 
-    const updated = await prisma.screenProjectMember.update({ where: { id: member.id }, data });
+    // 119.md §8 — role/permission changes are CRITICAL: the Logbook row commits
+    // with the update or not at all, and carries the before/after summary §8 asks
+    // for ("Before/after summary or structured diff").
+    const updated = await withLoggedTransaction(
+      (tx) => tx.screenProjectMember.update({ where: { id: member.id }, data }),
+      () => ({
+        action: 'MEMBER_PERMISSIONS_CHANGED',
+        mirrors: MIRROR_SCREEN_AUDIT,
+        summary: data.role && data.role !== member.role
+          ? `Changed ${member.email || 'a member'} from ${member.role} to ${data.role}`
+          : `Changed permissions for ${member.email || 'a member'}`,
+        resourceType: 'member', resourceId: member.id, resourceLabel: member.email || '',
+        before: { role: member.role, status: member.status, preset: member.permissionPreset, canScreen: !!member.canScreen, canChat: !!member.canChat },
+        after: data,
+      }),
+      logbookActor(req, access, { projectId: req.params.pid, metaLabProjectId: access.project.linkedMetaLabProjectId || '' }),
+    );
     // prompt50 WS6 — make a chat-permission change explicit in the audit trail
     // (acting user, affected member, project, previous → new, timestamp).
     const chatChanged = data.canChat !== undefined && !!data.canChat !== !!member.canChat;
@@ -473,7 +512,23 @@ export async function removeMember(req, res) {
     if (member.role === 'leader' && !access.isOwner) {
       return res.status(403).json({ error: 'Only the owner can remove a leader' });
     }
-    await prisma.screenProjectMember.delete({ where: { id: member.id } });
+    // 119.md §8 — removal is CRITICAL and irreversible from the member's side:
+    // the Logbook row commits with the delete (removing a member must never be
+    // possible without a trace of who did it and what they held).
+    await withLoggedTransaction(
+      (tx) => tx.screenProjectMember.delete({ where: { id: member.id } }),
+      () => ({
+        action: member.status === 'pending' ? 'INVITE_REVOKED' : 'MEMBER_REMOVED',
+        mirrors: MIRROR_SCREEN_AUDIT,
+        summary: member.status === 'pending'
+          ? `Revoked the invitation for ${member.email || 'a pending member'}`
+          : `Removed ${member.email || 'a member'} (${member.role})`,
+        resourceType: 'member', resourceId: member.id, resourceLabel: member.email || '',
+        before: { role: member.role, status: member.status, preset: member.permissionPreset },
+        after: null,
+      }),
+      logbookActor(req, access, { projectId: req.params.pid, metaLabProjectId: access.project.linkedMetaLabProjectId || '' }),
+    );
     await writeAudit(req.params.pid, req.user, 'MEMBER_REMOVED', {
       entityType: 'member', entityId: member.id, details: { email: member.email },
     });
@@ -521,7 +576,21 @@ export async function leaveProject(req, res) {
     const member = access.member;
     if (!member) return res.status(404).json({ error: 'Project not found' });
 
-    await prisma.screenProjectMember.delete({ where: { id: member.id } });
+    // 119.md §8 — a self-exit is the one membership change the leaders did not
+    // initiate, so it must be in their Logbook; written transactionally with the
+    // delete like every other membership mutation.
+    await withLoggedTransaction(
+      (tx) => tx.screenProjectMember.delete({ where: { id: member.id } }),
+      () => ({
+        action: 'MEMBER_LEFT',
+        mirrors: MIRROR_SCREEN_AUDIT,
+        summary: `${member.email || 'A member'} left the project (was ${member.role})`,
+        resourceType: 'member', resourceId: member.id, resourceLabel: member.email || '',
+        before: { role: member.role, status: member.status },
+        after: null,
+      }),
+      logbookActor(req, access, { projectId: req.params.pid, metaLabProjectId: access.project.linkedMetaLabProjectId || '' }),
+    );
     await writeAudit(req.params.pid, req.user, 'MEMBER_LEFT', {
       entityType: 'member', entityId: member.id, details: { email: member.email, role: member.role },
     });
@@ -648,6 +717,20 @@ export async function transferOwner(req, res) {
           },
         });
       }
+
+      // 5. 119.md §8 — ownership transfer is the single most consequential
+      //    membership action; its Logbook row is written INSIDE the same
+      //    transaction as steps 1-4, so the four-step flip and its audit record
+      //    are all-or-nothing.
+      await recordLogEventTx(tx, {
+        action: 'OWNERSHIP_TRANSFERRED',
+        mirrors: MIRROR_SCREEN_AUDIT,
+        summary: `Transferred project ownership to ${targetUser.email || targetUser.name || toUserId}`,
+        resourceType: 'project', resourceId: pid, resourceLabel: access.project.title || '',
+        before: { ownerId: oldOwnerId, ownerEmail: oldOwnerEmail },
+        after: { ownerId: toUserId, ownerEmail: targetUser.email || '' },
+        metadata: { metaLabProjectId: linkedId || null },
+      }, logbookActor(req, access, { projectId: pid, metaLabProjectId: linkedId || '' }));
     });
 
     await writeAudit(pid, req.user, 'OWNERSHIP_TRANSFERRED', {
