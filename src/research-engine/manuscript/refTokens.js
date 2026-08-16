@@ -341,6 +341,48 @@ export function figureUsage(draftOrSections, figKey) {
 }
 
 /**
+ * 119.md §5 (r2) — the DELETE-SAFETY count: how many times a figure is used
+ * ANYWHERE in a project's manuscripts (every draft's sections AND statements),
+ * split the way the delete route answers.
+ *
+ * ONE function, deliberately, because two copies of this rule would be a data-loss
+ * bug waiting to happen: the SERVER refuses to delete a figure whose count is
+ * non-zero, and the CLIENT refuses to even ask when its own freshly-flushed draft
+ * already places it — the draft the server has not received yet. If those two
+ * disagreed, the disagreement is exactly the window in which a figure's bytes are
+ * deleted out from under a marker one Ctrl+Z would restore.
+ *
+ * @param {Array} drafts  manuscripts list (blob shape: [{ sections, statements }])
+ * @returns {{ placements:number, references:number, total:number }}  Pure.
+ */
+export function figureUsageAcrossDrafts(drafts, figKey) {
+  const key = String(figKey == null ? '' : figKey);
+  const assetId = `figure:${key}`;
+  const out = { placements: 0, references: 0, total: 0 };
+  if (!key || !Array.isArray(drafts)) return out;
+  const texts = [];
+  for (const d of drafts) {
+    if (!d || typeof d !== 'object') continue;
+    const secs = (d.sections && typeof d.sections === 'object') ? d.sections : {};
+    for (const k of Object.keys(secs)) {
+      const c = secs[k] && secs[k].content;
+      if (typeof c === 'string' && c) texts.push(c);
+    }
+    const st = (d.statements && typeof d.statements === 'object') ? d.statements : {};
+    for (const k of Object.keys(st)) if (typeof st[k] === 'string' && st[k]) texts.push(st[k]);
+  }
+  for (const text of texts) {
+    const capRe = new RegExp(FIGURE_CAPTION_TOKEN_RE.source, 'g');
+    let m;
+    while ((m = capRe.exec(text)) !== null) if (m[1] === key) out.placements += 1;
+    const tokRe = new RegExp(ASSET_TOKEN_RE.source, 'g');
+    while ((m = tokRe.exec(text)) !== null) if (`${m[1]}:${m[2]}` === assetId) out.references += 1;
+  }
+  out.total = out.placements + out.references;
+  return out;
+}
+
+/**
  * Re-mint DUPLICATE figure markers in a pasted markdown fragment — the §5
  * counterpart of remintDuplicateCaptions, with one deliberate difference: a
  * figure's bytes live in a server row keyed by its figKey, so a COPY cannot mint
@@ -730,6 +772,7 @@ export default {
   findFigureCaptions,
   collectPlacedFigures,
   figureUsage,
+  figureUsageAcrossDrafts,
   dropDuplicateFigureMarkers,
   mintManualTableId,
   remintDuplicateCaptions,

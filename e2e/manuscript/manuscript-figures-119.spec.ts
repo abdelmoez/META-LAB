@@ -206,6 +206,72 @@ test.describe('Manuscript figures (119.md §5 · §10 scenario 12)', () => {
     await saved(page);
   });
 
+  /**
+   * 119.md §5 (r2) — REMOVAL MUST NOT TAKE THE SENTENCE WITH IT.
+   *
+   * The wave-2 figures work shipped with a stated WebKit-only defect: removing a
+   * picture also removed a cross-reference CHIP sitting in the paragraph immediately
+   * after it (both are contenteditable="false" islands, and WebKit reaches past the
+   * range end into the next block). Blink never reproduced it, so the whole file was
+   * held out of the WebKit project rather than pinning a red test.
+   *
+   * This is the test that fix has to pass, and it runs in BOTH engines
+   * (playwright.config: webkit-manuscript now matches manuscript-figure*). The shape
+   * is deliberately the failing one: the chip is in the paragraph DIRECTLY under the
+   * picture, with nothing between them.
+   */
+  test('§5/r2: removing a figure leaves the cross-reference in the next paragraph alone', async ({ page, tmpProject }) => {
+    const editor = await openEditorSection(page, tmpProject.id, 'results');
+    await editor.click();
+    await page.keyboard.press('ControlOrMeta+End');
+    await page.keyboard.type('Baseline prose that must survive.');
+    await page.keyboard.press('Enter');
+
+    await insertPicture(page, 'flow.png', PNG_1PX);
+    await expect(figureBlocks(page)).toHaveCount(1, { timeout: 20_000 });
+    await page.keyboard.type('Study flow');
+    await expect(figureTitles(page).first()).toHaveText('Study flow');
+
+    /* The sentence that carries the chip goes in the paragraph immediately AFTER the
+       picture — the exact adjacency the defect needed. */
+    await editor.click();
+    await page.keyboard.press('ControlOrMeta+End');
+    await page.keyboard.type('Screening is summarised in ');
+    await page.getByTestId('stitch-manuscript-crossref-open').click();
+    const picker = page.getByTestId('stitch-manuscript-crossref-popover');
+    await expect(picker).toBeVisible();
+    await picker.getByTestId('stitch-manuscript-crossref-search').fill('Study flow');
+    await picker.getByRole('option', { name: /Study flow/ }).first().click();
+    const chip = editorOf(page).locator('span.ms-asset[data-asset^="figure:"]');
+    await expect(chip).toHaveCount(1);
+    await expect(chip.first()).toHaveText('Figure 1');
+    await saved(page);
+
+    /* ── REMOVE the picture ─────────────────────────────────────────────────── */
+    await figureImgs(page).first().click();
+    await expect(page.getByTestId('stitch-manuscript-figure-ctl')).toBeVisible();
+    await page.getByTestId('stitch-manuscript-figure-op-remove').click();
+    const dialog = page.getByTestId('stitch-manuscript-figure-delete-confirm');
+    await expect(dialog).toBeVisible();
+    await page.getByTestId('stitch-manuscript-figure-delete-confirm-btn').click();
+    await expect(figureBlocks(page)).toHaveCount(0);
+
+    // THE ASSERTION: the sentence and its chip are untouched, in both engines.
+    await expect(chip).toHaveCount(1);
+    await expect(chip.first()).toHaveText('Figure 1', { timeout: 15_000 });
+    await expect(chip.first()).not.toHaveAttribute('data-asset-broken', 'true');
+    await expect(editor).toContainText('Screening is summarised in');
+    await expect(editor).toContainText('Baseline prose that must survive.');
+    await saved(page);
+
+    /* ── …and one native undo brings the picture back, chip still intact ────── */
+    await editor.click({ position: { x: 8, y: 8 } });
+    await undoUntil(page, async () => (await figureBlocks(page).count()) === 1);
+    await expect(figureBlocks(page)).toHaveCount(1);
+    await expect(chip).toHaveCount(1);
+    await expect(editor).toContainText('Screening is summarised in');
+  });
+
   test('§5: the Figures menu holds uploaded and generated figures, and refuses an SVG', async ({ page, tmpProject }) => {
     await page.goto(`/app/project/${tmpProject.id}?tab=manuscript`);
     await expect(page.getByTestId('stitch-manuscript-workspace')).toBeVisible({ timeout: 20_000 });

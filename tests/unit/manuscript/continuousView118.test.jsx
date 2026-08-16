@@ -569,15 +569,50 @@ describe('118.md §12/§47 — the view preference is remembered, per user', () 
       .toBeLessThan(setTab.indexOf('hostNavRef.current('));
   });
 
-  it('§47 — the URL carries the view only when it is not the default', () => {
+  /* r2 — §3 BACK/FORWARD ASYMMETRY, for exactly the researchers §3 promised not to
+     disturb: someone whose SAVED preference is Sections. Their bare-URL history
+     entry was displaying Sections, but the reconcile effect resolved its absent
+     `?msv=` to the CONSTANT default (Continuous) — so Back onto their own entry
+     changed nothing and looked dead. Toggling Sections → Continuous also pushed a
+     href identical to that bare URL, i.e. a duplicate entry. Two halves of one fix:
+     entries this session pushes name their view explicitly, and an absent param
+     means the view the session STARTED on. */
+  it('§3/r2 — a toggle pushes an EXPLICIT view, for both values', () => {
+    expect(manuscriptSubHref('editor', { projectId: 'p1', view: 'continuous', explicitView: true }))
+      .toContain('&msv=continuous');
+    expect(manuscriptSubHref('editor', { projectId: 'p1', view: 'sections', explicitView: true }))
+      .toContain('&msv=sections');
+    // …so the pushed entry is never byte-identical to the bare URL it came from.
+    expect(manuscriptSubHref('editor', { projectId: 'p1', view: 'continuous', explicitView: true }))
+      .not.toBe(manuscriptSubHref('editor', { projectId: 'p1' }));
+    // A garbage view never fabricates a param.
+    expect(manuscriptSubHref('editor', { projectId: 'p1', view: 'nonsense', explicitView: true }))
+      .not.toContain('msv=');
+    const ws = readSource('src/features/manuscript/ManuscriptWorkspace.jsx');
+    expect(ws).toContain('hostNavRef.current(tabRef.current, id, true);');
+    expect(ws).toContain('hostNavRef.current(id, viewRef.current, viewTouched.current);');
+  });
+
+  it('§3/r2 — an absent ?msv= means the view this session STARTED on, not the constant', () => {
+    const ws = readSource('src/features/manuscript/ManuscriptWorkspace.jsx');
+    expect(ws).toContain('const baselineView = useRef(view);');
+    // the stored-preference hydration moves the baseline with the view it applies…
+    expect(ws).toContain('if (stored) { setViewState(stored); baselineView.current = stored; }');
+    // …and the reconcile effect resolves an absent param through it.
+    expect(ws).toContain(
+      'const id = normalizeManuscriptView(initialView || baselineView.current || DEFAULT_MANUSCRIPT_VIEW);',
+    );
+  });
+
+  it('§47 — a LINK carries the view only when it is not the default', () => {
     const nav = readSource('src/frontend/stitch/nav/navConfig.js');
-    /* 119.md §3 (re-pinned) — the builder omits the DEFAULT view and emits the other
-       one. The reconcile effect reads an absent `?msv=` as the default, so these two
-       rules are one contract: if they ever disagreed, browser Back/Forward would
-       resolve a researcher's own history entries to the wrong view. The assertion is
-       byte-exact on purpose — a loosened match would let them drift apart again. */
-    expect(nav).toContain("const view = ctx.view === 'sections' ? '&msv=sections' : '';");
-    expect(nav).not.toContain("'&msv=continuous'");
+    /* 119.md §3 (re-pinned) — for a link built WITHOUT an explicit-view flag the
+       builder omits the DEFAULT view and emits the other one, so every pre-118 link
+       stays exactly as short as it was. The reconcile effect reads an absent `?msv=`
+       from such an entry as the view that entry was displaying, so these two rules
+       are one contract. Byte-exact on purpose — a loosened match would let them
+       drift apart again. */
+    expect(nav).toContain("    : (ctx.view === 'sections' ? '&msv=sections' : '');");
     expect(manuscriptSubHref('editor', { projectId: 'p1', view: DEFAULT_MANUSCRIPT_VIEW }))
       .not.toContain('msv=');
     expect(manuscriptSubHref('editor', { projectId: 'p1', view: 'sections' }))

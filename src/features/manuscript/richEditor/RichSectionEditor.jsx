@@ -800,33 +800,42 @@ export const RichSectionEditor = forwardRef(function RichSectionEditor({
          · a replacement over the host's ONLY child rewrites that element's CONTENTS
            instead of replacing it, leaving an empty <figure> husk (the same shape
            WebKit leaves for captions, 119.md §2).
-       An empty throwaway paragraph on each bare side removes both. It is written
+       An empty throwaway paragraph on each side removes both. It is written
        DIRECTLY rather than through execCommand — at these positions the editing
        commands are the thing that is broken — and being invisible to the undo stack
        is what we want: it is not content (htmlToMd drops an empty paragraph), it
        exists only so the REAL edit records and applies normally.
 
-       KNOWN LIMITATION, stated rather than hidden: under WebKit this same
-       replacement can also remove a cross-reference CHIP sitting in the paragraph
-       immediately after the picture (both are contenteditable="false" islands, and
-       WebKit reaches past the range end into the next block). One Ctrl+Z restores
-       both, and no other prose is touched. Three range/attribute shapes were tried
-       against both engines and each fixed one while breaking the other, so the
-       Blink-correct shape is what ships; the WebKit case wants the 108.md history
-       executor treatment (an application-level undo for this one action) rather
-       than another engine-shaped range. The figure spec therefore runs under
-       chromium only for now — see e2e/manuscript/manuscript-figures-119.spec.ts. */
+       r2 — AND THE PADS ARE NOW UNCONDITIONAL, which is the WebKit fix. The known
+       limitation this note used to record was: under WebKit the replacement also
+       removed a cross-reference CHIP sitting in the paragraph immediately AFTER the
+       picture (both are contenteditable="false" islands, and WebKit reaches past the
+       range end into the next block). The engine-shaped-range experiments each fixed
+       one engine and broke the other, because they were all arguing with the range.
+       A SACRIFICIAL EMPTY BLOCK does not argue: whatever WebKit reaches into is an
+       empty paragraph that was not content, so the researcher's sentence — and its
+       chip — is out of reach by construction. Blink's two behaviours were already
+       fixed by exactly this padding, so one shape now serves both engines and the
+       figure spec runs under BOTH (playwright.config webkit-manuscript).
+       (The pads STAY once the edit has applied — see the note further down for the
+       measurement that settled that.) */
     const top = topBlockOf(fb) || fb;
+    const pads = [];
+    /* `top` is a direct child of the host by construction (topBlockOf climbs to one),
+       but the pads are now UNCONDITIONAL, so a shape that broke that assumption would
+       turn an insertBefore into a throw and abandon the removal entirely. The parent
+       check keeps the worst case "no pad" rather than "no removal". */
     const padAt = (before) => {
+      if (top.parentNode !== el) return;
       const pad = document.createElement('p');
       pad.appendChild(document.createElement('br'));
       if (before) el.insertBefore(pad, top);
       else if (top.nextSibling) el.insertBefore(pad, top.nextSibling);
       else el.appendChild(pad);
+      pads.push(pad);
     };
-    const kids = significantChildren(el);
-    if (kids[0] === top) padAt(true);
-    if (kids[kids.length - 1] === top) padAt(false);
+    padAt(true);
+    padAt(false);
     replaceNode(fb, '<p><br></p>');
     // WebKit treats a contenteditable="false" element at the range start as
     // immovable (the §2 finding). Same retry, same reason.
@@ -837,6 +846,15 @@ export const RichSectionEditor = forwardRef(function RichSectionEditor({
     // Last resort: whatever husk an engine left behind goes through the same
     // mutation path (never a removeChild), so the document stays consistent.
     if (el.contains(fb)) replaceNode(fb, null);
+    /* THE PADS ARE LEFT WHERE THEY ARE, and that is deliberate (r2, measured).
+       Removing them afterwards looks tidier and costs the guarantee: Blink's undo
+       entry addresses the position the replacement recorded, and deleting the
+       sibling blocks around it made Ctrl+Z a silent no-op — the picture could not be
+       brought back, which is the one thing §5 asks of this path (reproduced in
+       e2e/manuscript/manuscript-figures-119.spec.ts under chromium). An empty
+       paragraph is not content: htmlToMd drops it, so the persisted markdown, the
+       export and the next mount are all clean. Undo beats tidiness. */
+    void pads; // kept as a named local so the decision above has something to point at.
     notifyFigureFocus(null);
     return !el.contains(fb);
   };

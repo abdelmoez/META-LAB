@@ -453,7 +453,13 @@ describe('118.md §46/§47 — the workspace wiring', () => {
     // 118.md §12 (Wave 2) — RE-PINNED deliberately: the seam now reports BOTH engine
     // sub-params, because the view is URL state too and a href that carried only one
     // of them would drop the other on every push.
-    expect(s).toContain("if (typeof hostNavRef.current === 'function') hostNavRef.current(id, viewRef.current);");
+    // 119.md §3 r2 — RE-PINNED again: the seam now reports a THIRD argument, whether
+    // the view has been explicitly chosen this session. Without it the pushed href
+    // omits `?msv=` for the default view, which (for a researcher whose stored
+    // preference is the OTHER view) is both a duplicate history entry and an entry
+    // ambiguous with the pre-toggle ones. See manuscriptSubHref's `explicitView`.
+    expect(s).toContain("if (typeof hostNavRef.current === 'function') hostNavRef.current(id, viewRef.current, viewTouched.current);");
+    expect(s).toContain('hostNavRef.current(tabRef.current, id, true);');
     // the toolbar and every panel change destination through the SAME function
     expect(s).toContain('<ManuscriptToolbar m={m} tab={tab} onTabChange={setTab}');
     expect(s).toContain('onNavigate={setTab}');
@@ -493,7 +499,7 @@ describe('118.md §46/§47 — the workspace wiring', () => {
 
     const page = readSource('src/frontend/stitch/pages/StitchProjectWorkspace.jsx');
     expect(page).toContain('initialSubtab={readManuscriptSubParam(search)}');
-    expect(page).toContain('onSubtabChange={(id, view) => navigate(manuscriptSubHref(id, { projectId, view }))}');
+    expect(page).toContain('onSubtabChange={(id, view, explicitView) => navigate(manuscriptSubHref(id, { projectId, view, explicitView }))}');
   });
 
   it('§43 — the toolbar adds no modifier chords, so Ctrl/Cmd+Z still reaches the editor', () => {

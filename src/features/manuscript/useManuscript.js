@@ -123,6 +123,9 @@ import { screeningApi } from '../../frontend/screening/api-client/screeningApi.j
 // 119.md §5 — the manuscript FIGURE store (bytes + row metadata). Where a figure
 // sits and what it is called live in the prose; this client only moves files.
 import { figureApi, isSupportedImageFile, UNSUPPORTED_IMAGE_MESSAGE } from './figureApi.js';
+// 119.md §5 (r2) — the SAME usage counter the delete route gates on, so the client
+// can refuse a delete the server would only find out about after the autosave lands.
+import { figureUsageAcrossDrafts } from '../../research-engine/manuscript/refTokens.js';
 // 117.md §22 (r2) — audit actors come from the signed-in user, not a phantom
 // `project._me` key nothing ever wrote. Optional: SSR tests have no provider.
 import { useOptionalAuth } from '../../frontend/context/AuthContext.jsx';
@@ -1386,6 +1389,17 @@ export function useManuscript(project, upd) {
   const [contentEpoch, setContentEpoch] = useState(0);
   const bumpContentEpoch = useCallback(() => setContentEpoch((n) => n + 1), []);
 
+  /**
+   * §7 restore. THE PENDING-EDIT FLUSH IS NOT MISSING HERE — it is inherited:
+   * `mutateActive` opens with `flushPending()` (see its definition), which clears
+   * the armed 600 ms field-patch timer AND applies the queued patch to the draft
+   * the mutator then receives. So a sentence typed 300 ms before "Restore
+   * snapshot" is committed first and the restore is applied over it; nothing can
+   * fire afterwards and write the pre-restore prose back under a remounted editor.
+   * (applyStructure calls flushPending explicitly for a different reason: it reads
+   * `projectRef.current` for the snapshot, so it wants the flush to have happened
+   * before its own body runs, not just before the mutator's.) 119.md §9.
+   */
   const restoreSnapshotById = useCallback((id) => {
     mutateActive((draft) => draftOf(restoreSnapshot(draft, id, { nowIso: new Date().toISOString() })));
     bumpContentEpoch();
@@ -1714,15 +1728,32 @@ export function useManuscript(project, upd) {
   }, [pid, refreshFigures]);
 
   /**
-   * §5 "Remove it" — the PERMANENT delete (row + bytes). The server refuses while
-   * anything still points at the figure, and that refusal is the feature: a figure
-   * still in the manuscript must be taken out of the document first, which is a
-   * prose edit one Ctrl+Z restores with a live file behind it.
+   * §5 "Remove it" — the delete. The server refuses while anything still points at
+   * the figure, and that refusal is the feature: a figure still in the manuscript
+   * must be taken out of the document first, which is a prose edit one Ctrl+Z
+   * restores with a live file behind it.
+   *
+   * r2 — TWO gates, not one, because they see different things:
+   *   · HERE, the pending 600 ms field-patch queue is flushed and the LIVE draft is
+   *     counted. A figure placed seconds ago exists only in this client until the
+   *     autosave lands, so the server would read a blob that does not know about it
+   *     and answer "unreferenced". Refusing locally is the only place that race can
+   *     be seen at all.
+   *   · SERVER-SIDE, the same count over the persisted blob, and then a SOFT delete
+   *     with a grace window so a collaborator's in-flight draft (which neither side
+   *     can see) still has real bytes behind its marker.
    * Returns { deleted } or { blocked, usage }.
    */
   const deleteFigure = useCallback(async (figureId) => {
     if (!pid || !figureId) return { deleted: false };
     setFigureError('');
+    const flushed = flushPending();
+    const list = flushed || readManuscripts(projectRef.current);
+    const figKey = (figuresRef.current.find((f) => f && f.id === figureId) || {}).figKey;
+    if (figKey) {
+      const local = figureUsageAcrossDrafts(list, figKey);
+      if (local.total > 0) return { deleted: false, blocked: true, usage: local };
+    }
     try {
       await figureApi.remove(pid, figureId);
       await refreshFigures();
@@ -1734,7 +1765,7 @@ export function useManuscript(project, upd) {
       setFigureError((e && e.message) || 'The figure could not be deleted.');
       return { deleted: false };
     }
-  }, [pid, refreshFigures]);
+  }, [pid, refreshFigures, flushPending]);
 
   /* ══════════ 117.md §28-§32 — the reference-library write path ══════════
    *

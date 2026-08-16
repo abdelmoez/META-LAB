@@ -17,7 +17,30 @@
  * `normal` user — and the allow-a-leader side needs the seeded `mod` user.
  */
 import { test, expect } from '../fixtures/stitch-test';
-import { createProject, deleteProject, ensureScreeningWorkspace, addProjectMember } from '../helpers/api';
+import { createProject, deleteProject, ensureScreeningWorkspace, addProjectMember, importScreeningRecords, makeRis } from '../helpers/api';
+
+/**
+ * r2 — A MISSING SEED USER IS NOT A PASS.
+ *
+ * The two role tests below are the ONLY browser-level proof of the §8 Owner/Leader
+ * boundary, and they used to `test.skip` when the seeded mod/normal sessions were
+ * absent. In an environment that never provisions them (a fresh CI image, a
+ * partially-failed global-setup) the whole security boundary reported green while
+ * nothing had been checked — precisely the shape of regression an authz test exists
+ * to catch. So: locally, a developer without seeded sessions is still allowed to
+ * skip; under CI the absence is a FAILURE, because there the seeded sessions are
+ * part of the environment contract and their absence is a broken run, not a choice.
+ */
+function requireSeededSession(user: unknown, which: string) {
+  if (user) return;
+  if (process.env.CI) {
+    throw new Error(
+      `119.md §8 — no seeded ${which} session: the Owner/Leader boundary has NOT been proven in this run. `
+      + 'Fix e2e/global-setup (seed provisioning) rather than letting the security test report green.',
+    );
+  }
+  test.skip(true, `no seeded ${which} session in this local run`);
+}
 
 test.describe('Project Logbook — Owner/Leader only (119.md §8)', () => {
   let projectId = '';
@@ -110,8 +133,73 @@ test.describe('Project Logbook — Owner/Leader only (119.md §8)', () => {
     expect(jsonDl.suggestedFilename()).toMatch(/\.json$/);
   });
 
+  /**
+   * §10 scenario 19's "…and with a large Logbook" clause, which r2 found untested:
+   * the filters were only ever exercised against a handful of seeded events, so the
+   * PAGER — the part that a large history actually stresses — had no browser-level
+   * coverage at all.
+   *
+   * What this proves, stated exactly: with a page size of 1 the cursor walks the
+   * whole history one event at a time, never repeats an event, never repeats a
+   * cursor, and terminates; and the same walk under a selective filter returns only
+   * matching events and still terminates. That is the contract a large Logbook
+   * depends on (a stalled or regressing cursor is what turns a big history into an
+   * infinite "Load more"), and it is provable without seeding a synthetic 100k-row
+   * table. It is NOT a throughput benchmark and does not claim to be one.
+   */
+  test('the pager walks a filtered history without repeating or stalling (§10.19 "large Logbook")', async ({ request, seed }) => {
+    const { project, siftId } = await seedProject(request, seed);
+    // A handful more real events, so there is genuinely something to page through.
+    await importScreeningRecords(request, siftId, {
+      content: makeRis([
+        { title: 'Paging seed A', year: 2021 },
+        { title: 'Paging seed B', year: 2022 },
+        { title: 'Paging seed C', year: 2023 },
+      ]),
+      filename: 'logbook-paging.ris',
+    });
+
+    const walk = async (query: string) => {
+      const ids: string[] = [];
+      const cursors: string[] = [];
+      let cursor = '';
+      for (let page = 0; page < 60; page += 1) {
+        const url = `/api/logbook/projects/${project.id}/events?limit=1&${query}`
+          + (cursor ? `&cursor=${encodeURIComponent(cursor)}` : '');
+        const res = await request.get(url);
+        expect(res.status(), `GET ${url}`).toBe(200);
+        const body = await res.json();
+        for (const e of body.events || []) {
+          expect(ids, 'an event must never appear on two pages').not.toContain(e.id);
+          ids.push(e.id);
+        }
+        if (!body.nextCursor) return { ids, pages: page + 1, terminated: true };
+        expect(cursors, 'a cursor must never repeat — that is a stall or a walk backwards')
+          .not.toContain(body.nextCursor);
+        cursors.push(body.nextCursor);
+        cursor = body.nextCursor;
+      }
+      return { ids, pages: 60, terminated: false };
+    };
+
+    const all = await walk('');
+    expect(all.terminated, 'the unfiltered walk must reach the end of the history').toBe(true);
+    expect(all.ids.length).toBeGreaterThan(1);
+
+    // The same walk under a selective filter: fewer events, same guarantees.
+    const core = await walk('engine=core');
+    expect(core.terminated).toBe(true);
+    expect(core.ids.length).toBeLessThanOrEqual(all.ids.length);
+    for (const id of core.ids) expect(all.ids).toContain(id);
+
+    // A filter nothing can match ends immediately rather than paging forever.
+    const none = await walk('q=zzz-no-such-event-zzz');
+    expect(none.terminated).toBe(true);
+    expect(none.ids).toHaveLength(0);
+  });
+
   test('a leader-role member is allowed — the boundary is leadership, not ownership', async ({ request, seed, modContext }) => {
-    test.skip(!seed.mod, 'no seeded mod session in this run');
+    requireSeededSession(seed.mod, 'mod (leader)');
     const { project } = await seedProject(request, seed);
 
     const { page: modPage, request: modRequest } = modContext;
@@ -127,7 +215,7 @@ test.describe('Project Logbook — Owner/Leader only (119.md §8)', () => {
   });
 
   test('a member/reviewer gets NO nav entry, no page, and a refused API @smoke', async ({ request, seed, normalContext }) => {
-    test.skip(!seed.normal, 'no seeded normal-user session in this run');
+    requireSeededSession(seed.normal, 'normal (member/reviewer)');
     const { project } = await seedProject(request, seed);
 
     const { page: memberPage, request: memberRequest } = normalContext;

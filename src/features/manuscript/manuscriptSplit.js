@@ -214,8 +214,14 @@ export function articleSubtitle(a) {
 export function matchesArticleQuery(a, q) {
   const terms = clean(q).toLowerCase().split(/\s+/).filter(Boolean);
   if (!terms.length) return true;
+  // The separator is a NUL so a term can never match ACROSS two fields. It is
+  // written as the ESCAPE, never as the byte (r2): a literal 0x00 in the source
+  // makes `file`, ripgrep and the repo's own Grep tool classify this whole module
+  // as BINARY, and every content search across the repo then silently skips it — a
+  // rename or a security sweep would conclude the code here does not exist. The
+  // runtime value is identical either way.
   const hay = [a.title, a.authors, a.year, a.journal, a.doi, a.pmid, a.label]
-    .map((x) => clean(x).toLowerCase()).join('   ');
+    .map((x) => clean(x).toLowerCase()).join(' \u0000 ');
   return terms.every((t) => hay.indexOf(t) !== -1);
 }
 

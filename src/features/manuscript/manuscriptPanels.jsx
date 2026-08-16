@@ -2968,7 +2968,10 @@ export function UploadedFigureDetails({ m, asset, onNotice }) {
       onNotice(`This figure is still used in the manuscript (${u.placements || 0} placement${u.placements === 1 ? '' : 's'}, ${u.references || 0} cross-reference${u.references === 1 ? '' : 's'}). Remove it from the document first — Ctrl+Z can bring it back until you delete the file here.`);
       return;
     }
-    if (r && r.deleted) onNotice('The figure and its image file were deleted.');
+    // 119.md §5 (r2) — honest copy: the figure leaves the manuscript at once, but
+    // its file is retained briefly so an undo (or an autosave still in flight) has
+    // real bytes behind it. Saying "the file was deleted" would be a lie for a day.
+    if (r && r.deleted) onNotice('The figure was removed from this project. Its image file is kept for a short while so an undo can still bring it back, then deleted automatically.');
   };
   return (
     <div data-testid={`stitch-manuscript-figure-details-${slug}`} style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>

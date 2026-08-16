@@ -446,7 +446,7 @@ function DeepToolPage({ stage }) {
     body = (<LazyManuscript project={project} upd={doc.upd}
       initialSubtab={readManuscriptSubParam(search)}
       initialView={readManuscriptViewParam(search)}
-      onSubtabChange={(id, view) => navigate(manuscriptSubHref(id, { projectId, view }))} />);
+      onSubtabChange={(id, view, explicitView) => navigate(manuscriptSubHref(id, { projectId, view, explicitView }))} />);
   } else if (stage === 'report') {
     body = (<LazyReport project={project} upd={doc.upd} />);
   } else if (stage === 'methods') {

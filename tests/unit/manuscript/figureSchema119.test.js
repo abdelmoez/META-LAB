@@ -33,6 +33,8 @@ const REQUIRED_FIELDS = {
   'Version/replacement history': ['replacedCount', 'prevStoredName', 'prevFileName', 'prevFileHash', 'replacedAt'],
   'Content identity (dedupe + ETag)': ['fileHash', 'fileSize', 'storedName'],
   'Project isolation': ['projectId'],
+  // r2: deletion is deferred, so a deleted-but-still-retrievable row needs a stamp.
+  'Soft delete + grace window (undo safety)': ['deletedAt'],
 };
 
 describe('ManuscriptFigure — schema', () => {
@@ -55,6 +57,7 @@ describe('ManuscriptFigure — schema', () => {
     expect(SQLITE).toContain('@@unique([projectId, figKey])');
     expect(SQLITE).toContain('@@index([projectId, createdAt])');
     expect(SQLITE).toContain('@@index([projectId, fileHash])');   // content dedupe
+    expect(SQLITE).toContain('@@index([projectId, deletedAt])');  // the graveyard sweep
   });
 
   it('is `db push`-safe: a BRAND-NEW table with no FK to an existing one', () => {
@@ -69,7 +72,7 @@ describe('ManuscriptFigure — schema', () => {
     for (const col of ['fileSize', 'mimeType', 'width', 'height', 'altText', 'sourceNote', 'origin', 'uploadedByName', 'replacedCount']) {
       expect(SQLITE).toMatch(new RegExp(`^\\s+${col}\\s+\\w+\\s+@default\\(`, 'm'));
     }
-    for (const col of ['prevStoredName', 'prevFileName', 'prevFileHash', 'replacedAt']) {
+    for (const col of ['prevStoredName', 'prevFileName', 'prevFileHash', 'replacedAt', 'deletedAt']) {
       expect(SQLITE).toMatch(new RegExp(`^\\s+${col}\\s+\\w+\\?`, 'm'));
     }
   });

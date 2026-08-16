@@ -18,6 +18,7 @@ const state = {
   project: null,
   figures: [],
   settings: { allowImageUpload: true, maxFigureSizeMb: 12 },
+  settingsError: null,
   logs: [],
   written: [],     // [{projectId, storedName, bytes}]
   unlinked: [],
@@ -61,7 +62,10 @@ vi.mock('../../../server/extraction/access.js', () => ({
   resolveExtractionAccess: vi.fn(async () => state.access),
 }));
 vi.mock('../../../server/screening/settings.js', () => ({
-  getMetaSiftSettings: vi.fn(async () => state.settings),
+  getMetaSiftSettings: vi.fn(async () => {
+    if (state.settingsError) throw state.settingsError;
+    return state.settings;
+  }),
 }));
 vi.mock('../../../server/logbook/logbookService.js', () => ({
   recordLogEvent: vi.fn(async (draft) => { state.logs.push(draft); return draft; }),
@@ -142,6 +146,7 @@ beforeEach(() => {
   state.project = { id: 'ml1', data: JSON.stringify({ manuscripts: [] }) };
   state.figures = [];
   state.settings = { allowImageUpload: true, maxFigureSizeMb: 12 };
+  state.settingsError = null;
   state.logs = [];
   state.written = [];
   state.unlinked = [];
@@ -236,6 +241,21 @@ describe('119.md §5/§9 — figure API authorization', () => {
     expect(s.body.error).toContain('disabled by the administrator');
   });
 
+  it('a FAILED settings read is a 503, not a fall-through with a lying diagnostic (r2)', async () => {
+    // Before the fix the catch ran next(), so multer never parsed the body: the
+    // handler answered 400 "No file uploaded" for a perfectly-formed request, and
+    // the allowImageUpload gate was skipped entirely on that path.
+    state.settingsError = new Error('db unavailable');
+    const s = res();
+    await new Promise((done) => {
+      s.json = (b) => { s.body = b; done(); return s; };
+      C.figureUploadMiddleware(req(), s, () => done(new Error('next() must not run')));
+    });
+    expect(s.statusCode).toBe(503);
+    expect(s.body.error).toContain('temporarily unavailable');
+    expect(s.body.error).not.toContain('No file uploaded');
+  });
+
   it('the admin per-file cap is applied on top of the hard ceiling', async () => {
     state.settings.maxFigureSizeMb = 2;
     const s = res();
@@ -310,6 +330,47 @@ describe('119.md §5 — replace keeps the figure identity', () => {
     expect(state.logs.map((l) => l.action)).toContain('FIGURE_REPLACED');
   });
 
+  it('a SECOND replace unlinks the version that just became unreachable (no leak)', async () => {
+    // r2: the row holds ONE previous version, so replace #2 supersedes replace #1's
+    // stored file. Nothing could ever name it again — leaving it on disk was bytes
+    // lost forever, and deleteFigure's cleanup could never find it either.
+    const up = await upload(pngBytes(10, 10));
+    const id = up.body.figure.id;
+    const v1 = state.figures[0].storedName;
+    const doReplace = async (buf, name) => {
+      const s = res();
+      await C.replaceFigure(req({
+        params: { id: 'ml1', figureId: id }, file: { buffer: buf, originalname: name },
+        figureCapBytes: 12 * 1024 * 1024,
+      }), s);
+      return s;
+    };
+    await doReplace(gifBytes(40, 30), 'v2.gif');
+    expect(state.unlinked).toHaveLength(0);          // one replace keeps one version
+    await doReplace(jpegBytes(64, 48), 'v3.jpg');
+    expect(state.unlinked).toHaveLength(1);          // …and the second reclaims v1
+    expect(state.unlinked[0]).toContain(v1);
+    // The KEPT previous version is still on disk and still named by the row.
+    expect(state.figures[0].prevStoredName).toBeTruthy();
+    expect(state.unlinked.some((p) => p.includes(state.figures[0].prevStoredName))).toBe(false);
+  });
+
+  it('never unlinks a superseded file another figure still shares', async () => {
+    const a = await upload(pngBytes(10, 10));
+    await upload(pngBytes(10, 10));                  // twin: same storedName
+    const doReplace = async (buf, name) => {
+      const s = res();
+      await C.replaceFigure(req({
+        params: { id: 'ml1', figureId: a.body.figure.id }, file: { buffer: buf, originalname: name },
+        figureCapBytes: 12 * 1024 * 1024,
+      }), s);
+      return s;
+    };
+    await doReplace(gifBytes(40, 30), 'v2.gif');
+    await doReplace(jpegBytes(64, 48), 'v3.jpg');
+    expect(state.unlinked).toHaveLength(0);          // the twin still points at v1
+  });
+
   it('identical bytes are a no-op, not a fake new version', async () => {
     const up = await upload(pngBytes(10, 10));
     const s = res();
@@ -357,15 +418,24 @@ describe('119.md §5 — delete only when unreferenced (what makes undo safe)', 
     expect(s.body.usage).toMatchObject({ placements: 0, references: 1 });
   });
 
-  it('deletes row AND file once nothing points at it', async () => {
+  it('removes the figure from the manuscript at once, but KEEPS the bytes for the grace window', async () => {
     const up = await upload(pngBytes());
     withProse('no figures here');
     const s = res();
     await C.deleteFigure(req({ params: { id: 'ml1', figureId: up.body.figure.id } }), s);
     expect(s.statusCode).toBe(200);
-    expect(state.figures).toHaveLength(0);
-    expect(state.unlinked).toHaveLength(1);
+    expect(s.body.deleted).toBe(true);
+    expect(s.body.retainedUntil).toBeTruthy();
+    // The row survives, stamped — and the file an in-flight autosave/undo would need
+    // is still on disk. That is the whole point of the r2 change.
+    expect(state.figures).toHaveLength(1);
+    expect(state.figures[0].deletedAt).toBeInstanceOf(Date);
+    expect(state.unlinked).toHaveLength(0);
     expect(state.logs.map((l) => l.action)).toContain('FIGURE_DELETED');
+    // …and it is gone from the listing the panel and the asset registry read.
+    const l = res();
+    await C.listFigures(req(), l);
+    expect(l.body.figures).toHaveLength(0);
   });
 
   it('keeps a file another figure still shares (reference-counted deletes)', async () => {
@@ -376,6 +446,94 @@ describe('119.md §5 — delete only when unreferenced (what makes undo safe)', 
     await C.deleteFigure(req({ params: { id: 'ml1', figureId: a.body.figure.id } }), s);
     expect(s.statusCode).toBe(200);
     expect(state.unlinked).toHaveLength(0);
+  });
+});
+
+/* ── 3. the grace window: the r2 autosave/undo race ───────────────────────── */
+
+/**
+ * 119.md §5 (r2) — the delete-vs-autosave race the "delete only when unreferenced"
+ * check could not see. The usage check reads the LAST PERSISTED blob; a figure
+ * placed seconds ago lives only in the client draft. A hard delete inside that
+ * window destroyed the bytes and the autosave then landed a marker pointing at
+ * nothing, so Ctrl+Z restored a broken picture — the exact failure the doctrine
+ * promises cannot happen.
+ */
+describe('119.md §5 (r2) — the deletion grace window', () => {
+  const withProse = (md) => {
+    state.project = {
+      id: 'ml1',
+      data: JSON.stringify({ manuscripts: [{ id: 'd1', sections: { results: { content: md } } }] }),
+    };
+  };
+
+  it('RESTORES a soft-deleted figure whose marker the autosave landed after the delete', async () => {
+    const up = await upload(pngBytes());
+    const { figKey, id } = up.body.figure;
+    withProse('nothing yet');                       // the stale blob the delete reads
+    const del = res();
+    await C.deleteFigure(req({ params: { id: 'ml1', figureId: id } }), del);
+    expect(del.statusCode).toBe(200);
+
+    // …and NOW the client's autosave lands, carrying the marker it wrote before.
+    withProse(`[[figcap:${figKey}]] Study flow`);
+    const l = res();
+    await C.listFigures(req(), l);
+    expect(l.body.figures.map((f) => f.figKey)).toEqual([figKey]);
+    expect(state.figures[0].deletedAt).toBe(null);  // the prose reclaimed it
+    expect(state.unlinked).toHaveLength(0);         // and the bytes were never destroyed
+  });
+
+  it('PURGES row and bytes once the grace has expired with nothing pointing at it', async () => {
+    const up = await upload(pngBytes());
+    withProse('nothing');
+    await C.deleteFigure(req({ params: { id: 'ml1', figureId: up.body.figure.id } }), res());
+    expect(state.figures).toHaveLength(1);
+
+    const expired = Date.now() + C.FIGURE_PURGE_GRACE_MS + 1;
+    const { purged, restored } = await C.sweepDeletedFigures('ml1', state.figures.slice(), {}, expired);
+    expect(restored).toHaveLength(0);
+    expect(purged).toHaveLength(1);
+    expect(state.figures).toHaveLength(0);
+    expect(state.unlinked).toHaveLength(1);
+  });
+
+  it('never purges bytes a surviving row still shares', async () => {
+    const a = await upload(pngBytes(10, 10));
+    await upload(pngBytes(10, 10));                 // deduped twin: same storedName
+    withProse('nothing');
+    await C.deleteFigure(req({ params: { id: 'ml1', figureId: a.body.figure.id } }), res());
+    const expired = Date.now() + C.FIGURE_PURGE_GRACE_MS + 1;
+    await C.sweepDeletedFigures('ml1', state.figures.filter((f) => f.deletedAt), {}, expired);
+    expect(state.figures).toHaveLength(1);          // the twin survives
+    expect(state.unlinked).toHaveLength(0);         // and so does the file it points at
+  });
+
+  it('a repeated DELETE is idempotent — one Logbook row, not two deletions', async () => {
+    const up = await upload(pngBytes());
+    withProse('nothing');
+    await C.deleteFigure(req({ params: { id: 'ml1', figureId: up.body.figure.id } }), res());
+    const again = res();
+    await C.deleteFigure(req({ params: { id: 'ml1', figureId: up.body.figure.id } }), again);
+    expect(again.statusCode).toBe(200);
+    expect(state.logs.filter((l) => l.action === 'FIGURE_DELETED')).toHaveLength(1);
+  });
+
+  it('a soft-deleted key is never re-minted for a new upload', async () => {
+    const up = await upload(pngBytes());
+    withProse('nothing');
+    await C.deleteFigure(req({ params: { id: 'ml1', figureId: up.body.figure.id } }), res());
+    const next = await upload(gifBytes());
+    expect(next.body.figure.figKey).not.toBe(up.body.figure.figKey);
+  });
+
+  it('the raw route still serves a soft-deleted figure — that IS the undo path', async () => {
+    const up = await upload(pngBytes());
+    withProse('nothing');
+    await C.deleteFigure(req({ params: { id: 'ml1', figureId: up.body.figure.id } }), res());
+    const s = res();
+    await C.rawFigure(req({ params: { id: 'ml1', figureId: up.body.figure.id } }), s);
+    expect(s.statusCode).toBe(200);
   });
 });
 

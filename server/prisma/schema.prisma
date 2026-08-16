@@ -3296,14 +3296,26 @@ model ManuscriptFigure {
   updatedAt     DateTime @updatedAt
   // §5 "Version/replacement history" — a replace keeps figKey and rewrites the
   // bytes on THIS row, and stamps the superseded file here so the previous
-  // version is recoverable and auditable (never silently overwritten).
+  // version is recoverable and auditable (never silently overwritten). DEPTH IS
+  // ONE: a second replace supersedes the first, and the controller unlinks the
+  // file that just became unreachable rather than leaking it (r2). `replacedCount`
+  // still records how many replacements happened, so the history is honest about
+  // what it does and does not keep.
   replacedCount Int      @default(0)
   prevStoredName String? // the file the last replace superseded (kept on disk)
   prevFileName  String?
   prevFileHash  String?
   replacedAt    DateTime?
+  // 119.md §5 (r2) — SOFT DELETE + grace window. Deleting a figure hides it from
+  // the manuscript at once but keeps the bytes, because the "is it still used?"
+  // check reads the last PERSISTED blob and a marker placed seconds ago has not
+  // reached the server yet. The sweep (manuscriptFigureController.sweepDeletedFigures)
+  // restores a row the prose still references and hard-deletes row + file only after
+  // FIGURE_PURGE_GRACE_MS with nothing pointing at it. NULL = live.
+  deletedAt     DateTime?
 
   @@unique([projectId, figKey])
   @@index([projectId, createdAt])
   @@index([projectId, fileHash])
+  @@index([projectId, deletedAt])
 }

@@ -243,6 +243,28 @@ describe('119.md §7 — undo a template change', () => {
     expect(panels).toContain('}:${m.contentEpoch || 0}`;');
   });
 
+  /* r2 — 119.md §9 "flush pending edits before … template switches". A wholesale
+     rewrite of the draft (snapshot restore, structure switch) must never leave an
+     armed 600 ms field-patch timer behind it: that patch would land AFTER the
+     rewrite, move neither lastGeneratedAt nor contentEpoch, and put the pre-restore
+     prose back under a remounted editor. The guarantee is structural — EVERY
+     structural write goes through mutateActive, and mutateActive flushes first — so
+     that is what this pins. Break it and the restore path silently regresses. */
+  it('every structural write flushes the pending field-patch queue FIRST', () => {
+    const src = readSource('src/features/manuscript/useManuscript.js');
+    const mut = src.slice(src.indexOf('const mutateActive = useCallback('));
+    // The flush is the first statement, and its result IS the list the mutator sees.
+    expect(mut.slice(0, 400)).toContain('const flushed = flushPending();');
+    expect(mut.slice(0, 400)).toContain('const list = flushed || readManuscripts(projectRef.current);');
+    // flushPending really disarms the timer (it does not merely read the queue).
+    const flush = src.slice(src.indexOf('const flushPending = useCallback('));
+    expect(flush.slice(0, 300)).toContain('if (timer.current) { clearTimeout(timer.current); timer.current = null; }');
+    expect(flush.slice(0, 300)).toContain('pending.current = null;');
+    // …and the wholesale-rewrite paths are the ones that ride it.
+    const restore = src.slice(src.indexOf('const restoreSnapshotById = useCallback('));
+    expect(restore.slice(0, 300)).toContain('mutateActive((draft) => draftOf(restoreSnapshot(');
+  });
+
   it('is backed by a snapshot taken INSIDE the same write as the switch', () => {
     const src = readSource('src/features/manuscript/useManuscript.js');
     const fn = src.slice(src.indexOf('const applyStructure = useCallback('), src.indexOf('/** §7 "Undo a template change"'));

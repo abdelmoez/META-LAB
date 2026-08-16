@@ -12,9 +12,11 @@
 import { describe, it, expect } from 'vitest';
 import {
   figureCaptionLine, findFigureCaptions, collectPlacedFigures, figureUsage,
+  figureUsageAcrossDrafts,
   dropDuplicateFigureMarkers, resolveNumbering, renderAssetMarkers, anchorsInProse,
   ASSET_KIND_IDS, findAssetTokens,
 } from '../../../src/research-engine/manuscript/refTokens.js';
+import { readSource } from '../../helpers/readSource.js';
 import { computeManuscriptAssets } from '../../../src/research-engine/manuscript/assets.js';
 import { normalizeDraft, makeManuscriptDraft } from '../../../src/research-engine/manuscript/model.js';
 
@@ -222,5 +224,50 @@ describe('119.md §5 — byte stability', () => {
     expect(after).toBe(before);
     expect(JSON.parse(after)).not.toHaveProperty('figures');
     expect(JSON.parse(after)).not.toHaveProperty('figureMeta');
+  });
+});
+
+/* ══ r2 — ONE delete-safety counter, shared by the client and the server ══════ */
+
+/**
+ * The delete route destroys nothing while a figure is still used, and the client
+ * refuses to even ask when its own freshly-flushed draft already places it. Two
+ * counts, one function: if they could disagree, the disagreement IS the window in
+ * which a figure's bytes are deleted out from under a marker Ctrl+Z would restore.
+ */
+describe('119.md §5 (r2) — figureUsageAcrossDrafts is the ONE usage gate', () => {
+  const drafts = [
+    { id: 'd1', sections: { results: { content: '[[figcap:fa1]] Flow' + String.fromCharCode(10, 10) + 'see [[figure:fa1]] and [[figure:fa1]]' } } },
+    { id: 'd2', sections: { methods: { content: 'nothing here' } }, statements: { data: 'also [[figure:fa1]]' } },
+  ];
+
+  it('counts placements and cross-references across EVERY draft, sections and statements', () => {
+    expect(figureUsageAcrossDrafts(drafts, 'fa1')).toEqual({ placements: 1, references: 3, total: 4 });
+    expect(figureUsageAcrossDrafts(drafts, 'other')).toEqual({ placements: 0, references: 0, total: 0 });
+  });
+
+  it('is total-safe on junk input — an unreadable blob never reads as "unused"', () => {
+    expect(figureUsageAcrossDrafts(null, 'fa1').total).toBe(0);
+    expect(figureUsageAcrossDrafts([null, 7, {}], 'fa1').total).toBe(0);
+    expect(figureUsageAcrossDrafts(drafts, '').total).toBe(0);
+    expect(figureUsageAcrossDrafts(drafts, null).total).toBe(0);
+  });
+
+  it('a figure token of another KIND is never counted as a figure reference', () => {
+    const d = [{ sections: { results: { content: '[[table:fa1]] and [[figure:fa1]]' } } }];
+    expect(figureUsageAcrossDrafts(d, 'fa1')).toEqual({ placements: 0, references: 1, total: 1 });
+  });
+
+  it('both gates really call it — the server delete route and the client hook', () => {
+    const ctrl = readSource('server/controllers/manuscriptFigureController.js');
+    expect(ctrl).toContain("import { figureUsageAcrossDrafts } from '../../src/research-engine/manuscript/refTokens.js';");
+    expect(ctrl).toContain('return figureUsageAcrossDrafts((data && data.manuscripts) || [], figKey);');
+    const hook = readSource('src/features/manuscript/useManuscript.js');
+    expect(hook).toContain("import { figureUsageAcrossDrafts } from '../../research-engine/manuscript/refTokens.js';");
+    const del = hook.slice(hook.indexOf('const deleteFigure = useCallback('));
+    // The flush comes FIRST: the point is to count the draft including the last
+    // ~600 ms of typing, which is exactly what the server cannot see.
+    expect(del.indexOf('const flushed = flushPending();')).toBeLessThan(del.indexOf('figureUsageAcrossDrafts('));
+    expect(del.slice(0, 1200)).toContain('return { deleted: false, blocked: true, usage: local };');
   });
 });

@@ -20,6 +20,13 @@
  *      default removes the <table> and leaves the contenteditable=false caption
  *      standing — the orphan "Table 1." users read as "it did not delete".
  *
+ * WEBKIT ≠ SAFARI (§10 scenario 1, r2). This file running green under the
+ * `webkit-manuscript` project is engine evidence, not a Safari sign-off: Playwright's
+ * WebKit carries none of Safari's own caret heuristics, page zoom, IME or VoiceOver.
+ * The manual checklist a Safari owner still has to run — and the honest statement that
+ * it has NOT been run, because the build environment is Windows-only — is recorded in
+ * docs/testing/PLAYWRIGHT_COVERAGE_MATRIX.md › "Real-Safari manual QA".
+ *
  * Drives the Stitch workspace at `/app/project/:id?tab=manuscript`.
  */
 import { test, expect } from '../fixtures/stitch-test';
@@ -63,6 +70,17 @@ async function undoUntil(page: Page, done: () => Promise<boolean>, max = 15) {
   for (let i = 0; i < max; i += 1) {
     if (await done()) return;
     await page.keyboard.press('ControlOrMeta+z');
+    await page.waitForTimeout(80);
+  }
+}
+
+/** Native REDO is Ctrl+Shift+Z in both engines (and Ctrl+Y on Windows Blink), and
+    its granularity is an engine fact like undo's — so redo until the condition
+    holds, trying both chords, rather than pinning a keystroke count. */
+async function redoUntil(page: Page, done: () => Promise<boolean>, max = 15) {
+  for (let i = 0; i < max; i += 1) {
+    if (await done()) return;
+    await page.keyboard.press(i % 2 === 0 ? 'ControlOrMeta+Shift+z' : 'Control+y');
     await page.waitForTimeout(80);
   }
 }
@@ -309,6 +327,99 @@ test.describe('Manuscript tables (119.md §2)', () => {
     await expect(captions(page)).toHaveCount(0);
     await expect(tables(page)).toHaveCount(0);
   });
+
+  /* §10 scenario 6 names REDO explicitly ("undo must restore it, redo must remove it
+     again"), and r2 found the file covered only the undo half. The atomic
+     caption+table op is where a redo regression would hide: 7a06781 fixed undo
+     re-stamping `tableMeta`, and a redo that restored the table while re-nulling
+     those stamps would leave a titled table with no metadata behind it — visible
+     here as a caption that comes back WITHOUT its title on the following undo. */
+  test('§2(c)/§10.6: redo removes the table again, and a further undo brings it back WITH its title', async ({ page, tmpProject }) => {
+    const editor = await openEditorSection(page, tmpProject.id, 'methods');
+    await editor.click();
+    await page.keyboard.press('ControlOrMeta+End');
+    await page.keyboard.type('Prose above, so the table is not the whole document.');
+    await page.keyboard.press('Enter');
+    await insertTable(page);
+    await page.keyboard.type('Redo table');
+    await expect(captions(page)).toHaveCount(1);
+    await expect(tables(page)).toHaveCount(1);
+
+    await selectWholeTable(page);
+    await page.keyboard.press('Delete');
+    await expect(tables(page)).toHaveCount(0, { timeout: 10_000 });
+    await expect(captions(page)).toHaveCount(0);
+
+    await editor.click();
+    await undoUntil(page, async () => (await tables(page).count()) === 1);
+    await expect(tables(page)).toHaveCount(1, { timeout: 10_000 });
+    await expect(captions(page).first()).toContainText('Redo table');
+
+    // REDO: the object goes away again, both halves together.
+    await redoUntil(page, async () => (await tables(page).count()) === 0);
+    await expect(tables(page)).toHaveCount(0, { timeout: 10_000 });
+    await expect(captions(page)).toHaveCount(0);
+    // The prose either side of it is untouched by the round trip.
+    await expect(editor).toContainText('Prose above, so the table is not the whole document.');
+
+    // …and undo once more restores the SAME object, title and derived number intact —
+    // which is what proves redo did not drop the tableMeta stamps on its way through.
+    await undoUntil(page, async () => (await tables(page).count()) === 1);
+    await expect(tables(page)).toHaveCount(1, { timeout: 10_000 });
+    await expect(captions(page)).toHaveCount(1);
+    await expect(captions(page).first()).toContainText('Table 1.');
+    await expect(captions(page).first()).toContainText('Redo table');
+  });
+
+  /* §10 scenario 3: "rapidly clicking table insertion produces exactly one table".
+     The re-entrancy guard is a per-GESTURE operation id (RichSectionEditor's
+     insertOpIds map + TableGridPicker's opRef/doneRef), and r2 found nothing
+     actually firing two clicks at it — the file covered re-entrancy only through the
+     caret-parked-in-a-caption geometry and a single keyboard gesture. A guard keyed
+     wrongly (per render rather than per gesture) would pass those and fail this. */
+  test('§2(b)/§10.3: rapid double-clicking the size cell inserts exactly ONE table', async ({ page, tmpProject }) => {
+    const editor = await openEditorSection(page, tmpProject.id, 'methods');
+    await editor.click();
+    await page.keyboard.press('ControlOrMeta+End');
+
+    await page.getByTestId('stitch-manuscript-tb-table').click();
+    await expect(page.getByTestId('stitch-manuscript-table-grid')).toBeVisible();
+    const cell = page.getByTestId('stitch-manuscript-table-grid-2-2');
+    // Two clicks as fast as the harness can deliver them, at the same point: the
+    // picker closes on the first, so the second must find nothing to insert into.
+    await cell.dblclick({ delay: 0 });
+
+    await expect(captions(page)).toHaveCount(1);
+    await expect(tables(page)).toHaveCount(1);
+    await expect(nestedTables(page)).toHaveCount(0);
+
+    /* A SECOND rapid gesture — with the caret now parked inside the first table's
+       caption title, which is the geometry §2(b) is about. One more table, not two,
+       and nothing spliced into the caption. */
+    await page.getByTestId('stitch-manuscript-tb-table').click();
+    await expect(page.getByTestId('stitch-manuscript-table-grid')).toBeVisible();
+    await page.getByTestId('stitch-manuscript-table-grid-2-2').dblclick({ delay: 0 });
+    await expect(tables(page)).toHaveCount(2);
+    await expect(captions(page)).toHaveCount(2);
+    await expect(nestedTables(page)).toHaveCount(0);
+
+    // The silent half again: nothing nested means the markdown round trip keeps both.
+    await saved(page);
+    await page.reload();
+    await expect(page.getByTestId('stitch-manuscript-workspace')).toBeVisible({ timeout: 20_000 });
+    await page.getByTestId('stitch-manuscript-section-methods').click();
+    await expect(tables(page)).toHaveCount(2, { timeout: 15_000 });
+  });
+
+  /* §10 scenario 4 — "retrying the insertion request" — is NOT APPLICABLE here, and
+     that disposition is recorded rather than left as a silent gap. Table insertion is
+     entirely client-side: the grid picker calls the editor API, which mutates the
+     contenteditable DOM and emits markdown into the SAME debounced draft queue as
+     typing. There is no per-insert network call to retry, and therefore no
+     duplicate-on-retry to guard against; the only network write is the project
+     autosave, whose idempotency is the blob compare-and-set covered elsewhere. The
+     equivalent risk for tables is the double-GESTURE, which is scenario 3 above.
+     (Uploaded FIGURES do have a per-insert request — see manuscript-figures-119.) */
 
   test('§2(c): a selection INSIDE one cell still deletes only that text', async ({ page, tmpProject }) => {
     const editor = await openEditorSection(page, tmpProject.id, 'methods');

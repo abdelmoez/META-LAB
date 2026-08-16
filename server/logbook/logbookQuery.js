@@ -38,6 +38,14 @@
  * response says so: hasMore stays true, nextCursor points at the scan frontier and
  * `scanIncomplete` tells the interface to offer "keep looking" instead of implying
  * a completeness nobody verified.
+ *
+ * CURSORS ARE EXACT, AND ONLY EVER MOVE FORWARD (r2 fix): each source resumes from
+ * a keyset predicate written in its OWN columns (cursorWhere), not from an inclusive
+ * date window — otherwise a same-millisecond batch bigger than the scan budget makes
+ * every request re-read the batch from its top, and the answer's nextCursor lands
+ * at-or-BEFORE the request cursor, walking the pager backwards over rows it has
+ * already emitted. listLogbook additionally refuses any nextCursor that does not
+ * sort strictly after the request cursor.
  */
 import { prisma } from '../db/client.js';
 import {
@@ -66,6 +74,15 @@ export const EXPORT_SCAN_CHUNKS = 2_000;
 
 /** Merge rank — fixes the tiebreak between sources at identical timestamps. */
 const SOURCE_RANK = { logbook: 0, screen_audit: 1, project_event: 2, extraction_audit: 3, rob_audit: 4 };
+/**
+ * How each source's PRIMARY KEY compares, so the cursor's row id can be pushed back
+ * into that source's SQL as an exact keyset predicate (see cursorWhere). Int keys
+ * are padded in `rawId` for the string comparator and un-padded on the way back.
+ */
+const SOURCE_ID_KIND = {
+  logbook: 'int', screen_audit: 'string', project_event: 'int',
+  extraction_audit: 'string', rob_audit: 'string',
+};
 
 const parseJson = (s, fallback) => {
   try { const v = JSON.parse(s == null ? 'null' : s); return v === null || v === undefined ? fallback : v; }
@@ -312,16 +329,57 @@ function simpleAuditRow(source, classify) {
 
 /* ═══════════════════════════ per-source reads ════════════════════════════ */
 
-function dateWindow(f, cursor, desc) {
+function dateWindow(f) {
   const cond = {};
   if (f.from) cond.gte = f.from;
   if (f.to) cond.lte = f.to;
-  if (cursor) {
-    const at = new Date(cursor.t);
-    if (desc) cond.lte = cond.lte && cond.lte < at ? cond.lte : at;
-    else cond.gte = cond.gte && cond.gte > at ? cond.gte : at;
-  }
   return Object.keys(cond).length ? cond : null;
+}
+
+/**
+ * cursorWhere(field, cursor, desc, source) — resume ONE source STRICTLY past the
+ * merge cursor, expressed in that source's own columns (119.md §8, r2 fix).
+ *
+ * WHY THIS AND NOT A DATE WINDOW. The cursor names a position in the TOTAL merge
+ * order (timestamp, sourceRank, rowId). An inclusive `createdAt <= cursor.t` window
+ * re-reads every row that shares the cursor's millisecond, and `afterCursor` then
+ * throws the already-emitted ones away — which is correct but not FREE: they still
+ * consume the per-request scan budget. A bulk `createMany` stamps one identical
+ * `now()` on a whole batch, so a same-millisecond tie group can be larger than the
+ * budget (take × maxChunks). Once the cursor sat deeper inside such a group than the
+ * budget reached, every request re-read the group from its top, emitted nothing, and
+ * set nextCursor to a frontier sorting BEFORE the request cursor — the pager then
+ * walked BACKWARDS and re-emitted rows earlier pages had already shown.
+ *
+ * Encoding the cursor exactly removes the re-read: the merge order says a row at the
+ * cursor's instant belongs to the next page iff its source rank is greater, or the
+ * rank is equal and its id sorts after. So each source starts where it truly left
+ * off and every request makes real forward progress.
+ */
+function cursorWhere(field, cursor, desc, source) {
+  if (!cursor) return null;
+  const at = new Date(cursor.t);
+  const tsAfter = desc ? 'lt' : 'gt';           // strictly past the cursor instant
+  const tsAtOrAfter = desc ? 'lte' : 'gte';     // the instant itself is still ahead
+  const rank = SOURCE_RANK[source] ?? 9;
+  // Equal timestamps break on rank in the SAME direction for asc and desc (see
+  // comparator), so this branch is direction-independent.
+  if (rank < cursor.r) return { [field]: { [tsAfter]: at } };
+  if (rank > cursor.r) return { [field]: { [tsAtOrAfter]: at } };
+  const kind = SOURCE_ID_KIND[source] || 'string';
+  const id = kind === 'int' ? Number.parseInt(cursor.i, 10) : String(cursor.i || '');
+  if (kind === 'int' ? !Number.isFinite(id) : !id) {
+    // A cursor without a usable row id (only reachable from a hand-made one): fall
+    // back to the inclusive window. `afterCursor` still drops the already-emitted
+    // ties, so this can cost work — never rows.
+    return { [field]: { [tsAtOrAfter]: at } };
+  }
+  return {
+    OR: [
+      { [field]: { [tsAfter]: at } },
+      { AND: [{ [field]: { equals: at } }, { id: { [desc ? 'lt' : 'gt']: id } }] },
+    ],
+  };
 }
 
 /**
@@ -383,8 +441,10 @@ async function readNative(scope, f, cursor, take, seek) {
   if (scope.metaLabProjectId) or.push({ metaLabProjectId: scope.metaLabProjectId });
   if (!or.length) return NOTHING;
   and.push({ OR: or });
-  const win = dateWindow(f, cursor, f.sort === 'desc');
+  const win = dateWindow(f);
   if (win) and.push({ createdAt: win });
+  const cw = cursorWhere('createdAt', cursor, f.sort === 'desc', 'logbook');
+  if (cw) and.push(cw);
   const sk = seekWhere('createdAt', seek, f.sort === 'desc');
   if (sk) and.push(sk);
   if (f.engines.length) and.push({ engine: { in: f.engines } });
@@ -426,8 +486,10 @@ export async function cutoverAt(scope) {
 async function readScreenAudit(scope, f, cursor, take, cutover, seek) {
   if (!scope.projectId || !prisma.screenAuditLog) return NOTHING;
   const and = [];
-  const win = dateWindow(f, cursor, f.sort === 'desc');
+  const win = dateWindow(f);
   if (win) and.push({ createdAt: win });
+  const cw = cursorWhere('createdAt', cursor, f.sort === 'desc', 'screen_audit');
+  if (cw) and.push(cw);
   const sk = seekWhere('createdAt', seek, f.sort === 'desc');
   if (sk) and.push(sk);
   if (f.actions.length) and.push({ action: { in: f.actions } });
@@ -474,8 +536,10 @@ async function readScreenAudit(scope, f, cursor, take, cutover, seek) {
 async function readProjectEvent(scope, f, cursor, take, seek) {
   if (!scope.metaLabProjectId || !prisma.projectEvent) return NOTHING;
   const and = [{ projectId: scope.metaLabProjectId }];
-  const win = dateWindow(f, cursor, f.sort === 'desc');
+  const win = dateWindow(f);
   if (win) and.push({ serverTs: win });
+  const cw = cursorWhere('serverTs', cursor, f.sort === 'desc', 'project_event');
+  if (cw) and.push(cw);
   const sk = seekWhere('serverTs', seek, f.sort === 'desc');
   if (sk) and.push(sk);
   if (f.actions.length) and.push({ eventType: { in: f.actions } });
@@ -523,8 +587,10 @@ async function readSimpleAudit(model, source, classify, scope, f, cursor, take, 
   // and one that includes them needs no predicate at all.
   if (f.engines.length && !f.engines.includes(classify('').engine)) return NOTHING;
   const and = [];
-  const win = dateWindow(f, cursor, f.sort === 'desc');
+  const win = dateWindow(f);
   if (win) and.push({ createdAt: win });
+  const cw = cursorWhere('createdAt', cursor, f.sort === 'desc', source);
+  if (cw) and.push(cw);
   const sk = seekWhere('createdAt', seek, f.sort === 'desc');
   if (sk) and.push(sk);
   if (f.actions.length) and.push({ action: { in: f.actions } });
@@ -636,7 +702,15 @@ export async function listLogbook(scope, filters, opts = {}) {
   // the cursor then resumes at the scan frontier so the next page makes real
   // progress instead of re-reading the same rows.
   const hasMore = overflow || !!boundary;
-  const nextCursor = hasMore ? encodeCursor(overflow && last ? last : boundary) : null;
+  // MONOTONICITY GUARD (r2). Every source now resumes STRICTLY past the cursor
+  // (cursorWhere), so both candidates below are strictly ahead of it by construction.
+  // This keeps that an enforced invariant rather than a reasoned-about one: a cursor
+  // that sorted at-or-before the request cursor would walk the pager BACKWARDS and
+  // re-emit rows the caller has already seen. Standing still is bad; going backwards
+  // and duplicating rows is worse, so a non-advancing candidate is refused.
+  const candidate = overflow && last ? last : boundary;
+  const advances = candidate && afterCursor(candidate, cursor, desc);
+  const nextCursor = hasMore ? (advances ? encodeCursor(candidate) : f.cursor || null) : null;
 
   return {
     available,

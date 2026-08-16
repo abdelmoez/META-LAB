@@ -28,6 +28,26 @@
  * a marker pointing at a purged file. DELETE therefore REFUSES while any draft
  * still places or references the figKey, and only then removes row + file
  * (delete-only-when-unreferenced — the studyDoc doctrine).
+ *
+ * …AND WHY THAT CHECK ALONE IS NOT ENOUGH (r2). The usage check reads the LAST
+ * PERSISTED Project.data blob, but a figure just placed in the prose lives only in
+ * the client draft until the 600 ms field debounce and the shell's own autosave
+ * debounce have both fired. A DELETE issued inside that window — by the author, or
+ * by a collaborator who cannot see the unsent draft at all — used to read a stale
+ * blob, find zero uses, and purge the bytes; the autosave then landed a marker
+ * pointing at nothing, and Ctrl+Z restored a broken picture. That is precisely the
+ * failure the doctrine above promises cannot happen, so DELETE IS A SOFT DELETE:
+ *   · the row is stamped `deletedAt` and vanishes from the listing/registry
+ *     immediately (the researcher's action takes effect at once);
+ *   · the bytes stay for FIGURE_PURGE_GRACE_MS, so an undo — or an autosave that
+ *     was already in flight — still has a real file behind the marker;
+ *   · a sweep (run opportunistically on list/delete) RESTORES any soft-deleted
+ *     figure the prose turns out to still reference — the manuscript is the
+ *     authority on what is placed, not a race — and hard-deletes row + bytes only
+ *     once the grace has expired with nothing pointing at it.
+ * The CLIENT closes its own half of the race by flushing pending edits and
+ * checking the live draft before it even asks (useManuscript.deleteFigure), using
+ * the SAME shared counter (refTokens.figureUsageAcrossDrafts).
  */
 import multer from 'multer';
 import fs from 'fs';
@@ -39,9 +59,19 @@ import {
   deleteFigureFile, mintFigureKey, isValidFigureKey,
 } from '../manuscript/figureStorage.js';
 import { recordLogEvent, logbookActor } from '../logbook/logbookService.js';
-import {
-  FIGURE_CAPTION_TOKEN_RE, ASSET_TOKEN_RE,
-} from '../../src/research-engine/manuscript/refTokens.js';
+import { figureUsageAcrossDrafts } from '../../src/research-engine/manuscript/refTokens.js';
+
+/**
+ * 119.md §5 (r2) — how long a soft-deleted figure's bytes are kept before the
+ * sweep purges them. It has to outlast every way a marker can still arrive after
+ * the delete: the editor's 600 ms field debounce, the shell's autosave debounce, a
+ * collaborator's unsent draft, a browser tab that comes back from sleep, and the
+ * researcher noticing the mistake and pressing Ctrl+Z. A day is generous enough to
+ * cover all of them and short enough that a deleted picture is genuinely gone the
+ * next working day. Purging is idempotent, so the exact value is a policy, not a
+ * correctness constant.
+ */
+export const FIGURE_PURGE_GRACE_MS = 24 * 60 * 60 * 1000;
 
 /* ─────────────────────────── upload middleware ─────────────────────────── */
 
@@ -57,7 +87,17 @@ const upload = multer({
   },
 });
 
-/** Express middleware: enforce the admin toggle + per-file cap, then run multer. */
+/**
+ * Express middleware: enforce the admin toggle + per-file cap, then run multer.
+ *
+ * r2 — a FAILED settings read is a 503, never a fall-through. Calling next() here
+ * skipped multer entirely, so a perfectly-formed multipart request reached the
+ * handler with no `req.file` and was answered `No file uploaded (field name must be
+ * "file")` — a misleading diagnostic for a server-side outage. It also meant the
+ * `allowImageUpload` kill-switch was not evaluated at all on that path: no bytes
+ * landed only because nothing had parsed them, which is the gate holding by accident
+ * rather than by design. Refusing loudly is both honest and fail-closed.
+ */
 export function figureUploadMiddleware(req, res, next) {
   getMetaSiftSettings().then((settings) => {
     if (settings.allowImageUpload === false) {
@@ -74,7 +114,12 @@ export function figureUploadMiddleware(req, res, next) {
       }
       return next();
     });
-  }).catch(() => next());
+  }).catch((err) => {
+    console.error('[ms-figure] upload settings read failed:', err && err.message);
+    return res.status(503).json({
+      error: 'Image upload is temporarily unavailable — the server could not read its upload settings. Try again shortly.',
+    });
+  });
 }
 
 /* ───────────────────────────── helpers ─────────────────────────────────── */
@@ -84,44 +129,18 @@ function parseData(project) {
   catch { return {}; }
 }
 
-/** Every markdown string a manuscript draft carries (sections + statements). */
-function draftTexts(data) {
-  const out = [];
-  const drafts = Array.isArray(data && data.manuscripts) ? data.manuscripts : [];
-  for (const d of drafts) {
-    if (!d || typeof d !== 'object') continue;
-    const secs = (d.sections && typeof d.sections === 'object') ? d.sections : {};
-    for (const k of Object.keys(secs)) {
-      const c = secs[k] && secs[k].content;
-      if (typeof c === 'string' && c) out.push(c);
-    }
-    const st = (d.statements && typeof d.statements === 'object') ? d.statements : {};
-    for (const k of Object.keys(st)) if (typeof st[k] === 'string' && st[k]) out.push(st[k]);
-  }
-  return out;
-}
-
 /**
  * 119.md §5 — is this figure still used ANYWHERE in the project's manuscripts?
  * Counts both kinds of use, because they are different facts: a `[[figcap:…]]`
  * marker is the picture itself, a `[[figure:…]]` token is a sentence pointing at
  * it. The delete route refuses on either, and reports both so the client can warn
  * with real numbers rather than a vague "it is in use".
+ *
+ * The counting itself lives in refTokens (figureUsageAcrossDrafts) so the client's
+ * pre-flight check and this gate can never drift apart — see the file header.
  */
 export function figureUsageInBlob(data, figKey) {
-  const key = String(figKey || '');
-  const assetId = `figure:${key}`;
-  let placements = 0;
-  let references = 0;
-  if (!key) return { placements, references, total: 0 };
-  for (const text of draftTexts(data)) {
-    const capRe = new RegExp(FIGURE_CAPTION_TOKEN_RE.source, 'g');
-    let m;
-    while ((m = capRe.exec(text)) !== null) if (m[1] === key) placements += 1;
-    const tokRe = new RegExp(ASSET_TOKEN_RE.source, 'g');
-    while ((m = tokRe.exec(text)) !== null) if (`${m[1]}:${m[2]}` === assetId) references += 1;
-  }
-  return { placements, references, total: placements + references };
+  return figureUsageAcrossDrafts((data && data.manuscripts) || [], figKey);
 }
 
 /** The API shape of a figure row. Never leaks storedName (a filesystem detail). */
@@ -178,6 +197,51 @@ function logCtx(req, access) {
   return logbookActor(req, access, { metaLabProjectId: access.project.id });
 }
 
+/** The META·LAB project row whose blob holds the manuscripts, or null. */
+async function loadProjectBlob(projectId) {
+  return prisma.project.findFirst({ where: { id: projectId, deletedAt: null } });
+}
+
+/**
+ * 119.md §5 (r2) — the graveyard sweep. Given the SOFT-DELETED rows of one project
+ * and the freshest blob, it does the two things the grace window exists for:
+ *   RESTORE   a figure the prose turns out to still reference (an autosave that was
+ *             in flight when the delete landed, or a Ctrl+Z) — the manuscript is the
+ *             authority on what is placed, so the row comes back rather than the
+ *             marker going dangling;
+ *   PURGE     row + bytes once the grace has expired with nothing pointing at it —
+ *             reference-counted, so a file another row (or another row's superseded
+ *             version) still uses is never unlinked.
+ * Callers pass the rows they already read: this must never turn a cheap listing
+ * into an extra query when the graveyard is empty, which it almost always is.
+ * @returns {{ restored: object[], purged: object[] }}
+ */
+export async function sweepDeletedFigures(projectId, graveyard, data, now = Date.now()) {
+  const restored = [];
+  const purged = [];
+  for (const row of graveyard || []) {
+    if (!row || !row.deletedAt) continue;
+    if (figureUsageInBlob(data, row.figKey).total > 0) {
+      try {
+        restored.push(await prisma.manuscriptFigure.update({ where: { id: row.id }, data: { deletedAt: null } }));
+      } catch { /* a lost restore is retried by the next sweep — never fatal to a read */ }
+      continue;
+    }
+    if (now - new Date(row.deletedAt).getTime() < FIGURE_PURGE_GRACE_MS) continue;
+    try {
+      await prisma.manuscriptFigure.delete({ where: { id: row.id } });
+      if (!(await storedNameReferenced(projectId, row.storedName, row.id))) {
+        deleteFigureFile(projectId, row.storedName);
+      }
+      if (row.prevStoredName && !(await storedNameReferenced(projectId, row.prevStoredName, row.id))) {
+        deleteFigureFile(projectId, row.prevStoredName);
+      }
+      purged.push(row);
+    } catch { /* likewise: the next sweep retries */ }
+  }
+  return { restored, purged };
+}
+
 /* ───────────────────────────── handlers ────────────────────────────────── */
 
 /** GET /api/projects/:id/manuscript-figures → { figures } */
@@ -186,10 +250,27 @@ export async function listFigures(req, res) {
     const access = await resolveExtractionAccess(req.params.id, req.user);
     if (!access || !access.canView) return res.status(404).json({ error: 'Project not found' });
     if (!figuresAvailable()) return res.json({ figures: [], available: false });
+    const projectId = access.project.id;
     const rows = await prisma.manuscriptFigure.findMany({
-      where: { projectId: access.project.id }, orderBy: { createdAt: 'asc' },
+      where: { projectId }, orderBy: { createdAt: 'asc' },
     });
-    res.json({ figures: rows.map(shapeFigure), available: true });
+    const graveyard = rows.filter((r) => r && r.deletedAt);
+    let live = rows.filter((r) => r && !r.deletedAt);
+    // The blob is only read when there IS something to sweep — the common case
+    // (nothing soft-deleted) costs exactly the one query it always did.
+    if (graveyard.length) {
+      const ml = await loadProjectBlob(projectId);
+      // No readable project ⇒ nothing can be PROVEN unreferenced, so nothing is
+      // purged. A sweep that cannot see the prose must not act on it.
+      if (ml) {
+        const { restored } = await sweepDeletedFigures(projectId, graveyard, parseData(ml));
+        if (restored.length) {
+          live = live.concat(restored)
+            .sort((a, b) => new Date(a.createdAt || 0) - new Date(b.createdAt || 0));
+        }
+      }
+    }
+    res.json({ figures: live.map(shapeFigure), available: true });
   } catch (err) {
     console.error('[ms-figure] listFigures:', err.message);
     res.status(500).json({ error: 'Internal server error' });
@@ -263,6 +344,16 @@ export async function uploadFigure(req, res) {
  * only the bytes change. The superseded file is KEPT (and stamped on the row) —
  * a replacement that silently destroys the previous version is not a version
  * history.
+ *
+ * DEPTH ONE, AND SAID SO (r2). The row holds ONE previous version (prevStoredName /
+ * prevFileName / prevFileHash), so a second replace necessarily supersedes the
+ * first. Before this fix that older file simply stayed on disk with no row pointing
+ * at it: unrecoverable (nothing could name it) AND unreclaimable (deleteFigure only
+ * looks at the columns), so every repeated replace leaked its bytes forever. The
+ * about-to-be-orphaned file is therefore removed HERE, once the update has landed
+ * and the reference count can be read from the real post-update state. A deeper
+ * history would need a real version table; claiming one we do not have would be
+ * worse than being explicit that the depth is one.
  */
 export async function replaceFigure(req, res) {
   try {
@@ -298,22 +389,39 @@ export async function replaceFigure(req, res) {
     if (twin) { storedName = twin.storedName; fileSize = twin.fileSize || buf.length; }
     else { const saved = saveFigure(projectId, buf, meta.ext); storedName = saved.storedName; fileSize = saved.fileSize; }
 
+    // Read BEFORE the write: this is the file the update is about to make
+    // unreachable, and `row` must not be trusted to still hold it afterwards.
+    const orphan = row.prevStoredName;
+    const keptName = row.storedName;
+    const prevFileName = row.fileName;
+    const prevSize = row.fileSize;
+    const prevW = row.width;
+    const prevH = row.height;
+
     const updated = await prisma.manuscriptFigure.update({
       where: { id: row.id },
       data: {
-        fileName: String(req.file.originalname || row.fileName).slice(0, 255),
+        fileName: String(req.file.originalname || prevFileName).slice(0, 255),
         storedName, fileSize, mimeType: meta.mime, fileHash: hash,
         width: meta.width, height: meta.height,
         replacedCount: (row.replacedCount || 0) + 1,
-        prevStoredName: row.storedName, prevFileName: row.fileName, prevFileHash: row.fileHash,
+        prevStoredName: keptName, prevFileName, prevFileHash: row.fileHash,
         replacedAt: new Date(),
       },
     });
+    // The version TWO back is now unreachable — no column names it any more. The
+    // reference count is read AFTER the update so it sees the row as it now is (its
+    // prevStoredName has just become the file we are keeping), and never unlinks a
+    // file some other figure, or this figure's kept version, still points at.
+    if (orphan && orphan !== keptName && orphan !== storedName
+      && !(await storedNameReferenced(projectId, orphan, null))) {
+      deleteFigureFile(projectId, orphan);
+    }
     void recordLogEvent({
       action: 'FIGURE_REPLACED',
       summary: `Replaced the image behind figure "${updated.fileName}"`,
       resourceType: 'manuscriptFigure', resourceId: row.id, resourceLabel: updated.fileName,
-      before: { fileName: row.fileName, bytes: row.fileSize, width: row.width, height: row.height },
+      before: { fileName: prevFileName, bytes: prevSize, width: prevW, height: prevH },
       after: { fileName: updated.fileName, bytes: fileSize, width: meta.width, height: meta.height },
       metadata: { figKey: row.figKey, version: updated.replacedCount + 1 },
     }, logCtx(req, access));
@@ -448,8 +556,13 @@ export async function downloadFigure(req, res) {
  * referenced from) a manuscript answers 409 with the real counts, so the client
  * can warn honestly and the researcher removes it from the document first —
  * which is a prose edit one Ctrl+Z restores, with a live file still behind it.
- * Once nothing points at it, the row and (if no other row shares them) its bytes
- * and its superseded version go.
+ *
+ * Once nothing points at it the figure LEAVES the manuscript immediately (the row
+ * is stamped `deletedAt`, so the listing and the asset registry stop seeing it),
+ * but its bytes are kept for FIGURE_PURGE_GRACE_MS — see the file header for why a
+ * single stale-blob read is not a safe basis for destroying a file. The sweep
+ * restores it if the prose turns out to still reference it, and hard-deletes row +
+ * (unshared) bytes + superseded version once the grace has passed.
  */
 export async function deleteFigure(req, res) {
   try {
@@ -461,9 +574,10 @@ export async function deleteFigure(req, res) {
     const row = await prisma.manuscriptFigure.findFirst({ where: { id: req.params.figureId, projectId } });
     if (!row) return res.status(404).json({ error: 'Figure not found' });
 
-    const ml = await prisma.project.findFirst({ where: { id: projectId, deletedAt: null } });
+    const ml = await loadProjectBlob(projectId);
     if (!ml) return res.status(404).json({ error: 'Project not found' });
-    const usage = figureUsageInBlob(parseData(ml), row.figKey);
+    const data = parseData(ml);
+    const usage = figureUsageInBlob(data, row.figKey);
     if (usage.total > 0) {
       return res.status(409).json({
         error: 'This figure is still used in the manuscript — remove it from the document first.',
@@ -471,21 +585,25 @@ export async function deleteFigure(req, res) {
       });
     }
 
-    await prisma.manuscriptFigure.delete({ where: { id: row.id } });
-    if (!(await storedNameReferenced(projectId, row.storedName, row.id))) {
-      deleteFigureFile(projectId, row.storedName);
+    const retainedUntil = new Date(Date.now() + FIGURE_PURGE_GRACE_MS);
+    // Already soft-deleted ⇒ idempotent success (a retried request must not look
+    // like a second deletion in the Logbook).
+    if (!row.deletedAt) {
+      await prisma.manuscriptFigure.update({ where: { id: row.id }, data: { deletedAt: new Date() } });
+      void recordLogEvent({
+        action: 'FIGURE_DELETED',
+        summary: `Deleted the figure "${row.fileName}"`,
+        resourceType: 'manuscriptFigure', resourceId: row.id, resourceLabel: row.fileName,
+        before: { figKey: row.figKey, fileName: row.fileName, bytes: row.fileSize },
+        metadata: { figKey: row.figKey, retainedUntil: retainedUntil.toISOString() },
+      }, logCtx(req, access));
     }
-    if (row.prevStoredName && !(await storedNameReferenced(projectId, row.prevStoredName, row.id))) {
-      deleteFigureFile(projectId, row.prevStoredName);
-    }
-    void recordLogEvent({
-      action: 'FIGURE_DELETED',
-      summary: `Deleted the figure "${row.fileName}"`,
-      resourceType: 'manuscriptFigure', resourceId: row.id, resourceLabel: row.fileName,
-      before: { figKey: row.figKey, fileName: row.fileName, bytes: row.fileSize },
-      metadata: { figKey: row.figKey },
-    }, logCtx(req, access));
-    return res.status(200).json({ deleted: true });
+
+    // Take the chance to clear anything whose grace has already expired (and to
+    // bring back anything the prose reclaimed) — no cron, no unbounded growth.
+    const all = await prisma.manuscriptFigure.findMany({ where: { projectId } });
+    await sweepDeletedFigures(projectId, all.filter((r) => r && r.deletedAt), data);
+    return res.status(200).json({ deleted: true, retainedUntil: retainedUntil.toISOString() });
   } catch (err) {
     console.error('[ms-figure] deleteFigure:', err.message);
     return res.status(500).json({ error: 'Internal server error' });
@@ -502,8 +620,16 @@ export async function figureUsageRoute(req, res) {
       where: { id: req.params.figureId, projectId: access.project.id },
     });
     if (!row) return res.status(404).json({ error: 'Figure not found' });
-    const ml = await prisma.project.findFirst({ where: { id: access.project.id, deletedAt: null } });
-    res.json({ usage: figureUsageInBlob(ml ? parseData(ml) : {}, row.figKey) });
+    const ml = await loadProjectBlob(access.project.id);
+    const data = ml ? parseData(ml) : {};
+    const usage = figureUsageInBlob(data, row.figKey);
+    // r2 — this route already holds the freshest blob, so it is the cheapest place to
+    // notice that a soft-deleted figure has been reclaimed by the prose and bring it
+    // back (see the file header's grace-window note). Never blocks the answer.
+    if (ml && row.deletedAt && usage.total > 0) {
+      await sweepDeletedFigures(access.project.id, [row], data).catch(() => {});
+    }
+    res.json({ usage });
   } catch (err) {
     console.error('[ms-figure] figureUsage:', err.message);
     res.status(500).json({ error: 'Internal server error' });

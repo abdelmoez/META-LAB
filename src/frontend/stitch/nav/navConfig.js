@@ -228,8 +228,25 @@ export function manuscriptSubHref(subtabId, ctx = {}) {
      for the default one. The omission is not cosmetic — the workspace's reconcile
      effect reads an absent `?msv=` as "the default", so if this builder and
      DEFAULT_MANUSCRIPT_VIEW ever disagreed, browser Back/Forward would resolve a
-     researcher's history entries to the wrong view. They flip together, here. */
-  const view = ctx.view === 'sections' ? '&msv=sections' : '';
+     researcher's history entries to the wrong view. They flip together, here.
+
+     r2 — `ctx.explicitView` names the ONE case where the short form is wrong: once
+     the researcher has TOGGLED the view in this session, the pushed entry must state
+     which view it is, both values included. Two things broke without it, and both
+     only for a researcher whose stored preference is not the default:
+       · toggling to the default produced a href IDENTICAL to the bare URL already
+         shown, so the push was a duplicate history entry and Back appeared dead;
+       · a bare entry created BEFORE the first toggle was displaying the STORED
+         preference, not the default, so resolving it later to the default showed
+         the wrong view when they navigated back to it.
+     An explicit param removes the ambiguity for every entry this session creates;
+     entries it did not create keep the pre-existing meaning (see the workspace's
+     reconcile effect, which resolves an absent param to the view that entry was
+     actually displaying). Links built elsewhere are unaffected. */
+  const explicit = ctx.explicitView && (ctx.view === 'sections' || ctx.view === 'continuous');
+  const view = explicit
+    ? `&msv=${ctx.view}`
+    : (ctx.view === 'sections' ? '&msv=sections' : '');
   return `/app/project/${pid}?tab=manuscript&ms=${id}${view}`;
 }
 

@@ -117,6 +117,14 @@ export function ManuscriptWorkspace({ project, upd, initialSubtab, onSubtabChang
     : (readStoredView(viewPrefKey(userId)) || DEFAULT_MANUSCRIPT_VIEW)));
   const viewRef = useRef(view);
   viewRef.current = view;
+  /* r2 — WHAT AN ABSENT `?msv=` MEANS FOR THIS SESSION. Not "the default": the view
+     the workspace was actually SHOWING before the first toggle, i.e. URL → stored
+     preference → default, resolved once. A researcher whose saved preference is
+     Sections opens a bare link and sees Sections; the history entry for that bare
+     URL therefore means Sections, and resolving it to Continuous when they navigate
+     back to it would show them a view that entry never displayed. Frozen at the
+     first toggle by construction: nothing below writes it once `viewTouched`. */
+  const baselineView = useRef(view);
 
   /* The signed-in user arrives ASYNCHRONOUSLY, so the first render can have no
      storage key and the initializer above then reads nothing. Hydrate once the key
@@ -129,7 +137,7 @@ export function ManuscriptWorkspace({ project, upd, initialSubtab, onSubtabChang
     hydratedKey.current = prefKey;
     if (initialView) return;
     const stored = readStoredView(prefKey);
-    if (stored) setViewState(stored);
+    if (stored) { setViewState(stored); baselineView.current = stored; }
   }, [prefKey, initialView]);
 
   /* ── 118.md §46-§48 — ONE navigation seam ────────────────────────────────────
@@ -166,7 +174,7 @@ export function ManuscriptWorkspace({ project, upd, initialSubtab, onSubtabChang
     setTabState(id);
     // 84.md — the Updates destination owns a heavy plan that is computed on entry only.
     if (id === 'updates' && refreshPlanRef.current) refreshPlanRef.current();
-    if (typeof hostNavRef.current === 'function') hostNavRef.current(id, viewRef.current);
+    if (typeof hostNavRef.current === 'function') hostNavRef.current(id, viewRef.current, viewTouched.current);
   }, []);
 
   /* 118.md §45 — EVERY view toggle FLUSHES first. The two debounces (600 ms field
@@ -183,22 +191,32 @@ export function ManuscriptWorkspace({ project, upd, initialSubtab, onSubtabChang
     writeStoredView(viewPrefKey(userId), id);
     // The same ONE seam as a destination change, so the pushed href always carries
     // both engine sub-params instead of dropping whichever one it did not know.
-    if (typeof hostNavRef.current === 'function') hostNavRef.current(tabRef.current, id);
+    // r2 — and, from the first toggle on, an EXPLICIT `?msv=` for BOTH values: a
+    // href identical to the bare URL already displayed would push a duplicate
+    // history entry (Back looks dead), and it would also be ambiguous with the
+    // pre-toggle entries that meant the stored preference. See manuscriptSubHref.
+    if (typeof hostNavRef.current === 'function') hostNavRef.current(tabRef.current, id, true);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [m, userId]);
 
   /* §47/§48 — once this session has PUT the view in the URL, the URL is
      authoritative in both directions, so Back/Forward walks view changes exactly.
-     119.md §3 — an absent `?msv=` then means DEFAULT_MANUSCRIPT_VIEW, because that is
-     precisely the value manuscriptSubHref omits; the two rules are symmetric and flip
-     together, which is why this reads the constant rather than naming a view.
      Before the first toggle an absent param means "the URL does not express a view"
      and the stored preference above stands — otherwise every fresh load would
-     silently overwrite the researcher's saved workflow with the default. */
+     silently overwrite the researcher's saved workflow with the default.
+
+     119.md §3 / r2 — AFTER the first toggle, every entry this session pushes names
+     its view explicitly (manuscriptSubHref's `explicitView`), so an absent param can
+     only belong to an entry that existed BEFORE the toggle — and what that entry was
+     displaying is `baselineView`, the session's URL → stored-preference → default
+     resolution. Reading the CONSTANT default here was wrong for exactly the
+     researchers §3 promised not to disturb: someone whose saved preference is
+     Sections pressed Back onto their own bare-URL entry and stayed in Continuous,
+     so Back looked dead and needed a second press to leave the page. */
   useEffect(() => {
     if (typeof hostNavRef.current !== 'function') return;
     if (initialView == null && !viewTouched.current) return;
-    const id = normalizeManuscriptView(initialView || DEFAULT_MANUSCRIPT_VIEW);
+    const id = normalizeManuscriptView(initialView || baselineView.current || DEFAULT_MANUSCRIPT_VIEW);
     if (id === viewRef.current) return;
     /* r2 (118.md §45) — a view change that arrives through the URL (browser
        Back/Forward, a white side-menu href, a deep link) is the SAME view toggle as
