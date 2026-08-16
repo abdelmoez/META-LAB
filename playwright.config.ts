@@ -65,6 +65,13 @@ export default defineConfig({
     // manuscript spec carries that tag). Whole-table Delete and the caption/table
     // insertion geometry ride along for the same reason: they are selection and
     // execCommand behaviour, which is exactly where engines differ.
+    // 119.md §5 — the uploaded-FIGURE spec is deliberately NOT in this project yet.
+    // It was run under WebKit during development and found a genuine WebKit-only
+    // defect in figure REMOVAL (the replacement reaches past the range end and can
+    // take a cross-reference chip in the following paragraph with it; one Ctrl+Z
+    // restores both). Adding the file here before that is fixed would pin a red
+    // test as if it were a passing claim about Safari — see the KNOWN LIMITATION
+    // note on removeFigureBlock in RichSectionEditor.jsx.
     { name: 'webkit-manuscript', use: { ...devices['Desktop Safari'] }, testMatch: '**/manuscript/manuscript-table*.spec.ts' },
     // Responsive projects only run the responsive specs (which assert layout at size).
     { name: 'mobile-chrome', use: { ...devices['Pixel 5'] }, testMatch: '**/responsive/**/*.spec.ts' },
