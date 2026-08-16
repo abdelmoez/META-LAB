@@ -1,7 +1,9 @@
 # PecanRev — Playwright E2E Coverage Matrix
 
-Generated for the suite under `e2e/`. **505 tests (all projects) across 34 spec files** (chromium full
-coverage; `@smoke` also runs on firefox + webkit + mobile/tablet). Validated serially
+Generated for the suite under `e2e/`. **706 tests (all projects) across 53 spec files** (chromium full
+coverage; `@smoke` also runs on firefox + webkit + mobile/tablet; the manuscript table + figure files
+run in FULL under `webkit-manuscript`). Counted with `npx playwright test --list` at the 119.md r2 round.
+Validated serially
 (`--workers=1`): all green, with the documented `test.skip`s below for preconditions not
 reachable via the current fixtures. How to run: see `e2e/README.md`.
 
@@ -51,6 +53,48 @@ Legend: ✅ covered · ⏭️ documented skip (TODO) · 🔒 permission boundary
 | branding | login PecanRev wordmark | `fixme` — login still shows legacy META·LAB wordmark (intentional per rebrand notes). |
 | seo | the "crawler-visible head" + "server crawler semantics" groups | Self-skip when `:3001` does not answer a built `/robots.txt`. Those behaviours (prerendered head, real 404s, slash/case 301s, `X-Robots-Tag`, sitemap/llms) belong to `server/middleware/publicPages.js` + `npm run build`; the Vite dev server mirrors only the `/privacy` 301. |
 | seo | runtime head for the 12 content pages | Not a skip but a scoped list: `RUNTIME_HEAD_PATHS` holds only the 4 routes that call `usePageHead`. `ArticlePage` → `PageShell` never calls it, so those 12 keep the shell head on the dev server and after client-side nav. App fix is one call in `PageShell`; then widen the list to all 16. |
+
+## Real-Safari manual QA — OUTSTANDING (119.md §10 scenario 1 / §11)
+
+119.md §10 is explicit: **"Do not treat Playwright WebKit as the only proof of real
+Safari compatibility."** This section records what the automation does and does not
+prove, so the remaining gap is a named, actionable item rather than a silence.
+
+**What IS proven automatically.** The `webkit-manuscript` Playwright project runs the
+manuscript TABLE and FIGURE specs in FULL under WebKit (not just `@smoke`):
+`e2e/manuscript/manuscript-tables-119.spec.ts` (empty-title caret: click → type,
+select, cut/paste, undo; click on the derived number; one-gesture-one-table including
+the rapid double click; whole-table Delete/Backspace with undo AND redo) and
+`e2e/manuscript/manuscript-figures-119.spec.ts` (insert → number → cross-reference →
+replace → delete → native undo; and the r2 regression that removing a figure leaves a
+cross-reference chip in the following paragraph alone). `webkit-search` and
+`webkit-pdf` do the same for their areas.
+
+**What is NOT proven by it.** Playwright's WebKit is a build of the WebKit engine, not
+Safari. It does not carry Safari's own text-caret heuristics, its page-zoom and
+text-size behaviour, its IME/dictation input path, VoiceOver, Safari extensions, or
+iOS/iPadOS soft-keyboard selection. The §2(a) defect lives in exactly that area —
+caret placement in an empty inline-block editing island — so a fix that is green here
+can still be wrong in the browser the defect was reported in.
+
+**Status:** NOT DONE in the 119 rounds. Reason, stated rather than papered over: the
+build and review environment is Windows-only, so no real Safari (or macOS/iOS) was
+available to any agent in this work. No one should read the green WebKit project as a
+Safari sign-off.
+
+**The checklist a Safari owner must run** (macOS Safari 17+, and once on iPadOS):
+1. Insert a table; click into the still-EMPTY title; type — every character must land.
+2. Click the derived "Table 1." NUMBER — the caret must go to the title, not nowhere.
+3. In the title: select-all, cut, paste, then Cmd+Z twice — text and selection behave.
+4. Insert a second table with the caret still parked in the first title — exactly one
+   new table, nothing nested, and both survive a reload.
+5. Drag-select a whole table, press Delete — table AND caption go; Cmd+Z restores both
+   with the title and number; Cmd+Shift+Z removes them again.
+6. Insert a picture, cross-reference it in the paragraph directly below, remove the
+   picture — the sentence and its chip must be untouched; Cmd+Z restores the picture.
+7. Repeat 1-2 at 150% page zoom and with a non-default text size.
+Record the result (version, OS, pass/fail per step) in the round's report before any
+claim of "Safari is fixed" is made in user-facing copy.
 
 These are the natural next coverage increments: add a study/result seeding helper (unlocks
 RoB deep flows + populated meta-analysis), a PDF-attachment helper (unlocks the loaded-PDF
