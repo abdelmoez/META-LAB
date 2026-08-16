@@ -432,9 +432,10 @@ function DeepToolPage({ stage }) {
     // (initial value read off the URL, changes pushed back through react-router), so
     // deep links, refresh and browser Back/Forward all resolve to the same
     // destination. The LEGACY shell passes neither prop and keeps component state.
-    // 118.md §12 — the Editor's view (`?msv=continuous`) rides the SAME sub-param
-    // contract; the workspace reports both values through one seam, so a pushed
-    // href can never carry a destination without its view (or the other way round).
+    // 118.md §12 — the Editor's view (`?msv=`) rides the SAME sub-param contract;
+    // the workspace reports both values through one seam, so a pushed href can never
+    // carry a destination without its view (or the other way round). 119.md §3 — the
+    // builder emits the param only for the NON-default view, which is now Sections.
     body = (<LazyManuscript project={project} upd={doc.upd}
       initialSubtab={readManuscriptSubParam(search)}
       initialView={readManuscriptViewParam(search)}
