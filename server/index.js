@@ -27,6 +27,8 @@ import authGoogleRouter  from './routes/authGoogle.js'; // 94.md — Google OAut
 import projectsRouter    from './routes/projects.js';
 import studiesRouter     from './routes/studies.js';
 import recordsRouter     from './routes/records.js';
+// 119.md §5 — manuscript figure binaries (uploaded pictures as scholarly figures).
+import manuscriptFiguresRouter from './routes/manuscriptFigures.js';
 import metaRouter        from './routes/meta.js';
 import nmaRouter         from './routes/nma.js';
 import gradeRouter       from './routes/grade.js';
@@ -569,6 +571,9 @@ app.use('/api/contact',              contactLimiter, contactRouter);
 app.use('/api/projects',             projectsRouter);
 app.use('/api/projects/:id/studies', studiesRouter);
 app.use('/api/projects/:id/records', recordsRouter);
+// 119.md §5 — figure bytes stream through this authenticated router; the storage
+// directory itself is never statically served.
+app.use('/api/projects/:id/manuscript-figures', manuscriptFiguresRouter);
 app.use('/api/meta',                 metaRouter);
 app.use('/api/nma',                  nmaRouter);
 // ── P12 GRADE certainty + Summary of Findings (grade.md). requireAuth at the mount;

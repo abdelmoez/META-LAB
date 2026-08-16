@@ -126,13 +126,17 @@ export function computePlacements({ sections, numbering, assets } = {}) {
   // Alias token ids place their CANONICAL asset (the docx emitter is keyed by
   // canonical ids only — an alias assetId would silently emit nothing).
   const aliasTo = new Map();
-  // 117.md §4 — MANUAL tables are ALREADY at their position: they are prose blocks
-  // the exporter walks through anyway. Placing them would emit the same table
-  // twice, so they are excluded from both `bySection` and `fallback`.
+  /* 117.md §4 — MANUAL tables are ALREADY at their position: they are prose blocks
+     the exporter walks through anyway. Placing them would emit the same table
+     twice, so they are excluded from both `bySection` and `fallback`.
+     119.md §5 — a PLACED uploaded figure is the same case (its marker is in the
+     prose). An uploaded figure that is NOT placed but IS referenced deliberately
+     stays eligible: it must still be emitted somewhere, next to its first mention,
+     or the reader meets a "Figure 2" the document never prints. */
   const manualIds = new Set();
   for (const a of (Array.isArray(assets) ? assets : [])) {
     for (const al of (a.aliasIds || [])) if (!aliasTo.has(al)) aliasTo.set(al, a.id);
-    if (a && a.origin === 'manual') manualIds.add(a.id);
+    if (a && (a.origin === 'manual' || (a.origin === 'upload' && a.placed))) manualIds.add(a.id);
   }
 
   const bySection = {};

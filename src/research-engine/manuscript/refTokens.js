@@ -113,6 +113,23 @@ export function countAssetMentions(draftOrSections, assetId) {
 
 /* ════════════ 117.md §4 — the manual-table caption grammar ════════════ */
 
+/**
+ * 119.md §5 — the ORIGINS that anchor at their own block instead of at their
+ * first mention.
+ *
+ * A manual table IS prose (its pipe rows are typed into the section) and an
+ * UPLOADED figure IS a block (its `[[figcap:…]]` marker is where the picture
+ * sits), so for both the document position of the marker is the ordinal.
+ * A generated table/figure has no body in the prose, so it anchors at the first
+ * sentence that cross-references it (the 85.md rule, unchanged).
+ */
+export const IN_PROSE_ORIGINS = Object.freeze(['manual', 'upload']);
+
+/** True when this asset's number comes from its own block, not from a mention. */
+export function anchorsInProse(asset) {
+  return !!asset && IN_PROSE_ORIGINS.includes(asset.origin);
+}
+
 /** Manual-table ids are `[a-z0-9-]` so `table:<id>` stays inside the token grammar. */
 export const MANUAL_TABLE_ID_RE = /^[a-z0-9-]+$/;
 
@@ -192,6 +209,150 @@ export function collectManualTables(draftOrSections) {
     }
   }
   return out;
+}
+
+/* ════════════ 119.md §5 — the UPLOADED-FIGURE anchor grammar ════════════
+ *
+ * `[[figcap:<figKey>]] Title` — the same block-marker shape as `[[tblcap:…]]`,
+ * for the same reason (117.md §4, quoted above): a picture placed in the
+ * manuscript is a BLOCK of the document, so its identity, its position and its
+ * title must live in the prose where one native Ctrl+Z restores all three
+ * together. That is what makes §5's "Undo must restore the figure and its
+ * references" true without a two-store reconciliation, and it is why the bytes
+ * are only ever deleted through an explicit, reference-checked route (the marker
+ * an undo brings back must still point at a live file).
+ *
+ * What is NOT in the prose: the binary, the uploader, the filename, the intrinsic
+ * dimensions and the replacement history — those live in the ManuscriptFigure row
+ * — and the display overrides (caption/legend/alt text/width/alignment), which
+ * ride the existing per-asset `draft.assets` channel like every other figure's.
+ *
+ * A figure key is the same `[a-z0-9-]` grammar as a manual-table id, so
+ * `figure:<figKey>` is a legal cross-reference token and `[[figcap:…]]` can never
+ * be read as one (the kind alternation is a closed set that does not contain
+ * `figcap`).
+ */
+
+/** A figure MARKER anywhere in a line (used for positions; see the LINE form). */
+export const FIGURE_CAPTION_TOKEN_RE = /\[\[figcap:([a-z0-9-]+)\]\]/g;
+
+/** A figure caption LINE: marker opens the line, everything after it is the title. */
+export const FIGURE_CAPTION_LINE_RE = /^[ \t]*\[\[figcap:([a-z0-9-]+)\]\][ \t]*(.*)$/;
+
+/** Serialize the marker line for an uploaded figure. Pure, canonical. */
+export function figureCaptionLine(figKey, title) {
+  const safe = String(figKey == null ? '' : figKey).replace(/[^a-z0-9-]/g, '');
+  const t = cleanCaptionTitle(title);
+  return `[[figcap:${safe}]]${t ? ` ${t}` : ''}`;
+}
+
+/**
+ * Find every figure marker line in one section's markdown.
+ * @returns [{ figKey, assetId, title, index, line }] — `index` is the character
+ *          offset of the marker (numbering anchors compare it against tokens).
+ * Pure.
+ */
+export function findFigureCaptions(md) {
+  const s = String(md == null ? '' : md);
+  if (s.indexOf('[[figcap:') === -1) return [];
+  const out = [];
+  const lines = s.split('\n');
+  let offset = 0;
+  for (let i = 0; i < lines.length; i += 1) {
+    const line = lines[i];
+    const m = line.match(FIGURE_CAPTION_LINE_RE);
+    if (m) {
+      out.push({
+        figKey: m[1],
+        assetId: `figure:${m[1]}`,
+        title: cleanCaptionTitle(m[2]),
+        index: offset + line.indexOf('[[figcap:'),
+        line: i,
+      });
+    }
+    offset += line.length + 1;
+  }
+  return out;
+}
+
+/**
+ * Every PLACED uploaded figure in a draft, in DOCUMENT order. Duplicate keys
+ * resolve to their FIRST occurrence — same rule (and same reason) as
+ * collectManualTables: numbering one identity twice would be worse than ignoring
+ * the copy, and the editor re-mints colliding keys on paste.
+ * @returns [{ figKey, assetId, title, sectionId, index, line }]  Pure.
+ */
+export function collectPlacedFigures(draftOrSections) {
+  const out = [];
+  const seen = new Set();
+  for (const sec of orderedSections(draftOrSections || [])) {
+    for (const c of findFigureCaptions(sec && sec.content)) {
+      if (seen.has(c.figKey)) continue;
+      seen.add(c.figKey);
+      out.push({ ...c, sectionId: (sec && sec.id) || '' });
+    }
+  }
+  return out;
+}
+
+/**
+ * 119.md §5 "Deleting a referenced figure must warn the user and identify
+ * affected references" — how many times a figure is USED in a draft, split into
+ * its placement (the marker) and its cross-references (the `[[figure:…]]`
+ * tokens). Both matter and they are not the same thing: removing the picture
+ * leaves the sentences that point at it, which is exactly what the warning has to
+ * say.
+ * @returns { placed:boolean, sectionIds:string[], references:number,
+ *            referenceSections:string[] }  Pure.
+ */
+export function figureUsage(draftOrSections, figKey) {
+  const key = String(figKey == null ? '' : figKey);
+  const assetId = `figure:${key}`;
+  const out = { placed: false, sectionIds: [], references: 0, referenceSections: [] };
+  if (!key) return out;
+  for (const sec of orderedSections(draftOrSections || [])) {
+    const sid = (sec && sec.id) || '';
+    for (const c of findFigureCaptions(sec && sec.content)) {
+      if (c.figKey !== key) continue;
+      out.placed = true;
+      if (!out.sectionIds.includes(sid)) out.sectionIds.push(sid);
+    }
+    for (const tk of findAssetTokens(sec && sec.content)) {
+      if (tk.id !== assetId) continue;
+      out.references += 1;
+      if (!out.referenceSections.includes(sid)) out.referenceSections.push(sid);
+    }
+  }
+  return out;
+}
+
+/**
+ * Re-mint DUPLICATE figure markers in a pasted markdown fragment — the §5
+ * counterpart of remintDuplicateCaptions, with one deliberate difference: a
+ * figure's bytes live in a server row keyed by its figKey, so a COPY cannot mint
+ * a new key on its own (there is no second row to point at). Pasting a figure
+ * that is already placed therefore DROPS the duplicate marker rather than
+ * inventing a dangling identity; moving one (cut → paste) keeps its key and every
+ * cross-reference to it.
+ * @returns {{ md:string, dropped:string[] }}  Pure.
+ */
+export function dropDuplicateFigureMarkers(md, used) {
+  const s = String(md == null ? '' : md);
+  const dropped = [];
+  if (s.indexOf('[[figcap:') === -1) return { md: s, dropped };
+  const taken = used instanceof Set ? new Set(used) : new Set(used || []);
+  const seenHere = new Set();
+  const lines = s.split('\n');
+  const out = [];
+  for (const line of lines) {
+    const m = line.match(FIGURE_CAPTION_LINE_RE);
+    if (!m) { out.push(line); continue; }
+    const key = m[1];
+    if (taken.has(key) || taken.has(`figure:${key}`) || seenHere.has(key)) { dropped.push(key); continue; }
+    seenHere.add(key);
+    out.push(line);
+  }
+  return { md: out.join('\n'), dropped };
 }
 
 /** The human label for a canonical section id ('methods' → 'Methods'). Pure. */
@@ -414,13 +575,17 @@ export function resolveNumbering({ sections, assets } = {}) {
     // grammars), the tie-break only keeps the sort deterministic.
     const stream = [];
     for (const c of findTableCaptions(sec && sec.content)) stream.push({ t: 0, index: c.index, id: c.assetId });
+    // 119.md §5 — an uploaded figure's marker joins the SAME positional stream, so
+    // a picture pasted between two referenced tables lands between their numbers
+    // and a figure moved up the page renumbers everything below it for free.
+    for (const c of findFigureCaptions(sec && sec.content)) stream.push({ t: 0, index: c.index, id: c.assetId });
     for (const tk of findAssetTokens(sec && sec.content)) stream.push({ t: 1, index: tk.index, tk });
     stream.sort((a, b) => (a.index - b.index) || (a.t - b.t));
 
     for (const ev of stream) {
       if (ev.t === 0) {
-        // A manual table anchors HERE, in every section (a table typed into the
-        // abstract is still a table at that document position).
+        // A manual table / placed figure anchors HERE, in every section (a table
+        // typed into the abstract is still a table at that document position).
         const asset = byAssetId.get(ev.id);
         if (!asset) continue; // caption without a registry entry → nothing to number
         if (!anchorSeen.has(asset.id)) { anchorSeen.add(asset.id); anchorOrder.push(asset.id); }
@@ -437,10 +602,10 @@ export function resolveNumbering({ sections, assets } = {}) {
         unresolved.push({ token: assetToken(tk.id), id: tk.id, kind: tk.kind, sectionId: sec.id, reason: 'unavailable' });
         continue;
       }
-      // A manual table's ordinal is its OWN block position, never a mention of it —
-      // otherwise "Table 4 is discussed in the Introduction" would renumber the
-      // table itself (117.md §7).
-      if (asset.origin === 'manual') continue;
+      // An in-prose object's ordinal is its OWN block position, never a mention of
+      // it — otherwise "Table 4 is discussed in the Introduction" would renumber
+      // the table itself (117.md §7; 119.md §5 for uploaded figures).
+      if (anchorsInProse(asset)) continue;
       if (isBody && !anchorSeen.has(asset.id)) { anchorSeen.add(asset.id); anchorOrder.push(asset.id); }
     }
   }
@@ -498,9 +663,13 @@ export function renderAssetMarkers(md, numbering, _assets, opts = {}) {
   const byId = (numbering && numbering.byId) || {};
   const fmt = opts.format || captionFormatFor(opts.templateId);
   const capRe = new RegExp(TABLE_CAPTION_LINE_RE.source, 'gm');
+  const figRe = new RegExp(FIGURE_CAPTION_LINE_RE.source, 'gm');
   const re = new RegExp(ASSET_TOKEN_RE.source, 'g');
   return String(md == null ? '' : md)
     .replace(capRe, (_full, id, title) => formatAssetCaption('table', byId[`table:${id}`], title, { format: fmt }))
+    // 119.md §5 — a placed figure's marker renders as its formatted caption too, so
+    // a plain-text rendering keeps the picture's number and title where it sits.
+    .replace(figRe, (_full, key, title) => formatAssetCaption('figure', byId[`figure:${key}`], title, { format: fmt }))
     .replace(re, (_full, kind, suffix) => formatAssetLabel(kind, byId[`${kind}:${suffix}`], { format: fmt }));
 }
 
@@ -514,6 +683,10 @@ export default {
   MANUAL_TABLE_ID_RE,
   TABLE_CAPTION_LINE_RE,
   TABLE_CAPTION_TOKEN_RE,
+  FIGURE_CAPTION_LINE_RE,
+  FIGURE_CAPTION_TOKEN_RE,
+  IN_PROSE_ORIGINS,
+  anchorsInProse,
   CAPTION_FORMATS,
   assetKindLabel,
   assetKindOf,
@@ -524,6 +697,11 @@ export default {
   tableCaptionLine,
   findTableCaptions,
   collectManualTables,
+  figureCaptionLine,
+  findFigureCaptions,
+  collectPlacedFigures,
+  figureUsage,
+  dropDuplicateFigureMarkers,
   mintManualTableId,
   remintDuplicateCaptions,
   captionFormatFor,

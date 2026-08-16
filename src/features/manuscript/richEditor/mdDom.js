@@ -47,6 +47,8 @@ import {
 import {
   ASSET_TOKEN_RE, TABLE_CAPTION_LINE_RE, TABLE_CAPTION_TOKEN_RE, MANUAL_TABLE_ID_RE,
   assetKindLabel, formatAssetLabel, formatCaptionPrefix, cleanCaptionTitle, tableCaptionLine,
+  // 119.md §5 — the uploaded-figure block grammar (see refTokens' §5 header).
+  FIGURE_CAPTION_LINE_RE, FIGURE_CAPTION_TOKEN_RE, figureCaptionLine,
 } from '../../../research-engine/manuscript/refTokens.js';
 import { FACT_TOKEN_RE, factPlaceholder } from '../../../research-engine/manuscript/factTokens.js';
 // 102.md — one classifier for the whole feature: the editor decorates exactly the
@@ -65,6 +67,15 @@ export const TABLE_CAPTION_NUM_CLASS = 'ms-tblcap-n';
 export const TABLE_CAPTION_TITLE_CLASS = 'ms-tblcap-t';
 /** Placeholder shown by CSS when a manual table has no title yet. */
 export const TABLE_CAPTION_PLACEHOLDER = 'Add a table title…';
+/** 119.md §5 — the uploaded-figure block and its regions (tblcap's counterpart). */
+export const FIGURE_BLOCK_CLASS = 'ms-figblock';
+export const FIGURE_IMG_CLASS = 'ms-figimg';
+export const FIGURE_CAPTION_CLASS = 'ms-figcap';
+export const FIGURE_CAPTION_NUM_CLASS = 'ms-figcap-n';
+export const FIGURE_CAPTION_TITLE_CLASS = 'ms-figcap-t';
+export const FIGURE_CAPTION_PLACEHOLDER = 'Add a figure title…';
+/** Shown in place of the picture when the registry says the file is gone. */
+export const FIGURE_MISSING_TEXT = 'Image unavailable — it may have been deleted.';
 
 /** The `[[fact:key]]` key grammar, mirrored for the reverse (HTML → md) direction. */
 const FACT_KEY_RE = /^[a-zA-Z][a-zA-Z0-9]*(?:\.[a-zA-Z][a-zA-Z0-9]*)*$/;
@@ -207,6 +218,55 @@ export function tableCaptionHtml(id, title, prefix) {
 }
 
 /**
+ * 119.md §5 — the uploaded-figure BLOCK.
+ *
+ * Structurally identical to the manual-table caption (and for the same reasons):
+ * a `contenteditable="false"` island so the caret cannot wander into the picture
+ * or type over the derived number, with exactly ONE editable region — the title,
+ * the one thing only the researcher can supply. Copying the block copies the
+ * marker with it, and a native undo restores picture + identity + position in one
+ * step, which is the whole point of putting the marker in the prose.
+ *
+ * The image is an `<img>` pointing at the AUTHENTICATED raw route. CSP already
+ * allows it (`img-src 'self' data: blob:`) and the route's ETag makes a re-render
+ * an empty revalidation. `info` is what the registry knows about this figure:
+ *   { src, alt, width, height, displayWidth (20-100 %), align, missing }
+ * Absent info means "the registry is not resolved here" — the block still renders
+ * (with no src) rather than accusing a real figure of being deleted, exactly the
+ * doctrine assetChipLabel's knownAssetIds follows.
+ */
+export function figureBlockHtml(figKey, title, prefix, info) {
+  const safeKey = String(figKey == null ? '' : figKey);
+  if (!MANUAL_TABLE_ID_RE.test(safeKey)) return '';
+  const t = cleanCaptionTitle(title);
+  const i = info || {};
+  const width = Number(i.displayWidth);
+  const pct = Number.isFinite(width) && width >= 20 && width <= 100 ? Math.round(width) : 100;
+  const align = ['left', 'center', 'right'].includes(i.align) ? i.align : 'center';
+  const alt = String(i.alt == null ? '' : i.alt) || t || 'Figure';
+  const body = i.missing
+    ? `<span class="${FIGURE_IMG_CLASS}" data-fig-missing="true">${escapeHtml(FIGURE_MISSING_TEXT)}</span>`
+    : `<img class="${FIGURE_IMG_CLASS}" src="${escapeAttr(i.src || '')}" alt="${escapeAttr(alt)}"`
+      + ` style="width:${pct}%" draggable="false">`;
+  return `<figure class="${FIGURE_BLOCK_CLASS}" data-figcap="${escapeAttr(safeKey)}"`
+    + ` data-fig-align="${align}" data-fig-width="${pct}" contenteditable="false">`
+    + body
+    + `<figcaption class="${FIGURE_CAPTION_CLASS}">`
+    + `<span class="${FIGURE_CAPTION_NUM_CLASS}" data-figcap-num="true">${escapeHtml(prefix)}</span>`
+    + `<span class="${FIGURE_CAPTION_TITLE_CLASS}" data-figcap-title="true" contenteditable="true"`
+    + ` role="textbox" spellcheck="true" aria-label="Figure title"`
+    + ` data-placeholder="${escapeAttr(FIGURE_CAPTION_PLACEHOLDER)}">${escapeHtml(t)}</span>`
+    + '</figcaption></figure>';
+}
+
+/** Look a figure's registry info up in a Map OR plain object, keyed by figKey. */
+export function figureInfoOf(figures, figKey) {
+  if (!figures) return null;
+  const v = typeof figures.get === 'function' ? figures.get(figKey) : figures[figKey];
+  return v || null;
+}
+
+/**
  * The atomic, non-editable fact chip (101.md §5/§6/§7). `text` is the RESOLVED value
  * — the thing the reader sees — while `data-fact` keeps the stable key so htmlToMd()
  * can put the token back. `data-engine`/`data-changed`/`data-missing` are inert
@@ -333,6 +393,8 @@ function inlineHtml(escText, orderMap, assetNumbers, factOpts, refOpts) {
   // reaches an inline run is therefore not a caption at all, and 65.md forbids a
   // visible `[[…]]` token, so it drops out. Its trailing text stays as prose.
   t = t.replace(new RegExp(TABLE_CAPTION_TOKEN_RE.source, 'g'), '');
+  // 119.md §5 — same rule for a stray figure marker.
+  t = t.replace(new RegExp(FIGURE_CAPTION_TOKEN_RE.source, 'g'), '');
   // 102.md — placeholders run FIRST, while the text is still literal markdown.
   // After the chip passes below, the HTML contains chip labels like "[1]" and
   // "Table 2"; scanning for brackets then would claim a citation chip's own marker
@@ -562,6 +624,15 @@ export function mdToHtml(md, opts = {}) {
       // The title arrives HTML-escaped (the whole source was escaped up front);
       // tableCaptionHtml escapes again, so decode once to avoid double-escaping.
       out.push(tableCaptionHtml(cap[1], unescapeEntities(cap[2]), prefix));
+      continue;
+    }
+    // 119.md §5 — the uploaded-figure marker is a BLOCK too, resolved before any
+    // inline pass so its key/title survive emphasis and link rules intact.
+    const fig = line.match(FIGURE_CAPTION_LINE_RE);
+    if (fig) {
+      closeList();
+      const prefix = formatCaptionPrefix('figure', assetNumberOf(assetNumbers, `figure:${fig[1]}`), { templateId: refOpts.templateId });
+      out.push(figureBlockHtml(fig[1], unescapeEntities(fig[2]), prefix, figureInfoOf(opts.figures, fig[1])));
       continue;
     }
     if (/^###\s+/.test(line)) { closeList(); out.push(`<h4>${inline(line.replace(/^###\s+/, ''))}</h4>`); continue; }
@@ -899,10 +970,39 @@ function emitTableCaption(node, blocks) {
   blocks.push(tableCaptionLine(id, title));
 }
 
+/**
+ * 119.md §5 — the figure block reverses to its MARKER LINE, never to the rendered
+ * "Figure 3. Title" text and never to an <img> tag. Same guarantee the table
+ * caption makes: what persists is identity + semantics, so the number stays
+ * derived and the bytes stay in the store the marker points at.
+ *
+ * A corrupt/foreign `data-figcap` element degrades to its visible text rather
+ * than emitting a broken marker.
+ */
+function emitFigureBlock(node, blocks) {
+  const key = String((node.attrs && node.attrs['data-figcap']) || '').trim();
+  if (!MANUAL_TABLE_ID_RE.test(key)) {
+    const t = textOf(node).trim();
+    if (t) blocks.push(t);
+    return;
+  }
+  const titleEl = findByAttr(node, 'data-figcap-title');
+  let title;
+  if (titleEl) title = textOf(titleEl);
+  else {
+    const numEl = findByAttr(node, 'data-figcap-num');
+    const numTxt = numEl ? textOf(numEl) : '';
+    const all = textOf(node);
+    title = (numTxt && all.startsWith(numTxt)) ? all.slice(numTxt.length) : all;
+  }
+  blocks.push(figureCaptionLine(key, title));
+}
+
 function emitBlock(node, blocks) {
   const tag = node.tag;
   if (DROP_TAGS.has(tag)) return;
   if (node.attrs && node.attrs['data-tblcap'] != null) { emitTableCaption(node, blocks); return; }
+  if (node.attrs && node.attrs['data-figcap'] != null) { emitFigureBlock(node, blocks); return; }
   if (tag === 'h1' || tag === 'h2') { const t = inlineOf(node.children, { oneLine: true }).trim(); if (t) blocks.push(`# ${t}`); return; }
   if (tag === 'h3') { const t = inlineOf(node.children, { oneLine: true }).trim(); if (t) blocks.push(`## ${t}`); return; }
   if (tag === 'h4' || tag === 'h5' || tag === 'h6') { const t = inlineOf(node.children, { oneLine: true }).trim(); if (t) blocks.push(`### ${t}`); return; }
@@ -993,6 +1093,8 @@ export function stripInlineMd(s) {
     // 117.md §4 — a caption marker in a label position drops to its title alone
     // (the number is derived, and an outline entry has no numbering context).
     .replace(new RegExp(TABLE_CAPTION_LINE_RE.source, 'gm'), (_m, _id, title) => String(title || ''))
+    // 119.md §5 — a figure marker in a label position drops to its title alone.
+    .replace(new RegExp(FIGURE_CAPTION_LINE_RE.source, 'gm'), (_m, _key, title) => String(title || ''))
     .replace(new RegExp(ASSET_TOKEN_RE.source, 'g'), (_m, kind) => `${assetKindLabel(kind)} ?`)
     // 101.md §6 — an outline label has no project snapshot to resolve against, so a
     // fact token drops out entirely rather than leaking its raw syntax into the UI.
@@ -1023,10 +1125,12 @@ export function extractOutline(md) {
 export default {
   escapeHtml, mdToHtml, htmlToMd, citeChipHtml, citeChipLabel, citeChipAria,
   assetChipHtml, assetChipLabel,
-  tableCaptionHtml, factChipHtml,
+  tableCaptionHtml, figureBlockHtml, figureInfoOf, factChipHtml,
   factChipText, factOf, parsePipeTable, serializePipeTable, escapePipeCell,
   extractOutline, stripInlineMd,
   CITE_CHIP_CLASS, ASSET_CHIP_CLASS, FACT_CHIP_CLASS, INPUT_CHIP_CLASS,
   TABLE_CAPTION_CLASS, TABLE_CAPTION_NUM_CLASS, TABLE_CAPTION_TITLE_CLASS,
   TABLE_CAPTION_PLACEHOLDER,
+  FIGURE_BLOCK_CLASS, FIGURE_IMG_CLASS, FIGURE_CAPTION_CLASS,
+  FIGURE_CAPTION_NUM_CLASS, FIGURE_CAPTION_TITLE_CLASS, FIGURE_CAPTION_PLACEHOLDER,
 };

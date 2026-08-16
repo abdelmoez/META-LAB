@@ -30,7 +30,9 @@ function coerceSettings(patch = {}) {
 
   const boolKeys = [
     'enabled', 'allowNewProjects', 'allowImport', 'allowExport',
-    'allowPdfUpload', 'allowDuplicateDetection', 'allowConflictResolution',
+    // 119.md §5 — allowImageUpload joins the same boolean toggle set as
+    // allowPdfUpload (one admin surface, one enforcement precedent).
+    'allowPdfUpload', 'allowImageUpload', 'allowDuplicateDetection', 'allowConflictResolution',
     'allowChat', 'allowSecondReview', 'requireTwoReviewers', 'defaultBlindMode',
   ];
   for (const k of boolKeys) {
@@ -51,6 +53,12 @@ function coerceSettings(patch = {}) {
   if ('maxPdfSizeMb' in patch) {
     const n = intIn(patch.maxPdfSizeMb, META_SIFT_DEFAULTS.maxPdfSizeMb);
     out.maxPdfSizeMb = Math.min(200, Math.max(1, n));
+  }
+  // 119.md §5 — manuscript figure per-file cap. Clamped to the module's hard
+  // ceiling (25 MB) so an admin can only ever LOWER what figureStorage enforces.
+  if ('maxFigureSizeMb' in patch) {
+    const n = intIn(patch.maxFigureSizeMb, META_SIFT_DEFAULTS.maxFigureSizeMb);
+    out.maxFigureSizeMb = Math.min(25, Math.max(1, n));
   }
   if ('maxRecordsPerProject' in patch) {
     const n = intIn(patch.maxRecordsPerProject, META_SIFT_DEFAULTS.maxRecordsPerProject);

@@ -100,6 +100,11 @@ export async function buildReproPackage(project, draft, opts = {}) {
     const docxBlob = await buildManuscriptDocx(project, draft, {
       runMeta: opts.runMeta, prec: opts.prec, prismaResult, primary, includeFigures: true,
       gradeByOutcome: opts.gradeByOutcome,
+      // 119.md §5 — the bundled manuscript embeds the SAME uploaded pictures the
+      // downloaded .docx does (registry + byte resolver threaded through, never
+      // re-derived here, so the two artefacts can never disagree).
+      ...(opts.assets ? { assets: opts.assets } : {}),
+      ...(opts.figureBlobUrl ? { figureBlobUrl: opts.figureBlobUrl } : {}),
       tables: {
         study: studyTbl,
         sof: sofTbl,

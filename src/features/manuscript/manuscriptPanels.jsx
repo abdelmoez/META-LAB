@@ -621,6 +621,59 @@ export function TableContextBar({ ctx, pageEl, getApi, onDeleteTable, onAddCapti
   );
 }
 
+/**
+ * 119.md §5 — the floating controls for the uploaded figure under the pointer.
+ *
+ * The TableContextBar contract, applied to a picture: everything mutating goes
+ * back through the editor's imperative API (so native undo owns the history), the
+ * width/alignment writes are per-asset draft overrides (the same buffered channel
+ * captions use), and the destructive action is routed to the parent, which counts
+ * the cross-references it would break BEFORE asking (§5 "Deleting a referenced
+ * figure must warn the user and identify affected references").
+ */
+export const FIGURE_WIDTH_STEPS = [40, 60, 80, 100];
+
+export function FigureContextBar({ ctx, pageEl, getApi, onReplace, onRemove, onResize, onAlign }) {
+  if (!ctx || !ctx.rect || !pageEl || typeof pageEl.getBoundingClientRect !== 'function') return null;
+  const pr = pageEl.getBoundingClientRect();
+  const top = Math.max(ctx.rect.top - pr.top - 34, 2);
+  const right = Math.max(pr.right - ctx.rect.right, 8);
+  const hold = (e) => e.preventDefault();   // keep the caret/selection through a click
+  const btn = (extra = {}) => ({
+    ...btnS('ghost'), padding: '3px 7px', fontSize: 10.5,
+    border: '1px solid transparent', background: 'transparent', color: C.txt2, ...extra,
+  });
+  return (
+    <div role="toolbar" aria-label="Figure controls" data-testid="stitch-manuscript-figure-ctl"
+      style={{
+        position: 'absolute', top, right, zIndex: 5,
+        display: 'flex', alignItems: 'center', gap: 2, padding: '3px 5px',
+        background: C.card, border: `1px solid ${C.brd}`, borderRadius: 8,
+        boxShadow: '0 4px 14px rgba(15,23,42,0.14)', whiteSpace: 'nowrap',
+      }}>
+      <button type="button" aria-label="Replace this image" title="Replace this image — the figure keeps its number and every cross-reference"
+        data-testid="stitch-manuscript-figure-op-replace"
+        onMouseDown={hold} onClick={() => onReplace && onReplace(ctx)} style={btn()}>Replace</button>
+      {FIGURE_WIDTH_STEPS.map((w) => (
+        <button key={w} type="button" aria-label={`Set figure width to ${w} percent`} title={`${w}% of the page width`}
+          data-testid={`stitch-manuscript-figure-width-${w}`}
+          onMouseDown={hold} onClick={() => onResize && onResize(ctx, w)}
+          style={btn(ctx.width === w ? { color: C.acc, fontWeight: 700 } : {})}>{w}%</button>
+      ))}
+      {[['left', '◧'], ['center', '▣'], ['right', '◨']].map(([a, glyph]) => (
+        <button key={a} type="button" aria-label={`Align figure ${a}`} title={`Align ${a}`}
+          data-testid={`stitch-manuscript-figure-align-${a}`}
+          onMouseDown={hold} onClick={() => onAlign && onAlign(ctx, a)}
+          style={btn(ctx.align === a ? { color: C.acc, fontWeight: 700 } : {})}>{glyph}</button>
+      ))}
+      <button type="button" aria-label="Remove this figure from the manuscript" title="Take this figure out of the document (the image is kept, and Ctrl+Z restores it)"
+        data-testid="stitch-manuscript-figure-op-remove"
+        onMouseDown={hold} onClick={() => onRemove && onRemove(ctx, getApi && getApi())}
+        style={btn({ color: C.red })}>✕ Figure</button>
+    </div>
+  );
+}
+
 /* ════════════ 117.md §10/§11 — cross-reference chip surfaces ════════════
  *
  * The chip lives inside a contentEditable; its popovers cannot. Both of these are
@@ -862,6 +915,57 @@ export function CiteRefMenu({
  */
 export const TABLE_DELETE_UNDO_NOTE = 'Press Ctrl+Z (Cmd+Z) right after deleting to restore the table, its caption and its references.';
 
+/**
+ * 119.md §5 — "Deleting a referenced figure must warn the user and identify
+ * affected references. Undo must restore the figure and its references."
+ *
+ * The wording states what ACTUALLY happens, which is not what a naive warning
+ * would say. Taking a picture out of the text removes its PLACEMENT, not the
+ * figure: the row and its bytes stay (that is what makes Ctrl+Z restore a marker
+ * pointing at a live file), so every cross-reference keeps resolving and the
+ * picture is printed at the end of the exported document until it is placed
+ * again. Claiming the references "will break" would be a lie, and claiming
+ * nothing changed would hide a real consequence — so it says both.
+ */
+export const FIGURE_REMOVE_UNDO_NOTE =
+  'The image file is kept — Ctrl+Z puts the figure, its title and its place in the text back.';
+
+export function FigureDeleteDialog({ info, onConfirm, onCancel }) {
+  if (!info) return null;
+  const n = info.count || 0;
+  return (
+    <div role="dialog" aria-modal="true" aria-label="Remove figure"
+      data-testid="stitch-manuscript-figure-delete-confirm"
+      style={{
+        position: 'fixed', inset: 0, zIndex: 60, display: 'flex', alignItems: 'center',
+        justifyContent: 'center', background: 'rgba(15,23,42,0.35)', padding: 16,
+      }}>
+      <div style={{ background: C.card, border: `1px solid ${C.brd}`, borderRadius: 12, padding: 18, maxWidth: 420, width: '100%' }}>
+        <h3 style={{ margin: '0 0 8px', fontSize: 14, fontWeight: 700, color: C.txt }}>
+          Remove {info.label || 'this figure'}?
+        </h3>
+        <p style={{ margin: '0 0 6px', fontSize: 12.5, color: C.txt2, lineHeight: 1.55 }}
+          data-testid="stitch-manuscript-figure-delete-count">
+          This figure is referenced {n} time{n === 1 ? '' : 's'} in the manuscript.
+          {' '}Those references keep working — the figure stays in this project and will be
+          {' '}printed at the end of the exported document until you place it again.
+        </p>
+        <p style={{ margin: '0 0 14px', fontSize: 11.5, color: C.muted, lineHeight: 1.5 }}>
+          {FIGURE_REMOVE_UNDO_NOTE}
+        </p>
+        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+          <button onClick={onCancel} data-testid="stitch-manuscript-figure-delete-cancel"
+            onMouseDown={(e) => e.preventDefault()}
+            style={{ ...btnS('ghost'), fontSize: 11.5 }}>Keep figure</button>
+          <button onClick={onConfirm} data-testid="stitch-manuscript-figure-delete-confirm-btn"
+            onMouseDown={(e) => e.preventDefault()}
+            style={{ ...btnS('danger'), fontSize: 11.5 }}>Remove anyway</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export function TableDeleteDialog({ info, onConfirm, onCancel }) {
   if (!info) return null;
   const n = info.count || 0;
@@ -1072,6 +1176,13 @@ export function EditorPanel({ m, exporters, sectionRequest, onOpenAssetPanel, on
   // the editor that owns it (`sectionId` is added here so a 10-editor document
   // routes the ops back to the right one); drives the floating table controls.
   const [tableCtx, setTableCtx] = useState(null);
+  /* 119.md §5 — the same idea for an uploaded FIGURE: which picture the pointer
+     last claimed, so the floating figure controls (replace / size / align /
+     remove) act on the object the researcher is looking at. */
+  const [figureCtx, setFigureCtx] = useState(null);
+  /** The hidden file input the "Insert picture" toolbar action opens. */
+  const figureFileRef = useRef(null);
+  const [figureTargetSection, setFigureTargetSection] = useState(null);
 
   const citeRefs = m.references || [];
   const refLabel = (r) => {
@@ -1147,6 +1258,8 @@ export function EditorPanel({ m, exporters, sectionRequest, onOpenAssetPanel, on
   const [chipHover, setChipHover] = useState(null);
   const [relinking, setRelinking] = useState(false);
   const [tableDelete, setTableDelete] = useState(null); // {tableId,label,count}
+  // 119.md §5 — {figKey,label,count,sectionId} while the remove warning is up.
+  const [figureDelete, setFigureDelete] = useState(null);
   // 117.md §38 — the citation chip's own popovers ({ids,label,broken,rect,sectionId}).
   const [citeMenu, setCiteMenu] = useState(null);
   const [citeHover, setCiteHover] = useState(null);
@@ -1569,6 +1682,44 @@ export function EditorPanel({ m, exporters, sectionRequest, onOpenAssetPanel, on
     setTableDelete(null);
   };
 
+  /* ── 119.md §5 — figure actions from the floating controls ────────────────
+   *
+   * Replace and Remove are the two that need more than an editor call:
+   *   · REPLACE moves bytes (a file picker + an authenticated upload), and the
+   *     figure keeps its key, its number and every cross-reference — which is the
+   *     whole point of §5's "without destroying its stable figure identity".
+   *   · REMOVE takes the picture OUT OF THE DOCUMENT. It is a prose edit, so one
+   *     native Ctrl+Z restores it, and the bytes are deliberately NOT deleted
+   *     (the server only ever deletes an unreferenced figure) — otherwise the
+   *     restored marker would point at a purged file. When other sentences
+   *     cross-reference it, we say how many before doing anything.
+   */
+  const askReplaceFigure = (ctx) => {
+    const a = assetById.get(`figure:${ctx && ctx.figKey}`) || null;
+    if (!a || !a.figureId) return;
+    setFigureTargetSection({ figureId: a.figureId, figKey: ctx.figKey });
+    if (figureFileRef.current) { figureFileRef.current.value = ''; figureFileRef.current.click(); }
+  };
+
+  const doRemoveFigure = (figKey, sectionId) => {
+    const api = apiFor(sectionId) || getApi();
+    if (api && api.removeFigure) api.removeFigure(figKey);
+    setFigureCtx(null);
+    setFigureDelete(null);
+  };
+
+  const askRemoveFigure = (ctx) => {
+    const figKey = ctx && ctx.figKey;
+    if (!figKey) return;
+    const count = countAssetMentions(liveDraft, `figure:${figKey}`);
+    if (!count) { doRemoveFigure(figKey, ctx.sectionId); return; }
+    const a = assetById.get(`figure:${figKey}`) || null;
+    setFigureDelete({
+      figKey, count, sectionId: ctx.sectionId,
+      label: a ? assetNumberLabel(m, a) : 'this figure',
+    });
+  };
+
   const status = sectionStatus(section);
   const isTitle = sel === 'title';
   const isAbstract = sel === 'abstract';
@@ -1619,6 +1770,17 @@ export function EditorPanel({ m, exporters, sectionRequest, onOpenAssetPanel, on
       // 116.md §61 — report the caret's table context for the floating table
       // controls (never while locked: no edits are possible).
       onTableFocus: secLocked ? null : ((ctx) => setTableCtx(ctx ? { ...ctx, sectionId: id } : null)),
+      /* 119.md §5 — uploaded figures. `figures` is what the editor paints each
+         placed picture from (one derived map, shared with the panel and the
+         export); `onImageFiles` is the ONE upload seam behind the file picker,
+         clipboard paste AND drag-and-drop, so all three run the same server-side
+         validation. A locked section takes neither (no edits are possible). */
+      figures: m.figureInfo,
+      onImageFiles: secLocked ? null : (async (files) => {
+        const created = await m.uploadFigures(files);
+        return created.map((f) => ({ figKey: f.figKey, title: '' }));
+      }),
+      onFigureFocus: secLocked ? null : ((info) => setFigureCtx(info ? { ...info, sectionId: id } : null)),
       // 117.md §4/§8/§10/§11 — the manuscript-object layer.
       knownAssetIds,
       templateId: m.activeDraft.templateId,
@@ -1667,6 +1829,10 @@ export function EditorPanel({ m, exporters, sectionRequest, onOpenAssetPanel, on
       factChanges: p.factChanges,
       showChanges: p.showChanges,
       onPlaceholderFocus: p.onPlaceholderFocus,
+      // 119.md §5 — the figure layer reaches the abstract's sub-editors too, so a
+      // picture pasted there renders and uploads exactly as it does in the body.
+      figures: p.figures,
+      onImageFiles: p.onImageFiles,
       // 117.md §10/§11 — cross-reference chips.
       onAssetChipMenu: p.onAssetChipMenu,
       onAssetChipHover: p.onAssetChipHover,
@@ -1715,6 +1881,34 @@ export function EditorPanel({ m, exporters, sectionRequest, onOpenAssetPanel, on
       <style>{RICH_EDITOR_CSS}</style>
       {/* 117.md §11 — deleting a cited table warns first, then allows it. */}
       <TableDeleteDialog info={tableDelete} onConfirm={confirmDeleteTable} onCancel={() => setTableDelete(null)} />
+      {/* 119.md §5 — the referenced-figure removal warning. */}
+      <FigureDeleteDialog info={figureDelete}
+        onConfirm={() => doRemoveFigure(figureDelete.figKey, figureDelete.sectionId)}
+        onCancel={() => setFigureDelete(null)} />
+      {/* 119.md §5 — the ONE hidden picker behind "Insert picture" and "Replace".
+          Which of the two it serves is decided by `figureTargetSection`, so there is
+          never a second upload path to keep in step. */}
+      <input ref={figureFileRef} type="file" accept="image/png,image/jpeg,image/gif,image/webp"
+        data-testid="stitch-manuscript-figure-file" style={{ display: 'none' }}
+        onChange={async (e) => {
+          const file = e.target.files && e.target.files[0];
+          e.target.value = '';
+          if (!file) { setFigureTargetSection(null); return; }
+          const target = figureTargetSection;
+          setFigureTargetSection(null);
+          if (target && target.figureId) { await m.replaceFigureFile(target.figureId, file); return; }
+          const created = await m.uploadFigures([file]);
+          const api = apiFor(target && target.sectionId) || getApi();
+          for (const f of created) if (api && api.insertFigure) api.insertFigure(f.figKey, '');
+        }} />
+      {/* Honest, non-blocking upload feedback (§5 "corrupted files" / governance). */}
+      {m.figureError && (
+        <div style={{ maxWidth: 760, margin: '0 auto 10px' }}>
+          <InfoBox color={C.red}>
+            <span data-testid="stitch-manuscript-figure-error">{m.figureError}</span>
+          </InfoBox>
+        </div>
+      )}
 
       {/* ── left: outline (118.md §15 — present in BOTH views) ──
           In the continuous document it also STAYS present: the page is ten sections
@@ -1945,7 +2139,14 @@ export function EditorPanel({ m, exporters, sectionRequest, onOpenAssetPanel, on
               /* 117.md §9 — Insert → Cross-reference, at the caret, with search. */
               crossRefs={crossRefItems} onInsertCrossRef={insertAssetRef}
               /* 117.md §34/§35 — Insert → Citation, searchable + multi-select. */
-              onInsertCitation={insertCitation} />
+              onInsertCitation={insertCitation}
+              /* 119.md §5 — Insert → Picture. Opens the ONE hidden file input; the
+                 upload, the validation and the marker insertion are the same path
+                 paste and drag-and-drop take. */
+              onInsertPicture={m.uploadFigures ? (() => {
+                setFigureTargetSection({ sectionId: sel });
+                if (figureFileRef.current) { figureFileRef.current.value = ''; figureFileRef.current.click(); }
+              }) : null} />
           </div>
         )}
 
@@ -1991,6 +2192,15 @@ export function EditorPanel({ m, exporters, sectionRequest, onOpenAssetPanel, on
               <TableContextBar ctx={tableCtx} pageEl={pageRef.current}
                 getApi={() => apiFor(tableCtx.sectionId) || getApi()}
                 onDeleteTable={askDeleteTable} />
+            )}
+            {/* 119.md §5 — the same floating pattern for an uploaded figure. */}
+            {figureCtx && (continuous || (!isTitle && !isAbstract && !locked)) && (
+              <FigureContextBar ctx={figureCtx} pageEl={pageRef.current}
+                getApi={() => apiFor(figureCtx.sectionId) || getApi()}
+                onReplace={askReplaceFigure}
+                onResize={(ctx, w) => m.queueAssetPatch(`figure:${ctx.figKey}`, { displayWidth: w })}
+                onAlign={(ctx, a) => m.queueAssetPatch(`figure:${ctx.figKey}`, { align: a })}
+                onRemove={askRemoveFigure} />
             )}
             {/* 117.md §10 — hover preview, suppressed while the action menu is open */}
             {(continuous || !isTitle) && !chipMenu && chipHover && (
@@ -2388,7 +2598,12 @@ function AssetControls({ m, asset, buf, commit, onInsertNotice, onOpenAsset }) {
   const numbering = m.assetNumbering || {};
   // 117.md §4 — a MANUAL table is prose. It cannot be "excluded" (that would mean
   // deleting text), and its title is not an override — see the Title field below.
-  const isManual = asset.origin === 'manual';
+  // 119.md §5 — a PLACED uploaded figure is prose in exactly the same sense: its
+  // title is the caption line in the page, and "excluding" it would mean deleting
+  // the block. An UNPLACED upload is neither — it is a file waiting for a place.
+  const isUpload = asset.origin === 'upload';
+  const isManual = asset.origin === 'manual' || (isUpload && asset.placed);
+  const unplaced = isUpload && !asset.placed;
   const mentioned = !!(numbering.mentioned && numbering.mentioned.has && numbering.mentioned.has(asset.id));
   const autoIncluded = !!(numbering.autoIncluded && numbering.autoIncluded.has && numbering.autoIncluded.has(asset.id));
   // Optimistic: the buffered override wins so the toggle responds instantly
@@ -2414,17 +2629,24 @@ function AssetControls({ m, asset, buf, commit, onInsertNotice, onOpenAsset }) {
           style={tagS(numLabel.startsWith('Not') ? 'gray' : 'blue')}>{numLabel}</span>
         <span style={tagS(asset.available ? 'green' : 'gray')}>{asset.available ? 'Available' : 'No data'}</span>
         {isManual && <span style={tagS('purple')} title="Typed in the manuscript, not generated from project data">In the text</span>}
+        {/* 119.md §5 — honest status for a picture that has been uploaded but has
+            no place in the argument yet (§69: never imply it is in the document). */}
+        {unplaced && <span style={tagS('gray')} data-testid={`stitch-manuscript-asset-unplaced-${slug}`}
+          title="Uploaded, but not yet placed in the manuscript">Not placed</span>}
         {asset.stale && <span style={tagS('yellow')}>Stale</span>}
         {mentioned
           ? <span style={tagS('purple')} title={autoIncluded ? 'Included because the text references it' : 'Referenced in the text'}>Referenced in text</span>
           : <span style={{ fontSize: 10.5, color: C.muted }}>Not referenced in the text</span>}
         <span style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 10 }}>
           <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 11.5, color: C.txt2, cursor: (asset.available && !isManual) ? 'pointer' : 'not-allowed' }}
-            title={isManual ? 'This table is part of the manuscript text — delete it in the Editor to remove it'
-              : !asset.available ? 'No data yet — nothing to include'
-                : mentioned ? 'Referenced in the text — remove the reference to exclude it' : 'Include this in the Word export'}>
+            title={isManual ? (asset.kind === 'figure'
+              ? 'This figure is placed in the manuscript text — remove it in the Editor to take it out'
+              : 'This table is part of the manuscript text — delete it in the Editor to remove it')
+              : unplaced ? 'Place it in the manuscript to include it in the export'
+                : !asset.available ? 'No data yet — nothing to include'
+                  : mentioned ? 'Referenced in the text — remove the reference to exclude it' : 'Include this in the Word export'}>
             <input type="checkbox" checked={includedNow}
-              disabled={!asset.available || mentioned || isManual}
+              disabled={!asset.available || mentioned || isManual || unplaced}
               data-testid={`stitch-manuscript-asset-include-${slug}`}
               onChange={(e) => patch({ included: e.target.checked })}
               aria-label={`Include ${asset.title || asset.id} in the export`} />
@@ -2462,7 +2684,7 @@ function AssetControls({ m, asset, buf, commit, onInsertNotice, onOpenAsset }) {
               style={{ fontSize: 11.5, color: C.txt2, lineHeight: 1.5 }}>
               {asset.title || <span style={{ color: C.muted }}>Untitled</span>}
               <div style={{ fontSize: 10.5, color: C.muted, marginTop: 2 }}>
-                Edit this table&rsquo;s title in its caption, in the Editor.
+                Edit this {asset.kind === 'figure' ? 'figure' : 'table'}&rsquo;s title in its caption, in the Editor.
               </div>
             </div>
           </Labeled>
@@ -2570,12 +2792,116 @@ export function TablesPanel({ m, onOpenAsset }) {
   );
 }
 
+/**
+ * 119.md §5 — the metadata block for ONE uploaded figure.
+ *
+ * Everything here is a property of the FILE (§5's "Source/provenance", "Creator or
+ * uploader", "Upload date", "Original filename and file type", "Dimensions and
+ * resolution", "Version/replacement history"), so it is written to the
+ * ManuscriptFigure row through the authenticated route — NOT into the draft. The
+ * display overrides (caption, legend, width, alignment) stay on the draft, where
+ * every other figure's already are. Two stores, one rule: facts about the file
+ * live with the file, decisions about the manuscript live with the manuscript.
+ */
+export function UploadedFigureDetails({ m, asset, onNotice }) {
+  const [alt, setAlt] = useState(asset.altText || '');
+  const [src, setSrc] = useState(asset.sourceNote || '');
+  const fileRef = useRef(null);
+  useEffect(() => { setAlt(asset.altText || ''); setSrc(asset.sourceNote || ''); }, [asset.figureId, asset.altText, asset.sourceNote]);
+  const slug = assetTestSlug(asset.id);
+  const dims = asset.width && asset.height ? `${asset.width} × ${asset.height} px` : 'dimensions unknown';
+  const size = asset.fileSize ? `${Math.max(1, Math.round(asset.fileSize / 1024))} KB` : '';
+  const remove = async () => {
+    const r = await m.deleteFigure(asset.figureId);
+    if (r && r.blocked) {
+      const u = r.usage || {};
+      onNotice(`This figure is still used in the manuscript (${u.placements || 0} placement${u.placements === 1 ? '' : 's'}, ${u.references || 0} cross-reference${u.references === 1 ? '' : 's'}). Remove it from the document first — Ctrl+Z can bring it back until you delete the file here.`);
+      return;
+    }
+    if (r && r.deleted) onNotice('The figure and its image file were deleted.');
+  };
+  return (
+    <div data-testid={`stitch-manuscript-figure-details-${slug}`} style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+      <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap', alignItems: 'flex-start' }}>
+        {asset.available && asset.figureId ? (
+          <img src={m.figureRawUrl(asset.figureId)} alt={asset.altText || asset.title || 'Uploaded figure'}
+            data-testid={`stitch-manuscript-figure-preview-${slug}`}
+            style={{ maxWidth: 240, maxHeight: 180, borderRadius: 4, border: `1px solid ${C.brd}`, background: '#f4f6f9' }} />
+        ) : (
+          <InfoBox color={C.red}>This figure&rsquo;s image file is missing. Replace it, or remove the figure from the manuscript.</InfoBox>
+        )}
+        <div style={{ fontSize: 11, color: C.muted, lineHeight: 1.7, minWidth: 200 }}>
+          <div data-testid={`stitch-manuscript-figure-file-${slug}`}>{asset.fileName || 'file'} · {dims}{size ? ` · ${size}` : ''}</div>
+          <div>Uploaded by {asset.uploadedByName || 'a project member'}{asset.uploadedAt ? ` on ${fmtTime(asset.uploadedAt)}` : ''}</div>
+          {asset.replacedCount > 0 && (
+            <div data-testid={`stitch-manuscript-figure-version-${slug}`}>
+              Version {asset.replacedCount + 1} — replaced {fmtTime(asset.replacedAt)}
+            </div>
+          )}
+          {asset.figureOrigin === 'analysis' && <div>Saved from an analysis figure.</div>}
+        </div>
+      </div>
+      <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+        <Labeled label="Alt text (accessibility)" style={{ flex: '2 1 260px' }}>
+          <textarea value={alt} rows={1}
+            placeholder="Describe what the picture shows, for readers using a screen reader…"
+            onChange={(e) => setAlt(e.target.value)}
+            onBlur={() => { if (alt !== (asset.altText || '')) m.updateFigureMeta(asset.figureId, { altText: alt }); }}
+            aria-label={`${asset.title || asset.id} alt text`}
+            data-testid={`stitch-manuscript-figure-alt-${slug}`}
+            style={{ ...inp, resize: 'vertical', lineHeight: 1.5 }} />
+        </Labeled>
+        <Labeled label="Source / provenance" style={{ flex: '2 1 260px' }}>
+          <input value={src} placeholder="e.g. Adapted from Smith et al. 2020 with permission"
+            onChange={(e) => setSrc(e.target.value)}
+            onBlur={() => { if (src !== (asset.sourceNote || '')) m.updateFigureMeta(asset.figureId, { sourceNote: src }); }}
+            aria-label={`${asset.title || asset.id} source`}
+            data-testid={`stitch-manuscript-figure-source-${slug}`} style={inp} />
+        </Labeled>
+      </div>
+      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+        <input ref={fileRef} type="file" accept="image/png,image/jpeg,image/gif,image/webp"
+          style={{ display: 'none' }}
+          data-testid={`stitch-manuscript-figure-replace-file-${slug}`}
+          onChange={async (e) => {
+            const f = e.target.files && e.target.files[0];
+            e.target.value = '';
+            if (!f) return;
+            const r = await m.replaceFigureFile(asset.figureId, f);
+            if (r) onNotice('The image was replaced. The figure keeps its number and every cross-reference to it.');
+          }} />
+        <button onClick={() => fileRef.current && fileRef.current.click()}
+          data-testid={`stitch-manuscript-figure-replace-${slug}`}
+          title="Replace the image without changing this figure's number or cross-references"
+          style={{ ...btnS('ghost'), fontSize: 10.5, padding: '3px 10px' }}>Replace image</button>
+        {asset.figureId && (
+          <a href={m.figureDownloadUrl(asset.figureId)} download
+            data-testid={`stitch-manuscript-figure-download-${slug}`}
+            style={{ ...btnS('ghost'), fontSize: 10.5, padding: '3px 10px', textDecoration: 'none' }}>
+            Download original
+          </a>
+        )}
+        <button onClick={remove} data-testid={`stitch-manuscript-figure-delete-${slug}`}
+          title={asset.placed
+            ? 'Take it out of the manuscript first — deleting the file is permanent'
+            : 'Permanently delete this image file'}
+          style={{ ...btnS('ghost'), fontSize: 10.5, padding: '3px 10px', color: C.red }}>
+          Delete file
+        </button>
+      </div>
+    </div>
+  );
+}
+
 export function FiguresPanel({ m, onOpenAsset }) {
   const [buf, commit] = useAssetOverridesBuffer(m);
   const [notice, setNotice] = useState('');
   const svgs = useFigureSvgs(m, { forest: true, prisma: true });
+  const uploadRef = useRef(null);
   const figureAssets = (m.assets || []).filter((a) => a.kind === 'figure');
   const preview = (asset) => {
+    // 119.md §5 — an UPLOADED figure previews itself (the picture is the content).
+    if (asset.origin === 'upload') return <UploadedFigureDetails m={m} asset={asset} onNotice={setNotice} />;
     if (asset.id === 'figure:prisma') {
       return svgs.loading ? <div style={{ color: C.muted, fontSize: 12 }}>Rendering…</div>
         : svgs.error ? <InfoBox color={C.red}>{svgs.error}</InfoBox>
@@ -2604,6 +2930,36 @@ export function FiguresPanel({ m, onOpenAsset }) {
   return (
     <div data-testid="stitch-manuscript-assets-figures">
       <InfoBox color={C.acc}>Included figures are embedded in the Word export with captions, alt text and live numbering. Reference one from the text and it moves next to its first mention.</InfoBox>
+      {/* 119.md §5 — uploaded pictures ARE figures: one menu, one numbering
+          sequence, one set of controls. This is the file-picker entry point; paste
+          and drag-and-drop reach the same upload path from inside the editor. */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 14, flexWrap: 'wrap' }}>
+        <input ref={uploadRef} type="file" multiple accept="image/png,image/jpeg,image/gif,image/webp"
+          style={{ display: 'none' }} data-testid="stitch-manuscript-figures-upload-file"
+          onChange={async (e) => {
+            const files = Array.from(e.target.files || []);
+            e.target.value = '';
+            if (!files.length) return;
+            const created = await m.uploadFigures(files);
+            if (created.length) {
+              setNotice(created.length === 1
+                ? 'Picture uploaded. Open the Editor and use Insert → Picture, or paste it, to place it in the manuscript.'
+                : `${created.length} pictures uploaded. Place each one in the manuscript from the Editor.`);
+            }
+          }} />
+        <button onClick={() => uploadRef.current && uploadRef.current.click()}
+          disabled={!!m.figureBusy}
+          data-testid="stitch-manuscript-figures-upload"
+          style={{ ...btnS('primary'), fontSize: 11.5, opacity: m.figureBusy ? 0.6 : 1 }}>
+          {m.figureBusy ? 'Uploading…' : 'Upload picture'}
+        </button>
+        <span style={{ fontSize: 10.5, color: C.muted }}>
+          PNG, JPEG, GIF or WebP. Uploaded pictures are numbered with the generated figures.
+        </span>
+      </div>
+      {m.figureError && (
+        <InfoBox color={C.red}><span data-testid="stitch-manuscript-figures-error">{m.figureError}</span></InfoBox>
+      )}
       {notice && <InfoBox color={C.acc}>{notice}</InfoBox>}
       {figureAssets.map((asset) => (
         <Card key={asset.id} style={{ marginBottom: 16 }}>

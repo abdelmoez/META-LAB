@@ -106,6 +106,9 @@ import {
   collectPdfLinkTargets, createReferencePdfResolver, pdfAttachmentIdFor, withResolvedPdfIds,
 } from './referencePdfLinks.js';
 import { screeningApi } from '../../frontend/screening/api-client/screeningApi.js';
+// 119.md §5 — the manuscript FIGURE store (bytes + row metadata). Where a figure
+// sits and what it is called live in the prose; this client only moves files.
+import { figureApi, isSupportedImageFile, UNSUPPORTED_IMAGE_MESSAGE } from './figureApi.js';
 // 117.md §22 (r2) — audit actors come from the signed-in user, not a phantom
 // `project._me` key nothing ever wrote. Optional: SSR tests have no provider.
 import { useOptionalAuth } from '../../frontend/context/AuthContext.jsx';
@@ -484,6 +487,42 @@ export function useManuscript(project, upd) {
     return () => { alive = false; };
   }, [pid, screenPid]);
   const availability = useMemo(() => sourceAvailability(sources), [sources]);
+
+  /* ══════════ 119.md §5 — the uploaded-figure store ══════════
+   *
+   * Rows only. WHERE a figure sits, and its title, live in the prose marker
+   * (`[[figcap:…]]`); its caption/legend/alt-text/size overrides live in
+   * draft.assets. This state is the third piece — the bytes' metadata — fetched
+   * once per project open and re-fetched after every write, soft-fail: a 404 (the
+   * table not yet pushed) or a network error leaves `figuresKnown` false, and the
+   * registry then trusts the prose rather than painting real figures as deleted.
+   */
+  const [figures, setFigures] = useState([]);
+  const [figuresKnown, setFiguresKnown] = useState(false);
+  const [figureError, setFigureError] = useState('');
+  const [figureBusy, setFigureBusy] = useState(false);
+  const figuresRef = useRef(figures);
+  useEffect(() => { figuresRef.current = figures; });
+
+  const refreshFigures = useCallback(async () => {
+    if (!pid) { setFigures([]); setFiguresKnown(false); return []; }
+    try {
+      const r = await figureApi.list(pid);
+      const list = Array.isArray(r && r.figures) ? r.figures : [];
+      setFigures(list);
+      // `available:false` = the server has no figure table yet (pre-migration).
+      // Treating that as "known and empty" would break every placed marker, so it
+      // is deliberately reported as UNKNOWN.
+      setFiguresKnown(r && r.available !== false);
+      return list;
+    } catch {
+      setFigures([]);
+      setFiguresKnown(false);
+      return [];
+    }
+  }, [pid]);
+
+  useEffect(() => { void refreshFigures(); }, [refreshFigures]);
 
   // 85.md B2 — export-freshness seam: re-run the soft-fail source fetch on demand
   // (the export path calls this so a .docx never embeds sources from project-open
@@ -882,7 +921,12 @@ export function useManuscript(project, upd) {
 
   const refSignature = useMemo(() => {
     if (!liveDraft) return '';
-    const re = /\[\[(?:tblcap|table|figure):[a-z0-9:-]+\]\]/g;
+    // 119.md §5 — `figcap` joins the signature: an uploaded picture's marker is a
+    // structural object exactly like a table caption, so inserting or moving one
+    // must rebuild the registry on the NEXT render rather than at the next
+    // autosave commit (otherwise its caption reads "Figure ?." for ~600 ms and
+    // every other figure's number lags behind the document).
+    const re = /\[\[(?:tblcap|figcap|table|figure):[a-z0-9:-]+\]\]/g;
     let sig = '';
     for (const s of SECTION_IDS) {
       const c = (liveDraft.sections && liveDraft.sections[s] && liveDraft.sections[s].content) || '';
@@ -933,10 +977,14 @@ export function useManuscript(project, upd) {
         tables, prismaCounts, analyses, primary,
         robByStudyId: sources.robByStudyId || undefined,
         robAssessments: sources.robAssessments || undefined,
+        // 119.md §5 — uploaded figures join the SAME registry. `undefined` when the
+        // store is not known (pre-migration server / failed fetch), which the
+        // registry reads as "trust the prose", never as "these figures are gone".
+        figures: figuresKnown ? figures : undefined,
         staleAssets,
       });
     } catch { return []; }
-  }, [project, registryDraft, tables, prismaCounts, analyses, primary, sources, staleAssets]);
+  }, [project, registryDraft, tables, prismaCounts, analyses, primary, sources, staleAssets, figures, figuresKnown]);
 
   const assetNumbering = useMemo(
     () => resolveNumbering({ sections: registryDraft || [], assets }),
@@ -961,6 +1009,32 @@ export function useManuscript(project, upd) {
 
   /** 117.md §4 — the manual (in-prose) subset of the registry, in document order. */
   const manualTables = useMemo(() => assets.filter((a) => a && a.origin === 'manual'), [assets]);
+
+  /** 119.md §5 — the uploaded subset of the registry (placed first, then unplaced). */
+  const uploadedFigures = useMemo(() => assets.filter((a) => a && a.origin === 'upload'), [assets]);
+
+  /**
+   * 119.md §5 — what the EDITOR needs to paint each placed picture: keyed by
+   * figKey, derived from the SAME registry entry the panel and the export read, so
+   * an alt text edited in the panel, a replaced image and a resized figure all
+   * reach the page through one path. `missing` is only ever true when the store is
+   * known and has no row — never on an unresolved fetch.
+   */
+  const figureInfo = useMemo(() => {
+    const map = {};
+    for (const a of uploadedFigures) {
+      map[a.figKey] = {
+        src: (a.figureId && pid) ? figureApi.rawUrl(pid, a.figureId) : '',
+        alt: a.altText || a.title || '',
+        width: a.width || 0,
+        height: a.height || 0,
+        displayWidth: a.displayWidth || 100,
+        align: a.align || 'center',
+        missing: !a.available,
+      };
+    }
+    return map;
+  }, [uploadedFigures, pid]);
 
   // True when the draft carries ANY structured asset token (known or not) — the
   // Insert-PRISMA button uses this to avoid silently mixing reference modes.
@@ -1133,10 +1207,15 @@ export function useManuscript(project, upd) {
     const prim = anals[0] || null;
     // Everything downstream reads the fact-resolved draft, so the exported
     // document, its validation and its asset numbering all describe the SAME text.
+    // 119.md §5 — the export re-reads the figure rows so a picture uploaded (or
+    // replaced) seconds ago is the one that lands in the .docx, not a render-time
+    // snapshot. Soft-fail: the last known list is honest enough to export.
+    const figs = await refreshFigures().catch(() => figuresRef.current);
     const asts = computeManuscriptAssets(proj, exportDraft, {
       tables: tbls, prismaCounts: pc, analyses: anals, primary: prim,
       robByStudyId: fresh.robByStudyId || undefined,
       robAssessments: fresh.robAssessments || undefined,
+      figures: Array.isArray(figs) ? figs : undefined,
       staleAssets,
     });
     const numb = resolveNumbering({ sections: exportDraft, assets: asts });
@@ -1167,8 +1246,12 @@ export function useManuscript(project, upd) {
       // 117.md §41 — the docx builder takes the resolved list + aliases so it never
       // re-derives a DIFFERENT bibliography than the one just validated.
       references: refList, referenceAliases: refAls,
+      // 119.md §5 — the .docx fetches uploaded figure bytes through the authorized
+      // raw route; the builder is handed the resolver rather than the project id so
+      // it never has to know how figures are addressed.
+      figureBlobUrl: (a) => (a && a.figureId && pid ? figureApi.rawUrl(pid, a.figureId) : null),
     };
-  }, [flushPending, refreshSources, gradeByOutcome, staleAssets, freshness, activeDraft]);
+  }, [flushPending, refreshSources, gradeByOutcome, staleAssets, freshness, activeDraft, refreshFigures, pid]);
 
   // LAZY sync plan: generating the draft to diff CURRENT vs PROPOSED is heavy, so
   // it runs on demand only (tab open / after a decision). The `generated` bundle
@@ -1453,6 +1536,96 @@ export function useManuscript(project, upd) {
       return out;
     });
   }, [mutateActive]);
+
+  /* ══════════ 119.md §5 — the figure write path ══════════
+   *
+   * Bytes move through the authenticated routes; nothing here touches the draft.
+   * PLACING a figure is a separate, deliberate step (the editor inserts the
+   * marker), because uploading a picture and deciding where it belongs in the
+   * argument are two different decisions — and only the second one is prose.
+   */
+
+  /**
+   * Upload one or more image files → the created figure rows. Used by the file
+   * picker, by clipboard paste and by drag-and-drop, so all three take exactly the
+   * same validated path (§5 "Provide safe server-side file validation").
+   * Never throws: the honest error is surfaced through `figureError`.
+   */
+  const uploadFigures = useCallback(async (files, meta = {}) => {
+    const list = Array.from(files || []).filter(Boolean);
+    if (!pid || !list.length) return [];
+    const unsupported = list.filter((f) => !isSupportedImageFile(f));
+    const usable = list.filter((f) => isSupportedImageFile(f));
+    setFigureError(unsupported.length ? UNSUPPORTED_IMAGE_MESSAGE : '');
+    if (!usable.length) return [];
+    setFigureBusy(true);
+    const created = [];
+    try {
+      for (const file of usable) {
+        try {
+          const r = await figureApi.upload(pid, file, meta);
+          if (r && r.figure) created.push(r.figure);
+        } catch (e) {
+          setFigureError((e && e.message) || 'The image could not be uploaded.');
+        }
+      }
+    } finally { setFigureBusy(false); }
+    if (created.length) await refreshFigures();
+    return created;
+  }, [pid, refreshFigures]);
+
+  /** §5 "Replace an image without destroying its stable figure identity". */
+  const replaceFigureFile = useCallback(async (figureId, file) => {
+    if (!pid || !figureId || !file) return null;
+    if (!isSupportedImageFile(file)) { setFigureError(UNSUPPORTED_IMAGE_MESSAGE); return null; }
+    setFigureBusy(true);
+    setFigureError('');
+    try {
+      const r = await figureApi.replace(pid, figureId, file);
+      await refreshFigures();
+      return (r && r.figure) || null;
+    } catch (e) {
+      setFigureError((e && e.message) || 'The image could not be replaced.');
+      return null;
+    } finally { setFigureBusy(false); }
+  }, [pid, refreshFigures]);
+
+  /** §5 "Alt text" / "Source/provenance" — row metadata, not draft overrides. */
+  const updateFigureMeta = useCallback(async (figureId, patch) => {
+    if (!pid || !figureId || !patch) return null;
+    setFigureError('');
+    try {
+      const r = await figureApi.update(pid, figureId, patch);
+      await refreshFigures();
+      return (r && r.figure) || null;
+    } catch (e) {
+      setFigureError((e && e.message) || 'The figure could not be updated.');
+      return null;
+    }
+  }, [pid, refreshFigures]);
+
+  /**
+   * §5 "Remove it" — the PERMANENT delete (row + bytes). The server refuses while
+   * anything still points at the figure, and that refusal is the feature: a figure
+   * still in the manuscript must be taken out of the document first, which is a
+   * prose edit one Ctrl+Z restores with a live file behind it.
+   * Returns { deleted } or { blocked, usage }.
+   */
+  const deleteFigure = useCallback(async (figureId) => {
+    if (!pid || !figureId) return { deleted: false };
+    setFigureError('');
+    try {
+      await figureApi.remove(pid, figureId);
+      await refreshFigures();
+      return { deleted: true };
+    } catch (e) {
+      if (e && e.status === 409) {
+        return { deleted: false, blocked: true, usage: (e.data && e.data.usage) || null };
+      }
+      setFigureError((e && e.message) || 'The figure could not be deleted.');
+      return { deleted: false };
+    }
+  }, [pid, refreshFigures]);
 
   /* ══════════ 117.md §28-§32 — the reference-library write path ══════════
    *
@@ -2048,6 +2221,14 @@ export function useManuscript(project, upd) {
     // editor needs to tell a working cross-reference from a broken one, the
     // manual-table subset, and the side-metadata writer.
     knownAssetIds, manualTables, setTableMeta,
+    // 119.md §5 — the uploaded-figure surface: the rows, the registry subset, what
+    // the editor needs to paint each placed picture, and the four write paths.
+    projectId: pid,
+    figures, figuresKnown, uploadedFigures, figureInfo,
+    figureError, figureBusy, setFigureError,
+    uploadFigures, replaceFigureFile, updateFigureMeta, deleteFigure, refreshFigures,
+    figureRawUrl: (figureId) => (pid && figureId ? figureApi.rawUrl(pid, figureId) : ''),
+    figureDownloadUrl: (figureId) => (pid && figureId ? figureApi.downloadUrl(pid, figureId) : ''),
     dataStatus: sources.dataStatus,
     screening: sources.screening,
     // 117.md §12 — the canonical record-derived flow itself, so the export paths can

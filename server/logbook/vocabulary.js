@@ -98,6 +98,14 @@ export const LOG_ACTIONS = Object.freeze(Object.fromEntries([
   // edit-session events with a readable diff or summary").
   A('MANUSCRIPT_EDIT_SESSION',     'manuscript', 'update', LOG_SEVERITY.ROUTINE, 'Edited the manuscript'),
   A('MANUSCRIPT_EXPORTED',         'manuscript', 'export', LOG_SEVERITY.NOTABLE, 'Exported the manuscript'),
+  // 119.md §8 "Figure insertion, replacement, deletion, and editing" — the figure
+  // BINARY lifecycle is a file event (it moves bytes), so it lands in the 'files'
+  // engine beside PDF upload/download; where a figure SITS in the manuscript is a
+  // prose edit and is already covered by MANUSCRIPT_EDIT_SESSION.
+  A('FIGURE_UPLOADED',             'files', 'create', LOG_SEVERITY.NOTABLE,   'Uploaded a manuscript figure'),
+  A('FIGURE_REPLACED',             'files', 'update', LOG_SEVERITY.NOTABLE,   'Replaced a manuscript figure'),
+  A('FIGURE_UPDATED',              'files', 'update', LOG_SEVERITY.ROUTINE,   'Edited manuscript figure details'),
+  A('FIGURE_DELETED',              'files', 'delete', LOG_SEVERITY.IMPORTANT, 'Deleted a manuscript figure'),
 
   // ── Files and exports (§8 "Files and exports") ────────────────────────────
   A('FILE_DOWNLOADED',             'files', 'access', LOG_SEVERITY.ROUTINE,   'Downloaded a file'),

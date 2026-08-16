@@ -284,7 +284,10 @@ export function validateExport(args = {}) {
           // 117.md §4 — a manual table's title IS its caption line in the page, so
           // the fix is in the editor, not in the Tables & Figures panel.
           ? 'Give the table a title in its caption line in the manuscript text.'
-          : 'Add a title or caption in the Tables & Figures panel.');
+          // 119.md §5 — a PLACED picture's title is its caption line too.
+          : (a.origin === 'upload' && a.placed)
+            ? 'Give the figure a title in its caption, in the manuscript text.'
+            : 'Add a title or caption in the Tables & Figures panel.');
     }
     if (a.stale === true) {
       push(warnings, 'stale-asset',

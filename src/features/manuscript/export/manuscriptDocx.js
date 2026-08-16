@@ -54,6 +54,8 @@ import { SECTION_TYPES, STATEMENT_TYPES } from '../../../research-engine/manuscr
 import {
   ASSET_KIND_ALTERNATION, TABLE_CAPTION_LINE_RE, TABLE_CAPTION_TOKEN_RE,
   formatAssetLabel, formatAssetCaption,
+  // 119.md §5 — the uploaded-figure block grammar.
+  FIGURE_CAPTION_LINE_RE, FIGURE_CAPTION_TOKEN_RE,
 } from '../../../research-engine/manuscript/refTokens.js';
 // 117.md §26/§32 — the ONE reference resolver seam (see its module header).
 import { resolveReferenceLibrary } from '../../../research-engine/manuscript/referenceLibrary.js';
@@ -71,6 +73,71 @@ const TOTAL_TABLE_DXA = 9360;
 async function blobToU8(blob) {
   const buf = await blob.arrayBuffer();
   return new Uint8Array(buf);
+}
+
+/* ── 119.md §5 — uploaded figure bytes ────────────────────────────────────────
+   The Word file must carry the ACTUAL picture, so the bytes are fetched through
+   the same authenticated raw route the editor renders from (credentials included;
+   the storage directory is never public). This happens ONCE, before the document
+   is assembled, because markdownToParagraphs is synchronous by contract — an
+   await inside it would either block the builder or silently drop the figure.
+
+   Word's ImageRun accepts png/jpeg/gif only. Anything else (a WebP that reached
+   the store through a direct API call) is canvas-transcoded to PNG here, so an
+   otherwise-valid figure is never dropped from a submission for a format reason.
+   A fetch/decode failure yields null and the caller emits the honest fallback
+   note — the caption and its bookmark are already in the document, so every
+   cross-reference to the figure still resolves. */
+const DOCX_IMAGE_TYPES = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/gif': 'gif' };
+
+async function transcodeToPng(blob) {
+  if (typeof document === 'undefined' || typeof createImageBitmap === 'undefined') return null;
+  const bitmap = await createImageBitmap(blob);
+  const canvas = document.createElement('canvas');
+  canvas.width = bitmap.width;
+  canvas.height = bitmap.height;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return null;
+  ctx.drawImage(bitmap, 0, 0);
+  if (typeof bitmap.close === 'function') bitmap.close();
+  const out = await new Promise((resolve) => canvas.toBlob(resolve, 'image/png'));
+  if (!out) return null;
+  return { blob: out, width: bitmap.width, height: bitmap.height };
+}
+
+/**
+ * Preload every PLACED uploaded figure's bytes → { [figKey]: {data,type,width,height} }.
+ * @param {Array} assets   the derived registry
+ * @param {function} urlOf (asset) => authenticated raw URL, or null
+ */
+export async function preloadUploadedFigures(assets, urlOf, opts = {}) {
+  const out = {};
+  if (typeof urlOf !== 'function' || typeof fetch !== 'function') return out;
+  const list = (assets || []).filter((a) => a && a.origin === 'upload' && a.available && a.figureId);
+  for (const a of list) {
+    const url = urlOf(a);
+    if (!url) continue;
+    try {
+      const res = await fetch(url, { credentials: 'include' });
+      if (!res.ok) continue;
+      let blob = await res.blob();
+      let width = Number(a.width) || 0;
+      let height = Number(a.height) || 0;
+      let type = DOCX_IMAGE_TYPES[String(blob.type || a.mimeType || '').toLowerCase()];
+      if (!type) {
+        const png = await transcodeToPng(blob);
+        if (!png) continue;
+        blob = png.blob; width = png.width; height = png.height; type = 'png';
+      }
+      out[a.figKey] = { data: await blobToU8(blob), type, width, height };
+    } catch {
+      // Honest degrade: no entry → the fallback note, never a corrupt media part.
+      if (typeof opts.onInfo === 'function') {
+        opts.onInfo('figure-fetch-failed', `The image for "${a.title || a.figKey}" could not be fetched for this export.`);
+      }
+    }
+  }
+  return out;
 }
 
 /* ── asset bookmark anchors ────────────────────────────────────────────────────
@@ -121,7 +188,10 @@ function parseInline(text, D, base = {}, ictx = null) {
   const emit = (t, extra = {}) => {
     // A caption marker is a BLOCK grammar (markdownToParagraphs owns it); one that
     // reaches an inline run is malformed, so it drops rather than leaking `[[…]]`.
-    const str = String(t == null ? '' : t).replace(new RegExp(TABLE_CAPTION_TOKEN_RE.source, 'g'), '');
+    const str = String(t == null ? '' : t)
+      .replace(new RegExp(TABLE_CAPTION_TOKEN_RE.source, 'g'), '')
+      // 119.md §5 — a stray figure marker is not a caption either; it never leaks.
+      .replace(new RegExp(FIGURE_CAPTION_TOKEN_RE.source, 'g'), '');
     const tre = new RegExp(`\\[\\[(${ASSET_KIND_ALTERNATION}):([a-z0-9:-]+)\\]\\]`, 'g');
     let l = 0;
     let tm;
@@ -138,7 +208,9 @@ function parseInline(text, D, base = {}, ictx = null) {
     + '|\\[[^\\]]*\\]\\((?:https?:\\/\\/|mailto:)[^)\\s]+\\))', 'g');
   let last = 0;
   let m;
-  const s = String(text == null ? '' : text).replace(new RegExp(TABLE_CAPTION_TOKEN_RE.source, 'g'), '');
+  const s = String(text == null ? '' : text)
+    .replace(new RegExp(TABLE_CAPTION_TOKEN_RE.source, 'g'), '')
+    .replace(new RegExp(FIGURE_CAPTION_TOKEN_RE.source, 'g'), '');
   while ((m = re.exec(s)) !== null) {
     if (m.index > last) plain(s.slice(last, m.index));
     const tok = m[0];
@@ -215,6 +287,47 @@ function mdTableToDocx(lines, D, ictx) {
  * Heading mapping mirrors mdDom: # → H2, ## → H3, ### → H4 (sections themselves
  * are H1). Exported for the MS-4 parity tests.
  */
+/**
+ * 119.md §5 — the ImageRun paragraph for an UPLOADED figure.
+ *
+ * Sizing: §5 asks that "large images do not overflow the Word document". The
+ * usable content width at 1in margins is 468pt, and the shipped figure width is
+ * the proven 560pt-class value scaled by the researcher's own display-width
+ * choice — capped at the page width, never above it, with the aspect ratio taken
+ * from the file's real intrinsic pixels (never guessed: a file whose dimensions
+ * could not be read falls back to a square-safe height rather than inventing a
+ * ratio that would distort the picture).
+ *
+ * `type` is REQUIRED by docx v9 — omitting it writes a media part with an
+ * undefined content type and Word must "repair" the file. Only png/jpeg/gif ever
+ * reach here: anything else was transcoded to PNG on the way in (figureApi) or at
+ * preload time (preloadUploadedFigures).
+ */
+export const DOCX_MAX_FIGURE_PT = 468;   // Letter/A4 content width at 1in margins
+
+export function uploadedImageParagraph(img, asset, number, title, D, ictx) {
+  const { Paragraph, AlignmentType, ImageRun } = D;
+  const pct = (asset && Number(asset.displayWidth) >= 20 && Number(asset.displayWidth) <= 100)
+    ? Number(asset.displayWidth) : 100;
+  const width = Math.max(72, Math.round((DOCX_MAX_FIGURE_PT * pct) / 100));
+  const ratio = (img.width > 0 && img.height > 0) ? (img.height / img.width) : 1;
+  const align = (asset && asset.align === 'left') ? AlignmentType.LEFT
+    : (asset && asset.align === 'right') ? AlignmentType.RIGHT : AlignmentType.CENTER;
+  const label = formatAssetLabel('figure', number, { templateId: ictx && ictx.templateId });
+  // §5 "Alt text" — the researcher's own description wins; the derived caption is
+  // the honest fallback, never an invented description of an image we cannot see.
+  const alt = (asset && asset.altText) || `${label}. ${title || ''}`.trim();
+  return new Paragraph({
+    alignment: align,
+    children: [new ImageRun({
+      type: img.type,
+      data: img.data,
+      transformation: { width, height: Math.round(width * ratio) },
+      altText: { title: label, description: alt, name: (ictx && ictx.anchors && ictx.anchors[`figure:${asset && asset.figKey}`]) || label },
+    })],
+  });
+}
+
 export function markdownToParagraphs(md, D, ctx) {
   const { Paragraph, HeadingLevel } = D;
   const c = ctx || { listInstance: 0 };
@@ -237,6 +350,38 @@ export function markdownToParagraphs(md, D, ctx) {
     const isTable = /^\s*\|/.test(line);
     if (tableBuf && !isTable) flushTable();
     if (isTable) { inOl = false; if (!tableBuf) tableBuf = []; tableBuf.push(line); continue; }
+    /* 119.md §5 — an UPLOADED figure's marker: the picture is a BLOCK of the
+       document, so it is emitted exactly where it sits, with the same numbered
+       caption + Bookmark anchor every other figure gets (so cross-reference
+       hyperlinks resolve identically). The image bytes were preloaded before the
+       document assembly started — this function is synchronous by contract, and a
+       fetch here would either block the builder or silently drop the picture. */
+    const figLine = line.match(FIGURE_CAPTION_LINE_RE);
+    if (figLine) {
+      inOl = false;
+      c.pendingTableNote = null;
+      const figId = `figure:${figLine[1]}`;
+      const figAsset = (ictx && ictx.uploadById && ictx.uploadById[figId]) || null;
+      const figNum = (ictx && ictx.numbers) ? ictx.numbers[figId] : null;
+      const figTitle = figLine[2].trim() || (figAsset && (figAsset.title || figAsset.defaultCaption)) || '';
+      // Caption FIRST (it carries the bookmark) so cross-references stay valid even
+      // when the image could not be embedded — the same rule emitFigureAsset uses.
+      out.push(caption(
+        formatAssetCaption('figure', figNum, figTitle, { templateId: ictx && ictx.templateId }),
+        D,
+        { bookmark: (ictx && ictx.anchors) ? ictx.anchors[figId] : null, keepNext: true },
+      ));
+      if (figAsset && figAsset.caption) out.push(captionBody(figAsset.caption, D, { keepNext: true }));
+      const img = (ictx && ictx.figureImages) ? ictx.figureImages[figLine[1]] : null;
+      if (img && img.data) {
+        out.push(uploadedImageParagraph(img, figAsset, figNum, figTitle, D, ictx));
+      } else {
+        out.push(note(`[The image for ${formatAssetLabel('figure', figNum, { templateId: ictx && ictx.templateId })} could not be embedded in this export — open the Figures tab to verify it, then re-export.]`, D));
+      }
+      if (figAsset && figAsset.legend) out.push(note(figAsset.legend, D));
+      if (figAsset && figAsset.note && figAsset.note !== figAsset.legend) out.push(note(figAsset.note, D));
+      continue;
+    }
     // 117.md §4/§92 — a MANUAL table's caption: the same treatment a registry asset
     // gets (numbered caption paragraph + Bookmark anchor + optional caption body),
     // emitted in place because the table itself is already inline prose.
@@ -438,7 +583,15 @@ export async function buildManuscriptDocx(project, draft, opts = {}) {
   const anchors = buildAnchors(assets);
   const includeFigures = opts.includeFigures !== false;
   const onProgress = typeof opts.onProgress === 'function' ? opts.onProgress : null;
-  const figTotal = includeFigures ? (numbering.orderFigures || []).length : 0;
+  // 119.md §5 — uploaded figures are emitted inline by the markdown walker, not by
+  // emitFigureAsset, so they are excluded from the rasterisation progress total
+  // (counting them would report a step that never runs).
+  const figTotal = includeFigures
+    ? (numbering.orderFigures || []).filter((id) => {
+      const a = assetById.get(id);
+      return !(a && a.origin === 'upload');
+    }).length
+    : 0;
   let figStep = 0;
 
   /* 117.md §26/§32/§41 — the bibliography comes from the ONE resolver seam. The
@@ -486,12 +639,26 @@ export async function buildManuscriptDocx(project, draft, opts = {}) {
   // the editor and the validation see.
   const manualById = {};
   for (const a of assets) if (a && a.origin === 'manual') manualById[a.id] = a;
+  /* 119.md §5 — the same treatment for UPLOADED figures: they are inline blocks of
+     the prose, so their registry entries (title override, caption, legend, alt
+     text, display width, alignment) ride the inline context, and their bytes are
+     fetched ONCE here — before assembly — because the markdown walker is sync. */
+  const uploadById = {};
+  for (const a of assets) if (a && a.origin === 'upload') uploadById[a.id] = a;
+  // Only figures this document will actually PRINT are fetched (a project may hold
+  // pictures that are neither placed nor referenced; downloading them would cost a
+  // round trip per unused file for nothing).
+  const figureImages = includeFigures
+    ? await preloadUploadedFigures(
+      assets.filter((a) => numbering.byId[a.id] != null), opts.figureBlobUrl, { onInfo },
+    )
+    : {};
   // One shared markdown context per document → every ordered list gets a unique
   // numbering instance (each restarts at 1 in Word).
   const mdCtx = {
     listInstance: 0,
     pendingTableNote: null,
-    inline: { numbers: numbering.byId, anchors, manualById, templateId: draft.templateId },
+    inline: { numbers: numbering.byId, anchors, manualById, uploadById, figureImages, templateId: draft.templateId },
   };
 
   /* ── asset emitters ── */
@@ -560,6 +727,19 @@ export async function buildManuscriptDocx(project, draft, opts = {}) {
       { bookmark: anchors[a.id], keepNext: true }));
     // User caption override — its own paragraph under the title line.
     if (a.caption) out.push(captionBody(a.caption, D, { keepNext: true }));
+    /* 119.md §5 — an UPLOADED figure reaching this emitter is one that is
+       referenced but not placed. Its bytes are already preloaded (the marker path
+       and this path share ONE fetch), so it is embedded with the same sizing,
+       alignment and alt-text rules as an inline one. */
+    if (a.origin === 'upload') {
+      const img = figureImages[a.figKey];
+      if (img && img.data) out.push(uploadedImageParagraph(img, a, n, title, D, mdCtx.inline));
+      else out.push(note(`[The image for ${formatAssetLabel('figure', n, { templateId: draft.templateId })} could not be embedded in this export — open the Figures tab to verify it, then re-export.]`, D));
+      if (a.legend) out.push(note(a.legend, D));
+      if (a.note && a.note !== a.legend) out.push(note(a.note, D));
+      await new Promise((r) => setTimeout(r, 0));
+      return;
+    }
     try {
       const png = await renderFigurePng(a);
       if (png && png.blob) {
@@ -588,9 +768,17 @@ export async function buildManuscriptDocx(project, draft, opts = {}) {
   const emitAsset = async (assetId, out) => {
     const a = assetById.get(assetId);
     if (!a || numbering.byId[assetId] == null) return;
-    // 117.md §4 — a manual table is ALREADY in the prose stream; emitting it here
-    // would duplicate it. computePlacements never yields one, this is the guard.
+    // 117.md §4 / 119.md §5 — a manual table and a PLACED uploaded figure are
+    // ALREADY in the prose stream; emitting them here would duplicate them.
+    // computePlacements never yields one, this is the guard.
+    //
+    // An uploaded figure that is REFERENCED but no longer placed (the researcher
+    // took the picture out of the text and kept the sentence pointing at it) is a
+    // different case: it must still be emitted, at the end with the other
+    // unreferenced-position assets, or the reader would meet a "Figure 2" that the
+    // document never prints.
     if (a.origin === 'manual') return;
+    if (a.origin === 'upload' && a.placed) return;
     if (a.kind === 'table') emitTableAsset(a, out);
     else if (a.kind === 'figure' && includeFigures) await emitFigureAsset(a, out);
   };

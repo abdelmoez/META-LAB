@@ -48,7 +48,7 @@ import {
 } from './tables.js';
 import { computePrismaCounts } from './prismaCounts.js';
 import { allAnalyses } from './draft.js';
-import { collectManualTables } from './refTokens.js';
+import { collectManualTables, collectPlacedFigures } from './refTokens.js';
 
 const clean = (s) => String(s == null ? '' : s).trim();
 
@@ -87,6 +87,9 @@ function staleFlag(stale, id) {
  *   primary       primaryAnalysis result (defaults to analyses[0])
  *   robByStudyId / robOpts / robAssessments / searchOpts / gradeByOutcome /
  *   runMeta / prec / analysis / screening   threaded to the builders
+ *   figures       119.md §5 — the project's ManuscriptFigure rows (uploaded
+ *                 pictures). Absent = "the store is unknown here", and a placed
+ *                 marker is then assumed honest rather than reported missing.
  *   staleAssets   {[assetId]:true} map or Set — stamps `stale:true`
  *
  * @returns Array of ordered asset descriptors:
@@ -197,6 +200,92 @@ export function computeManuscriptAssets(project, draft, opts = {}) {
     if (meta.createdAt) a.createdAt = meta.createdAt;
     if (meta.updatedAt) a.updatedAt = meta.updatedAt;
     out.push(a);
+  }
+
+  /* ── 119.md §5 — UPLOADED figures join the SAME registry ──
+     kind:'figure', origin:'upload' — NOT a new ASSET_KIND, because §5 wants ONE
+     Figures numbering sequence over generated and user-supplied pictures alike.
+     Everything downstream (numbering, chips, the cross-reference picker, export
+     validation, the .docx emitter, the Figures panel) consumes the registry shape
+     generically and needed no change.
+
+     They come FIRST among figures so an uploaded picture that is never placed and
+     never referenced still lists above the generated set in the panel; the numbers
+     themselves come from document position, never from this order.
+
+     `opts.figures` is the ManuscriptFigure row list (threaded like robAssessments).
+     When it is ABSENT the registry does not know what exists, so a placed marker is
+     assumed honest (`available:true`) — the same doctrine mdDom's knownAssetIds
+     follows: a consumer that has not resolved the store must never accuse a real
+     figure of being missing. When it IS present, a marker with no row is honestly
+     unavailable and export validation reports it. */
+  const figureRows = Array.isArray(o.figures) ? o.figures : null;
+  {
+    const rowByKey = new Map();
+    for (const f of (figureRows || [])) {
+      if (f && f.figKey && !rowByKey.has(f.figKey)) rowByKey.set(f.figKey, f);
+    }
+    const placed = collectPlacedFigures(draft || []);
+    const seen = new Set();
+    const pushUpload = (figKey, row, placement) => {
+      if (!figKey || seen.has(figKey)) return;
+      seen.add(figKey);
+      const id = `figure:${figKey}`;
+      const known = !!row;
+      const available = figureRows ? known : true;
+      const title = clean(placement && placement.title) || clean(row && row.fileName) || 'Figure';
+      const a = {
+        id,
+        kind: 'figure',
+        origin: 'upload',
+        builderId: null,
+        figKey,
+        title,
+        defaultCaption: title,
+        available,
+        // A picture is "in the export" exactly when it is in the document; an
+        // uploaded-but-unplaced figure is honestly listed as not placed instead of
+        // being silently appended to the end of the manuscript.
+        includedDefault: !!placement,
+        included: !!placement,
+        placed: !!placement,
+        source: 'upload',
+      };
+      if (placement) { a.sectionId = placement.sectionId; a.blockIndex = placement.index; }
+      if (row) {
+        a.figureId = row.id || '';
+        a.fileName = row.fileName || '';
+        a.mimeType = row.mimeType || '';
+        a.fileHash = row.fileHash || '';
+        a.width = Number(row.width) || 0;
+        a.height = Number(row.height) || 0;
+        a.fileSize = Number(row.fileSize) || 0;
+        a.uploadedBy = row.uploadedBy || '';
+        a.uploadedByName = row.uploadedByName || '';
+        a.uploadedAt = row.createdAt || null;
+        a.replacedCount = Number(row.replacedCount) || 0;
+        if (row.replacedAt) a.replacedAt = row.replacedAt;
+        if (clean(row.altText)) a.altText = clean(row.altText);
+        if (clean(row.sourceNote)) a.sourceNote = clean(row.sourceNote);
+        if (row.origin === 'analysis') a.figureOrigin = 'analysis';
+      }
+      // Display overrides ride the EXISTING per-asset channel (draft.assets), so
+      // caption/legend/alt-text/width/alignment edits are the same buffered
+      // queueAssetPatch write every other figure already uses.
+      const ov = (overrides[id] && typeof overrides[id] === 'object') ? overrides[id] : {};
+      if (clean(ov.title)) a.title = clean(ov.title);
+      if (clean(ov.caption)) a.caption = clean(ov.caption);
+      if (clean(ov.legend)) a.legend = clean(ov.legend);
+      if (clean(ov.note)) a.note = clean(ov.note);
+      if (clean(ov.altText)) a.altText = clean(ov.altText);
+      if (clean(ov.align)) a.align = clean(ov.align);
+      const w = Number(ov.displayWidth);
+      if (Number.isFinite(w) && w > 0) a.displayWidth = Math.min(100, Math.max(20, Math.round(w)));
+      if (staleFlag(stale, id)) a.stale = true;
+      out.push(a);
+    };
+    for (const p of placed) pushUpload(p.figKey, rowByKey.get(p.figKey) || null, p);
+    for (const f of (figureRows || [])) pushUpload(f && f.figKey, f, null);
   }
 
   /* ── Figures ── */

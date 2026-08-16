@@ -3242,3 +3242,68 @@ model PdfAnnotation {
   @@index([metaLabProjectId, docHash, updatedAt])
   @@index([docHash, page])
 }
+
+// ════════════════════════════════════════════════════════════════════════════
+// 119.md §5 — MANUSCRIPT FIGURES (user-uploaded pictures as scholarly figures).
+//
+// Why a TABLE and not a blob pointer (the studyDoc precedent): figure metadata is
+// read across drafts, carries a replacement HISTORY (§5 "Version/replacement
+// history"), and every autosave re-transmits the WHOLE Project.data blob under a
+// 10 MB parser ceiling — so binaries (and their growing metadata) must live
+// outside it. The bytes are on disk (server/storage/manuscript-figures/
+// <metaLabProjectId>/<uuid>.<ext>); this row is the only index of them.
+//
+// Scope key is the META·LAB Project id (the manuscript lives in that blob), gated
+// by resolveExtractionAccess exactly like study documents. Bare scope key, no FK:
+// audit-survival, matching ScreenPdfAttachment.projectId.
+//
+// IDENTITY (§5 "a stable internal ID independent of its displayed number"):
+//   `figKey` is the manuscript-facing id — the thing the prose marker
+//   `[[figcap:<figKey>]]` and the cross-reference token `[[figure:<figKey>]]`
+//   carry. It is minted grammar-safe ([a-z0-9-]) and NEVER changes: replacing the
+//   image writes new bytes onto the same row, so every cross-reference survives.
+//   `id` stays the row's own database id (routes address it, so a replace cannot
+//   be confused with a different figure by a stale client).
+//
+// DEFERRED BINARY DELETION (§5 "Undo must restore the figure and its references"):
+//   removing a figure from the manuscript is a PROSE edit (the marker goes), which
+//   one native Ctrl+Z restores — so the row and its bytes must still be there when
+//   it comes back. Rows are therefore only ever hard-deleted through the explicit
+//   "Delete permanently" route, which refuses while ANY draft still references the
+//   figKey (delete-only-when-unreferenced, the studyDoc doctrine).
+//
+// This is a BRAND-NEW table, so @@unique is allowed (house rule: uniques by
+// construction on new tables only). Every column is defaulted or nullable, so
+// `db push` onto a live database is additive.
+// After editing, re-run `node server/scripts/sync-postgres-schema.mjs`.
+model ManuscriptFigure {
+  id            String   @id @default(uuid())
+  projectId     String // META·LAB Project id (plain scope key — no relation)
+  figKey        String // manuscript-facing stable id ([a-z0-9-]) used by the prose marker
+  fileName      String // original upload name (§5 "Original filename")
+  storedName    String // on-disk uuid filename
+  fileSize      Int      @default(0)
+  mimeType      String   @default("image/png") // image/png | image/jpeg | image/gif | image/webp
+  fileHash      String // sha256 of the bytes — content identity + the raw route's ETag
+  width         Int      @default(0) // intrinsic pixels (0 = undetermined, never guessed)
+  height        Int      @default(0)
+  altText       String   @default("") // §5 "Alt text" — accessibility, exported into the .docx
+  sourceNote    String   @default("") // §5 "Source/provenance" — free text ("Adapted from …")
+  origin        String   @default("upload") // upload | analysis (rasterised project figure)
+  uploadedBy    String
+  uploadedByName String  @default("") // display name AT THE TIME (Logbook/ScreenDecision precedent)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  // §5 "Version/replacement history" — a replace keeps figKey and rewrites the
+  // bytes on THIS row, and stamps the superseded file here so the previous
+  // version is recoverable and auditable (never silently overwritten).
+  replacedCount Int      @default(0)
+  prevStoredName String? // the file the last replace superseded (kept on disk)
+  prevFileName  String?
+  prevFileHash  String?
+  replacedAt    DateTime?
+
+  @@unique([projectId, figKey])
+  @@index([projectId, createdAt])
+  @@index([projectId, fileHash])
+}

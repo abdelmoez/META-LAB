@@ -33,6 +33,9 @@ import {
   factChipText, factOf,
   CITE_CHIP_CLASS, ASSET_CHIP_CLASS, FACT_CHIP_CLASS, INPUT_CHIP_CLASS,
   TABLE_CAPTION_CLASS, TABLE_CAPTION_NUM_CLASS, TABLE_CAPTION_TITLE_CLASS,
+  // 119.md §5 — the uploaded-figure block.
+  FIGURE_BLOCK_CLASS, FIGURE_IMG_CLASS, FIGURE_CAPTION_CLASS,
+  FIGURE_CAPTION_NUM_CLASS, FIGURE_CAPTION_TITLE_CLASS,
 } from './mdDom.js';
 // 117.md §35 — one chip may carry several reference ids; the parser is shared with
 // the engine so the editor and the export can never disagree about a token.
@@ -43,6 +46,8 @@ import { parseCiteIds } from '../../../research-engine/manuscript/citations.js';
 import { makeCaptionedTableMd, applyTableOp } from './tableOps.js';
 import {
   mintManualTableId, remintDuplicateCaptions, formatCaptionPrefix, tableCaptionLine,
+  // 119.md §5 — the uploaded-figure marker grammar.
+  figureCaptionLine, dropDuplicateFigureMarkers,
 } from '../../../research-engine/manuscript/refTokens.js';
 import { SHOW_CHANGES_CSS, indexFactChanges, factChipTitle } from '../showChanges.js';
 // 117.md §44 — an overlay that consumes an Escape owns the fullscreen exit it causes.
@@ -120,6 +125,35 @@ export const RICH_EDITOR_CSS = `
 .ms-page-body .${TABLE_CAPTION_TITLE_CLASS}:focus{background:rgba(30,122,70,0.12);}
 .ms-page-body .${TABLE_CAPTION_CLASS}[data-tblcap-current="true"]{box-shadow:0 0 0 2px rgba(30,122,70,0.40);
   border-radius:4px;}
+
+/* 119.md §5 — the uploaded-figure BLOCK. Same island contract as the table
+   caption: only the title region is editable, the number is derived, and the
+   picture itself can never be typed into. The caption sits UNDER the picture
+   (biomedical convention: table titles above, figure captions below). */
+.ms-page-body .${FIGURE_BLOCK_CLASS}{margin:14px 0;display:flex;flex-direction:column;gap:5px;}
+.ms-page-body .${FIGURE_BLOCK_CLASS}[data-fig-align="center"]{align-items:center;}
+.ms-page-body .${FIGURE_BLOCK_CLASS}[data-fig-align="left"]{align-items:flex-start;}
+.ms-page-body .${FIGURE_BLOCK_CLASS}[data-fig-align="right"]{align-items:flex-end;}
+.ms-page-body .${FIGURE_IMG_CLASS}{max-width:100%;height:auto;display:block;border-radius:3px;
+  background:#f4f6f9;}
+.ms-page-body .${FIGURE_IMG_CLASS}[data-fig-missing="true"]{display:block;width:100%;padding:22px 12px;
+  font:500 12px/1.5 'IBM Plex Sans',sans-serif;color:#a32020;background:#fdf2f2;border:1px dashed #e0a3a3;
+  text-align:center;border-radius:4px;}
+.ms-page-body .${FIGURE_CAPTION_CLASS}{font:500 12.5px/1.55 'IBM Plex Sans',sans-serif;color:#1c2330;
+  width:100%;}
+.ms-page-body .${FIGURE_CAPTION_NUM_CLASS}{font-weight:700;color:#1e7a46;margin-right:6px;white-space:nowrap;
+  user-select:none;}
+.ms-page-body .${FIGURE_CAPTION_TITLE_CLASS}{outline:none;display:inline;border-radius:3px;padding:0 2px;}
+.ms-page-body .${FIGURE_CAPTION_TITLE_CLASS}:empty::before{content:attr(data-placeholder);color:#98a1b3;
+  font-style:italic;}
+/* 119.md §2 (same WebKit caret geometry fix the table title needed). */
+.ms-page-body .${FIGURE_CAPTION_TITLE_CLASS}:empty{display:inline-block;min-width:4px;}
+.ms-page-body .${FIGURE_CAPTION_TITLE_CLASS}:hover{background:rgba(30,122,70,0.07);}
+.ms-page-body .${FIGURE_CAPTION_TITLE_CLASS}:focus{background:rgba(30,122,70,0.12);}
+.ms-page-body .${FIGURE_BLOCK_CLASS}[data-figcap-current="true"]{box-shadow:0 0 0 2px rgba(30,122,70,0.40);
+  border-radius:4px;}
+/* Drag-and-drop target feedback (119.md §5 "Drag and drop"). */
+.ms-rich[data-fig-drop="true"]{outline:2px dashed #1e7a46;outline-offset:-4px;background:rgba(30,122,70,0.04);}
 /* 101.md §6 — the fact chip is deliberately NOT a chip to look at. It is an element
    only so a project-derived value stays atomic and caret-safe; visually it must be
    indistinguishable from the prose around it, or "turn Show Changes off → completely
@@ -223,6 +257,18 @@ export const RichSectionEditor = forwardRef(function RichSectionEditor({
   // the popovers.
   onCiteChipMenu = null,      // ({ids, label, broken, rect}) on click/Enter
   onCiteChipHover = null,     // ({ids, label, broken, rect}) on hover, null on leave
+  /* 119.md §5 — uploaded figures.
+     `figures`: figKey → { src, alt, width, height, displayWidth, align, missing },
+     i.e. what the derived registry knows about each placed picture. Absent means
+     "the registry is not resolved here" and a placed marker still renders (with no
+     src) rather than being painted as deleted — the knownAssetIds doctrine.
+     `onImageFiles(files)`: the parent uploads them and returns
+     [{figKey, title}] to insert at the caret (or [] when it refused). Absent →
+     paste/drop of an image is not intercepted at all and keeps its old behaviour.
+     `onFigureFocus(info|null)`: the caret entered/left a figure block. */
+  figures = null,
+  onImageFiles = null,
+  onFigureFocus = null,
 }, ref) {
   const rootRef = useRef(null);
   const savedRange = useRef(null);
@@ -257,6 +303,14 @@ export const RichSectionEditor = forwardRef(function RichSectionEditor({
   // snapshot the rest of the section is showing (§16).
   const factOptsRef = useRef(null);
   factOptsRef.current = { facts, factOverrides, factChanges, showChanges };
+  // 119.md §5 — the figure registry snapshot every render path resolves against,
+  // plus the parent's upload seam. Refs so the memoized api closures never go stale.
+  const figuresRef = useRef(figures);
+  const onImageFilesRef = useRef(onImageFiles);
+  const onFigureFocusRef = useRef(onFigureFocus);
+  useEffect(() => { figuresRef.current = figures; });
+  useEffect(() => { onImageFilesRef.current = onImageFiles; });
+  useEffect(() => { onFigureFocusRef.current = onFigureFocus; });
 
   // Rendered from props exactly once (per mount/key) — React sees the SAME
   // __html string on every re-render and never touches the live DOM again.
@@ -264,7 +318,7 @@ export const RichSectionEditor = forwardRef(function RichSectionEditor({
   if (html0.current == null) {
     html0.current = mdToHtml(value || '', {
       orderMap, assetNumbers, facts, factOverrides, factChanges, showChanges,
-      knownAssetIds, templateId, citationStyle, refsById, yearSuffixes,
+      knownAssetIds, templateId, citationStyle, refsById, yearSuffixes, figures,
     });
   }
 
@@ -323,7 +377,48 @@ export const RichSectionEditor = forwardRef(function RichSectionEditor({
       const prefix = formatCaptionPrefix('table', n == null ? null : n, { templateId });
       if (num.textContent !== prefix) num.textContent = prefix;
     });
+    // 119.md §5 — an uploaded figure's number is derived exactly the same way, so
+    // inserting a picture above another one renumbers it (and every cross-reference
+    // to it) in place, without remounting the editor or touching prose.
+    el.querySelectorAll(`figure.${FIGURE_BLOCK_CLASS}[data-figcap]`).forEach((fb) => {
+      const num = fb.querySelector(`span.${FIGURE_CAPTION_NUM_CLASS}`);
+      if (!num) return;
+      const id = `figure:${fb.getAttribute('data-figcap') || ''}`;
+      const n = assetNumbers
+        ? (typeof assetNumbers.get === 'function' ? assetNumbers.get(id) : assetNumbers[id])
+        : null;
+      const prefix = formatCaptionPrefix('figure', n == null ? null : n, { templateId });
+      if (num.textContent !== prefix) num.textContent = prefix;
+    });
   }, [assetNumbers, knownAssetIds, templateId]);
+
+  /* 119.md §5 — the live FIGURE seam: when the registry changes (a replace writes
+     new bytes, an alt text or a display width is edited, a figure is deleted), the
+     existing block's <img> is updated IN PLACE. Same contract as the fact/chip
+     effects above: the block is a contenteditable="false" island, so an
+     engine-driven update never disturbs the caret of someone typing beside it, and
+     the prose is byte-identical before and after. */
+  useEffect(() => {
+    const el = rootRef.current;
+    if (!el || typeof el.querySelectorAll !== 'function') return;
+    if (!figures) return;
+    el.querySelectorAll(`figure.${FIGURE_BLOCK_CLASS}[data-figcap]`).forEach((fb) => {
+      const key = fb.getAttribute('data-figcap') || '';
+      const info = (typeof figures.get === 'function' ? figures.get(key) : figures[key]) || null;
+      const img = fb.querySelector(`img.${FIGURE_IMG_CLASS}`);
+      const align = info && ['left', 'center', 'right'].includes(info.align) ? info.align : 'center';
+      const w = info && Number(info.displayWidth);
+      const pct = Number.isFinite(w) && w >= 20 && w <= 100 ? Math.round(w) : 100;
+      setAttr(fb, 'data-fig-align', align);
+      setAttr(fb, 'data-fig-width', String(pct));
+      if (!img) return;
+      const src = (info && !info.missing && info.src) ? info.src : '';
+      if (src && img.getAttribute('src') !== src) img.setAttribute('src', src);
+      const alt = (info && info.alt) || '';
+      if (alt && img.getAttribute('alt') !== alt) img.setAttribute('alt', alt);
+      if (img.style && img.style.width !== `${pct}%`) img.style.width = `${pct}%`;
+    });
+  }, [figures]);
 
   // 101.md §4/§33 — THE live-synchronization seam. When the project changes, the
   // engine re-resolves the facts and this effect writes the new values into the
@@ -529,17 +624,25 @@ export const RichSectionEditor = forwardRef(function RichSectionEditor({
    * keep working, and every engine does that part correctly).
    */
 
-  /** The caption island owning a node, scoped to this editor root. */
+  /**
+   * The caption island owning a node, scoped to this editor root.
+   * 119.md §5 — an uploaded FIGURE block is the same kind of island (a
+   * contenteditable="false" wrapper whose only editable region is a title), so it
+   * inherits the whole §2 caret fix here rather than growing a second copy of it.
+   */
   const captionFromNode = (node) => {
     let el = node && (node.nodeType === 1 ? node : node.parentElement);
     while (el && el !== rootRef.current) {
-      if (el.classList && el.classList.contains(TABLE_CAPTION_CLASS)) return el;
+      if (el.classList && (el.classList.contains(TABLE_CAPTION_CLASS)
+        || el.classList.contains(FIGURE_BLOCK_CLASS))) return el;
       el = el.parentElement;
     }
     return null;
   };
 
-  const captionTitleOf = (cap) => (cap ? cap.querySelector(`span.${TABLE_CAPTION_TITLE_CLASS}`) : null);
+  const captionTitleOf = (cap) => (cap
+    ? cap.querySelector(`span.${TABLE_CAPTION_TITLE_CLASS}, span.${FIGURE_CAPTION_TITLE_CLASS}`)
+    : null);
 
   /** Place a collapsed caret inside `titleEl`, honouring the click point when the
       title has text to aim at (a rename must be able to click mid-word). */
@@ -570,6 +673,174 @@ export const RichSectionEditor = forwardRef(function RichSectionEditor({
     return true;
   };
 
+  /* ══════════ 119.md §5 — uploaded-figure blocks ══════════ */
+
+  /** The figure block owning a node, scoped to this editor root. */
+  const figureFromNode = (node) => {
+    let el = node && (node.nodeType === 1 ? node : node.parentElement);
+    while (el && el !== rootRef.current) {
+      if (el.classList && el.classList.contains(FIGURE_BLOCK_CLASS)) return el;
+      el = el.parentElement;
+    }
+    return null;
+  };
+
+  /**
+   * Select the whole figure block (the object, not its parts).
+   *
+   * setStartBefore/setEndAfter — NOT Range.selectNode. They describe the same
+   * region, but WebKit's replacement machinery treats them differently: over a
+   * `contenteditable="false"` block parsed from markup (the state after a reload)
+   * a selectNode-based replacement swallowed the FOLLOWING paragraph's inline
+   * content — the sentence that cross-referenced the picture disappeared with it.
+   * This is the same range shape the §2 whole-table deletion uses, for the same
+   * reason. Focus is taken FIRST: document.execCommand silently no-ops when the
+   * editing host is not focused, and this path is usually reached from a
+   * confirmation dialog.
+   */
+  const selectFigureBlock = (fb) => {
+    if (!fb || typeof window === 'undefined' || !window.getSelection) return false;
+    if (rootRef.current && !readOnlyRef.current) rootRef.current.focus();
+    const sel = window.getSelection();
+    if (!sel) return false;
+    const r = document.createRange();
+    r.setStartBefore(fb);
+    r.setEndAfter(fb);
+    sel.removeAllRanges();
+    sel.addRange(r);
+    savedRange.current = r.cloneRange();
+    notifyFigureFocus(fb);
+    return true;
+  };
+
+  /**
+   * The figure block the current selection fully covers, or null.
+   *
+   * Same shape (and same conservatism) as fullySelectedTable: EXACTLY one figure
+   * touched, its picture and its caption both inside the range, and nothing else
+   * of the section straying into it. Anything less specific stays browser-default,
+   * because a selection that also covers prose must delete the prose the
+   * researcher selected — not silently swallow a figure.
+   */
+  const fullySelectedFigure = () => {
+    const el = rootRef.current;
+    if (!el || typeof window === 'undefined' || !window.getSelection) return null;
+    const sel = window.getSelection();
+    if (!sel || !sel.rangeCount || sel.isCollapsed) return null;
+    const r = sel.getRangeAt(0);
+    if (typeof r.intersectsNode !== 'function') return null;
+    if (!el.contains(r.commonAncestorContainer)) return null;
+    try {
+      const touched = Array.from(el.querySelectorAll(`figure.${FIGURE_BLOCK_CLASS}[data-figcap]`))
+        .filter((fb) => r.intersectsNode(fb));
+      if (touched.length !== 1) return null;
+      const fb = touched[0];
+      const caption = fb.querySelector(`figcaption.${FIGURE_CAPTION_CLASS}`);
+      if (caption && !r.intersectsNode(caption)) return null;
+      const own = topBlockOf(fb);
+      const straysOutside = Array.from(el.children).some((n) => n !== own && r.intersectsNode(n));
+      return straysOutside ? null : fb;
+    } catch { return null; }
+  };
+
+  /** Tell the parent which figure the caret owns (floating controls), or null. */
+  const lastFigureRef = useRef(null);
+  const notifyFigureFocus = (fb) => {
+    const cb = onFigureFocusRef.current;
+    if (!cb) return;
+    if (!fb) {
+      if (lastFigureRef.current) { lastFigureRef.current = null; cb(null); }
+      return;
+    }
+    lastFigureRef.current = fb;
+    cb({
+      figKey: fb.getAttribute('data-figcap') || '',
+      align: fb.getAttribute('data-fig-align') || 'center',
+      width: Number(fb.getAttribute('data-fig-width')) || 100,
+      rect: typeof fb.getBoundingClientRect === 'function' ? fb.getBoundingClientRect() : null,
+    });
+  };
+
+  /** Every figure key currently placed here (document order). */
+  const usedFigureKeys = () => {
+    const out = new Set();
+    const el = rootRef.current;
+    if (el && typeof el.querySelectorAll === 'function') {
+      el.querySelectorAll('[data-figcap]').forEach((n) => out.add(n.getAttribute('data-figcap') || ''));
+    }
+    return out;
+  };
+
+  /**
+   * 119.md §2/§5 — remove a figure block through the editor's NORMAL mutation path
+   * (selection → execCommand), so one native Ctrl+Z restores the picture, its
+   * title and its position together, and the emit that follows autosaves it.
+   * The bytes are untouched: the server only ever deletes an UNREFERENCED figure,
+   * which is precisely what makes the restored marker point at a live file.
+   */
+  const removeFigureBlock = (fb) => {
+    if (readOnlyRef.current || !fb) return false;
+    const el = rootRef.current;
+    if (!el || !el.contains(fb)) return false;
+    /* Routed through replaceNode, NOT through a bare selection + insertHtml.
+       replaceNode focuses the editing host FIRST, and that is load-bearing: this
+       removal is usually triggered from a CONFIRMATION DIALOG, and
+       document.execCommand silently returns false when the host is not focused —
+       at which point insertHtml falls back to raw range surgery, which mutates the
+       DOM without pushing anything onto the browser's undo stack. The picture
+       disappeared and Ctrl+Z could not bring it back: the one guarantee §5
+       actually asks for. An empty paragraph replaces it so a caret target remains;
+       htmlToMd drops that again, so the persisted markdown stays clean. */
+    /* …and the range must not START at offset 0 of the editing host.
+       …and it must be neither the FIRST nor the LAST significant child of the host.
+       Two Blink behaviours, both reproduced under Playwright chromium:
+         · a replacement whose range starts at offset 0 of the editing host is
+           APPLIED but never pushed onto the undo stack — the picture vanished and
+           Ctrl+Z could not bring it back, which is the one guarantee §5 asks for;
+         · a replacement over the host's ONLY child rewrites that element's CONTENTS
+           instead of replacing it, leaving an empty <figure> husk (the same shape
+           WebKit leaves for captions, 119.md §2).
+       An empty throwaway paragraph on each bare side removes both. It is written
+       DIRECTLY rather than through execCommand — at these positions the editing
+       commands are the thing that is broken — and being invisible to the undo stack
+       is what we want: it is not content (htmlToMd drops an empty paragraph), it
+       exists only so the REAL edit records and applies normally.
+
+       KNOWN LIMITATION, stated rather than hidden: under WebKit this same
+       replacement can also remove a cross-reference CHIP sitting in the paragraph
+       immediately after the picture (both are contenteditable="false" islands, and
+       WebKit reaches past the range end into the next block). One Ctrl+Z restores
+       both, and no other prose is touched. Three range/attribute shapes were tried
+       against both engines and each fixed one while breaking the other, so the
+       Blink-correct shape is what ships; the WebKit case wants the 108.md history
+       executor treatment (an application-level undo for this one action) rather
+       than another engine-shaped range. The figure spec therefore runs under
+       chromium only for now — see e2e/manuscript/manuscript-figures-119.spec.ts. */
+    const top = topBlockOf(fb) || fb;
+    const padAt = (before) => {
+      const pad = document.createElement('p');
+      pad.appendChild(document.createElement('br'));
+      if (before) el.insertBefore(pad, top);
+      else if (top.nextSibling) el.insertBefore(pad, top.nextSibling);
+      else el.appendChild(pad);
+    };
+    const kids = significantChildren(el);
+    if (kids[0] === top) padAt(true);
+    if (kids[kids.length - 1] === top) padAt(false);
+    replaceNode(fb, '<p><br></p>');
+    // WebKit treats a contenteditable="false" element at the range start as
+    // immovable (the §2 finding). Same retry, same reason.
+    if (el.contains(fb)) {
+      fb.removeAttribute('contenteditable');
+      replaceNode(fb, '<p><br></p>');
+    }
+    // Last resort: whatever husk an engine left behind goes through the same
+    // mutation path (never a removeChild), so the document stays consistent.
+    if (el.contains(fb)) replaceNode(fb, null);
+    notifyFigureFocus(null);
+    return !el.contains(fb);
+  };
+
   /**
    * 119.md §2 — one delegated entry point for every click inside a caption.
    *
@@ -583,6 +854,20 @@ export const RichSectionEditor = forwardRef(function RichSectionEditor({
     if (!cap) return false;
     const titleEl = captionTitleOf(cap);
     if (!titleEl) return false;
+    /* 119.md §5 — inside a FIGURE block, a click on the PICTURE is not a request to
+       rename it: it selects the whole object, which is what makes Delete/Backspace
+       and the floating figure controls work on the thing the researcher pointed at.
+       A click in the caption keeps the §2 title-caret behaviour below. */
+    const isFigure = cap.classList && cap.classList.contains(FIGURE_BLOCK_CLASS);
+    if (isFigure) {
+      const capRow = cap.querySelector(`figcaption.${FIGURE_CAPTION_CLASS}`);
+      const inCaption = capRow && (capRow === e.target || capRow.contains(e.target));
+      if (!inCaption) {
+        e.preventDefault();
+        selectFigureBlock(cap);
+        return true;
+      }
+    }
     const inTitle = titleEl === e.target || titleEl.contains(e.target);
     const empty = !(titleEl.textContent || '').length;
     // A click inside a title that HAS text is the browser's job — it positions the
@@ -595,6 +880,10 @@ export const RichSectionEditor = forwardRef(function RichSectionEditor({
 
   /** One mousedown entry point: reference chips, then cross-refs, then placeholders. */
   const onEditorMouseDown = (e) => {
+    // 119.md §5 — which figure (if any) the pointer just claimed, so the floating
+    // figure controls follow the object the researcher is working on. Fires the
+    // leave transition exactly once, like notifyTableFocus.
+    if (onFigureFocusRef.current) notifyFigureFocus(figureFromNode(e.target));
     // 117.md §38 — a click on a citation opens its action menu without moving the
     // caret (same preventDefault rule as §10).
     const cite = onCiteChipMenuRef.current ? citeChipFrom(e.target) : null;
@@ -733,7 +1022,7 @@ export const RichSectionEditor = forwardRef(function RichSectionEditor({
    * So a block insertion always lands AFTER the whole enclosing object, never inside
    * it. Returns true when the point was moved.
    */
-  const hoistInsertionPoint = () => {
+  const hoistInsertionPoint = (opts = {}) => {
     const el = rootRef.current;
     if (!el || typeof window === 'undefined' || !window.getSelection) return false;
     const sel = window.getSelection();
@@ -752,6 +1041,14 @@ export const RichSectionEditor = forwardRef(function RichSectionEditor({
       const table = cell && typeof cell.closest === 'function' ? cell.closest('table') : null;
       if (table && el.contains(table)) anchor = table;
     }
+    /* 119.md §5 — a FIGURE is a whole block, not a run of inline content, so it must
+       land BETWEEN top-level blocks and never inside one. Chrome's insertHTML, given
+       a <figure> at a caret in the middle of a paragraph, wraps the surrounding
+       blocks in a <div> — DOM the grammar cannot round-trip and the researcher sees
+       as "the picture went somewhere else". Hoisting to the end of the enclosing
+       top-level block is also the behaviour a researcher expects from "put the
+       picture here": it lands after the paragraph they were in. */
+    if (!anchor && opts.blockLevel) anchor = r.commonAncestorContainer;
     const top = anchor ? topBlockOf(anchor) : null;
     if (!top) return false;
     const nr = document.createRange();
@@ -869,6 +1166,14 @@ export const RichSectionEditor = forwardRef(function RichSectionEditor({
       const title = cap.querySelector(`span.${TABLE_CAPTION_TITLE_CLASS}`);
       if (title) setAttr(title, 'contenteditable', 'true');
     }
+    // 119.md §5 — the uploaded-figure block is the same kind of island and needs
+    // the same re-stamp after a native undo restores it.
+    const figs = el.querySelectorAll(`figure.${FIGURE_BLOCK_CLASS}[data-figcap]`);
+    for (const fb of figs) {
+      setAttr(fb, 'contenteditable', 'false');
+      const title = fb.querySelector(`span.${FIGURE_CAPTION_TITLE_CLASS}`);
+      if (title) setAttr(title, 'contenteditable', 'true');
+    }
   };
 
   const emit = useCallback(() => {
@@ -961,7 +1266,7 @@ export const RichSectionEditor = forwardRef(function RichSectionEditor({
    */
   const insertHtml = useCallback((html, opts) => {
     if (!focusWithSelection()) return;
-    if (opts && opts.hoistFromIslands) hoistInsertionPoint();
+    if (opts && opts.hoistFromIslands) hoistInsertionPoint({ blockLevel: !!(opts && opts.blockLevel) });
     let ok = false;
     try { ok = document.execCommand('insertHTML', false, html); } catch { ok = false; }
     if (!ok) {
@@ -1100,7 +1405,7 @@ export const RichSectionEditor = forwardRef(function RichSectionEditor({
     savedRange.current = r.cloneRange();
     const html = mdToHtml(res.md, {
       orderMap: orderMapRef.current, assetNumbers: assetNumbersRef.current,
-      ...factOptsRef.current, ...refOptsRef.current,
+      ...factOptsRef.current, ...refOptsRef.current, figures: figuresRef.current,
     }).replace('<table>', '<table data-ms-new="1">');
     insertHtml(html);
     const nt = rootRef.current && rootRef.current.querySelector('table[data-ms-new="1"]');
@@ -1150,7 +1455,7 @@ export const RichSectionEditor = forwardRef(function RichSectionEditor({
     /** Insert subset markdown at the caret as normal editable content (MS-8). */
     insertMarkdown: (md) => insertHtml(mdToHtml(md, {
       orderMap: orderMapRef.current, assetNumbers: assetNumbersRef.current,
-      ...factOptsRef.current, ...refOptsRef.current,
+      ...factOptsRef.current, ...refOptsRef.current, figures: figuresRef.current,
     })),
     /**
      * 116.md §60 + 117.md §4 — insert a fresh rows × cols table at the caret,
@@ -1177,7 +1482,7 @@ export const RichSectionEditor = forwardRef(function RichSectionEditor({
       const md = makeCaptionedTableMd(id, tblOpts.title || '', rows, cols);
       const html = mdToHtml(md, {
         orderMap: orderMapRef.current, assetNumbers: assetNumbersRef.current,
-        ...factOptsRef.current, ...refOptsRef.current,
+        ...factOptsRef.current, ...refOptsRef.current, figures: figuresRef.current,
       }).replace('<table>', '<table data-ms-new="1">');
       if (opId) {
         insertOpIds.current.set(opId, id);
@@ -1226,7 +1531,7 @@ export const RichSectionEditor = forwardRef(function RichSectionEditor({
       const md = `${tableCaptionLine(id, title)}\n\n${htmlToMd(ctx.table.outerHTML)}`;
       const html = mdToHtml(md, {
         orderMap: orderMapRef.current, assetNumbers: assetNumbersRef.current,
-        ...factOptsRef.current, ...refOptsRef.current,
+        ...factOptsRef.current, ...refOptsRef.current, figures: figuresRef.current,
       });
       if (!replaceNode(ctx.table, html)) return null;
       const root = rootRef.current;
@@ -1348,6 +1653,71 @@ export const RichSectionEditor = forwardRef(function RichSectionEditor({
       if (typeof chip.scrollIntoView === 'function') chip.scrollIntoView({ block: 'center', inline: 'nearest' });
       if (typeof chip.focus === 'function') chip.focus();
       return true;
+    },
+    /* ══════════ 119.md §5 — uploaded figures ══════════ */
+    /**
+     * Insert an already-uploaded figure at the caret as a first-class manuscript
+     * object: the `[[figcap:<key>]] Title` marker, rendered as the picture + its
+     * derived number + an editable title.
+     *
+     * Goes through insertHtml → ONE native undo step + one autosave emit, and
+     * hoists out of caption islands / table cells first (the §2 rule) because a
+     * figure is a BLOCK the pipe grammar cannot nest. The caret lands in the
+     * TITLE, for the same reason insertTable does: the number is already derived
+     * and the one thing only the researcher can supply is what the figure shows.
+     */
+    insertFigure: (figKey, title = '') => {
+      if (readOnlyRef.current || !figKey) return null;
+      const key = String(figKey).replace(/[^a-z0-9-]/g, '');
+      if (!key || usedFigureKeys().has(key)) return null;   // never place one twice
+      const md = figureCaptionLine(key, title);
+      const html = mdToHtml(md, {
+        orderMap: orderMapRef.current, assetNumbers: assetNumbersRef.current,
+        ...factOptsRef.current, ...refOptsRef.current, figures: figuresRef.current,
+      });
+      insertHtml(`${html}<p><br></p>`, { hoistFromIslands: true, blockLevel: true });
+      const root = rootRef.current;
+      const fb = root && root.querySelector(`figure.${FIGURE_BLOCK_CLASS}[data-figcap="${key}"]`);
+      const titleEl = fb && fb.querySelector(`span.${FIGURE_CAPTION_TITLE_CLASS}`);
+      if (titleEl) { titleEl.focus(); selectCellContents(titleEl); }
+      return key;
+    },
+    /** "View in manuscript" for a placed figure — scroll to it and mark it. */
+    focusFigure: (figKey) => {
+      const el = rootRef.current;
+      if (!el || !figKey || typeof el.querySelector !== 'function') return false;
+      const fb = el.querySelector(`figure.${FIGURE_BLOCK_CLASS}[data-figcap="${String(figKey).replace(/"/g, '')}"]`);
+      if (!fb) return false;
+      if (typeof fb.scrollIntoView === 'function') fb.scrollIntoView({ block: 'center', inline: 'nearest' });
+      el.querySelectorAll(`figure.${FIGURE_BLOCK_CLASS}[data-figcap-current="true"]`)
+        .forEach((n) => n.removeAttribute('data-figcap-current'));
+      fb.setAttribute('data-figcap-current', 'true');
+      return true;
+    },
+    /** Focus a placed figure's TITLE region ("Edit figure"). */
+    editFigure: (figKey) => {
+      const el = rootRef.current;
+      if (!el || !figKey || typeof el.querySelector !== 'function') return false;
+      const fb = el.querySelector(`figure.${FIGURE_BLOCK_CLASS}[data-figcap="${String(figKey).replace(/"/g, '')}"]`);
+      const titleEl = fb && fb.querySelector(`span.${FIGURE_CAPTION_TITLE_CLASS}`);
+      if (!titleEl) return false;
+      if (typeof fb.scrollIntoView === 'function') fb.scrollIntoView({ block: 'center', inline: 'nearest' });
+      titleEl.focus();
+      selectCellContents(titleEl);
+      return true;
+    },
+    /** Take a placed figure out of the document (undoable — see removeFigureBlock). */
+    removeFigure: (figKey) => {
+      const el = rootRef.current;
+      if (!el || !figKey || typeof el.querySelector !== 'function') return false;
+      const fb = el.querySelector(`figure.${FIGURE_BLOCK_CLASS}[data-figcap="${String(figKey).replace(/"/g, '')}"]`);
+      return removeFigureBlock(fb);
+    },
+    /** Every figure key this section currently places (document order). */
+    figureKeys: () => {
+      const el = rootRef.current;
+      if (!el || typeof el.querySelectorAll !== 'function') return [];
+      return Array.from(el.querySelectorAll('[data-figcap]')).map((n) => n.getAttribute('data-figcap') || '');
     },
     /** Every manual-table id this section currently renders (document order). */
     manualTableIds: () => {
@@ -1520,6 +1890,22 @@ export const RichSectionEditor = forwardRef(function RichSectionEditor({
     runTableOp('deleteTable', null, table);
   };
 
+  /**
+   * 119.md §5 — Delete/Backspace over a whole FIGURE removes the picture, its
+   * title and its position in ONE native undo step (Ctrl+Z brings all three back,
+   * pointing at bytes the server still holds). Partial selections stay
+   * browser-default, and any modified chord is left to the §23 shortcut router.
+   */
+  const onFigureDeleteKey = (e) => {
+    if (e.key !== 'Delete' && e.key !== 'Backspace') return false;
+    if (e.ctrlKey || e.metaKey || e.altKey || e.shiftKey) return false;
+    const fb = fullySelectedFigure();
+    if (!fb) return false;
+    e.preventDefault();
+    removeFigureBlock(fb);
+    return true;
+  };
+
   const onKeyDown = (e) => {
     // 117.md §38 — the citation chip first (it is the innermost target).
     if (onCiteKeyDown(e)) return;
@@ -1535,6 +1921,8 @@ export const RichSectionEditor = forwardRef(function RichSectionEditor({
     if (onTableTab(e)) return;
     // 119.md §2 — Delete/Backspace over a whole table removes table + caption.
     if (onTableDeleteKey(e)) return;
+    // 119.md §5 — the same rule for a whole uploaded figure.
+    if (onFigureDeleteKey(e)) return;
     if (!(e.ctrlKey || e.metaKey)) return;
     const k = String(e.key || '').toLowerCase();
     if (k === 'b') { e.preventDefault(); exec('bold'); }
@@ -1543,10 +1931,55 @@ export const RichSectionEditor = forwardRef(function RichSectionEditor({
     // k === 'z' without shift → falls through to the browser's native undo.
   };
 
+  /* ══════════ 119.md §5 — clipboard / drag-drop IMAGE capture ══════════
+   *
+   * This runs BEFORE the htmlToMd sanitizer on purpose. `img` is a void tag with
+   * no markdown emission, so until now a pasted picture vanished silently — the
+   * worst possible outcome, because the researcher watched it disappear with no
+   * explanation. Intercepting the FILE (never the <img> markup) means the bytes
+   * take exactly the same validated server path as a file-picker upload: nothing
+   * is ever inlined into the markdown, and a remote URL is never trusted.
+   *
+   * The parent owns the upload (it has the project id, the governance answer and
+   * the error surface) and returns the figures to place; this only decides that
+   * an image WAS the thing being pasted, and where it goes.
+   */
+  const imageFilesFrom = (dt) => {
+    if (!dt) return [];
+    const out = [];
+    const list = dt.files && dt.files.length ? Array.from(dt.files) : [];
+    for (const f of list) if (f && /^image\//i.test(f.type || '')) out.push(f);
+    if (out.length) return out;
+    const items = dt.items ? Array.from(dt.items) : [];
+    for (const it of items) {
+      if (!it || it.kind !== 'file' || !/^image\//i.test(it.type || '')) continue;
+      const f = typeof it.getAsFile === 'function' ? it.getAsFile() : null;
+      if (f) out.push(f);
+    }
+    return out;
+  };
+
+  /** Upload through the parent, then place each returned figure at the caret. */
+  const placeImageFiles = (files) => {
+    const cb = onImageFilesRef.current;
+    if (!cb || !files.length) return;
+    Promise.resolve(cb(files)).then((placed) => {
+      const list = Array.isArray(placed) ? placed : [];
+      for (const f of list) {
+        if (f && f.figKey) apiRef.current.insertFigure(f.figKey, f.title || '');
+      }
+    }).catch(() => { /* the parent surfaces its own error — never throw into paste */ });
+  };
+
   const onPaste = (e) => {
     if (readOnly) { e.preventDefault(); return; }
     const cd = e.clipboardData;
     if (!cd) return;
+    // 119.md §5 — image files first, BEFORE any HTML sanitisation.
+    if (onImageFilesRef.current) {
+      const imgs = imageFilesFrom(cd);
+      if (imgs.length) { e.preventDefault(); placeImageFiles(imgs); return; }
+    }
     const html = cd.getData && cd.getData('text/html');
     if (!html) return; // plain-text paste → browser default (inserted as text)
     e.preventDefault();
@@ -1556,16 +1989,65 @@ export const RichSectionEditor = forwardRef(function RichSectionEditor({
     // table, never a second claimant to the original's identity. Moving a table
     // (cut → paste) keeps its id, so its cross-references survive the move.
     const { md } = remintDuplicateCaptions(htmlToMd(html), usedTableIds());
+    /* 119.md §5 — a copied FIGURE marker cannot be re-minted the way a table id is:
+       the picture's bytes live in a server row keyed by that figKey, and a fresh
+       key would point at nothing. So a marker for a figure that is ALREADY placed
+       is dropped (the copy would otherwise give two blocks one identity), while
+       moving a figure (cut → paste) keeps its key and every cross-reference. */
+    const { md: md2 } = dropDuplicateFigureMarkers(md, usedFigureKeys());
     // 119.md §2 — pasting a TABLE while the caret sits in a caption title (or a
     // cell) would nest one table inside another object, which the pipe grammar
     // cannot round-trip: the same hoist insertTable uses applies. A paste with no
     // table in it is ordinary inline/prose content and keeps the caret exactly
     // where the researcher put it.
-    const hasBlockTable = /^\s*\|/m.test(md) || /\[\[tblcap:/.test(md);
-    insertHtml(mdToHtml(md, {
+    const hasBlockTable = /^\s*\|/m.test(md2) || /\[\[tblcap:/.test(md2) || /\[\[figcap:/.test(md2);
+    insertHtml(mdToHtml(md2, {
       orderMap: orderMapRef.current, assetNumbers: assetNumbersRef.current,
-      ...factOptsRef.current, ...refOptsRef.current,
+      ...factOptsRef.current, ...refOptsRef.current, figures: figuresRef.current,
     }), { hoistFromIslands: hasBlockTable });
+  };
+
+  /* 119.md §5 "Drag and drop" — dropping image files anywhere in the section
+     uploads them and places them at the drop point. A drop carrying no image
+     files is left entirely alone (dragging text within the editor must keep
+     working), and the highlight is cleared on every exit path. */
+  const [dropActive, setDropActive] = useState(false);
+
+  const onDragOver = (e) => {
+    if (readOnly || !onImageFilesRef.current) return;
+    const dt = e.dataTransfer;
+    const types = dt && dt.types ? Array.from(dt.types) : [];
+    if (!types.includes('Files')) return;
+    e.preventDefault();
+    if (dt) dt.dropEffect = 'copy';
+    if (!dropActive) setDropActive(true);
+  };
+
+  const onDragLeave = (e) => {
+    if (!dropActive) return;
+    // Only the real exit counts — dragging over a child fires leave on the parent.
+    if (e.currentTarget.contains(e.relatedTarget)) return;
+    setDropActive(false);
+  };
+
+  const onDrop = (e) => {
+    if (readOnly || !onImageFilesRef.current) return;
+    const imgs = imageFilesFrom(e.dataTransfer);
+    setDropActive(false);
+    if (!imgs.length) return;
+    e.preventDefault();
+    // Put the caret where the picture was dropped, so it lands there rather than
+    // wherever the caret happened to be before the drag.
+    if (typeof document.caretRangeFromPoint === 'function' && window.getSelection) {
+      const r = document.caretRangeFromPoint(e.clientX, e.clientY);
+      if (r && rootRef.current && rootRef.current.contains(r.startContainer)) {
+        const sel = window.getSelection();
+        sel.removeAllRanges();
+        sel.addRange(r);
+        savedRange.current = r.cloneRange();
+      }
+    }
+    placeImageFiles(imgs);
   };
 
   return (
@@ -1584,6 +2066,8 @@ export const RichSectionEditor = forwardRef(function RichSectionEditor({
          in SHOW_CHANGES_CSS hangs off this attribute, so the document itself (text,
          chips, markdown) is byte-identical in both modes. */
       data-show-changes={showChanges ? 'true' : 'false'}
+      /* 119.md §5 — drag-and-drop target feedback (styled in RICH_EDITOR_CSS). */
+      data-fig-drop={dropActive ? 'true' : undefined}
       data-placeholder={placeholder || 'Write this section, or generate it from your project data.'}
       spellCheck
       onInput={() => { rememberSelection(); emit(); }}
@@ -1600,6 +2084,10 @@ export const RichSectionEditor = forwardRef(function RichSectionEditor({
       onMouseLeave={(onAssetChipHover || onCiteChipHover) ? onChipMouseLeave : undefined}
       onFocus={rememberSelection}
       onPaste={onPaste}
+      /* 119.md §5 — drop an image file straight into the manuscript. */
+      onDragOver={onDragOver}
+      onDragLeave={onDragLeave}
+      onDrop={onDrop}
       /* 119.md §2 — cutting a whole table removes table + caption together and
          leaves usable content on the clipboard; partial selections stay native. */
       onCut={onCut}
@@ -2077,7 +2565,12 @@ export function CiteRefPicker({
  * last had the caret (one toolbar serves the abstract's multiple fields too).
  * onMouseDown preventDefault keeps the editor selection alive through the click.
  */
-export function RichToolbar({ getApi, citeRefs, refLabel, disabled, crossRefs, onInsertCrossRef, onInsertCitation }) {
+export function RichToolbar({
+  getApi, citeRefs, refLabel, disabled, crossRefs, onInsertCrossRef, onInsertCitation,
+  // 119.md §5 — Insert → Picture. Rendered only when the host supplies the seam,
+  // so a shell without a figure store never shows a control that cannot act (§69).
+  onInsertPicture = null,
+}) {
   const run = (cmd) => {
     const api = getApi && getApi();
     if (api && api.exec) api.exec(cmd[0], cmd[1]);
@@ -2103,6 +2596,20 @@ export function RichToolbar({ getApi, citeRefs, refLabel, disabled, crossRefs, o
       ))}
       {/* 116.md §60 — Insert → Table grid selector */}
       <TableGridPicker getApi={getApi} disabled={disabled} />
+      {/* 119.md §5 — Insert → Picture (the file-picker path; paste and drag-drop
+          reach the same upload seam from inside the editor). */}
+      {onInsertPicture && (
+        <button type="button" aria-label="Insert picture" title="Insert a picture as a numbered figure"
+          disabled={disabled} data-testid="stitch-manuscript-tb-picture"
+          onMouseDown={(e) => e.preventDefault()}
+          onClick={() => onInsertPicture()}
+          style={{
+            ...btnS('ghost'), padding: '5px 9px', fontSize: 11.5, border: '1px solid transparent',
+            background: 'transparent', color: C.txt2, opacity: disabled ? 0.5 : 1,
+          }}>
+          ▤ Picture
+        </button>
+      )}
       {/* 117.md §9 — Insert → Cross-reference, at the caret */}
       <CrossRefPicker items={crossRefs || []} disabled={disabled}
         onPick={(id) => {

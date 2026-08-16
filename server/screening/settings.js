@@ -21,6 +21,10 @@ export const META_SIFT_DEFAULTS = {
   allowImport: true,
   allowExport: true,
   allowPdfUpload: true,
+  // 119.md §5 — the manuscript FIGURE upload kill-switch, exactly the
+  // allowPdfUpload precedent: enforced server-side in the upload/replace
+  // middleware, never merely by hiding the button. Default ON.
+  allowImageUpload: true,
   allowDuplicateDetection: true,
   allowConflictResolution: true,
   allowChat: true,
@@ -40,6 +44,9 @@ export const META_SIFT_DEFAULTS = {
   oaProviderPriority: ['unpaywall', 'openalex', 'crossref'],
   // ── limits ─────────────────────────────────────────────────────────
   maxPdfSizeMb: 25,
+  // 119.md §5 — per-file ceiling for manuscript figures (clamped 1..25 by the
+  // admin coercer; the hard cap in figureStorage.MAX_FIGURE_BYTES always wins).
+  maxFigureSizeMb: 12,
   maxRecordsPerProject: 10000,
   inviteExpiryDays: 14,        // prompt9 — pending-invite token validity window
   maintenanceMessage: 'Screening is currently undergoing maintenance. Please try again later.',

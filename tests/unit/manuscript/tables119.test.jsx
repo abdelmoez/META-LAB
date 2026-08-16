@@ -80,8 +80,12 @@ describe('119.md §2(a) — typing into an empty table title', () => {
 
 describe('119.md §2(b) — creating one table creates exactly one table', () => {
   it('hoists the insertion point out of caption islands and cells first', () => {
-    expect(EDITOR).toContain('const hoistInsertionPoint = () => {');
-    expect(EDITOR).toContain('if (opts && opts.hoistFromIslands) hoistInsertionPoint();');
+    // 119.md §5 re-pin: the hoist gained an OPTIONS argument so a whole-block
+    // insertion (an uploaded figure) can also be hoisted out of the paragraph it
+    // would otherwise be spliced into. The table behaviour pinned here is
+    // unchanged — insertTable still asks for the island hoist and nothing else.
+    expect(EDITOR).toContain('const hoistInsertionPoint = (opts = {}) => {');
+    expect(EDITOR).toContain('if (opts && opts.hoistFromIslands) hoistInsertionPoint({ blockLevel: !!(opts && opts.blockLevel) });');
     // the two BLOCK insertion paths ask for it …
     expect(EDITOR).toContain('insertHtml(`${html}<p><br></p>`, { hoistFromIslands: true });');
     expect(EDITOR).toContain('}), { hoistFromIslands: hasBlockTable });');
