@@ -12,7 +12,7 @@
  * Renders in BOTH the legacy and the Stitch shell — styled exclusively with the
  * legacy token system (Stitch auto-remaps --t-*).
  */
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { C } from '../../frontend/workspace/ui/styles.js';
 import { InfoBox } from '../../frontend/workspace/ui/primitives.jsx';
 import { SECTION_IDS } from '../../research-engine/manuscript/index.js';
@@ -30,6 +30,21 @@ import {
 // read from the signed-in user when there is one. Optional on purpose: this
 // workspace renders in SSR contract tests and in shells without the provider.
 import { useOptionalAuth } from '../../frontend/context/AuthContext.jsx';
+// 119.md §4 — the Editor + included-article PDF split workspace.
+import {
+  PdfSplitPane, SplitResizeDivider, ManuscriptSplitToggle, useManuscriptSplit, useSplitLayout,
+} from './PdfSplitPane.jsx';
+import {
+  SPLIT_DIVIDER_PX, splitRatioKey, splitArticleKey, readStoredArticle, writeStoredArticle,
+  buildSplitArticles, pickArticle,
+} from './manuscriptSplit.js';
+/* §4 — "Hide the normal left and right menus/panels to maximize writing space". The
+   shell already has exactly one mechanism for that (Focus Mode UNMOUNTS both rails and
+   leaves the slim focus bar), so the split DRIVES it instead of inventing a second
+   hide-the-rails path that the global navigation would then have to know about. Safe
+   outside the provider: `useFocusMode` returns a permanently-off no-op shape, which is
+   what the legacy shell and the SSR contract tests get. */
+import { useFocusMode } from '../../frontend/focus/FocusModeContext.jsx';
 
 const safeName = (s) => String(s || 'manuscript').replace(/[^a-z0-9]+/gi, '-').replace(/^-+|-+$/g, '') || 'manuscript';
 
@@ -60,6 +75,11 @@ function writeStoredView(key, view) {
 /* 118.md §49 — one constant engine column. The toolbar spans it; only the document
    column inside changes width per destination, so the chrome never resizes. */
 const SHELL_STYLE = { maxWidth: 1440, margin: '0 auto', padding: '4px 2px' };
+
+/* 119.md §4 — with the PDF pane open the workspace is a two-column writing surface,
+   so the constant engine column gives way to the full width the shell now offers (the
+   rails are gone). Same object shape, so nothing else in the layout moves. */
+const SPLIT_SHELL_STYLE = { ...SHELL_STYLE, maxWidth: 'none' };
 
 /**
  * @param {string}   initialSubtab   118.md §47 — the host's URL sub-param (`?ms=`).
@@ -242,6 +262,122 @@ export function ManuscriptWorkspace({ project, upd, initialSubtab, onSubtabChang
     setTab('references');
   }, [setTab]);
 
+  /* ── 119.md §4 — the Editor + included-article PDF split ─────────────────────
+     Everything here is LAYOUT. It is deliberately kept in this file, above the panel
+     host, because the whole of §4's reliability list ("must not reload the manuscript
+     / reset the cursor / discard unsaved changes / break autosave") follows from ONE
+     structural rule: the editor's position in the element tree never changes. The row
+     and the editor pane are rendered ALWAYS — opening, closing and resizing the split
+     change their STYLE and append siblings AFTER the editor, so React never unmounts
+     the panel host and `useManuscript` (which is above all of this) never re-runs. */
+  const projectId = (project && project.id) || '';
+  const splitRowRef = useRef(null);
+  const [splitOpen, setSplitOpen] = useState(false);
+  const [articleId, setArticleId] = useState('');
+  const [reportId, setReportId] = useState('');
+  const [stackPane, setStackPane] = useState('editor');   // narrow layout: which pane is shown
+  const split = useManuscriptSplit(splitRowRef, splitRatioKey(userId));
+  const splitLayout = useSplitLayout(splitRowRef, splitOpen);
+
+  const articles = useMemo(
+    () => buildSplitArticles(m.references, project && project.studies),
+    [m.references, project],
+  );
+  const activeArticle = useMemo(
+    () => pickArticle(articles, articleId, m.referencePdfIds, m.screenProjectId),
+    [articles, articleId, m.referencePdfIds, m.screenProjectId],
+  );
+
+  /* The remembered article + open state (§4 "Remembering the most recently viewed
+     article when appropriate"), per user and per project, in localStorage — never in
+     the blob, and never a server call: §4 forbids "audit events repeatedly from layout
+     noise", and the cheapest way to honour that is for layout to make no writes at all
+     that leave the browser. Hydrated once, exactly like the view preference, because
+     the signed-in user arrives asynchronously. */
+  const articleKey = splitArticleKey(userId);
+  const splitHydrated = useRef(null);
+  useEffect(() => {
+    if (!articleKey || !projectId || splitHydrated.current === `${articleKey}:${projectId}`) return;
+    splitHydrated.current = `${articleKey}:${projectId}`;
+    const stored = readStoredArticle(articleKey, projectId);
+    if (!stored) return;
+    setArticleId(stored.refId);
+    setReportId(stored.reportId || '');
+    if (stored.open) setSplitOpen(true);
+  }, [articleKey, projectId]);
+
+  const rememberSplit = useCallback((next) => {
+    if (!articleKey || !projectId) return;
+    writeStoredArticle(articleKey, projectId, next);
+  }, [articleKey, projectId]);
+
+  /* §4 "PDF availability status" — resolved through the 117 seam (one listPdf per
+     included screening record, batched + cached + soft-failing to "unknown"), and only
+     once the researcher has actually opened the pane. */
+  const resolvedFor = useRef('');
+  useEffect(() => {
+    if (!splitOpen || !articles.length) return;
+    const sig = `${projectId}:${articles.length}`;
+    if (resolvedFor.current === sig) return;
+    resolvedFor.current = sig;
+    if (m.resolveReferencePdfs) m.resolveReferencePdfs(articles.map((a) => a.id));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [splitOpen, articles, projectId]);
+
+  /* §4 — the maximized layout. Focus Mode is the shell's own rail-hiding mechanism, so
+     the split enters it and, on exit, RELEASES it only when the split is what turned it
+     on (a researcher who was already in Focus Mode stays there). */
+  const focus = useFocusMode();
+  const focusRef = useRef(focus);
+  focusRef.current = focus;
+  const focusOwned = useRef(false);
+  const prevSplitOpen = useRef(false);
+  useEffect(() => {
+    if (splitOpen === prevSplitOpen.current) return;
+    prevSplitOpen.current = splitOpen;
+    const api = focusRef.current;
+    if (splitOpen) {
+      if (!api.focus && api.setFocus) { api.setFocus(true); focusOwned.current = true; }
+    } else if (focusOwned.current) {
+      focusOwned.current = false;
+      if (api.setFocus) api.setFocus(false);
+    }
+  }, [splitOpen]);
+  // Leaving the workspace with the pane open must not strand the shell in Focus Mode.
+  useEffect(() => () => {
+    if (focusOwned.current && focusRef.current && focusRef.current.setFocus) focusRef.current.setFocus(false);
+  }, []);
+
+  /* ARCH-119 §4 — `m.flush()` before every LAYOUT transition, for the same reason the
+     view toggle owes one (118.md §45): the two debounces (600 ms field patch → 800 ms
+     blob autosave) are usually still armed, and a re-laid-out editor re-reads the
+     COMMITTED draft. Resizing does NOT flush — it re-renders nothing but the divider. */
+  const toggleSplit = useCallback(() => {
+    if (m.flush) m.flush();
+    setSplitOpen((open) => {
+      const next = !open;
+      /* Asking for PDF view on a NARROW screen means "show me the PDF": the stacked
+         layout can only show one pane, so opening lands on the one just requested (on
+         a wide screen the row shows both and this is inert). The pane switch is right
+         there to go back to the manuscript. */
+      if (next) setStackPane('pdf');
+      rememberSplit({ refId: articleId || (activeArticle && activeArticle.id) || '', reportId, open: next });
+      return next;
+    });
+  }, [m, rememberSplit, articleId, activeArticle, reportId]);
+
+  const pickArticleId = useCallback((a) => {
+    if (!a || !a.id) return;
+    setArticleId(a.id);
+    setReportId('');
+    rememberSplit({ refId: a.id, reportId: '', open: true });
+  }, [rememberSplit]);
+
+  const pickReportId = useCallback((id) => {
+    setReportId(id || '');
+    rememberSplit({ refId: (activeArticle && activeArticle.id) || articleId, reportId: id || '', open: true });
+  }, [rememberSplit, activeArticle, articleId]);
+
   const runExport = useCallback(async (key, fn) => {
     setExporting(key);
     setExportError('');
@@ -284,6 +420,10 @@ export function ManuscriptWorkspace({ project, upd, initialSubtab, onSubtabChang
         references: model.references, referenceAliases: model.referenceAliases,
         robAssessments: model.robAssessments, robByStudyId: model.robByStudyId,
         screening: model.screening, validation: model.validation,
+        // 119.md §5 — how the builder fetches an uploaded figure's bytes (through
+        // the authenticated raw route). Without it a picture would export as the
+        // honest "could not be embedded" note instead of the actual image.
+        figureBlobUrl: model.figureBlobUrl,
         onProgress: (step, total, label) => setExportProgress(`Rendering figure ${step}/${total}…`),
       });
       downloadBlob(blob, `${safeName(project.name)}.docx`);
@@ -340,6 +480,12 @@ export function ManuscriptWorkspace({ project, upd, initialSubtab, onSubtabChang
       // counts, prisma_2020.svg/png and bundled .docx are the SAME PRISMA the editor
       // displayed. Absent (unlinked / record-less project) → legacy counter chain.
       prismaFlow: m.prismaFlow,
+      // 119.md §5 — the bundled manuscript embeds uploaded pictures too: the LIVE
+      // registry (which knows which figures are placed) plus the authenticated byte
+      // resolver. Without both, the bundle's .docx would carry the honest
+      // "could not be embedded" note where the downloaded one carries the image.
+      assets: m.assets,
+      figureBlobUrl: (a) => (a && a.figureId ? m.figureRawUrl(a.figureId) : null),
     });
     downloadBlob(blob, `${safeName(project.name)}-reproducibility.zip`);
   }), [runExport, project, freshDraft, m.runMeta, m.gradeByOutcome, m.screening, m.screeningWorkflow, m.searchMethodsText, m.robAssessments, m.robByStudyId, m.perSource, m.genOpts, m.prismaFlow]);
@@ -375,13 +521,17 @@ export function ManuscriptWorkspace({ project, upd, initialSubtab, onSubtabChang
        column below it narrows (the Editor's outline · page · tools layout, 65.md
        MS-3, needs the full width; the other destinations keep the calmer 900px
        reading column). */
-    <div data-testid="stitch-manuscript-workspace" style={SHELL_STYLE}>
+    <div data-testid="stitch-manuscript-workspace" style={splitOpen ? SPLIT_SHELL_STYLE : SHELL_STYLE}>
       <ManuscriptToolbar m={m} tab={tab} onTabChange={setTab}
         /* 118.md §12 — the documented right-hand slot, filled. It renders only on
            the Editor destination (the toolbar enforces that) and condenses with the
            rest of Level B. */
         viewSwitcher={({ condensed }) => (
           <ManuscriptViewSwitcher view={view} onChange={setView} condensed={condensed} />
+        )}
+        /* 119.md §4 — the PDF-view toggle. */
+        splitToggle={({ condensed }) => (
+          <ManuscriptSplitToggle open={splitOpen} onToggle={toggleSplit} condensed={condensed} />
         )} />
 
       {/* 85.md B2 — pre-export validation review. 118.md keeps it mounted ABOVE
@@ -393,49 +543,142 @@ export function ManuscriptWorkspace({ project, upd, initialSubtab, onSubtabChang
         </div>
       )}
 
-      {/* panels — the tablist's one tabpanel (118.md §42). */}
+      {/* 119.md §4 — the split ROW. Rendered in BOTH states on purpose: the editor
+          pane below is always this row's first child, so toggling the PDF pane only
+          appends siblings after it and changes styles. React therefore keeps the whole
+          editor subtree mounted — which is the entire mechanism behind §4's "opening,
+          closing, or resizing the PDF must not reload the manuscript, reset the
+          manuscript cursor, discard unsaved changes or break autosave". */}
       <div
-        id={MS_PANEL_ID}
-        role="tabpanel"
-        aria-labelledby={msTabDomId(tab)}
-        data-testid="stitch-manuscript-panel"
-        style={{ maxWidth: tab === 'editor' ? 'none' : 900, margin: '0 auto' }}
+        ref={splitRowRef}
+        data-testid="stitch-manuscript-split"
+        data-split={splitOpen ? 'on' : 'off'}
+        data-layout={splitOpen ? splitLayout : 'off'}
+        data-ratio={splitOpen ? Math.round(split.ratio * 100) : undefined}
+        style={splitOpen && splitLayout === 'split' ? {
+          display: 'grid',
+          // minmax(0, …) on BOTH panes is what keeps a long title or a wide table from
+          // widening its column — §4 forbids nested horizontal scrolling.
+          gridTemplateColumns: `minmax(0, var(--ms-editor-pct, 50%)) ${SPLIT_DIVIDER_PX}px minmax(0, 1fr)`,
+          alignItems: 'start',
+        } : { display: 'block' }}
       >
-        {/* 118.md §3 — `onNavigate` is the ONE way a panel changes destination, so
-            an Overview CTA and a nav tab take exactly the same path (Updates plan
-            refresh + the ?ms= round-trip included). */}
-        {tab === 'overview' && <OverviewPanel m={m} exporters={exporters} onOpenSection={openSection} onNavigate={setTab} />}
-        {/* r2 — UpdatesPanel takes `onOpenSection` only: its cards' "View in
-            manuscript" goes through openSection, which already switches to the
-            Editor. The `onNavigate` that used to be passed here was never read. */}
-        {tab === 'updates' && <UpdatesPanel m={m} onOpenSection={openSection} />}
-        {/* 117.md §10 — "Edit table" on a GENERATED object opens the panel that owns
-            it (a builder table has no prose to jump to). */}
-        {tab === 'editor' && (
-          <EditorPanel m={m} exporters={exporters} sectionRequest={sectionRequest}
-            /* 118.md §10-§19 — the ONE Editor destination, in the view the
-               researcher chose. Both views render the same draft through the same
-               hook, so this prop changes the PRESENTATION and nothing else. */
-            view={view}
-            onNavigate={setTab}
-            onOpenAssetPanel={(which) => setTab(which === 'figures' ? 'figures' : 'tables')}
-            /* 117.md §38 — View / Edit / Open PDF / Go to References from a chip. */
-            onOpenReference={openReference} />
+        {/* §4 responsive floor — below ~1024px the row shows ONE pane at a time
+            instead of two unusable columns, and this is how the other one comes back.
+            Always rendered (stable positions), shown only in the stacked layout. */}
+        <div
+          data-testid="stitch-manuscript-split-panes"
+          role="radiogroup"
+          aria-label="Visible pane"
+          style={{
+            display: splitOpen && splitLayout === 'stacked' ? 'flex' : 'none',
+            gap: 2, padding: 2, marginBottom: 8, alignSelf: 'start',
+            background: C.card2, border: `1px solid ${C.brd}`, borderRadius: 8, width: 'fit-content',
+          }}
+        >
+          {[{ id: 'editor', label: 'Manuscript' }, { id: 'pdf', label: 'PDF' }].map((p) => (
+            <button
+              key={p.id}
+              type="button"
+              role="radio"
+              aria-checked={stackPane === p.id ? 'true' : 'false'}
+              data-testid={`stitch-manuscript-split-pane-${p.id}`}
+              data-active={stackPane === p.id ? 'true' : undefined}
+              onClick={() => {
+                if (stackPane === p.id) return;
+                if (m.flush) m.flush();     // a layout transition, so it owes a flush
+                setStackPane(p.id);
+              }}
+              style={{
+                height: 26, padding: '0 12px', borderRadius: 6, cursor: 'pointer',
+                background: stackPane === p.id ? C.card : 'transparent',
+                border: `1px solid ${stackPane === p.id ? 'var(--t-acc)' : 'transparent'}`,
+                color: stackPane === p.id ? 'var(--t-acc)' : C.txt2,
+                fontSize: 11.5, fontWeight: stackPane === p.id ? 700 : 600,
+                fontFamily: "'IBM Plex Sans',sans-serif",
+              }}
+            >{p.label}</button>
+          ))}
+        </div>
+
+        {/* The EDITOR pane. This wrapper exists in both layouts and never moves. */}
+        <div
+          data-testid="stitch-manuscript-split-editor"
+          style={{
+            minWidth: 0,
+            display: (splitOpen && splitLayout === 'stacked' && stackPane === 'pdf') ? 'none' : 'block',
+          }}
+        >
+          {/* panels — the tablist's one tabpanel (118.md §42). */}
+          <div
+            id={MS_PANEL_ID}
+            role="tabpanel"
+            aria-labelledby={msTabDomId(tab)}
+            data-testid="stitch-manuscript-panel"
+            style={{ maxWidth: (splitOpen || tab === 'editor') ? 'none' : 900, margin: '0 auto' }}
+          >
+            {/* 118.md §3 — `onNavigate` is the ONE way a panel changes destination, so
+                an Overview CTA and a nav tab take exactly the same path (Updates plan
+                refresh + the ?ms= round-trip included). */}
+            {tab === 'overview' && <OverviewPanel m={m} exporters={exporters} onOpenSection={openSection} onNavigate={setTab} />}
+            {/* r2 — UpdatesPanel takes `onOpenSection` only: its cards' "View in
+                manuscript" goes through openSection, which already switches to the
+                Editor. The `onNavigate` that used to be passed here was never read. */}
+            {tab === 'updates' && <UpdatesPanel m={m} onOpenSection={openSection} />}
+            {/* 117.md §10 — "Edit table" on a GENERATED object opens the panel that owns
+                it (a builder table has no prose to jump to). */}
+            {tab === 'editor' && (
+              <EditorPanel m={m} exporters={exporters} sectionRequest={sectionRequest}
+                /* 118.md §10-§19 — the ONE Editor destination, in the view the
+                   researcher chose. Both views render the same draft through the same
+                   hook, so this prop changes the PRESENTATION and nothing else. */
+                view={view}
+                onNavigate={setTab}
+                onOpenAssetPanel={(which) => setTab(which === 'figures' ? 'figures' : 'tables')}
+                /* 117.md §38 — View / Edit / Open PDF / Go to References from a chip. */
+                onOpenReference={openReference} />
+            )}
+            {/* 118.md §65 — "View in manuscript" on a table/figure row. */}
+            {tab === 'tables' && <TablesPanel m={m} onNavigate={setTab} onOpenAsset={openAsset} />}
+            {tab === 'figures' && <FiguresPanel m={m} onNavigate={setTab} onOpenAsset={openAsset} />}
+            {tab === 'references' && (
+              <ReferencesPanel m={m} focusReference={focusReference} onNavigate={setTab}
+                /* 117.md §34 — "Cite" from the library inserts at the end of Results when
+                   no editor is mounted, exactly like the Tables panel's Insert reference. */
+                onInsertCitation={(id) => {
+                  const ok = m.insertCitationReference && m.insertCitationReference(id);
+                  if (ok) setTab('editor');
+                }} />
+            )}
+            {tab === 'prisma' && <PrismaPanel m={m} exporters={exporters} onNavigate={setTab} />}
+            {tab === 'export' && <ExportPanel m={m} exporters={exporters} onNavigate={setTab} />}
+          </div>
+        </div>
+
+        {/* 119.md §4 — the divider and the PDF pane, appended AFTER the editor pane so
+            their presence can never shift it. The pane stays MOUNTED in the stacked
+            layout (hidden) so switching back to it keeps the open document. */}
+        {splitOpen && splitLayout === 'split' && <SplitResizeDivider split={split} />}
+        {splitOpen && (
+          <PdfSplitPane
+            projectId={projectId}
+            articles={articles}
+            activeArticle={activeArticle}
+            activeReportId={reportId}
+            onPickArticle={pickArticleId}
+            onPickReport={pickReportId}
+            resolved={m.referencePdfIds}
+            screenProjectId={m.screenProjectId}
+            /* §4 — "Opening the existing article record or PDF association": the
+               References library owns reference records, so this is the SAME seam a
+               citation chip uses, not a second record surface. */
+            onOpenRecord={(a) => openReference(a.id, 'view')}
+            onExit={toggleSplit}
+            split={split}
+            layout={splitLayout}
+            hidden={splitLayout === 'stacked' && stackPane !== 'pdf'}
+          />
         )}
-        {/* 118.md §65 — "View in manuscript" on a table/figure row. */}
-        {tab === 'tables' && <TablesPanel m={m} onNavigate={setTab} onOpenAsset={openAsset} />}
-        {tab === 'figures' && <FiguresPanel m={m} onNavigate={setTab} onOpenAsset={openAsset} />}
-        {tab === 'references' && (
-          <ReferencesPanel m={m} focusReference={focusReference} onNavigate={setTab}
-            /* 117.md §34 — "Cite" from the library inserts at the end of Results when
-               no editor is mounted, exactly like the Tables panel's Insert reference. */
-            onInsertCitation={(id) => {
-              const ok = m.insertCitationReference && m.insertCitationReference(id);
-              if (ok) setTab('editor');
-            }} />
-        )}
-        {tab === 'prisma' && <PrismaPanel m={m} exporters={exporters} onNavigate={setTab} />}
-        {tab === 'export' && <ExportPanel m={m} exporters={exporters} onNavigate={setTab} />}
       </div>
     </div>
   );

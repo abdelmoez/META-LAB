@@ -795,8 +795,18 @@ export function ManuscriptWorkspaceNav({ tab, onTabChange, badge, density = 'ful
  *
  * @param {node}     viewSwitcher  118.md §12 slot (Wave 2). Absent → nothing renders;
  *                                 §69 forbids shipping the control before it works.
+ * @param {node|function} splitToggle  119.md §4 slot — "a clear toggle in the
+ *                                 Manuscript Editor that allows the user to open a PDF
+ *                                 from an included study beside the manuscript". It
+ *                                 sits beside the save pill because it is a WORKSPACE
+ *                                 layout control, not a document control: it stays
+ *                                 visible at every density (like the pill and the
+ *                                 navigation) instead of overflowing into '⋯', and it
+ *                                 is not tab-scoped, because the pane is the layout of
+ *                                 the whole workspace. Takes a node or a function of
+ *                                 the bar's own density, exactly like `viewSwitcher`.
  */
-export function ManuscriptToolbar({ m, tab, onTabChange, stickyTop = 0, viewSwitcher = null }) {
+export function ManuscriptToolbar({ m, tab, onTabChange, stickyTop = 0, viewSwitcher = null, splitToggle = null }) {
   const rootRef = useRef(null);
   const width = useContainerWidth(rootRef);
   const density = toolbarDensity(width);
@@ -909,8 +919,12 @@ export function ManuscriptToolbar({ m, tab, onTabChange, stickyTop = 0, viewSwit
           <span style={{ minWidth: 0, overflow: 'hidden', display: 'flex' }}>{controls.autoDraft}</span>
         )}
 
-        {/* §44 — the save state, always visible, at the density the bar can afford. */}
-        <span style={{ marginLeft: 'auto', flexShrink: 0, display: 'inline-flex', alignItems: 'center' }}>
+        {/* §44 — the save state, always visible, at the density the bar can afford.
+            119.md §4 — the PDF-view toggle shares this right-hand group: both are
+            workspace state rather than document controls, and both stay reachable at
+            every width (§41 keeps only Level-A DOCUMENT controls in the '⋯' menu). */}
+        <span style={{ marginLeft: 'auto', flexShrink: 0, display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+          {splitToggle && (typeof splitToggle === 'function' ? splitToggle({ condensed, density }) : splitToggle)}
           <SaveStatusPill saveState={m.saveState} lastError={m.lastError} onRetry={m.retry} />
         </span>
       </div>
