@@ -196,6 +196,95 @@ function setAttr(el, name, val) {
   else if (el.hasAttribute(name)) el.removeAttribute(name);
 }
 
+/* ══════════ 120.md §3 — a caret target below trailing media ══════════
+ *
+ * THE DEFECT, from the model outward. The persisted model is a markdown subset,
+ * and it cannot represent an empty paragraph: htmlToMd drops any block whose text
+ * trims to '' (mdDom's emitBlock). So every `<p><br></p>` the editor drops beside a
+ * new table/figure lives ONLY in the live DOM of the current mount — and mdToHtml
+ * never synthesizes one on the way back, because a section whose markdown ends with
+ * a table or a figure renders with a contenteditable="false" island as the editing
+ * host's LAST child. There is then NO caret position after the media at all: a click
+ * below it, an ArrowDown out of the last cell and an Enter from the caption all have
+ * nowhere to land, and the researcher cannot write the paragraph that follows their
+ * table — least of all when the media is the final node of the section.
+ *
+ * THE FIX is one synthesized affordance, appended DIRECTLY (never through
+ * execCommand). That is the same sacrificial-pad doctrine removeFigureBlock
+ * documents, and it is deliberate on both counts:
+ *   · it is NOT CONTENT — the serializer drops an empty paragraph, so it can never
+ *     duplicate itself across renders or saves, never reach an export, never create
+ *     an endless blank page and never be mistaken for part of the media block
+ *     (120.md §3's six safety clauses hold BY CONSTRUCTION, not by bookkeeping);
+ *   · it is therefore INVISIBLE to the undo stack, which is exactly right: creating
+ *     a caret target is not a history action, and undoing the paragraph the
+ *     researcher then types must never reach into the media block above it.
+ * Idempotent by construction: it appends only when the last significant child IS
+ * media, so calling it on every mount and every emit can never stack two of them.
+ */
+
+/** A child that carries meaning — whitespace-only text and comments do not, and
+    engines sprinkle them freely between blocks. */
+function isSignificantNode(n) {
+  if (!n) return false;
+  if (n.nodeType === 3) return !!String(n.textContent || '').trim();
+  return n.nodeType === 1;
+}
+
+/** The last meaningful child of `el` — walked backwards, so the cost is O(1) for
+    the shapes that matter (Continuous View mounts ~10 of these editors). */
+export function lastSignificantChild(el) {
+  let n = el && el.lastChild;
+  while (n && !isSignificantNode(n)) n = n.previousSibling;
+  return n || null;
+}
+
+export function nextSignificantSibling(node) {
+  let n = node && node.nextSibling;
+  while (n && !isSignificantNode(n)) n = n.nextSibling;
+  return n || null;
+}
+
+export function prevSignificantSibling(node) {
+  let n = node && node.previousSibling;
+  while (n && !isSignificantNode(n)) n = n.previousSibling;
+  return n || null;
+}
+
+/** 120.md §3 — a block the caret cannot be placed AFTER by itself: a pipe table,
+    the manual-table caption island, or the uploaded-figure island. */
+export function isMediaBlockNode(node) {
+  if (!node || node.nodeType !== 1) return false;
+  if (String(node.tagName || '').toUpperCase() === 'TABLE') return true;
+  const cl = node.classList;
+  if (!cl || typeof cl.contains !== 'function') return false;
+  return cl.contains(TABLE_CAPTION_CLASS) || cl.contains(FIGURE_BLOCK_CLASS);
+}
+
+/** The synthesized affordance itself: a paragraph with no text (a lone <br>). */
+export function isEmptyParagraph(node) {
+  if (!node || node.nodeType !== 1) return false;
+  if (String(node.tagName || '').toUpperCase() !== 'P') return false;
+  return !String(node.textContent || '').trim();
+}
+
+/**
+ * Append ONE `<p><br></p>` when the editing host ends in media, so a caret target
+ * exists after it. Returns true when it actually appended. Safe to call on any
+ * host, in any order, as often as you like.
+ */
+export function ensureTrailingParagraph(el) {
+  if (!el || typeof el.appendChild !== 'function') return false;
+  const last = lastSignificantChild(el);
+  if (!isMediaBlockNode(last)) return false;
+  const doc = el.ownerDocument || (typeof document !== 'undefined' ? document : null);
+  if (!doc || typeof doc.createElement !== 'function') return false;
+  const p = doc.createElement('p');
+  p.appendChild(doc.createElement('br'));
+  el.appendChild(p);
+  return true;
+}
+
 export const RichSectionEditor = forwardRef(function RichSectionEditor({
   value, orderMap, onChange, placeholder, minHeight = 340,
   ariaLabel, testId = 'stitch-manuscript-rich-editor', onActivate,
@@ -321,6 +410,20 @@ export const RichSectionEditor = forwardRef(function RichSectionEditor({
       knownAssetIds, templateId, citationStyle, refsById, yearSuffixes, figures,
     });
   }
+
+  /* 120.md §3 — THE MOUNT-SIDE half of the trailing caret target.
+     A section whose markdown ends with a table or a figure mounts with a
+     contenteditable="false" island as the host's last child, so there is no caret
+     position after it at all. This runs beside the renumbering effects (same
+     pattern: a DOM-only pass over freshly mounted markup, no re-render, no emit)
+     and re-establishes the affordance on EVERY mount, which is what makes
+     "reopening the document preserves predictable behaviour" true without the
+     empty paragraph ever having to be persisted. Mount-once by design — the emit
+     path covers every later shape change, including the one a native undo makes. */
+  useEffect(() => {
+    if (readOnly) return;
+    ensureTrailingParagraph(rootRef.current);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Chips renumber in place when the order of first appearance changes; chips
   // are contenteditable=false islands, so this never disturbs the caret.
@@ -855,6 +958,10 @@ export const RichSectionEditor = forwardRef(function RichSectionEditor({
        paragraph is not content: htmlToMd drops it, so the persisted markdown, the
        export and the next mount are all clean. Undo beats tidiness. */
     void pads; // kept as a named local so the decision above has something to point at.
+    // 120.md §3 — the removal can leave ANOTHER media block as the host's last
+    // child (two pictures in a row, a figure above a table); re-establish the
+    // caret target rather than waiting for the next emit to notice.
+    ensureTrailingParagraph(el);
     notifyFigureFocus(null);
     return !el.contains(fb);
   };
@@ -918,6 +1025,9 @@ export const RichSectionEditor = forwardRef(function RichSectionEditor({
     // handler that would move the caret back out of the island.
     if (onCaptionMouseDown(e)) return;
     onPlaceholderMouseDown(e);
+    // 120.md §3 — a click in the empty space BELOW trailing media lands in the
+    // paragraph after it (synthesizing that paragraph if this mount has none).
+    if (!e.defaultPrevented) onBelowMediaMouseDown(e);
   };
 
   const readOnlyRef = useRef(readOnly);
@@ -1199,6 +1309,14 @@ export const RichSectionEditor = forwardRef(function RichSectionEditor({
     const el = rootRef.current;
     if (!el) return;
     repairCaptionIslands(el);
+    /* 120.md §3 — and the affordance is re-established here, beside the island
+       re-stamp, for exactly the same reason: this is where EVERY shape change
+       passes, including the ones no command of ours made (a native undo, a
+       browser-default delete, a drop). Running before serialization is harmless by
+       construction — htmlToMd drops an empty paragraph, so what the parent receives
+       is byte-identical either way, which is what keeps the affordance out of the
+       document, out of the autosave and out of the export. */
+    ensureTrailingParagraph(el);
     /* 119.md §2 — the ONE place the orphan-caption repair runs: a caption whose
        table a native selection-delete removed is dropped as the section is
        serialized. Undo-safe by construction (see dropOrphanCaptionBlocks). */
@@ -1410,8 +1528,25 @@ export const RichSectionEditor = forwardRef(function RichSectionEditor({
         if (!next || next.tagName !== 'TABLE') {
           cap.removeAttribute('contenteditable');
           replaceNode(cap, null);
+          /* 120.md §3 (r1) — and when the mutation path PROVABLY LIED, the husk goes
+             directly. Reproduced under webkit-manuscript: with the §3 trailing
+             affordance now following the husk, WebKit's execCommand('delete') over a
+             selectNode(husk) range RETURNS TRUE while removing nothing (the retry's
+             insertHTML had merged the replacement <p> INSIDE the preserved caption
+             div, and a div holding a block child survives the delete). This direct
+             removal does not violate the never-removeChild doctrine, because that
+             doctrine protects the undo stack and the autosave — and a caption whose
+             table is gone is ALREADY invisible to both: the serializer drops its
+             line on every emit (dropOrphanCaptionBlocks), so the persisted markdown
+             is byte-identical with or without the husk, exactly like a sacrificial
+             pad. Native undo still restores caption + table together from the
+             replacement the engine DID record. Guarded to run only after the
+             execCommand path was given its chance and provably did not finish. */
+          if (rootRef.current.contains(cap) && typeof cap.remove === 'function') cap.remove();
         }
       }
+      // 120.md §3 — a deletion can promote another media block to last child.
+      ensureTrailingParagraph(rootRef.current);
       notifyTableFocus();
       return true;
     }
@@ -1437,6 +1572,9 @@ export const RichSectionEditor = forwardRef(function RichSectionEditor({
     // typing does not: the draft's own updatedAt already covers that, and stamping
     // per keystroke would be write amplification for a hover tooltip).
     if (tableId && onTableMetaRef.current) onTableMetaRef.current(tableId, { updatedAt: new Date().toISOString() });
+    // 120.md §3 — a whole-table replacement re-creates the <table> node, so the
+    // affordance below a trailing table is re-established here too.
+    ensureTrailingParagraph(rootRef.current);
     notifyTableFocus();
     return true;
   };
@@ -1464,6 +1602,252 @@ export const RichSectionEditor = forwardRef(function RichSectionEditor({
     if (!ok) r.deleteContents();
     rememberSelection();
     emit();
+    return true;
+  };
+
+  /* ══════════ 120.md §3/§4 — the media BOUNDARY commands ══════════
+   *
+   * These are the keyboard half of "a media block is a structured entity you can
+   * write around but not into". Everything here only ever MOVES A CARET — none of
+   * it mutates the document — so the undo stack, the autosave and the byte-stable
+   * markdown are untouched by construction. The one exception is the redirected
+   * character in onCaptionGapKeyDown, which goes through the same execCommand path
+   * as ordinary typing and is therefore one ordinary native undo step.
+   *
+   * The rule for every handler below is the 108.md §23 router rule: claim ONLY
+   * unmodified keys, and only in the exact position where the browser has nothing
+   * valid to do. Anywhere the engine already behaves, it keeps the key.
+   */
+
+  /** The LAST top-level block of the media object a node sits in, or null. A
+      manual table's object is caption + table (the table ends it); a figure's
+      object is the single island. */
+  const mediaObjectEndBlock = (node) => {
+    const el = rootRef.current;
+    if (!el || !node) return null;
+    const cap = captionFromNode(node);
+    if (cap) {
+      if (cap.classList && cap.classList.contains(FIGURE_BLOCK_CLASS)) return topBlockOf(cap);
+      const next = cap.nextElementSibling;
+      return topBlockOf(next && next.tagName === 'TABLE' ? next : cap);
+    }
+    const cell = cellFromNode(node);
+    const table = cell && typeof cell.closest === 'function' ? cell.closest('table') : null;
+    if (table && el.contains(table)) return topBlockOf(table);
+    return null;
+  };
+
+  /**
+   * Put a collapsed caret at the START of the block after `top`, synthesizing the
+   * trailing paragraph first when `top` is the last block (120.md §3). Returns
+   * false when there is nowhere to land, and the caller then leaves the keystroke
+   * to the browser rather than inventing a position.
+   *
+   * A next block that is itself MEDIA is deliberately refused: an empty paragraph
+   * wedged between two media objects is not expressible in the persisted markdown
+   * (the serializer drops empties), so it would silently disappear on reload. The
+   * researcher can still put a paragraph there by typing in the one below and
+   * moving it, and the caption/table pair keeps its adjacency.
+   */
+  const placeCaretAfterBlock = (top) => {
+    const el = rootRef.current;
+    if (!el || !top || top.parentElement !== el) return false;
+    if (typeof window === 'undefined' || !window.getSelection) return false;
+    if (!nextSignificantSibling(top)) ensureTrailingParagraph(el);
+    const next = nextSignificantSibling(top);
+    if (!next || next.nodeType !== 1 || isMediaBlockNode(next)) return false;
+    const sel = window.getSelection();
+    if (!sel) return false;
+    // The caret was inside a nested editing island (a caption title), so DOM focus
+    // has to come back to the host before the range is applied — the same order
+    // placeCaretInTitle uses in the other direction.
+    el.focus();
+    const r = document.createRange();
+    r.selectNodeContents(next);
+    r.collapse(true);
+    sel.removeAllRanges();
+    sel.addRange(r);
+    savedRange.current = r.cloneRange();
+    return true;
+  };
+
+  /** The collapsed caret range inside this root, or null (a selection is not a
+      caret, and every handler here is about where the caret IS). */
+  const collapsedCaretRange = () => {
+    const el = rootRef.current;
+    if (!el || typeof window === 'undefined' || !window.getSelection) return null;
+    const sel = window.getSelection();
+    if (!sel || !sel.rangeCount || !sel.isCollapsed) return null;
+    const r = sel.getRangeAt(0);
+    return el.contains(r.startContainer) ? r : null;
+  };
+
+  /** Is the caret at the very end of `node`'s text? (Nothing but markup after it.) */
+  const caretAtEndOfNode = (node, range) => {
+    if (!node || !range) return false;
+    try {
+      const r = document.createRange();
+      r.selectNodeContents(node);
+      r.setStart(range.endContainer, range.endOffset);
+      return r.toString().length === 0;
+    } catch { return false; }
+  };
+
+  /**
+   * 120.md §3 — ArrowDown out of trailing media, and 120.md §4 — Enter in a title.
+   *
+   *  · ArrowDown in the LAST ROW of a table that nothing follows (or that only the
+   *    synthesized paragraph follows) lands in that paragraph. In every other row
+   *    the browser is already right — it moves down a row — so it keeps the key.
+   *  · ArrowDown in a FIGURE title does the same, because a figure's caption sits
+   *    BELOW its picture. A TABLE caption sits ABOVE its table, so ArrowDown there
+   *    must keep moving INTO the table: left native, deliberately.
+   *  · Enter in a caption/figure title never splits the entity (§4 is explicit).
+   *    At the end of the title it moves the caret to the paragraph below the whole
+   *    object — the "move from the final caption to a new paragraph" interaction
+   *    §3 asks for. Mid-title, and for Shift+Enter, it is swallowed: a title is one
+   *    line, and a line break there is not a thing this model can express (the
+   *    serializer's cleanCaptionTitle already strips newlines — this just stops the
+   *    UI from pretending otherwise).
+   */
+  const onMediaBoundaryKeyDown = (e) => {
+    if (e.key !== 'ArrowDown' && e.key !== 'Enter') return false;
+    if (e.ctrlKey || e.metaKey || e.altKey) return false;
+    /* An IME composition keystroke is not a command — the Enter that COMMITS a
+       CJK/accent candidate must reach the input method, not move the caret out of
+       the title. Same rule (and same two tests) the 108.md §23 adapter applies. */
+    if (e.isComposing || e.keyCode === 229) return false;
+    const r = collapsedCaretRange();
+    if (!r) return false;
+    const cap = captionFromNode(r.startContainer);
+    const titleEl = cap ? captionTitleOf(cap) : null;
+    const inTitle = !!(titleEl && (titleEl === r.startContainer || titleEl.contains(r.startContainer)));
+    if (e.key === 'Enter') {
+      if (!inTitle) return false;
+      e.preventDefault();
+      if (e.shiftKey) return true;
+      if (!caretAtEndOfNode(titleEl, r)) return true;
+      placeCaretAfterBlock(mediaObjectEndBlock(r.startContainer));
+      return true;
+    }
+    // A Shift-extended ArrowDown is a SELECTION gesture — always the browser's.
+    if (e.shiftKey) return false;
+    let top = null;
+    if (inTitle) {
+      if (!(cap.classList && cap.classList.contains(FIGURE_BLOCK_CLASS))) return false;
+      top = topBlockOf(cap);
+    } else {
+      const cell = cellFromNode(r.startContainer);
+      const table = cell && typeof cell.closest === 'function' ? cell.closest('table') : null;
+      if (!table || !rootRef.current.contains(table)) return false;
+      const trs = Array.from(table.querySelectorAll('tr'));
+      if (trs.indexOf(cell.closest('tr')) !== trs.length - 1) return false;
+      top = topBlockOf(table);
+    }
+    if (!top) return false;
+    /* Only when the media is TRAILING — i.e. nothing follows it, or the only thing
+       that follows is the synthesized empty paragraph at the very end. Media with
+       real prose after it is a position every engine already handles. */
+    const next = nextSignificantSibling(top);
+    if (next && !(isEmptyParagraph(next) && !nextSignificantSibling(next))) return false;
+    if (!placeCaretAfterBlock(top)) return false;
+    e.preventDefault();   // …only now, because only now did the caret actually move
+    return true;
+  };
+
+  /**
+   * 120.md §4 — CLOSE the gap between a caption and its table.
+   *
+   * The caption island and the <table> are top-level SIBLINGS, so a browser will
+   * put a collapsed caret between them and a keystroke there creates an arbitrary
+   * paragraph inside the object — the precise structure §4 forbids ("Table 1 /
+   * Example title / an unrelated paragraph / the actual table"), and the structure
+   * that used to cost the researcher the caption entirely on the next save.
+   *
+   * The fix is the inverse of hoistInsertionPoint: an insertion that has no valid
+   * position inside the object is moved to the one region of it that IS editable —
+   * the title — and the keystroke follows the caret. The character is inserted
+   * through execCommand like any other typing, so it is one native undo step and
+   * one ordinary autosave emit.
+   */
+  const captionGapCaption = () => {
+    const el = rootRef.current;
+    const r = collapsedCaretRange();
+    if (!el || !r) return null;
+    let before = null;
+    let after = null;
+    if (r.startContainer === el) {
+      const kids = el.childNodes;
+      let b = kids[r.startOffset - 1] || null;
+      while (b && !isSignificantNode(b)) b = b.previousSibling;
+      let a = kids[r.startOffset] || null;
+      while (a && !isSignificantNode(a)) a = a.nextSibling;
+      before = b;
+      after = a;
+    } else if (r.startContainer.nodeType === 3 && r.startContainer.parentNode === el
+      && !String(r.startContainer.textContent || '').trim()) {
+      // Engines also park the caret in the whitespace text node between two blocks.
+      before = prevSignificantSibling(r.startContainer);
+      after = nextSignificantSibling(r.startContainer);
+    } else return null;
+    if (!before || !after || before.nodeType !== 1) return null;
+    if (!(before.classList && before.classList.contains(TABLE_CAPTION_CLASS))) return null;
+    if (String(after.tagName || '').toUpperCase() !== 'TABLE') return null;
+    return before;
+  };
+
+  const onCaptionGapKeyDown = (e) => {
+    if (e.ctrlKey || e.metaKey || e.altKey) return false;
+    if (e.isComposing || e.keyCode === 229) return false;   // never claim an IME keystroke
+    // One-character keys are the printable ones ('a', ' ', '€'); 'Dead'/'Process'
+    // and every named key are longer, so IME composition is never claimed here.
+    const printable = typeof e.key === 'string' && e.key.length === 1;
+    if (!printable && e.key !== 'Enter') return false;
+    const cap = captionGapCaption();
+    const titleEl = cap ? captionTitleOf(cap) : null;
+    if (!titleEl) return false;
+    e.preventDefault();
+    placeCaretInTitle(titleEl);   // no point → the END of the title
+    if (printable) exec('insertText', e.key);
+    return true;
+  };
+
+  /**
+   * 120.md §3 — a CLICK in the empty space below trailing media.
+   *
+   * `e.target === root` means the pointer hit the editing host itself rather than
+   * any block in it, which is exactly the "visual space directly below the media"
+   * §3 names. With the synthesized paragraph in place most engines land there on
+   * their own; claiming the case makes it deterministic in all of them (an empty
+   * block after a `contenteditable="false"` island is precisely the caret geometry
+   * WebKit has been unreliable about — 119.md §2's finding, same shape).
+   *
+   * Scoped hard: only when the last block is media or the synthesized paragraph
+   * after media, and only when the pointer is genuinely BELOW it. A click beside
+   * ordinary prose keeps the browser's own placement.
+   */
+  const onBelowMediaMouseDown = (e) => {
+    const el = rootRef.current;
+    if (!el || e.target !== el || readOnlyRef.current) return false;
+    const last = lastSignificantChild(el);
+    const afterMedia = isMediaBlockNode(last)
+      || (isEmptyParagraph(last) && isMediaBlockNode(prevSignificantSibling(last)));
+    if (!afterMedia) return false;
+    const box = typeof last.getBoundingClientRect === 'function' ? last.getBoundingClientRect() : null;
+    if (!box || typeof e.clientY !== 'number' || e.clientY < box.bottom) return false;
+    ensureTrailingParagraph(el);
+    const target = lastSignificantChild(el);
+    if (!isEmptyParagraph(target) || typeof window === 'undefined' || !window.getSelection) return false;
+    const sel = window.getSelection();
+    if (!sel) return false;
+    e.preventDefault();
+    el.focus();
+    const r = document.createRange();
+    r.selectNodeContents(target);
+    r.collapse(true);
+    sel.removeAllRanges();
+    sel.addRange(r);
+    savedRange.current = r.cloneRange();
     return true;
   };
 
@@ -1937,6 +2321,11 @@ export const RichSectionEditor = forwardRef(function RichSectionEditor({
     // 116.md §61 — Tab moves between table cells (and never leaves the editor
     // while inside a table).
     if (onTableTab(e)) return;
+    // 120.md §4 — typing in the gap between a caption and its table goes into the
+    // TITLE instead of creating a paragraph inside the object.
+    if (onCaptionGapKeyDown(e)) return;
+    // 120.md §3/§4 — ArrowDown out of trailing media, Enter at the end of a title.
+    if (onMediaBoundaryKeyDown(e)) return;
     // 119.md §2 — Delete/Backspace over a whole table removes table + caption.
     if (onTableDeleteKey(e)) return;
     // 119.md §5 — the same rule for a whole uploaded figure.
@@ -1991,6 +2380,16 @@ export const RichSectionEditor = forwardRef(function RichSectionEditor({
 
   const onPaste = (e) => {
     if (readOnly) { e.preventDefault(); return; }
+    /* 120.md §4 — a paste with the caret parked in the caption/table gap would put
+       a block INSIDE the object. Move the insertion point into the title first;
+       a BLOCK paste is then hoisted past the whole object by the §2 rule below,
+       and an inline paste lands in the title, which is the only editable region
+       the researcher could have meant. */
+    const gapCap = captionGapCaption();
+    if (gapCap) {
+      const gapTitle = captionTitleOf(gapCap);
+      if (gapTitle) placeCaretInTitle(gapTitle);
+    }
     const cd = e.clipboardData;
     if (!cd) return;
     // 119.md §5 — image files first, BEFORE any HTML sanitisation.
@@ -2030,6 +2429,29 @@ export const RichSectionEditor = forwardRef(function RichSectionEditor({
      files is left entirely alone (dragging text within the editor must keep
      working), and the highlight is cleared on every exit path. */
   const [dropActive, setDropActive] = useState(false);
+
+  /**
+   * 120.md §4 — a media island may not be dragged APART.
+   *
+   * §4 lists drag-and-drop among the ways a title must never be separated from its
+   * media, and native drag of a `contenteditable="false"` island is exactly that:
+   * the engine moves the element (or its title text) on its own, with no path
+   * through the editor's mutation seam, so nothing renumbers, nothing re-mints an
+   * id, and the resulting DOM may be shapes the pipe grammar cannot round-trip.
+   * Rather than build drag support the model does not need, the drag is refused at
+   * its source — moving a whole object is `Cut` then `Paste`, which already keeps
+   * the caption, the id and every cross-reference (onCut + remintDuplicateCaptions).
+   * Scoped to the ISLANDS: ordinary prose and table-cell text drags are untouched,
+   * and an external image FILE drop never fires dragstart here at all.
+   */
+  const onDragStart = (e) => {
+    if (readOnlyRef.current) return;
+    const t = e.target;
+    const island = t && typeof t.closest === 'function'
+      ? t.closest(`div.${TABLE_CAPTION_CLASS}, figure.${FIGURE_BLOCK_CLASS}`)
+      : null;
+    if (island && rootRef.current && rootRef.current.contains(island)) e.preventDefault();
+  };
 
   const onDragOver = (e) => {
     if (readOnly || !onImageFilesRef.current) return;
@@ -2102,6 +2524,8 @@ export const RichSectionEditor = forwardRef(function RichSectionEditor({
       onMouseLeave={(onAssetChipHover || onCiteChipHover) ? onChipMouseLeave : undefined}
       onFocus={rememberSelection}
       onPaste={onPaste}
+      /* 120.md §4 — a caption/figure island can never be dragged out of its object. */
+      onDragStart={onDragStart}
       /* 119.md §5 — drop an image file straight into the manuscript. */
       onDragOver={onDragOver}
       onDragLeave={onDragLeave}

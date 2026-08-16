@@ -1069,17 +1069,87 @@ function dropOrphanCaptionBlocks(blocks) {
   return out;
 }
 
+/** A block that is a pipe table / a manual-table caption marker line. */
+const isTableBlock = (b) => typeof b === 'string' && /^\s*\|/.test(b);
+const isCaptionBlock = (b) => typeof b === 'string' && TABLE_CAPTION_LINE_RE.test(b);
+
+/**
+ * 120.md §4 — REPAIR a separated caption instead of deleting it.
+ *
+ * A manual-table caption and its table are ONE object expressed as two SIBLING
+ * blocks (the caption is a contenteditable="false" island directly above its
+ * <table>). The browser will happily drop a collapsed caret BETWEEN them, so a
+ * keystroke, an Enter or a paste can push a paragraph in between:
+ *
+ *     [[tblcap:t1]] Baseline characteristics
+ *     an arbitrary paragraph              ← the interloper
+ *     | A | B |                           ← the table is still right there
+ *
+ * Until now the only "enforcement" was destructive: dropOrphanCaptionBlocks saw
+ * caption-then-not-a-table and DELETED the caption on the very next emit, taking
+ * the table's identity, its title, its number and every [[table:id]] cross-ref
+ * with it (the chips flipped to "(deleted)"). The table was never in danger — the
+ * IDENTITY was, permanently, from one keystroke in a gap the editor allowed.
+ *
+ * So: a caption whose next block is not a table is SEPARATED — not orphaned —
+ * when a pipe table still follows it before any OTHER caption line, and the
+ * repair MOVES the caption back to immediately before that table. The interloper
+ * paragraphs therefore end up ABOVE the caption, which is the visible consequence
+ * of the repair and the honest one: the researcher's text is never deleted, and
+ * the object it was typed into is put back together.
+ *
+ * A caption with NO table after it at all is the genuine 119.md §2 orphan (a
+ * native selection-delete removed the table and left the island standing), and
+ * that still drops — pinned by tests/unit/manuscript/tables119.test.jsx.
+ *
+ * PURE and IDEMPOTENT: after one pass every surviving caption is immediately
+ * followed by its table, so repair(repair(x)) === repair(x).
+ */
+export function repairCaptionBlocks(blocks) {
+  const src = Array.isArray(blocks) ? blocks : [];
+  /** table block index → the caption block that must be emitted before it. */
+  const moveTo = new Map();
+  const relocated = new Set();
+  for (let i = 0; i < src.length; i += 1) {
+    if (!isCaptionBlock(src[i]) || relocated.has(i)) continue;
+    if (isTableBlock(src[i + 1])) continue;            // already adjacent — nothing to do
+    let table = -1;
+    for (let k = i + 1; k < src.length; k += 1) {
+      // Another caption line first → the later table belongs to THAT caption, and
+      // this one is a genuine orphan. Never guess two captions onto one table.
+      if (isCaptionBlock(src[k])) break;
+      if (isTableBlock(src[k])) { table = k; break; }
+    }
+    if (table < 0 || moveTo.has(table)) continue;      // orphan → the drop pass takes it
+    moveTo.set(table, i);
+    relocated.add(i);
+  }
+  if (!moveTo.size) return dropOrphanCaptionBlocks(src);
+  const moved = [];
+  for (let i = 0; i < src.length; i += 1) {
+    if (relocated.has(i)) continue;                    // the caption is emitted below
+    if (moveTo.has(i)) moved.push(src[moveTo.get(i)]);
+    moved.push(src[i]);
+  }
+  // …and whatever is still caption-without-a-table after the move is the genuine
+  // orphan case, handled by the one function that has always handled it.
+  return dropOrphanCaptionBlocks(moved);
+}
+
 /**
  * @param {string} html
  * @param {object} [opts]
- * @param {boolean} [opts.dropOrphanCaptions] 119.md §2 — see above. Set by the live
- *   editor's emit path only, so a repair can never happen anywhere the user is not
- *   actively editing the section it repairs.
+ * @param {boolean} [opts.dropOrphanCaptions] 119.md §2 / 120.md §4 — see above. Set
+ *   by the live editor's emit path only, so a repair can never happen anywhere the
+ *   user is not actively editing the section it repairs. The flag keeps its 119.md
+ *   name (it is a pinned contract with the editor), but it now means REPAIR FIRST,
+ *   drop only what is genuinely orphaned: 120.md §4 turned the caption/table
+ *   adjacency rule from a silent deletion into a reunion.
  */
 export function htmlToMd(html, opts) {
   const blocks = [];
   walkBlocks(parseHtml(html).children, blocks);
-  const kept = (opts && opts.dropOrphanCaptions) ? dropOrphanCaptionBlocks(blocks) : blocks;
+  const kept = (opts && opts.dropOrphanCaptions) ? repairCaptionBlocks(blocks) : blocks;
   return kept.join('\n\n');
 }
 
@@ -1127,7 +1197,7 @@ export default {
   assetChipHtml, assetChipLabel,
   tableCaptionHtml, figureBlockHtml, figureInfoOf, factChipHtml,
   factChipText, factOf, parsePipeTable, serializePipeTable, escapePipeCell,
-  extractOutline, stripInlineMd,
+  extractOutline, stripInlineMd, repairCaptionBlocks,
   CITE_CHIP_CLASS, ASSET_CHIP_CLASS, FACT_CHIP_CLASS, INPUT_CHIP_CLASS,
   TABLE_CAPTION_CLASS, TABLE_CAPTION_NUM_CLASS, TABLE_CAPTION_TITLE_CLASS,
   TABLE_CAPTION_PLACEHOLDER,
