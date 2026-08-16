@@ -16,11 +16,15 @@
  * inside the engine's own scroller, never fixed to the viewport, and it never
  * imitates or replaces the global PecanRev rail.
  *
- * Styling: LEGACY tokens only (C/btnS/tagS + var(--t-*)) — this component renders in
+ * Styling: LEGACY tokens only (C/btnS + var(--t-*)) — this component renders in
  * BOTH shells and Stitch remaps the same custom properties. No Stitch S-token import.
+ * 120.md §2 — the bar's own SURFACE is the one exception, and it is still a legacy
+ * token: `C.pecan` (--t-pecan) is the brand purple, emitted identically in day and
+ * night and never rewritten by an admin brand. Everything painted on it reads from
+ * the `TB` palette below.
  */
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { C, btnS, tagS } from '../../frontend/workspace/ui/styles.js';
+import { C, btnS } from '../../frontend/workspace/ui/styles.js';
 import { Icon } from '../../frontend/components/icons.jsx';
 import { alpha } from '../../frontend/theme/tokens.js';
 import Tooltip from '../../frontend/components/Tooltip.jsx';
@@ -35,6 +39,14 @@ export const MANUSCRIPT_TABS = [
   { id: 'overview', label: 'Overview', icon: 'layers' },
   { id: 'updates', label: 'Updates', icon: 'refresh' },
   { id: 'editor', label: 'Editor', icon: 'pencil' },
+  /* 120.md §8 — "PDF View" is the ninth destination, directly after Editor. It is an
+     ALIAS over the existing split-view state machine (ManuscriptWorkspace's
+     `splitOpen`), never a second PDF viewer: selecting it opens the SAME pane the
+     119.md §4 toggle opened, and the Editor destination closes it. Everything that
+     reads MANUSCRIPT_TABS/MANUSCRIPT_TAB_IDS — the roving tabindex, the sliding
+     indicator, the loading skeleton and `?ms=` validity — therefore picks it up with
+     no further wiring. */
+  { id: 'pdfview', label: 'PDF View', icon: 'fileText' },
   { id: 'tables', label: 'Tables', icon: 'table' },
   { id: 'figures', label: 'Figures', icon: 'barChart' },
   { id: 'references', label: 'References', icon: 'bookOpen' },
@@ -85,6 +97,48 @@ export const TOOLBAR_BREAKPOINTS = { compact: 1100, overflow: 700, minimal: 520 
    the initial synchronous read and the ResizeObserver must agree, or the bar lands one
    density off at exactly the boundary. Exported for the e2e width assertions. */
 export const TOOLBAR_PAD_X = 14;
+
+/* ── 120.md §2 — the on-purple palette ──────────────────────────────────────────
+   The bar is now ONE solid brand purple (`C.pecan` → `--t-pecan`, the same constant
+   the Stitch rail paints itself with — theme/tokens.js PECAN_PRIMARY). Deliberately
+   NOT `--t-acc`: the accent is admin-brand-overridable at runtime and flips between
+   indigo-600 and indigo-400 with the theme, and a brand SURFACE must do neither.
+
+   Every colour the bar puts on that surface reads from this one object, so the
+   toolbar has no scattered literals and a future brand change is a single edit.
+   The values are measured, not guessed (WCAG 2.1, sRGB, contrast.js):
+
+     ink        #ffffff                    on the bar 6.79:1 · on a chip 8.28:1
+     inkMuted   rgba(255,255,255,0.82)     on the bar 5.21:1 · on a chip 6.35:1
+     inkFaint   rgba(255,255,255,0.72)     4.42:1 — decorative glyphs/icons only (≥3:1)
+     chipBg     rgba(0,0,0,0.14)           an INSET well; a darker chip RAISES the
+                                           contrast of the light text it carries,
+                                           where a white-tinted one would lower it
+     amber      #ffdca0                    5.17:1 on the bar · 6.31:1 on a chip
+     rose       #ffc9c0                    4.65:1 · 5.66:1   (critical / save failure)
+     mint       #a7f3d0                    5.29:1 · 6.46:1   (saved)
+
+   Menus that OPEN from the bar (the '⋯' menu, the New-draft popover, a native
+   <select>'s own dropdown) keep the design system's LIGHT surface — 120.md §2 allows
+   exactly that — so every control carries an explicit `onDark` flag rather than
+   assuming its background from its class. */
+export const TB = {
+  bg: C.pecan,
+  ink: '#ffffff',
+  inkMuted: 'rgba(255,255,255,0.82)',
+  inkFaint: 'rgba(255,255,255,0.72)',
+  chipBg: 'rgba(0,0,0,0.14)',
+  chipBrd: 'rgba(255,255,255,0.26)',
+  chipBrdStrong: 'rgba(255,255,255,0.55)',
+  activeBg: 'rgba(0,0,0,0.24)',
+  hoverBg: 'rgba(255,255,255,0.10)',
+  divider: 'rgba(255,255,255,0.24)',
+  hairline: 'rgba(0,0,0,0.22)',
+  ring: 'rgba(255,255,255,0.92)',
+  amber: '#ffdca0',
+  rose: '#ffc9c0',
+  mint: '#a7f3d0',
+};
 
 export function toolbarDensity(width) {
   const w = Number(width);
@@ -141,16 +195,28 @@ export function updatesBadge(freshness, outdatedCount) {
    semantic selects: the control is a LABEL + a native <select> welded into one chip,
    so the app-wide `select:focus` ring would draw around the select alone, half-inside
    the chip. Focus has to ring the thing the user perceives as the control. */
+/* 120.md §2 — two variants of every interactive rule, because the same components
+   render BOTH on the purple bar and inside the light menus that open from it. The
+   `[data-on-dark="true"]` overrides follow their light siblings so specificity and
+   order both favour them. The app-wide focus ring is a `--t-acc` colour-mix, which is
+   effectively invisible on purple, so on-bar controls get a WHITE ring instead — the
+   precedent is the Stitch rail's own ring (stitchTokens.js). Every rule stays scoped
+   to `.ms-toolbar` so nothing here can reach the document below. */
 export const MANUSCRIPT_TOOLBAR_CSS = `
 .ms-toolbar .ms-tb-select:focus-within{border-color:var(--t-acc);
   box-shadow:0 0 0 3px color-mix(in srgb, var(--t-acc) 20%, transparent);}
 .ms-toolbar .ms-tb-select select:focus{box-shadow:none !important;}
 .ms-toolbar .ms-tb-select:hover{border-color:var(--t-brd2);}
-.ms-toolbar .ms-nav-tab:hover{color:var(--t-txt);}
-.ms-toolbar .ms-nav-tab[data-active="true"]:hover{color:var(--t-acc);}
+.ms-toolbar .ms-tb-select[data-on-dark="true"]:hover{border-color:${TB.chipBrdStrong};}
+.ms-toolbar .ms-tb-select[data-on-dark="true"]:focus-within{border-color:${TB.ink};
+  box-shadow:0 0 0 3px ${TB.ring};}
+.ms-toolbar .ms-nav-tab:hover{color:${TB.ink};background:${TB.hoverBg};}
+.ms-toolbar .ms-nav-tab[data-active="true"]:hover{color:${TB.ink};}
 .ms-toolbar .ms-tb-action:hover{border-color:var(--t-brd2);color:var(--t-txt);background:var(--t-card2);}
-.ms-toolbar .ms-view-btn:hover{color:var(--t-txt);}
-.ms-toolbar .ms-view-btn[data-active="true"]:hover{color:var(--t-acc);}
+.ms-toolbar .ms-tb-action[data-on-dark="true"]:hover{border-color:${TB.chipBrdStrong};color:${TB.ink};background:${TB.activeBg};}
+.ms-toolbar .ms-view-btn:hover{color:${TB.ink};}
+.ms-toolbar .ms-view-btn[data-active="true"]:hover{color:${TB.ink};}
+.ms-toolbar .ms-tb-dark:focus-visible{outline:none;box-shadow:0 0 0 3px ${TB.ring};}
 `;
 
 /* ── local hooks ────────────────────────────────────────────────────────────── */
@@ -288,11 +354,19 @@ function useViewportClamp(open) {
 }
 
 /** A subtle text action — 118.md §9: reserve real buttons for real primary actions. */
-const subtleAction = (active) => ({
+/* 120.md §2 — `onDark` is the on-purple variant (the control is IN the bar); without
+   it the same control is rendering inside the light '⋯' menu and keeps its legacy
+   tokens. Pressed/active state stays a filled well in both, so "open" never has to be
+   read from colour alone. */
+const subtleAction = (active, onDark = false) => ({
   display: 'inline-flex', alignItems: 'center', gap: 5, whiteSpace: 'nowrap',
-  background: active ? alpha(C.acc, '14') : 'transparent',
-  border: `1px solid ${active ? alpha(C.acc, '38') : C.brd}`,
-  color: active ? C.acc : C.txt2,
+  background: onDark
+    ? (active ? TB.activeBg : 'transparent')
+    : (active ? alpha(C.acc, '14') : 'transparent'),
+  border: `1px solid ${onDark
+    ? (active ? TB.chipBrdStrong : TB.chipBrd)
+    : (active ? alpha(C.acc, '38') : C.brd)}`,
+  color: onDark ? (active ? TB.ink : TB.inkMuted) : (active ? C.acc : C.txt2),
   borderRadius: 8, padding: '0 10px', height: 28,
   fontSize: 11.5, fontWeight: 600, fontFamily: "'IBM Plex Sans',sans-serif",
   cursor: 'pointer', letterSpacing: 0.1,
@@ -310,33 +384,44 @@ const subtleAction = (active) => ({
  * document rewrite and therefore needs a preview + diff + mapping step (§7) — a
  * native <select> that applied on change could not offer any of them.
  */
-export function ToolbarButton({ label, value, onClick, testid, condensed, title }) {
+/* 120.md §2 — the chip's two skins. `onDark` is the on-purple one (an inset well with
+   light type); without it the chip is inside a light menu and keeps the legacy tokens. */
+const chipSkin = (onDark) => ({
+  background: onDark ? TB.chipBg : C.card2,
+  border: `1px solid ${onDark ? TB.chipBrd : C.brd}`,
+});
+const chipLabelColor = (onDark) => (onDark ? TB.inkMuted : C.muted);
+const chipValueColor = (onDark) => (onDark ? TB.ink : C.txt);
+const chipGlyphColor = (onDark) => (onDark ? TB.inkFaint : C.muted);
+
+export function ToolbarButton({ label, value, onClick, testid, condensed, title, onDark = false }) {
   return (
     <button
       type="button"
       data-testid={testid}
-      className="ms-tb-select"
+      className={onDark ? 'ms-tb-select ms-tb-dark' : 'ms-tb-select'}
+      data-on-dark={onDark ? 'true' : undefined}
       onClick={onClick}
       title={title || undefined}
       aria-label={`${label}: ${value}`}
       style={{
         display: 'inline-flex', alignItems: 'center', height: 28, maxWidth: condensed ? 210 : 300,
-        background: C.card2, border: `1px solid ${C.brd}`, borderRadius: 8,
+        ...chipSkin(onDark), borderRadius: 8,
         flexShrink: 1, minWidth: 0, cursor: 'pointer', padding: 0,
         fontFamily: "'IBM Plex Sans',sans-serif",
         transition: 'border-color 0.15s ease, box-shadow 0.15s ease',
       }}
     >
       <span style={{
-        padding: '0 1px 0 10px', fontSize: 10.5, fontWeight: 700, color: C.muted,
+        padding: '0 1px 0 10px', fontSize: 10.5, fontWeight: 700, color: chipLabelColor(onDark),
         letterSpacing: 0.3, whiteSpace: 'nowrap', flexShrink: 0,
       }}>{label}:</span>
       <span style={{
-        color: C.txt, fontSize: 11.5, fontWeight: 600, padding: '0 3px 0 5px',
+        color: chipValueColor(onDark), fontSize: 11.5, fontWeight: 600, padding: '0 3px 0 5px',
         textOverflow: 'ellipsis', overflow: 'hidden', whiteSpace: 'nowrap', minWidth: 0,
       }}>{value}</span>
       <span aria-hidden="true" style={{
-        marginRight: 6, pointerEvents: 'none', color: C.muted,
+        marginRight: 6, pointerEvents: 'none', color: chipGlyphColor(onDark),
         display: 'inline-flex', alignItems: 'center',
       }}>
         <Icon name="chevronDown" size={11} />
@@ -345,20 +430,21 @@ export function ToolbarButton({ label, value, onClick, testid, condensed, title 
   );
 }
 
-export function ToolbarSelect({ label, value, onChange, options, testid, condensed }) {
+export function ToolbarSelect({ label, value, onChange, options, testid, condensed, onDark = false }) {
   return (
     <span
       data-testid={testid}
       className="ms-tb-select"
+      data-on-dark={onDark ? 'true' : undefined}
       style={{
         display: 'inline-flex', alignItems: 'center', height: 28, maxWidth: condensed ? 210 : 300,
-        background: C.card2, border: `1px solid ${C.brd}`, borderRadius: 8,
+        ...chipSkin(onDark), borderRadius: 8,
         flexShrink: 1, minWidth: 0,
         transition: 'border-color 0.15s ease, box-shadow 0.15s ease',
       }}
     >
       <span style={{
-        padding: '0 1px 0 10px', fontSize: 10.5, fontWeight: 700, color: C.muted,
+        padding: '0 1px 0 10px', fontSize: 10.5, fontWeight: 700, color: chipLabelColor(onDark),
         letterSpacing: 0.3, whiteSpace: 'nowrap', flexShrink: 0,
       }}>{label}:</span>
       <select
@@ -368,15 +454,22 @@ export function ToolbarSelect({ label, value, onChange, options, testid, condens
         style={{
           appearance: 'none', WebkitAppearance: 'none', MozAppearance: 'none',
           background: 'transparent', border: 'none', outline: 'none',
-          color: C.txt, fontFamily: "'IBM Plex Sans',sans-serif", fontSize: 11.5, fontWeight: 600,
+          color: chipValueColor(onDark), fontFamily: "'IBM Plex Sans',sans-serif", fontSize: 11.5, fontWeight: 600,
           padding: '0 20px 0 5px', height: 26, cursor: 'pointer',
           textOverflow: 'ellipsis', minWidth: 0, maxWidth: '100%',
         }}
       >
-        {options.map((o) => <option key={o.id} value={o.id}>{o.label}</option>)}
+        {/* 120.md §2 — the CLOSED face of the select sits on the purple bar, but its
+            dropdown list is drawn by the OS from the option's own colours. Without
+            these two the near-white value colour is inherited by the options and the
+            list renders white-on-white (reproducible in Chrome/Edge on Windows).
+            Stated in legacy tokens, so the list is correct in day AND night. */}
+        {options.map((o) => (
+          <option key={o.id} value={o.id} style={{ color: C.txt, background: C.card }}>{o.label}</option>
+        ))}
       </select>
       <span aria-hidden="true" style={{
-        marginLeft: -17, marginRight: 6, pointerEvents: 'none', color: C.muted,
+        marginLeft: -17, marginRight: 6, pointerEvents: 'none', color: chipGlyphColor(onDark),
         display: 'inline-flex', alignItems: 'center',
       }}>
         <Icon name="chevronDown" size={11} />
@@ -391,21 +484,27 @@ export function ToolbarSelect({ label, value, onChange, options, testid, condens
  * `title` for the native fallback, `aria-label` so assistive tech never depends on
  * the tooltip firing at all).
  */
-export function AutoDraftNotice({ condensed }) {
+export function AutoDraftNotice({ condensed, onDark = false }) {
+  /* 120.md §2 — the notice keeps its AMBER identity on the purple bar; only the
+     specific amber changes, to one that reads on it (#ffdca0 = 5.17:1 on the bar,
+     6.31:1 on the chip; the legacy --t-yel would be 2.13:1 there). */
+  const amber = onDark ? TB.amber : C.yel;
+  const body = onDark ? TB.inkMuted : C.txt2;
   return (
     <span
       data-testid="stitch-manuscript-autodraft"
       style={{
         display: 'inline-flex', alignItems: 'center', gap: 6, whiteSpace: 'nowrap',
         height: 24, padding: '0 8px 0 7px', borderRadius: 7,
-        background: alpha(C.yel, '12'), border: `1px solid ${alpha(C.yel, '30')}`,
-        color: C.txt2, fontSize: 11, minWidth: 0,
+        background: onDark ? TB.chipBg : alpha(C.yel, '12'),
+        border: `1px solid ${onDark ? 'rgba(255,220,160,0.42)' : alpha(C.yel, '30')}`,
+        color: body, fontSize: 11, minWidth: 0,
       }}
     >
-      <Icon name="alertTriangle" size={12} style={{ color: C.yel, flexShrink: 0 }} />
-      <span style={{ color: C.yel, fontWeight: 700 }}>Auto-draft</span>
+      <Icon name="alertTriangle" size={12} style={{ color: amber, flexShrink: 0 }} />
+      <span style={{ color: amber, fontWeight: 700 }}>Auto-draft</span>
       {!condensed && (
-        <span style={{ color: C.txt2, overflow: 'hidden', textOverflow: 'ellipsis' }}>
+        <span style={{ color: body, overflow: 'hidden', textOverflow: 'ellipsis' }}>
           · Verify generated content before submission
         </span>
       )}
@@ -415,9 +514,11 @@ export function AutoDraftNotice({ condensed }) {
           data-testid="stitch-manuscript-autodraft-info"
           aria-label={AUTO_DRAFT_FULL}
           title={AUTO_DRAFT_FULL}
+          className={onDark ? 'ms-tb-dark' : undefined}
           style={{
             width: 15, height: 15, borderRadius: '50%', flexShrink: 0,
-            border: `1px solid ${alpha(C.yel, '44')}`, background: 'transparent', color: C.yel,
+            border: `1px solid ${onDark ? 'rgba(255,220,160,0.6)' : alpha(C.yel, '44')}`,
+            background: 'transparent', color: amber,
             fontSize: 9, fontWeight: 700, lineHeight: '13px', padding: 0, cursor: 'help',
             display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
             fontFamily: "'IBM Plex Sans',sans-serif",
@@ -465,7 +566,7 @@ export function NewDraftConfirm({ currentTitle, onCancel, onConfirm }) {
   );
 }
 
-function NewDraftAction({ currentTitle, onCreate, condensed }) {
+function NewDraftAction({ currentTitle, onCreate, condensed, onDark = false }) {
   const [open, setOpen] = useState(false);
   const close = useCallback(() => setOpen(false), []);
   useEscape(open, close);
@@ -477,8 +578,9 @@ function NewDraftAction({ currentTitle, onCreate, condensed }) {
         aria-haspopup="dialog"
         aria-expanded={open}
         onClick={() => setOpen((o) => !o)}
-        className="ms-tb-action"
-        style={subtleAction(open)}
+        className={onDark ? 'ms-tb-action ms-tb-dark' : 'ms-tb-action'}
+        data-on-dark={onDark ? 'true' : undefined}
+        style={subtleAction(open, onDark)}
       >
         <Icon name="plus" size={12} />{condensed ? 'New' : 'New draft'}
       </button>
@@ -510,8 +612,11 @@ function OverflowMenu({ children }) {
         aria-label="More document controls"
         title="More document controls"
         onClick={() => setOpen((o) => !o)}
-        className="ms-tb-action"
-        style={{ ...subtleAction(open), padding: '0 9px', fontSize: 14, lineHeight: '26px' }}
+        /* 120.md §2 — the '⋯' trigger is ALWAYS on the bar (only what it holds moves),
+           so it is unconditionally the on-purple variant. */
+        className="ms-tb-action ms-tb-dark"
+        data-on-dark="true"
+        style={{ ...subtleAction(open, true), padding: '0 9px', fontSize: 14, lineHeight: '26px' }}
       >
         <span aria-hidden="true">⋯</span>
       </button>
@@ -601,7 +706,7 @@ export function normalizeManuscriptView(id) {
  * role, and are implemented here rather than left as a promise — no modifier
  * chords, so nothing the editor binds is intercepted (§43).
  */
-export function ManuscriptViewSwitcher({ view, onChange, condensed = false }) {
+export function ManuscriptViewSwitcher({ view, onChange, condensed = false, onDark = false }) {
   const current = normalizeManuscriptView(view);
   const btnRefs = useRef({});
   const onKeyDown = (e) => {
@@ -627,7 +732,11 @@ export function ManuscriptViewSwitcher({ view, onChange, condensed = false }) {
       onKeyDown={onKeyDown}
       style={{
         display: 'inline-flex', alignItems: 'center', gap: 2, flexShrink: 0,
-        background: C.card2, border: `1px solid ${C.brd}`, borderRadius: 8, padding: 2,
+        // 120.md §2 — the segmented control on the purple bar: an inset well with a
+        // lifted white-tinted "selected" segment (never colour alone — the selected
+        // one is also bolder, and `aria-checked` carries it to assistive tech).
+        background: onDark ? TB.chipBg : C.card2,
+        border: `1px solid ${onDark ? TB.chipBrd : C.brd}`, borderRadius: 8, padding: 2,
       }}
     >
       {MANUSCRIPT_VIEWS.map((v) => {
@@ -645,12 +754,16 @@ export function ManuscriptViewSwitcher({ view, onChange, condensed = false }) {
               data-testid={`stitch-manuscript-view-${v.id}`}
               data-active={active ? 'true' : undefined}
               onClick={() => { if (!active) onChange(v.id); }}
-              className="ms-view-btn"
+              className={onDark ? 'ms-view-btn ms-tb-dark' : 'ms-view-btn'}
               style={{
                 display: 'inline-flex', alignItems: 'center', gap: 5, whiteSpace: 'nowrap',
-                background: active ? C.card : 'transparent',
-                border: `1px solid ${active ? alpha(C.acc, '38') : 'transparent'}`,
-                color: active ? C.acc : C.txt2,
+                background: onDark
+                  ? (active ? 'rgba(255,255,255,0.18)' : 'transparent')
+                  : (active ? C.card : 'transparent'),
+                border: `1px solid ${onDark
+                  ? (active ? TB.chipBrdStrong : 'transparent')
+                  : (active ? alpha(C.acc, '38') : 'transparent')}`,
+                color: onDark ? (active ? TB.ink : TB.inkMuted) : (active ? C.acc : C.txt2),
                 borderRadius: 6, padding: condensed ? '0 7px' : '0 9px', height: 24,
                 fontSize: 11, fontWeight: active ? 700 : 600, fontFamily: "'IBM Plex Sans',sans-serif",
                 cursor: 'pointer', letterSpacing: 0.1,
@@ -768,23 +881,29 @@ export function ManuscriptWorkspaceNav({ tab, onTabChange, badge, density = 'ful
             data-testid={`stitch-manuscript-subtab-${s.id}`}
             data-active={active ? 'true' : undefined}
             onClick={() => { setFocusId(s.id); onTabChange(s.id); }}
-            className="ms-nav-tab"
+            className="ms-nav-tab ms-tb-dark"
             style={{
               display: 'inline-flex', alignItems: 'center', gap: condensed ? 0 : 6,
               background: 'transparent', border: 'none',
               // The active underline is drawn by the sliding indicator once it has
               // measured; until then (SSR / no-JS / no-ResizeObserver) the tab paints
               // its own, so the active destination is NEVER ambiguous (§6).
-              borderBottom: `2px solid ${active && !ind ? C.acc : 'transparent'}`,
+              // 120.md §2 — white on the purple bar, matching the sliding indicator.
+              borderBottom: `2px solid ${active && !ind ? TB.ink : 'transparent'}`,
               padding: condensed ? '8px 9px' : '9px 13px',
               margin: 0, cursor: 'pointer',
               fontFamily: "'IBM Plex Sans',sans-serif",
               fontSize: condensed ? 11.5 : 12.5,
               fontWeight: active ? 700 : 600,
               letterSpacing: 0.1,
-              color: active ? C.acc : C.txt2,
+              /* 120.md §2 — active vs inactive is carried by THREE things, not colour
+                 alone: the white underline, the bolder weight, and full-strength white
+                 (6.79:1) against the muted 82% white of the others (5.21:1 — still AA
+                 for normal text, so an inactive destination is never hard to read). */
+              color: active ? TB.ink : TB.inkMuted,
               whiteSpace: 'nowrap',
               transition: reduceMotion ? 'none' : 'color 0.16s ease',
+              borderRadius: '6px 6px 0 0',
             }}
           >
             {!condensed && <Icon name={s.icon} size={13} />}
@@ -794,8 +913,18 @@ export function ManuscriptWorkspaceNav({ tab, onTabChange, badge, density = 'ful
                 data-testid="stitch-manuscript-updates-badge"
                 aria-label={`${b.count} update${b.count === 1 ? '' : 's'} to review`}
                 title={`${b.count} update${b.count === 1 ? '' : 's'} to review`}
+                /* 120.md §2 — the badge keeps its two TONES (amber = updates, rose =
+                   critical) but at values that read on purple: the legacy --t-yel /
+                   --t-red chips measured 2.13:1 and 2.8:1 here. Amber 5.93:1, rose
+                   5.04:1 on the badge's own well. The count itself, and the accessible
+                   name, carry the meaning where colour cannot. */
                 style={{
-                  ...tagS(b.tone), marginLeft: 6, padding: '0 6px',
+                  display: 'inline-flex', alignItems: 'center', borderRadius: 99,
+                  background: TB.chipBg,
+                  border: `1px solid ${b.tone === 'red' ? 'rgba(255,201,192,0.55)' : 'rgba(255,220,160,0.55)'}`,
+                  color: b.tone === 'red' ? TB.rose : TB.amber,
+                  fontWeight: 700, letterSpacing: 0.3, whiteSpace: 'nowrap',
+                  marginLeft: 6, padding: '0 6px',
                   fontSize: 10, lineHeight: '15px', minWidth: 15, justifyContent: 'center',
                 }}
               >{b.text}</span>
@@ -809,7 +938,8 @@ export function ManuscriptWorkspaceNav({ tab, onTabChange, badge, density = 'ful
         aria-hidden="true"
         data-testid="stitch-manuscript-nav-indicator"
         style={{
-          position: 'absolute', height: 2, borderRadius: 2, background: C.acc,
+          // 120.md §2 — the indicator is the bar's one white accent on purple.
+          position: 'absolute', height: 2, borderRadius: 2, background: TB.ink,
           top: ind ? ind.top : 0, left: ind ? ind.left : 0,
           width: ind ? ind.width : 0, opacity: ind ? 1 : 0,
           transition: reduceMotion
@@ -889,32 +1019,41 @@ export function ManuscriptToolbar({
   const inMenu = LEVEL_A_CONTROLS.filter((k) => !inline.includes(k));
 
   /* Each Level-A control is built ONCE and then placed either in the bar or in the
-     '⋯' menu (118.md §41) — the menu never renders a stand-in. */
+     '⋯' menu (118.md §41) — the menu never renders a stand-in.
+     120.md §2 — and each is told WHICH SURFACE it landed on: inline means the purple
+     bar, overflowed means the menu's light card. The flag is derived from the same
+     `inline` list that decides the placement, so the two can never disagree. */
+  const onBar = (k) => inline.includes(k);
   const controls = {
     draft: drafts.length > 1 ? (
       <ToolbarSelect key="draft" label="Draft" testid="stitch-manuscript-draft-select" condensed={condensed}
+        onDark={onBar('draft')}
         value={m.activeId || ''} onChange={(e) => switchDraft(e.target.value)} options={draftOptions} />
     ) : null,
     newDraft: (
       <NewDraftAction key="newDraft" currentTitle={draftTitle} condensed={condensed && inline.includes('newDraft')}
+        onDark={onBar('newDraft')}
         onCreate={() => m.addDraft({})} />
     ),
     structure: (
       <ToolbarButton key="structure" label="Structure" testid="stitch-manuscript-structure-select" condensed={condensed}
+        onDark={onBar('structure')}
         value={structureLabel} onClick={onOpenStructure}
         title={`Manuscript structure: ${structureLabel}${customizedStructure ? ' (customized)' : ''} — preview and switch reporting structures`} />
     ),
     template: (
       <ToolbarSelect key="template" label="Template" testid="stitch-manuscript-template-select" condensed={condensed}
+        onDark={onBar('template')}
         value={draft.templateId} onChange={(e) => m.setMeta({ templateId: e.target.value })}
         options={JOURNAL_TEMPLATES} />
     ),
     citation: (
       <ToolbarSelect key="citation" label="Citation style" testid="stitch-manuscript-citation-select" condensed={condensed}
+        onDark={onBar('citation')}
         value={draft.citationStyle} onChange={(e) => m.setMeta({ citationStyle: e.target.value })}
         options={CITATION_STYLES} />
     ),
-    autoDraft: <AutoDraftNotice key="autoDraft" condensed={condensed} />,
+    autoDraft: <AutoDraftNotice key="autoDraft" condensed={condensed} onDark={onBar('autoDraft')} />,
   };
 
   return (
@@ -927,11 +1066,14 @@ export function ManuscriptToolbar({
         // 118.md §7 — sticky INSIDE the manuscript engine. `top` is the engine
         // scroller's own edge; z stays under the shell (30) and every modal (60).
         position: 'sticky', top: stickyTop, zIndex: 20,
-        // §7 — a SOLID surface, or the document scrolls visibly through the bar.
-        // The brand tint is two near-transparent layers over an opaque token, so
-        // the composite is still fully opaque (§4: distinguish, do not repaint).
-        background: `linear-gradient(180deg, ${alpha(C.acc, '0d')}, ${alpha(C.acc, '05')}), ${C.card}`,
-        borderBottom: `1px solid ${alpha(C.acc, '2b')}`,
+        /* 120.md §2 — ONE solid Pecan purple, in every mode: normal, sticky, each
+           responsive density and Focus Mode (the bar has no separate full-screen
+           variant — Focus Mode renders this same element, so there is nothing else to
+           keep in step). It replaces the two-layer brand-tint gradient, and §7's
+           original requirement is satisfied more simply than before: an opaque colour
+           cannot let the document scroll visibly through the bar. */
+        background: TB.bg,
+        borderBottom: `1px solid ${TB.hairline}`,
         boxShadow: '0 8px 16px -14px var(--t-shadow)',
         // Bleed to the hosting card's edges so the bar reads as engine chrome rather
         // than another card floating in the content column. 14px is inside BOTH
@@ -946,17 +1088,18 @@ export function ManuscriptToolbar({
         data-testid="stitch-manuscript-header-level-a"
         style={{ display: 'flex', alignItems: 'center', gap: 9, flexWrap: 'nowrap', minWidth: 0, paddingBottom: 9 }}
       >
-        {/* §4 — workspace identity. Brand colour is spent in exactly three places —
-            this chip, the active-destination underline and the bar's own hairline
-            tint — so the toolbar reads as a hierarchy rather than a wall of purple
-            controls ("do not simply make every control purple"). */}
+        {/* §4 — workspace identity. 120.md §2 — the bar itself is now the brand
+            surface, so the chip stops being a purple-on-white badge and becomes a
+            white-on-purple one: full-strength white type (6.79:1) inside a lightly
+            lifted well, which is the strongest thing on the bar and therefore still
+            reads as the identity rather than as another control. */}
         <span
           data-testid="stitch-manuscript-wordmark"
           style={{
             display: 'inline-flex', alignItems: 'center', gap: 6, flexShrink: 0,
             height: 26, padding: '0 10px 0 8px', borderRadius: 7,
-            background: alpha(C.acc, '12'), border: `1px solid ${alpha(C.acc, '30')}`,
-            color: C.acc, fontSize: 11.5, fontWeight: 700, letterSpacing: 0.2, whiteSpace: 'nowrap',
+            background: 'rgba(255,255,255,0.14)', border: `1px solid ${TB.chipBrd}`,
+            color: TB.ink, fontSize: 11.5, fontWeight: 700, letterSpacing: 0.2, whiteSpace: 'nowrap',
           }}
         >
           <Icon name="pencil" size={13} /> Manuscript
@@ -971,7 +1114,9 @@ export function ManuscriptToolbar({
         {inline.includes('draft') && controls.draft}
         {inline.includes('newDraft') && controls.newDraft}
         {(inline.includes('structure') || inline.includes('template')) && (
-          <span aria-hidden="true" style={{ width: 1, height: 18, background: C.brd, flexShrink: 0 }} />
+          // 120.md §2 — a white-tinted hairline; the legacy border token disappears
+          // into the purple.
+          <span aria-hidden="true" style={{ width: 1, height: 18, background: TB.divider, flexShrink: 0 }} />
         )}
         {/* 119.md §7 — the three format dimensions, left to right in the order they
             matter: which sections exist · how the journal wants them · how a
@@ -988,8 +1133,11 @@ export function ManuscriptToolbar({
             workspace state rather than document controls, and both stay reachable at
             every width (§41 keeps only Level-A DOCUMENT controls in the '⋯' menu). */}
         <span style={{ marginLeft: 'auto', flexShrink: 0, display: 'inline-flex', alignItems: 'center', gap: 8 }}>
-          {splitToggle && (typeof splitToggle === 'function' ? splitToggle({ condensed, density }) : splitToggle)}
-          <SaveStatusPill saveState={m.saveState} lastError={m.lastError} onRetry={m.retry} />
+          {splitToggle && (typeof splitToggle === 'function' ? splitToggle({ condensed, density, onDark: true }) : splitToggle)}
+          {/* 120.md §2 — the save pill is ALWAYS on the bar, so it always gets the
+              on-purple skin (its legacy green/amber/red chips measured 1.8-2.8:1
+              against the brand purple). */}
+          <SaveStatusPill saveState={m.saveState} lastError={m.lastError} onRetry={m.retry} onDark />
         </span>
       </div>
 
@@ -1003,9 +1151,13 @@ export function ManuscriptToolbar({
             working value (§69); Wave 2 fills it. The slot takes a NODE or a function
             of the bar's own density, so the switcher can condense with everything
             else (§41) without the workspace having to measure the toolbar. */}
-        {viewSwitcher && tab === 'editor' && (
+        {/* 120.md §8 — 'PDF View' IS the Editor destination with the PDF pane open, so
+            the view switcher belongs to it exactly as much as to 'editor'. Anything
+            else here would make the Section/Continuous choice vanish the moment a
+            researcher opened a PDF beside the text they are editing. */}
+        {viewSwitcher && (tab === 'editor' || tab === 'pdfview') && (
           <span style={{ marginLeft: 'auto', paddingBottom: 6, flexShrink: 0 }}>
-            {typeof viewSwitcher === 'function' ? viewSwitcher({ condensed, density }) : viewSwitcher}
+            {typeof viewSwitcher === 'function' ? viewSwitcher({ condensed, density, onDark: true }) : viewSwitcher}
           </span>
         )}
       </div>
@@ -1019,16 +1171,18 @@ export function ManuscriptToolbar({
  * claims a value it does not have (no "Saved", no counts — §69).
  */
 export function ManuscriptToolbarSkeleton() {
+  // 120.md §2 — "any loading state that reproduces the toolbar" must carry the SAME
+  // solid purple, or the bar visibly changes colour the moment the manuscript lands.
   const ghost = (w) => (
-    <span aria-hidden="true" style={{ display: 'inline-block', width: w, height: 20, borderRadius: 6, background: C.card2 }} />
+    <span aria-hidden="true" style={{ display: 'inline-block', width: w, height: 20, borderRadius: 6, background: TB.chipBg }} />
   );
   return (
     <div
       data-testid="stitch-manuscript-header-skeleton"
       aria-hidden="true"
       style={{
-        background: `linear-gradient(180deg, ${alpha(C.acc, '0d')}, ${alpha(C.acc, '05')}), ${C.card}`,
-        borderBottom: `1px solid ${alpha(C.acc, '2b')}`,
+        background: TB.bg,
+        borderBottom: `1px solid ${TB.hairline}`,
         boxShadow: '0 8px 16px -14px var(--t-shadow)',
         margin: '-4px -14px 18px', padding: '9px 14px 0',
       }}
@@ -1036,15 +1190,15 @@ export function ManuscriptToolbarSkeleton() {
       <div style={{ display: 'flex', alignItems: 'center', gap: 9, paddingBottom: 9 }}>
         <span style={{
           display: 'inline-flex', alignItems: 'center', gap: 6, height: 26, padding: '0 10px 0 8px',
-          borderRadius: 7, background: alpha(C.acc, '12'), border: `1px solid ${alpha(C.acc, '30')}`,
-          color: C.acc, fontSize: 11.5, fontWeight: 700, letterSpacing: 0.2,
+          borderRadius: 7, background: 'rgba(255,255,255,0.14)', border: `1px solid ${TB.chipBrd}`,
+          color: TB.ink, fontSize: 11.5, fontWeight: 700, letterSpacing: 0.2,
         }}>
           <Icon name="pencil" size={13} /> Manuscript
         </span>
         {ghost(150)}{ghost(120)}
       </div>
       <div style={{ display: 'flex', gap: 3, height: 37, alignItems: 'center' }}>
-        {MANUSCRIPT_TABS.map((s) => <span key={s.id} style={{ display: 'inline-block', width: 12 + s.label.length * 7, height: 12, borderRadius: 6, background: C.card2 }} />)}
+        {MANUSCRIPT_TABS.map((s) => <span key={s.id} style={{ display: 'inline-block', width: 12 + s.label.length * 7, height: 12, borderRadius: 6, background: TB.chipBg }} />)}
       </div>
     </div>
   );

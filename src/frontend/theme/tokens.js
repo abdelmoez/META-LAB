@@ -19,6 +19,18 @@
  * values — never bake `var(--t-*)` into anything the user exports.
  */
 
+/* ─── The Pecan brand purple ──────────────────────────────────────────
+ * 120.md §2 — ONE constant for the brand purple, shared by the Stitch
+ * navigation rail (stitchTokens.js STITCH_RAIL.bg) and the Manuscript
+ * Editor toolbar. It is deliberately NOT `--t-acc`: the accent is
+ * admin-brand-overridable at runtime (themeEngine.js rewrites the four
+ * `--t-acc*` variables), and it flips between indigo-600 and indigo-400
+ * with the theme. The brand surface must do neither, so it is a fixed
+ * value emitted identically in day and night (see THEMES below) and
+ * exposed to components as `C.pecan` / `var(--t-pecan)`.
+ */
+export const PECAN_PRIMARY = '#5d509c';
+
 /* ─── Theme value maps ────────────────────────────────────────────── */
 
 // prompt16 — Nextly-inspired design language. DAY is the default theme: a bright,
@@ -54,6 +66,8 @@ export const THEMES = {
     goldBg:  '#fffbeb',
     tealBg:  '#f0fdfa',   // teal-50
     shadow:  'rgba(17, 24, 39, 0.08)',
+    // 120.md §2 — the brand purple, IDENTICAL in both themes on purpose.
+    pecan:   PECAN_PRIMARY,
   },
   night: {
     bg:      '#0b1120',   // slate-950
@@ -84,6 +98,9 @@ export const THEMES = {
     goldBg:  '#2c2113',
     tealBg:  '#0b2a27',
     shadow:  'rgba(2, 6, 16, 0.55)',
+    // 120.md §2 — same value as `day`: the brand surface never flips with the theme
+    // (the purple rail has always worked this way — stitchTokens.js STITCH_RAIL).
+    pecan:   PECAN_PRIMARY,
   },
 };
 
@@ -146,6 +163,8 @@ export const C = {
   accBg: v('accBg'), grnBg: v('grnBg'), redBg: v('redBg'), yelBg: v('yelBg'),
   purpBg: v('purpBg'), goldBg: v('goldBg'), tealBg: v('tealBg'),
   shadow: v('shadow'),
+  // 120.md §2 — the brand purple surface (theme-stable, never brand-overridden).
+  pecan: v('pecan'),
 };
 
 // prompt16 — Inter is the Nextly template font; IBM Plex Sans kept as a fallback.

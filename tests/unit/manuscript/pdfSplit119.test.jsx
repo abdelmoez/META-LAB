@@ -22,6 +22,9 @@ import {
 import {
   ManuscriptSplitToggle, SplitResizeDivider, ArticleSelector, PdfSplitPane, SPLIT_KEEPALIVE,
 } from '../../../src/features/manuscript/PdfSplitPane.jsx';
+// 120.md §8 — PDF View is a projection over this same pane state; the mapping is pure.
+import { PDF_VIEW_TAB, panelFor, destinationFor } from '../../../src/features/manuscript/ManuscriptWorkspace.jsx';
+import { MANUSCRIPT_TAB_IDS } from '../../../src/features/manuscript/ManuscriptToolbar.jsx';
 
 /* A Map-backed localStorage, so the preference rules are tested for real. */
 function stubStorage() {
@@ -316,10 +319,71 @@ describe('119.md §4 — the structural guarantees (source pins)', () => {
     expect(ws).not.toContain('{splitOpen && (\n        <div\n          ref={splitRowRef}');
   });
 
+  /* 120.md §8 — RE-PINNED. The 119 toggle became the PDF View / Editor pair of
+     toolbar destinations, so the open/close body is now `setSplitTo(next)` — ONE
+     idempotent path shared by the two destinations, a `?ms=` deep link, browser
+     Back/Forward and the pane's own exit button. The guarantee is unchanged and is
+     what this pins: it flushes BEFORE it changes the layout. */
   it('flushes pending edits before a layout transition, and never on a resize', () => {
-    expect(ws).toMatch(/const toggleSplit = useCallback\(\(\) => \{\s*\n\s*if \(m\.flush\) m\.flush\(\);/);
-    // The divider commits a ratio; nothing in the split hook flushes or saves.
+    expect(ws).toMatch(/const setSplitTo = useCallback\(\(next\) => \{\s*\n\s*if \(splitOpenRef\.current === next\) return;\s*\n\s*if \(m\.flush\) m\.flush\(\);/);
+    // Every route into the pane goes through that one body …
+    expect(ws).toContain('setSplitRef.current = setSplitTo;');
+    expect(ws).toContain("if (id === PDF_VIEW_TAB) { if (setSplitRef.current) setSplitRef.current(true); }");
+    expect(ws).toContain("else if (id === 'editor') { if (setSplitRef.current) setSplitRef.current(false); }");
+    expect(ws).toContain('onExit={exitSplit}');
+    // … and the divider still only commits a ratio: nothing in the pane flushes or saves.
     expect(pane).not.toContain('m.flush');
+  });
+
+  /* ── 120.md §8 — PDF View as a toolbar destination ─────────────────────────── */
+
+  it('projects PDF View out of the ONE pane state, in both directions', () => {
+    expect(PDF_VIEW_TAB).toBe('pdfview');
+    // the destination the nav shows and the URL carries …
+    expect(destinationFor('editor', true)).toBe('pdfview');
+    expect(destinationFor('editor', false)).toBe('editor');
+    // … a pane open on another destination does NOT relabel it (the pane persists
+    // outside the tabpanel, exactly as in 119.md §4)
+    expect(destinationFor('tables', true)).toBe('tables');
+    expect(destinationFor('overview', false)).toBe('overview');
+    // … and the panel that actually renders.
+    expect(panelFor('pdfview')).toBe('editor');
+    expect(panelFor('editor')).toBe('editor');
+    expect(panelFor('tables')).toBe('tables');
+  });
+
+  it('makes ?ms=pdfview a real, valid destination', () => {
+    expect(MANUSCRIPT_TAB_IDS).toContain('pdfview');
+    // `normalizeSubtab` is derived from the tab ids, so the URL scheme needs no
+    // special case: an unknown value still resolves to the workspace home.
+    expect(MANUSCRIPT_TAB_IDS.indexOf('pdfview')).toBe(MANUSCRIPT_TAB_IDS.indexOf('editor') + 1);
+  });
+
+  /* The keep-alive pool is the whole mechanism behind §8's "switching between Editor
+     and PDF View must preserve … selected study, current PDF page, PDF zoom": closing
+     the pane used to UNMOUNT it, and with PDF View as a destination that would now
+     happen on every switch. */
+  it('keeps the pane MOUNTED once opened, and only hides it when closed', () => {
+    expect(ws).toContain('const [splitMounted, setSplitMounted] = useState(splitOpen);');
+    expect(ws).toContain('{splitMounted && (');
+    expect(ws).toContain("hidden={!splitOpen || (splitLayout === 'stacked' && stackPane !== 'pdf')}");
+    // The old unmount-on-close is gone …
+    expect(ws).not.toContain('{splitOpen && (\n          <PdfSplitPane');
+    // … and the pooled viewers still hide with `visibility`, never `display`, so a
+    // hidden viewer keeps a real box and its ResizeObserver never sees a 0-width layout.
+    expect(pane).toContain("visibility: 'hidden', pointerEvents: 'none',");
+  });
+
+  it('a ?ms=pdfview deep link opens the pane on the FIRST render (no second transition)', () => {
+    expect(ws).toContain('const [tab, setTabState] = useState(() => panelFor(initialDestination));');
+    expect(ws).toContain('const [splitOpen, setSplitOpen] = useState(initialDestination === PDF_VIEW_TAB);');
+  });
+
+  it('the toolbar no longer carries a second control for the same state', () => {
+    expect(ws).not.toContain('<ManuscriptSplitToggle');
+    expect(ws).not.toContain('splitToggle={');
+    // The component itself is still exported for a host without the tablist.
+    expect(typeof ManuscriptSplitToggle).toBe('function');
   });
 
   it('keeps layout out of the project blob and off the network', () => {

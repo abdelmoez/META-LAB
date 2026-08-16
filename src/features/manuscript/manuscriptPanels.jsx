@@ -2527,7 +2527,31 @@ function SaveDot({ color, pulse }) {
   );
 }
 
-export function SaveStatusPill({ saveState, lastError, onRetry }) {
+/* 120.md §2 — the pill's ON-PURPLE skin. The toolbar it lives in is now the solid
+   Pecan purple, where the legacy status chips measured 1.8:1 (green), 2.1:1 (amber)
+   and 2.8:1 (red) — unreadable. `onDark` swaps the three tones for values that read
+   on that surface (mint #a7f3d0 = 6.46:1, amber #ffdca0 = 6.31:1, rose #ffc9c0 =
+   5.66:1 on the pill's own well), keeps the DOT + word pairing so the state is never
+   colour-only, and changes no wording, no test id and no save behaviour. The default
+   (light) skin is untouched, because this component is also rendered on light cards
+   by the unit tests and by any future host. */
+const ON_DARK_SAVE_TONES = {
+  green: '#a7f3d0',
+  yellow: '#ffdca0',
+  red: '#ffc9c0',
+};
+const savePillSkin = (tone, onDark) => (onDark
+  ? {
+    background: 'rgba(0,0,0,0.14)',
+    border: `1px solid ${ON_DARK_SAVE_TONES[tone]}59`,
+    color: ON_DARK_SAVE_TONES[tone],
+  }
+  : tagS(tone));
+const saveDotColor = (tone, onDark) => (onDark
+  ? ON_DARK_SAVE_TONES[tone]
+  : ({ green: C.grn, yellow: C.yel, red: C.red })[tone]);
+
+export function SaveStatusPill({ saveState, lastError, onRetry, onDark = false }) {
   if (saveState === 'conflict') {
     return (
       <span
@@ -2535,9 +2559,9 @@ export function SaveStatusPill({ saveState, lastError, onRetry }) {
         role="status"
         aria-live="polite"
         title="Another tab or collaborator saved first, so this change was refused. Load the latest version before editing further."
-        style={{ ...tagS('red'), ...savePillBase }}
+        style={{ ...savePillSkin('red', onDark), ...savePillBase }}
       >
-        <SaveDot color={C.red} />
+        <SaveDot color={saveDotColor('red', onDark)} />
         Updated elsewhere — not saved
       </span>
     );
@@ -2546,13 +2570,20 @@ export function SaveStatusPill({ saveState, lastError, onRetry }) {
     return (
       <span style={{ display: 'inline-flex', alignItems: 'center', gap: 7, flexWrap: 'nowrap' }}>
         <span data-testid="stitch-manuscript-save-status" role="status" aria-live="polite"
-          title={lastError || 'Could not save changes.'} style={{ ...tagS('red'), ...savePillBase }}>
-          <SaveDot color={C.red} />
+          title={lastError || 'Could not save changes.'} style={{ ...savePillSkin('red', onDark), ...savePillBase }}>
+          <SaveDot color={saveDotColor('red', onDark)} />
           Save failed
         </span>
         {onRetry && (
           <button type="button" onClick={onRetry} aria-label="Retry saving"
-            style={{ ...btnS('danger'), fontSize: 10.5, padding: '3px 10px' }}>
+            className={onDark ? 'ms-tb-dark' : undefined}
+            style={onDark
+              ? {
+                ...btnS('ghost'), fontSize: 10.5, padding: '3px 10px',
+                color: ON_DARK_SAVE_TONES.red, borderColor: `${ON_DARK_SAVE_TONES.red}80`,
+                background: 'rgba(0,0,0,0.14)',
+              }
+              : { ...btnS('danger'), fontSize: 10.5, padding: '3px 10px' }}>
             Retry
           </button>
         )}
@@ -2560,10 +2591,11 @@ export function SaveStatusPill({ saveState, lastError, onRetry }) {
     );
   }
   const saving = saveState === 'saving';
+  const tone = saving ? 'yellow' : 'green';
   return (
     <span data-testid="stitch-manuscript-save-status" role="status" aria-live="polite"
-      style={{ ...tagS(saving ? 'yellow' : 'green'), ...savePillBase }}>
-      <SaveDot color={saving ? C.yel : C.grn} pulse={saving} />
+      style={{ ...savePillSkin(tone, onDark), ...savePillBase }}>
+      <SaveDot color={saveDotColor(tone, onDark)} pulse={saving} />
       {saving ? 'Saving…' : 'Saved'}
     </span>
   );

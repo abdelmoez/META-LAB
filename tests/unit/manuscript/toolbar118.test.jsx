@@ -25,11 +25,32 @@ import {
   ManuscriptToolbar, ManuscriptToolbarSkeleton, ManuscriptWorkspaceNav, NewDraftConfirm,
   AutoDraftNotice, ToolbarSelect, MANUSCRIPT_TABS, MANUSCRIPT_TAB_IDS, MS_PANEL_ID, msTabDomId,
   updatesBadge, toolbarDensity, levelAInline, LEVEL_A_CONTROLS, TOOLBAR_BREAKPOINTS, AUTO_DRAFT_FULL,
-  MANUSCRIPT_TOOLBAR_CSS, POPOVER_VIEWPORT_MARGIN,
+  MANUSCRIPT_TOOLBAR_CSS, POPOVER_VIEWPORT_MARGIN, TB,
 } from '../../../src/features/manuscript/ManuscriptToolbar.jsx';
 import { makeManuscriptDraft, normalizeDraft } from '../../../src/research-engine/manuscript/model.js';
+// 120.md §2 — the solid purple is a shared, measured token, so the contrast claims in
+// this file are computed rather than asserted by eye.
+import { C, PECAN_PRIMARY, THEMES, buildThemeCss } from '../../../src/frontend/theme/tokens.js';
+import { STITCH_RAIL } from '../../../src/frontend/stitch/theme/stitchTokens.js';
+import { contrastRatio } from '../../../src/frontend/theme/contrast.js';
 
 const noop = () => {};
+
+/** The complete opening tag that carries `data-testid` (attribute order is React's). */
+function tagFor(html, testid) {
+  const at = html.indexOf(`data-testid="${testid}"`);
+  if (at < 0) return '';
+  return html.slice(html.lastIndexOf('<', at), html.indexOf('>', at) + 1);
+}
+
+/** Composite `fg` at `a` opacity over an opaque `bg` — what the eye actually sees. */
+function over(fg, a, bg) {
+  const parse = (h) => [1, 3, 5].map((i) => parseInt(h.slice(i, i + 2), 16));
+  const [r1, g1, b1] = parse(fg);
+  const [r2, g2, b2] = parse(bg);
+  const mix = (x, y) => Math.round(x * a + y * (1 - a)).toString(16).padStart(2, '0');
+  return `#${mix(r1, r2)}${mix(g1, g2)}${mix(b1, b2)}`;
+}
 
 function mockM(extra = {}) {
   const draft = normalizeDraft(makeManuscriptDraft({ title: 'A pooled analysis' }));
@@ -323,12 +344,43 @@ describe('118.md §6/§9/§42 — Level B is a TAB LIST, not eight CTA buttons',
     expect(src).toContain('onClick={() => { setFocusId(s.id); onTabChange(s.id); }}');
   });
 
-  it('keeps the eight destinations and their stable test ids', () => {
-    expect(MANUSCRIPT_TAB_IDS).toEqual(['overview', 'updates', 'editor', 'tables', 'figures', 'references', 'prisma', 'export']);
+  /* 120.md §8 — the ninth destination, "PDF View", sits directly after Editor:
+     `Overview | Updates | Editor | PDF View | Tables | Figures | References | PRISMA
+     | Export`. The ORDER is the requirement, not just the membership. */
+  it('keeps the nine destinations, in the §8 order, with their stable test ids', () => {
+    expect(MANUSCRIPT_TAB_IDS).toEqual(['overview', 'updates', 'editor', 'pdfview', 'tables', 'figures', 'references', 'prisma', 'export']);
+    expect(MANUSCRIPT_TABS.map((t) => t.label)).toEqual([
+      'Overview', 'Updates', 'Editor', 'PDF View', 'Tables', 'Figures', 'References', 'PRISMA', 'Export',
+    ]);
     for (const s of MANUSCRIPT_TABS) {
       expect(html).toContain(`data-testid="stitch-manuscript-subtab-${s.id}"`);
       expect(html).toContain(s.label);
     }
+    // …and it is an ordinary tab: same roles, same wiring, no special-casing.
+    const pdfTab = tagFor(html, 'stitch-manuscript-subtab-pdfview');
+    expect(pdfTab).toContain('role="tab"');
+    expect(pdfTab).toContain(`aria-controls="${MS_PANEL_ID}"`);
+    expect(pdfTab).toContain('aria-selected="false"');
+    const selected = renderToStaticMarkup(
+      <ManuscriptToolbar m={mockM()} tab="pdfview" onTabChange={noop} />,
+    );
+    const pdfSelected = tagFor(selected, 'stitch-manuscript-subtab-pdfview');
+    expect(pdfSelected).toContain('aria-selected="true"');
+    expect(pdfSelected).toContain('data-active="true"');
+    expect(pdfSelected).toContain('tabindex="0"');
+  });
+
+  /* 120.md §8 — the Section/Continuous switcher belongs to BOTH Editor destinations:
+     PDF View is the editor with a PDF beside it, so the view choice must not vanish
+     the moment a researcher opens one. */
+  it('§8 — the view switcher stays on the PDF View destination too', () => {
+    const withSwitcher = (tab) => renderToStaticMarkup(
+      <ManuscriptToolbar m={mockM()} tab={tab} onTabChange={noop}
+        viewSwitcher={() => <span data-testid="view-switcher-slot" />} />,
+    );
+    expect(withSwitcher('editor')).toContain('data-testid="view-switcher-slot"');
+    expect(withSwitcher('pdfview')).toContain('data-testid="view-switcher-slot"');
+    expect(withSwitcher('tables')).not.toContain('data-testid="view-switcher-slot"');
   });
 
   it('§9 — no nav item is styled as a filled CTA button', () => {
@@ -423,10 +475,105 @@ describe('118.md §7 — sticky WITHIN the manuscript engine', () => {
     expect(style).toMatch(/z-index:20/);
   });
 
-  it('the surface is opaque — the document can never scroll visibly through it', () => {
+  /* 120.md §2 — RE-PINNED. §7's guarantee was "the surface is opaque"; it used to be
+     met by layering two near-transparent brand tints over an opaque card token. The
+     toolbar is now ONE solid Pecan purple, which meets the same guarantee outright —
+     so this assertion moves from the gradient string to the solid it replaced, and
+     adds the other half of §2: no remnant of the old gradient anywhere on the bar. */
+  it('the surface is ONE opaque solid — the document can never scroll through it', () => {
+    const html = bar();
+    const tag = html.slice(html.indexOf('data-testid="stitch-manuscript-header"'));
+    const style = tag.slice(0, tag.indexOf('>'));
+    expect(style).toContain('background:var(--t-pecan)');
+    expect(style).not.toContain('linear-gradient');
+  });
+
+  it('§2 — no gradient remains anywhere in the bar, live or skeleton', () => {
+    expect(bar()).not.toContain('linear-gradient');
+    expect(bar({ tab: 'editor' })).not.toContain('linear-gradient');
+    expect(renderToStaticMarkup(<ManuscriptToolbarSkeleton />)).not.toContain('linear-gradient');
     const src = readSource('src/features/manuscript/ManuscriptToolbar.jsx');
-    // brand tint layered OVER an opaque token, not instead of one
-    expect(src).toContain('${alpha(C.acc, \'05\')}), ${C.card}`');
+    expect(src).not.toContain('linear-gradient');
+  });
+
+  it('§2 — the loading skeleton reproduces the SAME purple, so the bar never changes colour', () => {
+    const skeleton = renderToStaticMarkup(<ManuscriptToolbarSkeleton />);
+    expect(skeleton).toContain('background:var(--t-pecan)');
+    expect(TB.bg).toBe(C.pecan);
+  });
+
+  /* 120.md §2 — the purple is a SHARED, theme-stable brand constant, not a literal
+     sprinkled through the toolbar and not the admin-overridable accent. */
+  it('§2 — one token: --t-pecan is #5D509C in BOTH themes, and the rail shares it', () => {
+    expect(PECAN_PRIMARY.toLowerCase()).toBe('#5d509c');
+    expect(THEMES.day.pecan).toBe(PECAN_PRIMARY);
+    expect(THEMES.night.pecan).toBe(PECAN_PRIMARY);   // a brand surface never flips
+    expect(STITCH_RAIL.bg).toBe(PECAN_PRIMARY);
+    expect(C.pecan).toBe('var(--t-pecan)');
+    // …and it is NOT the accent, which an admin brand rewrites at runtime.
+    expect(C.pecan).not.toBe(C.acc);
+    const css = buildThemeCss();
+    expect(css).toContain('--t-pecan: #5d509c;');
+    expect((css.match(/--t-pecan: #5d509c;/g) || []).length).toBe(2); // day + night
+  });
+
+  /* 120.md §2 / cross-cutting accessibility — every colour the bar puts on the purple
+     is measured, not asserted by eye. Small text needs 4.5:1, icons/large 3:1. */
+  it('§2 — every on-purple foreground meets WCAG AA on the bar AND on a chip', () => {
+    const chip = over('#000000', 0.14, PECAN_PRIMARY);      // TB.chipBg over the bar
+    const inks = {
+      ink: '#ffffff',
+      inkMuted: over('#ffffff', 0.82, PECAN_PRIMARY),
+      amber: TB.amber,
+      rose: TB.rose,
+      mint: TB.mint,
+    };
+    for (const [name, ink] of Object.entries(inks)) {
+      expect(contrastRatio(ink, PECAN_PRIMARY), `${name} on the bar`).toBeGreaterThanOrEqual(4.5);
+      expect(contrastRatio(ink, chip), `${name} on a chip`).toBeGreaterThanOrEqual(4.5);
+    }
+    // The decorative glyph tint (chevrons, icons) only owes the 3:1 UI threshold.
+    expect(contrastRatio(over('#ffffff', 0.72, PECAN_PRIMARY), PECAN_PRIMARY)).toBeGreaterThanOrEqual(3);
+    // The legacy status/accent colours are exactly why the bar needed its own palette.
+    expect(contrastRatio(THEMES.day.yel, PECAN_PRIMARY)).toBeLessThan(3);
+    expect(contrastRatio(THEMES.day.grn, PECAN_PRIMARY)).toBeLessThan(3);
+  });
+
+  /* 120.md §2 — the app-wide focus ring is a `--t-acc` colour-mix and disappears on
+     purple, so on-bar controls carry a WHITE ring (the Stitch rail's precedent). */
+  it('§2 — on-bar controls get a white focus-visible ring, and menus keep the light one', () => {
+    expect(MANUSCRIPT_TOOLBAR_CSS).toContain('.ms-toolbar .ms-tb-dark:focus-visible');
+    expect(MANUSCRIPT_TOOLBAR_CSS).toContain('rgba(255,255,255,0.92)');
+    // the light variants survive for the controls that render INSIDE the '⋯' menu
+    expect(MANUSCRIPT_TOOLBAR_CSS).toContain('.ms-toolbar .ms-tb-action:hover{border-color:var(--t-brd2)');
+    expect(MANUSCRIPT_TOOLBAR_CSS).toContain('.ms-toolbar .ms-tb-select[data-on-dark="true"]:focus-within');
+    // every nav tab is an on-bar control
+    expect(bar()).toContain('class="ms-nav-tab ms-tb-dark"');
+  });
+
+  /* 120.md §2 — the same control renders on the purple bar AND inside the light '⋯'
+     menu, so the surface flag has to follow the PLACEMENT, never the component. */
+  it('§2 — a control that overflows into the light menu drops its on-dark skin', () => {
+    const src = readSource('src/features/manuscript/ManuscriptToolbar.jsx');
+    expect(src).toContain('const onBar = (k) => inline.includes(k);');
+    for (const k of ['draft', 'newDraft', 'structure', 'template', 'citation', 'autoDraft']) {
+      expect(src).toContain(`onDark={onBar('${k}')}`);
+    }
+    // …and the light skin is really the default, so a menu copy is unchanged.
+    const light = renderToStaticMarkup(
+      <ToolbarSelect label="Template" testid="t" value="generic" onChange={noop}
+        options={[{ id: 'generic', label: 'Generic biomedical journal' }]} />,
+    );
+    expect(light).toContain('background:var(--t-card2)');
+    expect(light).not.toContain('data-on-dark');
+    const dark = renderToStaticMarkup(
+      <ToolbarSelect label="Template" testid="t" value="generic" onChange={noop} onDark
+        options={[{ id: 'generic', label: 'Generic biomedical journal' }]} />,
+    );
+    expect(dark).toContain('data-on-dark="true"');
+    // 120.md §2 — the OS-drawn dropdown list gets explicit colours, or Windows dark
+    // mode inherits the near-white on-bar value colour and renders white-on-white.
+    expect(dark).toContain('style="color:var(--t-txt);background:var(--t-card)"');
   });
 });
 
@@ -460,8 +607,10 @@ describe('118.md §46/§47 — the workspace wiring', () => {
     // ambiguous with the pre-toggle ones. See manuscriptSubHref's `explicitView`.
     expect(s).toContain("if (typeof hostNavRef.current === 'function') hostNavRef.current(id, viewRef.current, viewTouched.current);");
     expect(s).toContain('hostNavRef.current(tabRef.current, id, true);');
-    // the toolbar and every panel change destination through the SAME function
-    expect(s).toContain('<ManuscriptToolbar m={m} tab={tab} onTabChange={setTab}');
+    // the toolbar and every panel change destination through the SAME function.
+    // 120.md §8 — RE-PINNED: the toolbar is handed the DESTINATION (the projection of
+    // the panel and the PDF pane), not the raw panel id. The seam itself is unchanged.
+    expect(s).toContain('<ManuscriptToolbar m={m} tab={destination} onTabChange={setTab}');
     expect(s).toContain('onNavigate={setTab}');
   });
 

@@ -1,5 +1,5 @@
 /**
- * manuscript-pdf-split.spec.ts — 119.md §4, §10 scenarios 9-11.
+ * manuscript-pdf-split.spec.ts — 119.md §4, §10 scenarios 9-11; 120.md §8.
  *
  * The split workspace is the one part of §4 a unit test cannot prove: it exists to be
  * OPENED, DRAGGED and TYPED IN. What this file pins is exactly that —
@@ -9,6 +9,14 @@
  *   11. writing in the manuscript while the PDF is open loses nothing — including the
  *       structural guarantee behind that: opening/closing the pane does not remount
  *       the editor (proved with a DOM probe React would destroy on a remount).
+ *
+ * 120.md §8 — the pane is now opened from the toolbar's PDF View DESTINATION rather
+ * than a separate toggle (one state, one control), so every scenario below drives the
+ * tab. The behavioural assertions are deliberately unchanged: the same pane, the same
+ * ratio, the same article, the same viewer, the same no-remount guarantee. What is
+ * new is that the destination is real URL state (`?ms=pdfview`), and that closing it
+ * HIDES the pane instead of unmounting it — which is what makes the PDF's own page,
+ * zoom and scroll survive an Editor⇄PDF View round trip (Journey I, at the end).
  *
  * Drives the Stitch workspace at `/app/project/:id?tab=manuscript`.
  */
@@ -36,9 +44,22 @@ async function seedStudies(request: import('@playwright/test').APIRequestContext
   expect((await request.put(`/api/projects/${projectId}/autosave`, { data: proj })).ok()).toBeTruthy();
 }
 
+/* 120.md §8 — PDF View is a toolbar destination; choosing it opens the pane. */
+const PDF_TAB = 'stitch-manuscript-subtab-pdfview';
+const EDITOR_TAB = 'stitch-manuscript-subtab-editor';
+
 const openSplit = async (page: Page) => {
-  await page.getByTestId('stitch-manuscript-split-toggle').click();
+  await page.getByTestId(PDF_TAB).click();
   await expect(page.getByTestId('stitch-manuscript-split-pdf')).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByTestId(PDF_TAB)).toHaveAttribute('aria-selected', 'true');
+};
+
+/* …and choosing Editor closes it. The pane stays MOUNTED once it has been opened
+   (120.md §8's keep-alive rule), so "closed" is HIDDEN, not gone. */
+const closeSplit = async (page: Page) => {
+  await page.getByTestId(EDITOR_TAB).click();
+  await expect(page.getByTestId('stitch-manuscript-split-pdf')).toBeHidden();
+  await expect(page.getByTestId(EDITOR_TAB)).toHaveAttribute('aria-selected', 'true');
 };
 
 const ratio = async (page: Page) => Number(await page.getByTestId(SPLIT).getAttribute('data-ratio'));
@@ -55,14 +76,19 @@ test.describe('Manuscript Editor + PDF split workspace (119.md §4)', () => {
     await seedStudies(request, tmpProject.id);
     await openManuscript(page, tmpProject.id);
 
-    // The toggle is one control with two states, and the pane starts closed.
-    const toggle = page.getByTestId('stitch-manuscript-split-toggle');
-    await expect(toggle).toHaveAttribute('aria-pressed', 'false');
+    /* 120.md §8 — ONE control for the pane, and it is the navigation: the Editor and
+       PDF View destinations are the two states. The old free-standing toggle is gone,
+       and nothing is mounted before the pane has ever been opened. */
+    await expect(page.getByTestId('stitch-manuscript-split-toggle')).toHaveCount(0);
+    await expect(page.getByTestId(PDF_TAB)).toHaveAttribute('aria-selected', 'false');
+    await expect(page.getByTestId(EDITOR_TAB)).toHaveAttribute('aria-selected', 'true');
     await expect(page.getByTestId(SPLIT)).toHaveAttribute('data-split', 'off');
     await expect(page.getByTestId('stitch-manuscript-split-pdf')).toHaveCount(0);
 
     await openSplit(page);
-    await expect(toggle).toHaveAttribute('aria-pressed', 'true');
+    // …and the destination is real URL state, so it is deep-linkable and Back-correct.
+    await expect(page).toHaveURL(/ms=pdfview/);
+    await expect(page.getByTestId(EDITOR_TAB)).toHaveAttribute('aria-selected', 'false');
     await expect(page.getByTestId(SPLIT)).toHaveAttribute('data-split', 'on');
     await expect(page.getByTestId(SPLIT)).toHaveAttribute('data-layout', 'split');
     expect(await ratio(page)).toBe(50);
@@ -93,11 +119,22 @@ test.describe('Manuscript Editor + PDF split workspace (119.md §4)', () => {
     }
     await expect(page.getByTestId('stitch-manuscript-split-preset-even')).toHaveAttribute('aria-pressed', 'true');
 
-    // Exiting restores the ordinary workspace (and the rails with it).
+    /* Exiting restores the ordinary workspace (and the rails with it). 120.md §8 —
+       the pane's own exit is the SAME navigation as choosing Editor, so the URL
+       follows it; and the pane is hidden rather than unmounted, which is what keeps
+       the open PDF's page and zoom alive for the next visit. */
     await page.getByTestId('stitch-manuscript-split-exit').click();
-    await expect(page.getByTestId('stitch-manuscript-split-pdf')).toHaveCount(0);
+    await expect(page.getByTestId('stitch-manuscript-split-pdf')).toBeHidden();
+    await expect(page).toHaveURL(/ms=editor/);
+    await expect(page.getByTestId(EDITOR_TAB)).toHaveAttribute('aria-selected', 'true');
     await expect(page.getByTestId(SPLIT)).toHaveAttribute('data-split', 'off');
     await expect(page.getByTestId('stitch-app-shell')).not.toHaveAttribute('data-focused', 'true');
+
+    // Back walks the two Editor destinations exactly like any other pair (§8).
+    await page.goBack();
+    await expect(page).toHaveURL(/ms=pdfview/);
+    await expect(page.getByTestId('stitch-manuscript-split-pdf')).toBeVisible();
+    await expect(page.getByTestId(PDF_TAB)).toHaveAttribute('aria-selected', 'true');
   });
 
   /* ── §10 scenario 10 ────────────────────────────────────────────────────────── */
@@ -130,10 +167,13 @@ test.describe('Manuscript Editor + PDF split workspace (119.md §4)', () => {
     // §4 — honest empty state: these studies carry no attached PDF.
     await expect(page.getByTestId('stitch-manuscript-split-empty')).toContainText(/No PDF attached/i);
 
-    // REFRESH — the pane, the ratio and the article all come back.
+    // REFRESH — the pane, the ratio and the article all come back. 120.md §8 — the URL
+    // now names the destination, so this also proves `?ms=pdfview` is a real deep link.
+    await expect(page).toHaveURL(/ms=pdfview/);
     await page.reload();
     await expect(page.getByTestId('stitch-manuscript-workspace')).toBeVisible({ timeout: 20_000 });
     await expect(page.getByTestId('stitch-manuscript-split-pdf')).toBeVisible({ timeout: 15_000 });
+    await expect(page.getByTestId(PDF_TAB)).toHaveAttribute('aria-selected', 'true');
     await expect(page.getByTestId(SPLIT)).toHaveAttribute('data-ratio', '56');
     await expect(page.getByTestId('stitch-manuscript-split-identity')).toContainText('Trial B');
 
@@ -272,12 +312,101 @@ test.describe('Manuscript Editor + PDF split workspace (119.md §4)', () => {
 
     // Back to a wide window: two panes and the separator return. (Closing the pane
     // first releases Focus Mode, so the window is resizable again.)
-    await page.getByTestId('stitch-manuscript-split-toggle').click();
-    await expect(page.getByTestId('stitch-manuscript-split-pdf')).toHaveCount(0);
+    await closeSplit(page);
     await expect(page.getByTestId('stitch-app-shell')).not.toHaveAttribute('data-focused', 'true');
     await desktop(page);
     await openSplit(page);
     await expect(page.getByTestId(SPLIT)).toHaveAttribute('data-layout', 'split');
     await expect(page.getByTestId('stitch-manuscript-split-divider')).toBeVisible();
+  });
+
+  /* ── 120.md §8 — Journey I: the whole Editor ⇄ PDF View round trip ──────────── */
+
+  /**
+   * 120.md §8's state-preservation list is a ROUND TRIP requirement, and the round
+   * trip is what this drives: type (unsaved) → PDF View → choose a study → resize →
+   * back to Editor → PDF View again. What must survive, and is asserted here:
+   *
+   *   · the unsaved manuscript text, and the editor's own DOM node (no remount, so no
+   *     lost caret and no lost undo history);
+   *   · the selected study;
+   *   · the split-pane width;
+   *   · the PDF pane's own DOM node — the mechanical form of "current PDF page and
+   *     zoom are preserved", because those live in the keep-alive viewers this pane
+   *     holds. A pane that is re-created cannot have kept them; a pane that is the
+   *     same node did.
+   *
+   * The two probes are attributes set from OUTSIDE React: React would destroy the
+   * element (and the attribute with it) on a remount, so their survival is the proof.
+   */
+  test('§8 Journey I: Editor ⇄ PDF View preserves the text, the study, the width and the live viewers', async ({ page, request, tmpProject }) => {
+    await desktop(page);
+    await seedStudies(request, tmpProject.id);
+    await openManuscript(page, tmpProject.id);
+
+    const intro = page.getByTestId('stitch-manuscript-rich-editor-introduction');
+    await expect(intro).toBeVisible({ timeout: 20_000 });
+    await page.evaluate(() => {
+      const el = document.querySelector('[data-testid="stitch-manuscript-rich-editor-introduction"]');
+      if (el) el.setAttribute('data-remount-probe', 'alive');
+    });
+
+    // 1. Type, and do NOT wait: both autosave debounces are still armed.
+    await intro.click();
+    const typed = `Journey I unsaved sentence ${Date.now()}`;
+    await page.keyboard.type(typed);
+
+    // 2. PDF View — through the toolbar destination.
+    await openSplit(page);
+    await expect(page).toHaveURL(/ms=pdfview/);
+    await expect(intro).toHaveAttribute('data-remount-probe', 'alive');
+    await expect(intro).toContainText(typed);
+
+    // 3. Choose a study, and mark the pane so a re-creation would be detectable.
+    await page.getByTestId('stitch-manuscript-split-article').click();
+    await page.getByTestId('stitch-manuscript-split-article-search').fill('Brown');
+    const options = page.locator('[data-testid^="stitch-manuscript-split-article-option-"]');
+    await expect(options).toHaveCount(1);
+    await options.first().click();
+    await expect(page.getByTestId('stitch-manuscript-split-identity')).toContainText('Trial C');
+    await page.evaluate(() => {
+      const el = document.querySelector('[data-testid="stitch-manuscript-split-pdf"]');
+      if (el) el.setAttribute('data-keepalive-probe', 'alive');
+    });
+
+    // 4. Resize the panes away from 50/50 (the accessible separator's own keyboard
+    //    contract — a drag and a nudge commit through the same path).
+    const divider = page.getByTestId('stitch-manuscript-split-divider');
+    await divider.focus();
+    await divider.press('ArrowRight');
+    await divider.press('ArrowRight');
+    await expect(page.getByTestId(SPLIT)).toHaveAttribute('data-ratio', '54');
+
+    // 5. Back to Editor. The pane closes; NOTHING is thrown away.
+    await closeSplit(page);
+    await expect(page).toHaveURL(/ms=editor/);
+    await expect(intro).toHaveAttribute('data-remount-probe', 'alive');
+    await expect(intro).toContainText(typed);
+    // The caret is still in the manuscript, so typing continues where it left off.
+    await intro.click();
+    await page.keyboard.press('ControlOrMeta+End');
+    const more = ' and one more clause.';
+    await page.keyboard.type(more);
+    await expect(intro).toContainText(typed + more);
+
+    // 6. PDF View again — the SAME pane, the same study, the same width.
+    await openSplit(page);
+    await expect(page.getByTestId('stitch-manuscript-split-pdf'))
+      .toHaveAttribute('data-keepalive-probe', 'alive');
+    await expect(page.getByTestId('stitch-manuscript-split-identity')).toContainText('Trial C');
+    await expect(page.getByTestId(SPLIT)).toHaveAttribute('data-ratio', '54');
+    await expect(intro).toHaveAttribute('data-remount-probe', 'alive');
+
+    // …and every word of it reached the server through the ordinary autosave.
+    await expect(page.getByTestId('stitch-manuscript-save-status')).toContainText(/Saved/i, { timeout: 25_000 });
+    await expect(async () => {
+      const proj = await (await request.get(`/api/projects/${tmpProject.id}`)).json();
+      expect(JSON.stringify(proj.manuscripts || [])).toContain(typed + more);
+    }).toPass({ timeout: 25_000 });
   });
 });

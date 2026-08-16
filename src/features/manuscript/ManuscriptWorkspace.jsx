@@ -33,8 +33,12 @@ import {
 // workspace renders in SSR contract tests and in shells without the provider.
 import { useOptionalAuth } from '../../frontend/context/AuthContext.jsx';
 // 119.md §4 — the Editor + included-article PDF split workspace.
+/* 120.md §8 — ManuscriptSplitToggle is no longer mounted here: the PDF View
+   destination in the toolbar's tablist replaced it, so the pane has exactly one
+   control again. The component itself stays exported from PdfSplitPane.jsx (and the
+   toolbar keeps its `splitToggle` slot) for a host without that navigation. */
 import {
-  PdfSplitPane, SplitResizeDivider, ManuscriptSplitToggle, useManuscriptSplit, useSplitLayout,
+  PdfSplitPane, SplitResizeDivider, useManuscriptSplit, useSplitLayout,
 } from './PdfSplitPane.jsx';
 import {
   SPLIT_DIVIDER_PX, splitRatioKey, splitArticleKey, readStoredArticle, writeStoredArticle,
@@ -51,6 +55,27 @@ import { useFocusMode } from '../../frontend/focus/FocusModeContext.jsx';
 const safeName = (s) => String(s || 'manuscript').replace(/[^a-z0-9]+/gi, '-').replace(/^-+|-+$/g, '') || 'manuscript';
 
 const normalizeSubtab = (id) => (MANUSCRIPT_TAB_IDS.includes(id) ? id : 'overview');
+
+/* ── 120.md §8 — the 'PDF View' destination ────────────────────────────────────
+   PDF View is NOT a ninth panel and NOT a second PDF viewer: it is the Editor
+   destination with the 119.md §4 split pane open. `splitOpen` therefore stays the
+   single source of truth and the toolbar's selected destination becomes a
+   PROJECTION of (panel destination × pane state). These two pure functions are the
+   entire mapping, in both directions, and are exported so the contract is testable
+   without a DOM:
+
+     destinationFor('editor', true)  → 'pdfview'    (what the nav and `?ms=` show)
+     panelFor('pdfview')             → 'editor'     (which panel actually renders)
+
+   The consequence that matters for §8's state-preservation list: EditorPanel keeps
+   rendering under `tab === 'editor'` in the same position of the same tree, so
+   moving between Editor and PDF View never remounts it — no lost caret, no lost
+   undo history, no discarded unsaved text. */
+export const PDF_VIEW_TAB = 'pdfview';
+export const panelFor = (destination) => (destination === PDF_VIEW_TAB ? 'editor' : destination);
+export const destinationFor = (panelTab, splitOpen) => (
+  (panelTab === 'editor' && splitOpen) ? PDF_VIEW_TAB : panelTab
+);
 
 /* 118.md §12 — "store the user's preferred view where appropriate so refreshing the
    editor does not unnecessarily reset their workflow". It is a UI preference, never
@@ -97,7 +122,12 @@ const SPLIT_SHELL_STYLE = { ...SHELL_STYLE, maxWidth: 'none' };
  */
 export function ManuscriptWorkspace({ project, upd, initialSubtab, onSubtabChange, initialView }) {
   const m = useManuscript(project, upd);
-  const [tab, setTabState] = useState(() => normalizeSubtab(initialSubtab));
+  /* 120.md §8 — the URL names a DESTINATION ('pdfview' included); the state below
+     holds the PANEL it resolves to. A `?ms=pdfview` deep link therefore lands on the
+     Editor panel with the pane already open, on the first paint, with no flash of a
+     paneless editor and no extra history entry. */
+  const initialDestination = normalizeSubtab(initialSubtab);
+  const [tab, setTabState] = useState(() => panelFor(initialDestination));
 
   /* ── 118.md §12/§45 — the editing VIEW ───────────────────────────────────────
      ONE piece of view state and NO manuscript state: both views render the same
@@ -162,16 +192,36 @@ export function ManuscriptWorkspace({ project, upd, initialSubtab, onSubtabChang
   const flushRef = useRef(m.flush);
   flushRef.current = m.flush;
 
+  /* 120.md §8 — live handles for the projection, so `setTab` can stay referentially
+     STABLE (it is handed to the toolbar and to every panel) while still reading the
+     current pane state and driving the one open/close path defined further down. */
+  const destinationRef = useRef(destinationFor(tab, initialDestination === PDF_VIEW_TAB));
+  const setSplitRef = useRef(null);
+
   const setTab = useCallback((next) => {
     const id = normalizeSubtab(next);
     /* r2 — clicking the destination you are ALREADY on is not a navigation. Without
        this guard a same-tab click (the nav tab, an Overview CTA that lands where you
        already are, a keyboard re-activation) pushed a duplicate history entry, so
        browser Back appeared to do nothing; and re-clicking Updates re-ran the heavy
-       sync plan. `refreshSyncPlan` belongs to genuine ENTRY, which is what this is. */
-    if (id === tabRef.current) return;
-    tabRef.current = id;
-    setTabState(id);
+       sync plan. `refreshSyncPlan` belongs to genuine ENTRY, which is what this is.
+       120.md §8 — compared against the DESTINATION (the thing the nav shows and the
+       URL carries), not the panel: Editor and PDF View share a panel, so comparing
+       panels would swallow every move between them. */
+    if (id === destinationRef.current) return;
+    /* 120.md §8 — the two Editor destinations differ ONLY by the pane, and both
+       transitions go through the ONE flush-first open/close path (`setSplitTo`), so
+       nothing typed in the last 600 ms can be lost by navigating. Choosing any other
+       destination leaves the pane exactly as it was — a researcher who opened a PDF
+       and stepped over to Tables comes back to it. */
+    if (id === PDF_VIEW_TAB) { if (setSplitRef.current) setSplitRef.current(true); }
+    else if (id === 'editor') { if (setSplitRef.current) setSplitRef.current(false); }
+    const panel = panelFor(id);
+    if (panel !== tabRef.current) {
+      tabRef.current = panel;
+      setTabState(panel);
+    }
+    destinationRef.current = id;
     // 84.md — the Updates destination owns a heavy plan that is computed on entry only.
     if (id === 'updates' && refreshPlanRef.current) refreshPlanRef.current();
     if (typeof hostNavRef.current === 'function') hostNavRef.current(id, viewRef.current, viewTouched.current);
@@ -238,8 +288,20 @@ export function ManuscriptWorkspace({ project, upd, initialSubtab, onSubtabChang
   useEffect(() => {
     if (typeof hostNavRef.current !== 'function' || initialSubtab == null) return;
     const id = normalizeSubtab(initialSubtab);
-    if (id === tabRef.current) return;
-    setTabState(id);
+    if (id === destinationRef.current) return;
+    /* 120.md §8 — a destination that arrives through the URL (a deep link, the white
+       side-menu, browser Back/Forward) opens and closes the pane through the SAME
+       flush-first path a click takes, so Back out of PDF View cannot lose the words
+       typed just before it. Reporting back out of here would loop, so this writes
+       LOCAL state only. */
+    if (id === PDF_VIEW_TAB) { if (setSplitRef.current) setSplitRef.current(true); }
+    else if (id === 'editor') { if (setSplitRef.current) setSplitRef.current(false); }
+    const panel = panelFor(id);
+    if (panel !== tabRef.current) {
+      tabRef.current = panel;
+      setTabState(panel);
+    }
+    destinationRef.current = id;
     if (id === 'updates' && refreshPlanRef.current) refreshPlanRef.current();
   }, [initialSubtab]);
 
@@ -306,7 +368,22 @@ export function ManuscriptWorkspace({ project, upd, initialSubtab, onSubtabChang
      the panel host and `useManuscript` (which is above all of this) never re-runs. */
   const projectId = (project && project.id) || '';
   const splitRowRef = useRef(null);
-  const [splitOpen, setSplitOpen] = useState(false);
+  // 120.md §8 — a `?ms=pdfview` deep link IS "the pane is open", resolved on the
+  // first render so the pane is never opened by a second, post-mount transition.
+  const [splitOpen, setSplitOpen] = useState(initialDestination === PDF_VIEW_TAB);
+  const splitOpenRef = useRef(splitOpen);
+  splitOpenRef.current = splitOpen;
+  /* 120.md §8 — once the pane has been opened in this session it stays MOUNTED, and
+     closing it only HIDES it. Unmounting destroyed PdfSplitPane's keep-alive viewer
+     pool (SPLIT_KEEPALIVE), which is where the open document's page, zoom, rotation
+     and search live — so with PDF View as a toolbar destination, every Editor⇄PDF
+     View move would have re-downloaded and re-rendered the PDF and thrown all of it
+     away. §8 lists exactly those as state that must survive the switch. */
+  const [splitMounted, setSplitMounted] = useState(splitOpen);
+  /* 120.md §8 — the destination the NAVIGATION shows and the URL carries. Derived on
+     every render from the two pieces of state, so it can never drift from them. */
+  const destination = destinationFor(tab, splitOpen);
+  destinationRef.current = destination;
   const [articleId, setArticleId] = useState('');
   const [reportId, setReportId] = useState('');
   const [stackPane, setStackPane] = useState('editor');   // narrow layout: which pane is shown
@@ -337,7 +414,15 @@ export function ManuscriptWorkspace({ project, upd, initialSubtab, onSubtabChang
     if (!stored) return;
     setArticleId(stored.refId);
     setReportId(stored.reportId || '');
-    if (stored.open) setSplitOpen(true);
+    /* 120.md §8 — hydration deliberately does NOT go through `setSplitTo`: that path
+       re-writes the remembered article, and at this instant `articleId` is still the
+       pre-hydration value, so the stored choice would be clobbered by its own
+       restoration. It opens the pane directly and arms the keep-alive latch. */
+    if (stored.open) {
+      splitOpenRef.current = true;
+      setSplitOpen(true);
+      setSplitMounted(true);
+    }
   }, [articleKey, projectId]);
 
   const rememberSplit = useCallback((next) => {
@@ -386,19 +471,38 @@ export function ManuscriptWorkspace({ project, upd, initialSubtab, onSubtabChang
      view toggle owes one (118.md §45): the two debounces (600 ms field patch → 800 ms
      blob autosave) are usually still armed, and a re-laid-out editor re-reads the
      COMMITTED draft. Resizing does NOT flush — it re-renders nothing but the divider. */
-  const toggleSplit = useCallback(() => {
+  /* 120.md §8 — THE one open/close path. Every route into the pane now goes through
+     it (the PDF View / Editor destinations, a `?ms=` deep link, browser Back/Forward,
+     and the pane's own "Exit PDF view"), which is what keeps the flush, the stacked
+     -layout rule and the remembered-article write from drifting apart. Idempotent on
+     purpose: asking for the state it is already in does nothing at all — no flush, no
+     localStorage write, no re-render. */
+  const setSplitTo = useCallback((next) => {
+    if (splitOpenRef.current === next) return;
     if (m.flush) m.flush();
-    setSplitOpen((open) => {
-      const next = !open;
+    splitOpenRef.current = next;
+    setSplitOpen(next);
+    if (next) {
+      setSplitMounted(true);
       /* Asking for PDF view on a NARROW screen means "show me the PDF": the stacked
          layout can only show one pane, so opening lands on the one just requested (on
          a wide screen the row shows both and this is inert). The pane switch is right
          there to go back to the manuscript. */
-      if (next) setStackPane('pdf');
-      rememberSplit({ refId: articleId || (activeArticle && activeArticle.id) || '', reportId, open: next });
-      return next;
-    });
+      setStackPane('pdf');
+    }
+    rememberSplit({ refId: articleId || (activeArticle && activeArticle.id) || '', reportId, open: next });
   }, [m, rememberSplit, articleId, activeArticle, reportId]);
+  // The stable `setTab` reaches the live callback through this ref (see above).
+  setSplitRef.current = setSplitTo;
+
+  /* 120.md §8 — the pane's own exit control is the SAME navigation as choosing the
+     Editor destination, so it reports through `setTab` and the URL follows (`?ms=`
+     goes back to `editor`). From any other destination the pane is not what the nav
+     is showing, so exiting is a pure layout change and pushes no history entry. */
+  const exitSplit = useCallback(() => {
+    if (tabRef.current === 'editor') setTab('editor');
+    else setSplitTo(false);
+  }, [setTab, setSplitTo]);
 
   const pickArticleId = useCallback((a) => {
     if (!a || !a.id) return;
@@ -556,18 +660,20 @@ export function ManuscriptWorkspace({ project, upd, initialSubtab, onSubtabChang
        MS-3, needs the full width; the other destinations keep the calmer 900px
        reading column). */
     <div data-testid="stitch-manuscript-workspace" style={splitOpen ? SPLIT_SHELL_STYLE : SHELL_STYLE}>
-      <ManuscriptToolbar m={m} tab={tab} onTabChange={setTab}
+      {/* 120.md §8 — the toolbar is told the DESTINATION, which is the projection of
+          the panel and the pane. 119.md §4's separate `splitToggle` is deliberately
+          NOT passed any more: one state must have one control, and §8 puts that
+          control in the navigation. The slot itself stays in the toolbar's signature
+          (and ManuscriptSplitToggle stays exported) for hosts that have no tablist. */}
+      <ManuscriptToolbar m={m} tab={destination} onTabChange={setTab}
         /* 119.md §7 — "Structure: <name> ▾" opens the preview/diff/mapping dialog. */
         onOpenStructure={openStructure}
-        /* 118.md §12 — the documented right-hand slot, filled. It renders only on
-           the Editor destination (the toolbar enforces that) and condenses with the
-           rest of Level B. */
-        viewSwitcher={({ condensed }) => (
-          <ManuscriptViewSwitcher view={view} onChange={setView} condensed={condensed} />
-        )}
-        /* 119.md §4 — the PDF-view toggle. */
-        splitToggle={({ condensed }) => (
-          <ManuscriptSplitToggle open={splitOpen} onToggle={toggleSplit} condensed={condensed} />
+        /* 118.md §12 — the documented right-hand slot, filled. It renders on the
+           Editor and PDF View destinations (the toolbar enforces that) and condenses
+           with the rest of Level B. 120.md §2 — `onDark` is the toolbar telling the
+           control which surface it landed on. */
+        viewSwitcher={({ condensed, onDark }) => (
+          <ManuscriptViewSwitcher view={view} onChange={setView} condensed={condensed} onDark={onDark} />
         )} />
 
       {/* 119.md §7 — the structure switcher, and the in-context undo the switch
@@ -659,7 +765,9 @@ export function ManuscriptWorkspace({ project, upd, initialSubtab, onSubtabChang
           <div
             id={MS_PANEL_ID}
             role="tabpanel"
-            aria-labelledby={msTabDomId(tab)}
+            /* 120.md §8 — labelled by the SELECTED tab, which on the Editor panel is
+               'PDF View' whenever the pane is open. */
+            aria-labelledby={msTabDomId(destination)}
             data-testid="stitch-manuscript-panel"
             style={{ maxWidth: (splitOpen || tab === 'editor') ? 'none' : 900, margin: '0 auto' }}
           >
@@ -705,7 +813,11 @@ export function ManuscriptWorkspace({ project, upd, initialSubtab, onSubtabChang
             their presence can never shift it. The pane stays MOUNTED in the stacked
             layout (hidden) so switching back to it keeps the open document. */}
         {splitOpen && splitLayout === 'split' && <SplitResizeDivider split={split} />}
-        {splitOpen && (
+        {/* 120.md §8 — mounted from the first time the pane is opened and NEVER
+            unmounted afterwards (see `splitMounted`): closing it hides it, so the
+            keep-alive viewer pool, the selected study, the page and the zoom are all
+            still there when PDF View is chosen again. */}
+        {splitMounted && (
           <PdfSplitPane
             projectId={projectId}
             articles={articles}
@@ -719,10 +831,10 @@ export function ManuscriptWorkspace({ project, upd, initialSubtab, onSubtabChang
                References library owns reference records, so this is the SAME seam a
                citation chip uses, not a second record surface. */
             onOpenRecord={(a) => openReference(a.id, 'view')}
-            onExit={toggleSplit}
+            onExit={exitSplit}
             split={split}
             layout={splitLayout}
-            hidden={splitLayout === 'stacked' && stackPane !== 'pdf'}
+            hidden={!splitOpen || (splitLayout === 'stacked' && stackPane !== 'pdf')}
           />
         )}
       </div>

@@ -105,10 +105,11 @@ test.describe('Manuscript toolbar (118.md)', () => {
       .getByText('Auto-draft — verify all content and numbers')).toHaveCount(0);
     await page.getByTestId('stitch-manuscript-wordmark').click(); // dismiss the tooltip
 
-    // Level B — a tablist, not eight CTA buttons.
+    // Level B — a tablist, not nine CTA buttons. (120.md §8 added the ninth
+    // destination, PDF View; the semantics of the row are unchanged.)
     const nav = page.getByTestId('stitch-manuscript-nav');
     await expect(nav).toHaveAttribute('role', 'tablist');
-    await expect(nav.getByRole('tab')).toHaveCount(8);
+    await expect(nav.getByRole('tab')).toHaveCount(9);
     await expect(page.getByTestId('stitch-manuscript-subtab-overview')).toHaveAttribute('aria-selected', 'true');
     await expect(page.getByTestId('stitch-manuscript-subtab-editor')).toHaveAttribute('aria-selected', 'false');
 
@@ -145,6 +146,59 @@ test.describe('Manuscript toolbar (118.md)', () => {
     // The header never grows a second copy of the save pill (§44 — one home).
     await expect(page.getByTestId('stitch-manuscript-save-status')).toHaveCount(1);
     await expect(header).toBeVisible();
+  });
+
+  /* ── 120.md §2: the solid Pecan purple toolbar ─────────────────────────────── */
+
+  /**
+   * 120.md §2. Asserted against COMPUTED style, not a style string: the requirement is
+   * that the rendered bar is one solid #5D509C with no gradient left anywhere on it,
+   * in normal, sticky, responsive and full-screen (Focus Mode) states.
+   */
+  test('§2: the toolbar is ONE solid Pecan purple — sticky, responsive and in Focus Mode', async ({ page, tmpProject }) => {
+    await desktop(page);
+    await openManuscript(page, tmpProject.id);
+    const header = page.getByTestId(HEADER);
+
+    const paint = async () => header.evaluate((el) => {
+      const s = getComputedStyle(el as HTMLElement);
+      return { bg: s.backgroundColor, image: s.backgroundImage };
+    });
+
+    const before = await paint();
+    expect(before.bg, 'the bar is the Pecan purple').toBe('rgb(93, 80, 156)');
+    expect(before.image, 'no remnant of the old gradient').toBe('none');
+
+    // …and the token really is the shared, theme-stable brand constant.
+    const pecan = await page.evaluate(() => getComputedStyle(document.documentElement)
+      .getPropertyValue('--t-pecan').trim());
+    expect(pecan.toLowerCase()).toBe('#5d509c');
+
+    // Every control ON the bar is light-on-purple: sample the active destination.
+    const tabColor = await page.getByTestId('stitch-manuscript-subtab-overview')
+      .evaluate((el) => getComputedStyle(el as HTMLElement).color);
+    expect(tabColor).toBe('rgb(255, 255, 255)');
+
+    // STICKY: scrolling the engine does not change the surface.
+    await page.getByTestId('stitch-manuscript-subtab-editor').click();
+    await page.getByTestId('stitch-manuscript-generate').click();
+    await expect(page.getByTestId('stitch-manuscript-save-status')).toContainText(/Saved/i, { timeout: 20_000 });
+    const scroller = page.getByTestId('stitch-main-content');
+    await scroller.evaluate((el) => { el.scrollTop = 900; });
+    expect(await paint()).toEqual(before);
+
+    // RESPONSIVE: every density paints the same surface.
+    for (const width of [1100, 900, 640]) {
+      await page.setViewportSize({ width, height: 900 });
+      await expect(header).toBeVisible();
+      expect(await paint(), `at ${width}px`).toEqual(before);
+    }
+    await desktop(page);
+
+    // FULL-SCREEN: Focus Mode renders this same bar, so it must not change either.
+    await page.getByTestId('focus-toggle').click();
+    await expect(page.getByTestId('focus-nav-bar')).toBeVisible();
+    expect(await paint()).toEqual(before);
   });
 
   /* ── §7: sticky INSIDE the manuscript engine ───────────────────────────────── */
@@ -359,9 +413,11 @@ test.describe('Manuscript toolbar (118.md)', () => {
       const density = (await header.getAttribute('data-density'))!;
       seen.push(density);
 
-      // §41 non-negotiables at EVERY width: all eight destinations and the save
+      // §41 non-negotiables at EVERY width: all nine destinations and the save
       // state stay visible; nothing scrolls out of reach.
-      await expect(page.getByTestId('stitch-manuscript-nav').getByRole('tab')).toHaveCount(8);
+      await expect(page.getByTestId('stitch-manuscript-nav').getByRole('tab')).toHaveCount(9);
+      // 120.md §8 — including the new one, which must never need an overflow menu.
+      await expect(page.getByTestId('stitch-manuscript-subtab-pdfview')).toBeVisible();
       await expect(page.getByTestId('stitch-manuscript-subtab-export')).toBeVisible();
       await expect(page.getByTestId('stitch-manuscript-save-status')).toBeVisible();
 

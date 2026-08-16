@@ -559,14 +559,22 @@ describe('118.md §12/§47 — the view preference is remembered, per user', () 
   /* r2 — re-selecting the destination you are already on is not a navigation:
      it pushed a duplicate history entry (so Back appeared to do nothing) and
      re-ran the deliberately lazy Updates sync plan. */
+  /* 120.md §8 — RE-PINNED. The guard is unchanged in purpose (a click on the
+     destination you are already on is not a navigation: no history entry, no sync
+     plan) but it now compares DESTINATIONS rather than panels. It has to: Editor and
+     PDF View render the same panel, so a panel comparison would swallow every move
+     between them and leave the nav and the URL behind. */
   it('r2 — an unchanged destination pushes no history and re-runs no sync plan', () => {
     const ws = readSource('src/features/manuscript/ManuscriptWorkspace.jsx');
     const setTab = ws.slice(ws.indexOf('const setTab = useCallback('), ws.indexOf('}, []);', ws.indexOf('const setTab = useCallback(')));
-    expect(setTab).toContain('if (id === tabRef.current) return;');
-    expect(setTab.indexOf('if (id === tabRef.current) return;'))
+    expect(setTab).toContain('if (id === destinationRef.current) return;');
+    expect(setTab.indexOf('if (id === destinationRef.current) return;'))
       .toBeLessThan(setTab.indexOf('refreshPlanRef.current()'));
-    expect(setTab.indexOf('if (id === tabRef.current) return;'))
+    expect(setTab.indexOf('if (id === destinationRef.current) return;'))
       .toBeLessThan(setTab.indexOf('hostNavRef.current('));
+    // …and the destination really is derived from the panel + the pane, every render.
+    expect(ws).toContain('const destination = destinationFor(tab, splitOpen);');
+    expect(ws).toContain('destinationRef.current = destination;');
   });
 
   /* r2 — §3 BACK/FORWARD ASYMMETRY, for exactly the researchers §3 promised not to

@@ -20,6 +20,11 @@
  * (0,2,0). Our blocks are theme-qualified on `html[data-ui-design="stitch"]`
  * (0,2,1) so they reliably win for BOTH day and night without !important.
  */
+// 120.md §2 — the rail's purple and the Manuscript Editor toolbar's purple are ONE
+// brand constant, now declared once in theme/tokens.js. This import changes no bytes
+// of the emitted CSS (PECAN_PRIMARY === the '#5d509c' this file has always used); it
+// removes the second copy so the two surfaces cannot drift apart.
+import { PECAN_PRIMARY } from '../../theme/tokens.js';
 
 /* ─── Light identity (the canonical Stitch look) ──────────────────────────── */
 export const STITCH_LIGHT = {
@@ -142,7 +147,7 @@ export const STITCH_SHAPE = {
    secondary-container #96f591 as the active indicator bar. One tokenized purple —
    design2.md Part 9: "no multiple competing shades of purple without tokens". */
 export const STITCH_RAIL = {
-  bg:        '#5d509c',
+  bg:        PECAN_PRIMARY,   // 120.md §2 — '#5d509c', shared with the manuscript toolbar
   bgHover:   '#7669b6',
   active:    'rgba(255,255,255,0.16)',
   indicator: '#96f591',

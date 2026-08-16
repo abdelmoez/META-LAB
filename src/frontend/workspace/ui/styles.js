@@ -14,6 +14,11 @@
 import { alpha as themeAlpha } from "../../theme/tokens.js";
 
 export const C={
+  // 120.md §2 — the Pecan brand purple. Defined in theme/tokens.js (THEMES.day and
+  // THEMES.night carry the SAME value) so the brand surface never flips with the
+  // theme and is never rewritten by an admin brand override (which only touches the
+  // four --t-acc* variables). Used by the Manuscript Editor toolbar.
+  pecan:"var(--t-pecan)",
   bg:"var(--t-bg)",        // deep background
   surf:"var(--t-surf)",    // sidebar / elevated surface
   card:"var(--t-card)",    // card background
