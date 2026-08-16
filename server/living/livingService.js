@@ -15,6 +15,9 @@
 import { prisma } from '../db/client.js';
 import { createNotification } from '../services/notificationService.js';
 import { scheduleRescore } from '../services/screeningAiJobs.js';
+// 119.md §1 — one dedup derivation for every consumer (see server/screening/dedupCounts.js).
+import { loadDedupIdentificationInputs } from '../screening/dedupCounts.js';
+import { derivePrismaIdentification } from '../utils/prismaDerive.js';
 import { startRun, pecanSearchEnabled } from '../pecanSearch/runService.js';
 import { featureAccess } from '../services/featureAccess.js';
 import { runMeta } from '../../src/research-engine/statistics/meta-analysis.js';
@@ -424,17 +427,28 @@ export async function buildSnapshotSummary(metaLabProjectId) {
   if (spIds.length) {
     const [total, batches, decidedRecords, accepted, fullText, latestRun] = await Promise.all([
       prisma.screenRecord.count({ where: { projectId: { in: spIds } } }),
-      prisma.screenImportBatch.findMany({ where: { projectId: { in: spIds } }, select: { duplicateCount: true } }),
+      // 119.md §1 — the shared primitives; `supersedesBatchId` rides along so a forced
+      // re-import stops inflating the digest.
+      prisma.screenImportBatch.findMany({ where: { projectId: { in: spIds } }, select: { duplicateCount: true, supersedesBatchId: true } }),
       prisma.screenDecision.findMany({ where: { projectId: { in: spIds }, decision: { in: ['include', 'exclude', 'maybe'] } }, select: { recordId: true }, distinct: ['recordId'] }),
       prisma.screenRecord.count({ where: { projectId: { in: spIds }, finalStatus: 'accepted' } }),
       prisma.screenRecord.count({ where: { projectId: { in: spIds }, currentStage: 'full_text' } }),
       prisma.screenAiRun.findFirst({ where: { projectId: { in: spIds }, isActive: true, status: 'completed' }, orderBy: { createdAt: 'desc' }, select: { id: true, configJson: true, snapshotHash: true } }),
     ]);
-    const importDups = batches.reduce((a, b) => a + (b.duplicateCount || 0), 0);
+    // 119.md §1 — CONSUMER CONVERGENCE. This digest used to derive `identified` and
+    // `duplicatesRemoved` from import-batch duplicates ALONE, so it disagreed with
+    // GET /prisma (and with the dashboard summary) on any project that ran an
+    // automated search or resolved a duplicate group: the engine's pre-landing
+    // duplicates and every record-level removal were simply missing. It now reads the
+    // SAME shared inputs and the SAME pure derivation the flow service and the
+    // summary do. `screened` deliberately keeps its own meaning here (records with a
+    // decision — a progress signal, not the PRISMA post-dedup pool).
+    const dedupInputs = await loadDedupIdentificationInputs(spIds);
+    const dedupCounts = derivePrismaIdentification({ ...dedupInputs, recordCount: total });
     screening = { total, decided: decidedRecords.length, includedK: accepted, fullTextAssessed: fullText + accepted };
     prismaCounts = {
-      identified: total + importDups,
-      duplicatesRemoved: importDups,
+      identified: dedupCounts.identified,
+      duplicatesRemoved: dedupCounts.duplicatesRemoved,
       screened: decidedRecords.length,
       fullTextAssessed: fullText + accepted,
       included: accepted,

@@ -26,6 +26,10 @@ import { kickImportWorker } from '../services/screeningImportWorker.js';
 // racing the delete transaction (see server/screening/resetLock.js).
 import { isResetLocked } from '../screening/resetLock.js';
 import { getProjectAccess, ensureLeaderMember, writeAudit, QUORUM } from '../screening/access.js';
+// 119.md §8 — project Logbook. Project lifecycle (create/settings/archive/delete)
+// is written here; the CRITICAL paths go through the transactional writer.
+import { recordLogEvent, recordLogEventTx, withLoggedTransaction, logbookActor } from '../logbook/logbookService.js';
+import { MIRROR_SCREEN_AUDIT } from '../logbook/vocabulary.js';
 // 116.md §10 (r2) — the record-editing bar, shared with the GET that advertises it.
 import { canEditRecordMetadata, canFinalizeRecords } from '../screening/recordAccess.js';
 // 109.md §22 — keyword mutations were completely unaudited; the pure row builder
@@ -62,6 +66,14 @@ import { requireProjectExport, requireProjectExportEnabled, settleProjectExport,
 import { snapshotPico } from '../screening/picoSnapshot.js';
 import { screeningCountSelect } from '../utils/screeningCounts.js';
 import { derivePrismaIdentification } from '../utils/prismaDerive.js';
+// 119.md §1 — the SHARED dedup primitives (the flow service is the authority; this
+// summary delegates to the same rules instead of keeping a parallel arithmetic) and
+// the dedup AUDIT writer.
+import {
+  loadEngineDuplicateSources, engineDuplicateTotals, sumImportDuplicates,
+  countRemovedDuplicateRecords,
+} from '../screening/dedupCounts.js';
+import { recordDedupEvents, markDedupEventsReversed } from '../screening/dedupEvents.js';
 import {
   scorePair, normalizeTitle, classifyPair, DUP_TYPES,
   isExactDuplicateGroup, pickBulkPrimary, mergeFillBlanks,
@@ -293,6 +305,14 @@ export async function createProject(req, res) {
       });
       // The creator automatically becomes the project owner (Part 4).
       await ensureLeaderMember(sp, tx);
+      // 119.md §8 "Project creation" — the Logbook's first row, written inside
+      // the SAME atomic core so a workspace can never exist without one.
+      await recordLogEventTx(tx, {
+        action: 'PROJECT_CREATED',
+        summary: `Created the project "${sp.title}"`,
+        resourceType: 'project', resourceId: sp.id, resourceLabel: sp.title,
+        after: { title: sp.title, blindMode: effectiveBlind, linkedMetaLabProjectId: linkedId || null },
+      }, logbookActor(req, { role: 'owner', isOwner: true }, { projectId: sp.id, metaLabProjectId: linkedId || '' }));
       return sp;
     });
 
@@ -461,6 +481,33 @@ export async function updateProject(req, res) {
 
     const updated = await prisma.screenProject.update({ where: { id: p.id }, data });
 
+    /* 119.md §8 "Project settings changes" — ONE Logbook row per settings save,
+     * carrying only the keys that actually changed (before/after). The existing
+     * per-setting writeAudit calls below are untouched (they feed the screening
+     * audit view and have finer-grained action strings); this row is the
+     * project-level "what did this save change" summary the Logbook shows. Not
+     * mirrored: PROJECT_SETTINGS_CHANGED has no single legacy twin, so the
+     * bridged BLIND_MODE_* / CHAT_RESTRICTED_* rows still show alongside it. */
+    try {
+      const changed = {};
+      const previous = {};
+      for (const k of Object.keys(data)) {
+        if (JSON.stringify(p[k] ?? null) === JSON.stringify(data[k] ?? null)) continue;
+        previous[k] = p[k] ?? null;
+        changed[k] = data[k];
+      }
+      const keys = Object.keys(changed);
+      if (keys.length) {
+        void recordLogEvent({
+          action: 'PROJECT_SETTINGS_CHANGED',
+          summary: `Changed project settings: ${keys.slice(0, 6).join(', ')}${keys.length > 6 ? `, +${keys.length - 6} more` : ''}`,
+          resourceType: 'project', resourceId: p.id, resourceLabel: updated.title || p.title || '',
+          before: previous, after: changed,
+          metadata: { keys },
+        }, logbookActor(req, access, { projectId: p.id, metaLabProjectId: p.linkedMetaLabProjectId || '' }));
+      }
+    } catch { /* the Logbook must never break a settings save */ }
+
     // 98.md §14 Defect 1 — sign-off corroboration. The leader may still mark the
     // workspace 'done' freely (deliberately NOT hard-rejected), but when the
     // substep evidence says screening work is pending we return an ADDITIVE
@@ -582,10 +629,23 @@ export async function deleteProject(req, res) {
     await writeAudit(p.id, req.user, 'PROJECT_DELETED', {
       entityType: 'project', entityId: p.id, details: { title: p.title },
     });
-    await prisma.screenProject.update({
-      where: { id: p.id },
-      data: { deletedAt: new Date(), deletedSource: 'owner' },
-    });
+    // 119.md §8 — project deletion is CRITICAL: the Logbook row commits with the
+    // soft-delete mark so a deleted workspace always carries the record of who
+    // deleted it (the rows survive — the delete is a mark, not a destroy).
+    await withLoggedTransaction(
+      (tx) => tx.screenProject.update({
+        where: { id: p.id },
+        data: { deletedAt: new Date(), deletedSource: 'owner' },
+      }),
+      () => ({
+        action: 'PROJECT_DELETED',
+        mirrors: MIRROR_SCREEN_AUDIT,
+        summary: `Deleted the project "${p.title || p.id}"`,
+        resourceType: 'project', resourceId: p.id, resourceLabel: p.title || '',
+        before: { deletedAt: null }, after: { deletedAt: 'now', deletedSource: 'owner' },
+      }),
+      logbookActor(req, { role: 'owner', isOwner: true }, { projectId: p.id, metaLabProjectId: p.linkedMetaLabProjectId || '' }),
+    );
     recordUsage({
       type: USAGE.PROJECT_DELETED,
       userId: req.user.id,
@@ -619,6 +679,14 @@ export async function archiveProject(req, res) {
     await writeAudit(p.id, req.user, 'PROJECT_ARCHIVED', {
       entityType: 'project', entityId: p.id, details: { title: p.title },
     });
+    // 119.md §8 "Project archive, restore, or deletion operations".
+    void recordLogEvent({
+      action: 'PROJECT_ARCHIVED',
+      mirrors: MIRROR_SCREEN_AUDIT,
+      summary: `Archived the project "${p.title || p.id}"`,
+      resourceType: 'project', resourceId: p.id, resourceLabel: p.title || '',
+      before: { archived: !!p.archived }, after: { archived: true },
+    }, logbookActor(req, { role: 'owner', isOwner: true }, { projectId: p.id, metaLabProjectId: p.linkedMetaLabProjectId || '' }));
     recordUsage({ type: USAGE.WORKSPACE_ARCHIVED, userId: req.user.id, screenProjectId: p.id });
     // Members with the project open revalidate (it drops from their active list).
     emitToProjectMembers(p.id, { type: 'project.updated' }, { exclude: req.user.id });
@@ -645,6 +713,16 @@ export async function unarchiveProject(req, res) {
     await writeAudit(p.id, req.user, 'PROJECT_UNARCHIVED', {
       entityType: 'project', entityId: p.id, details: { title: p.title },
     });
+    // 119.md §8 — the restore half of the archive/restore pair. Registered as
+    // PROJECT_RESTORED in the Logbook vocabulary (PROJECT_UNARCHIVED stays the
+    // ScreenAuditLog string, so `mirrors` still cuts the legacy twin over).
+    void recordLogEvent({
+      action: 'PROJECT_RESTORED',
+      mirrors: MIRROR_SCREEN_AUDIT,
+      summary: `Restored the project "${p.title || p.id}" from the archive`,
+      resourceType: 'project', resourceId: p.id, resourceLabel: p.title || '',
+      before: { archived: !!p.archived }, after: { archived: false },
+    }, logbookActor(req, { role: 'owner', isOwner: true }, { projectId: p.id, metaLabProjectId: p.linkedMetaLabProjectId || '' }));
     recordUsage({ type: USAGE.WORKSPACE_UNARCHIVED, userId: req.user.id, screenProjectId: p.id });
     emitToProjectMembers(p.id, { type: 'project.updated' }, { exclude: req.user.id });
     res.json({ archived: false });
@@ -2750,12 +2828,27 @@ export async function resolveDuplicateGroup(req, res) {
     // record is flagged isDuplicate), so both remain in screening.
     if (keepAll) {
       await labelPairs('not_duplicate');
+      // 119.md §1 — RESTORATION. The worker already flagged these members, so PRISMA
+      // has been counting them as removed; keep-all puts them back and the count
+      // drops. The audit trail must say so: the open removal events are STAMPED
+      // reversed (never rewritten in meaning) and the restoration is APPENDED as its
+      // own event — the 108.md undo doctrine, applied to dedup.
+      const keepAllIds = await prisma.screenRecord.findMany({
+        where: { duplicateGroupId: group.id }, select: { id: true },
+      }).then((rs) => rs.map((r) => r.id)).catch(() => []);
       await prisma.screenRecord.updateMany({ where: { duplicateGroupId: group.id }, data: { isDuplicate: false, isPrimary: false } });
       // 92.md — primaryId is a NON-nullable String @default("") column; writing null
       // threw a Prisma validation error, so "Not duplicates — keep all" 500'd at the
       // API since prompt23. "" is the model's own no-primary sentinel.
       await prisma.screenDuplicateGroup.update({ where: { id: group.id }, data: { resolvedAt: new Date(), primaryId: '' } });
       await writeAudit(p.id, req.user, 'DUPLICATE_GROUP_KEEP_ALL', { entityType: 'duplicateGroup', entityId: group.id });
+      await markDedupEventsReversed({ projectId: p.id, recordIds: keepAllIds });
+      await recordDedupEvents(keepAllIds.map((id) => ({
+        projectId: p.id, recordId: id, groupId: group.id,
+        method: 'human-keepall', classification: 'manual',
+        actor: req.user.id, actorName: access.member?.name || req.user.email || '',
+        reversed: true, restoredAt: new Date(),
+      })));
       emitToProjectMembers(p.id, { type: 'project.updated' });
       return res.json({ resolved: true, keepAll: true });
     }
@@ -2782,6 +2875,22 @@ export async function resolveDuplicateGroup(req, res) {
       entityType: 'duplicateGroup', entityId: group.id, primaryId,
       details: { mergedFields: Object.keys(patch), filledFrom },
     });
+    // 119.md §1 — the human CONFIRMATION of an automatic suggestion. 119.md requires
+    // that confirming does not re-count the removal, and it does not: the count comes
+    // from the records' isDuplicate/isPrimary state, which the worker already set and
+    // this write only re-asserts. The event records WHO confirmed it, so the audit
+    // trail distinguishes an unreviewed suggestion from a reviewed decision even
+    // though both count identically in the figure.
+    await recordDedupEvents(groupRecs
+      .filter((r) => r.id !== primaryId)
+      .map((r) => ({
+        projectId: p.id, recordId: r.id, canonicalRecordId: primaryId, groupId: group.id,
+        method: 'human-confirm', classification: 'manual',
+        basis: (r.doi && primaryRec.doi && String(r.doi).toLowerCase() === String(primaryRec.doi).toLowerCase()) ? 'doi'
+          : (r.pmid && primaryRec.pmid && String(r.pmid) === String(primaryRec.pmid)) ? 'pmid' : 'title',
+        actor: req.user.id, actorName: access.member?.name || req.user.email || '',
+        detail: JSON.stringify({ mergedFields: Object.keys(patch) }),
+      })));
     emitToProjectMembers(p.id, { type: 'project.updated' });
 
     res.json({ resolved: true, primaryId, mergedFields: Object.keys(patch) });
@@ -3160,7 +3269,10 @@ export async function getMetaLabSummary(req, res) {
       prisma.screenDecision.findMany({ where: { projectId: sp.id }, select: { recordId: true, reviewerId: true, decision: true, stage: true } }),
       prisma.screenConflict.findMany({ where: { projectId: sp.id }, select: { resolvedAt: true } }),
       prisma.screenDuplicateGroup.findMany({ where: { projectId: sp.id }, select: { resolvedAt: true, createdAt: true } }),
-      prisma.screenImportBatch.findMany({ where: { projectId: sp.id }, select: { preDedupCount: true, duplicateCount: true, createdAt: true, source: true } }),
+      // 119.md §1 — `supersedesBatchId` rides along so a forced re-upload of an
+      // already-imported file stops inflating the summary exactly as it stopped
+      // inflating the flow (sumImportDuplicates skips repeats).
+      prisma.screenImportBatch.findMany({ where: { projectId: sp.id }, select: { preDedupCount: true, duplicateCount: true, createdAt: true, source: true, supersedesBatchId: true } }),
       // 78.md #4 — the AUTOMATED (Pecan Search Engine) runs that LANDED in THIS resolved
       // workspace (sp.id — recs round: scoped to the SAME ScreenProject as `records`/
       // `batches`, NOT the raw mlpid, so when one META·LAB project is linked from more
@@ -3172,10 +3284,9 @@ export async function getMetaLabSummary(req, res) {
       // 96.md D11 — rolled-back runs are EXCLUDED: a screening reset removed their
       // landed records/batches, so keeping their engine-side dedup counts would
       // over-report identified/duplicates-removed forever after a reset.
-      prisma.pecanSearchSource.findMany({
-        where: { run: { screenProjectId: sp.id, rolledBackAt: null } },
-        select: { exactDupCount: true, fuzzyDupCount: true },
-      }).catch(() => []),
+      // 119.md §1 — one loader, shared with prismaFlowService, so the dashboard and
+      // the canonical flow can no longer disagree about which runs count.
+      loadEngineDuplicateSources(sp.id),
     ]);
     const total              = records.length;
     // 58.md §7 — PRISMA must show total-identified BEFORE dedup + ALL duplicates
@@ -3183,13 +3294,16 @@ export async function getMetaLabSummary(req, res) {
     // skipped at insert (never become ScreenRecords), so they are recovered from the
     // per-batch dedup accounting; post-import detected duplicates are flagged on the
     // surviving records. `identified` = pre-dedup total; `screened` = pool after dedup.
-    const importDuplicates   = batches.reduce((a, b) => a + (b.duplicateCount || 0), 0);
+    // 119.md §1 — all three terms now come from the SHARED primitives, which is what
+    // makes this summary agree with GET /prisma record-for-record: superseded
+    // re-imports are skipped, and a removed duplicate is `isDuplicate && !isPrimary`
+    // (the flow's own disposition rule) rather than `isDuplicate` alone.
+    const importDuplicates   = sumImportDuplicates(batches);
     const preDedupAccounting = batches.reduce((a, b) => a + (b.preDedupCount || 0), 0);
-    const postImportDupes    = records.filter(r => r.isDuplicate).length;
+    const postImportDupes    = countRemovedDuplicateRecords(records);
     // 78.md #4 — automated-run cross-source duplicates (engine-removed before landing).
     // existingMatch is excluded on purpose (rerun-safety — see prismaDerive.js).
-    const pecanExactDup      = pecanSources.reduce((a, s) => a + (s.exactDupCount || 0), 0);
-    const pecanFuzzyDup      = pecanSources.reduce((a, s) => a + (s.fuzzyDupCount || 0), 0);
+    const { exact: pecanExactDup, fuzzy: pecanFuzzyDup } = engineDuplicateTotals(pecanSources);
     // Manual + imported + automated all feed the SAME normalized derivation (pure helper).
     const { identified, duplicatesRemoved, screened } = derivePrismaIdentification({
       recordCount: total, importDuplicates, postImportDuplicates: postImportDupes, pecanExactDup, pecanFuzzyDup,

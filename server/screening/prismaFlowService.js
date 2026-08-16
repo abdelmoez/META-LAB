@@ -31,6 +31,12 @@ import {
   derivePrismaFlow, reconcilePrismaFlow, armOf,
 } from '../../src/research-engine/prisma/index.js';
 import { canonicalDbKey, dbLabel } from '../../src/research-engine/search/searchProvenance.js';
+// 119.md §1 — the shared dedup primitives. The flow service is the AUTHORITY; these
+// helpers are what the dashboard summary, the living digest and public synthesis
+// delegate to so all four read one rule instead of four arithmetics.
+import {
+  loadEngineDuplicateSources, engineDuplicatesByArm, isSupersededImport,
+} from './dedupCounts.js';
 
 /** Is a model available on the current Prisma client? */
 function has(model) {
@@ -52,11 +58,24 @@ const BASE_RECORD_SELECT = Object.freeze({
   importBatchId: true, identificationSource: true, sourceDetail: true,
 });
 
-/** ScreenImportBatch.source → the ScreenRecordSource.origin an import of that kind writes. */
+/**
+ * ScreenImportBatch.source → the ScreenRecordSource.origin an import of that kind writes.
+ *
+ * 119.md §1 — 'citation-mining' and 'living' are now DECLARED rather than reaching
+ * the 'file' fallback by accident. Citation mining lands through
+ * dedupeAndInsertRecords with source 'citation-mining' (citationMiningService), and
+ * its discards belong to the other-methods arm because that is what citation
+ * searching IS in PRISMA 2020 — previously the right answer arrived only because an
+ * unknown source fell through to 'file' and 'file' happens to resolve to 'manual'.
+ * A living-review re-search is an executed database search (it runs the Pecan
+ * pipeline), so it maps to 'search'.
+ */
 const ORIGIN_BY_BATCH_SOURCE = Object.freeze({
   'pecan-search': 'search',
   api: 'api',
   file: 'file',
+  'citation-mining': 'mining',
+  living: 'search',
 });
 
 /**
@@ -104,6 +123,11 @@ async function loadImportBatches(pid) {
       select: {
         id: true, duplicateCount: true, sourceDatabase: true, contributesToReview: true,
         source: true, filename: true, format: true, createdAt: true,
+        // 119.md §1 — a FORCED re-upload of an already-imported file repeats an
+        // accounting that is already on the books. Selecting the lineage here is
+        // what makes the phantom sum idempotent (live: identified stayed 4 instead
+        // of climbing 4 → 8 → 12 on repeated forces).
+        supersedesBatchId: true,
       },
     });
   } catch {
@@ -139,7 +163,7 @@ export async function loadPrismaFlow(pid, opts = {}) {
     ...(opts.recordOrderBy ? { orderBy: opts.recordOrderBy } : {}),
   };
 
-  const [records, decisions, conflicts, sources, candidates, requests, attachments, batches] = await Promise.all([
+  const [records, decisions, conflicts, sources, candidates, requests, attachments, batches, engineSources] = await Promise.all([
     safe(() => prisma.screenRecord.findMany(recordQuery), []),
     // 116.md §15 — the field is `exclusionReason`. Selecting the nonexistent
     // `reason` here is the exact bug that silently zeroed every exclusion count.
@@ -188,6 +212,19 @@ export async function loadPrismaFlow(pid, opts = {}) {
     // un-migrated client, deliberately NOT through safe(): letting a missing column
     // fall all the way to [] would silently zero `unrecordedDuplicates`.
     loadImportBatches(pid),
+    // 119.md §1 — THE AUTOMATED-SEARCH GAP THIS FILE SHIPPED.
+    //
+    // The Pecan engine classifies cross-source duplicates BEFORE landing
+    // (pipeline.js lands only 'new' and 'ambiguous'), so an exact/fuzzy duplicate
+    // never becomes a ScreenRecord AND never touches a batch's duplicateCount —
+    // pecan batches carry duplicateCount ≈ 0. The loader read only batches, so for
+    // every automated search GET /prisma (and therefore the manuscript diagram and
+    // the DOCX export) under-reported BOTH "records identified" and "duplicate
+    // records removed" by exactDup+fuzzyDup — while the dashboard summary, which
+    // does fold them in, showed the correct figure right beside it.
+    //
+    // Rolled-back runs are excluded inside the loader (96.md D11).
+    loadEngineDuplicateSources(pid),
   ]);
 
   if (!records.length) return null;
@@ -281,12 +318,30 @@ export async function loadPrismaFlow(pid, opts = {}) {
   for (const b of batches || []) {
     const n = Number(b && b.duplicateCount) || 0;
     if (n <= 0) continue;
+    // 119.md §1 — a re-import of an already-imported file re-observes records that
+    // are already on the books (its own duplicateCount is honestly stored and shown
+    // in Import History; it is simply not a second retrieval). Skipping it here is
+    // what makes `force: true` idempotent for PRISMA.
+    if (isSupersededImport(b)) continue;
     const arm = armOfBatchDiscards(
       { declaredDatabase: (batchById[b.id] || {}).sourceDatabase || '', source: b.source },
       survivorsByBatch.get(b.id) || [],
     );
     unrecordedDuplicates[arm === 'db' ? 'db' : 'other'] += n;
   }
+
+  // 119.md §1 — the Pecan engine's pre-landing duplicates enter through the SAME
+  // phantom mechanism as import discards: counted in identification and in removal,
+  // with no ids (there is no record to inspect — the copy was never stored), so the
+  // engine's identities keep balancing. Attribution is per SOURCE, resolved through
+  // armOf on the provider's canonical key rather than assumed to be db.
+  const engineByArm = engineDuplicatesByArm(engineSources);
+  unrecordedDuplicates.db += engineByArm.db;
+  unrecordedDuplicates.other += engineByArm.other;
+  // The engine share rides along so the §12 stage breakdown says "Removed during
+  // automated search" instead of mislabelling it "Discarded at import".
+  unrecordedDuplicates.dbSearch = engineByArm.db;
+  unrecordedDuplicates.otherSearch = engineByArm.other;
 
   const flow = derivePrismaFlow(projections, {
     previous: opts.previous || null,

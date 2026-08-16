@@ -688,6 +688,8 @@ model ScreenProject {
   members          ScreenProjectMember[]
   chatMessages     ScreenChatMessage[]
   auditLogs        ScreenAuditLog[]
+  // 119.md §1 — the deduplication AUDIT trail (never a counter source).
+  dedupEvents      ScreenDedupEvent[]
 
   @@index([linkedMetaLabProjectId])
 }
@@ -901,11 +903,85 @@ model ScreenImportBatch {
   importedById   String?
   importedByName String        @default("")
   parser         String        @default("")
+  // 119.md §1 — FORCE RE-IMPORT LINEAGE.
+  //
+  // The fileHash fence (409 duplicate_import) is the only idempotency a file import
+  // has, and `force: true` legitimately bypasses it. Before this, every forced
+  // re-upload of the SAME bytes created a second batch whose duplicateCount counted
+  // the very records the first batch had already landed, and prismaFlowService sums
+  // ALL batches forever: identified went 4 → 8 and duplicatesRemoved 2 → 6 on one
+  // re-upload, permanently.
+  //
+  // A re-upload of an identical file is a RE-OBSERVATION, not a second retrieval —
+  // the same doctrine that makes the Pecan engine count `existing_match` nowhere
+  // (server/utils/prismaDerive.js). The newcomer records the batch it repeats and is
+  // EXCLUDED from PRISMA's phantom duplicate accounting; the PRIOR batch keeps its
+  // accounting because its records are the ones actually in the project (retiring the
+  // older one instead would drop the accounting for records that are still there).
+  // An overlapping export from a SECOND database has a different fileHash and is
+  // therefore untouched — it still adds instances, as PRISMA requires.
+  // Additive + defaulted ⇒ `prisma db push` stays safe; legacy rows read "".
+  supersedesBatchId String      @default("") // on the RE-IMPORT: the batch whose file it repeats
+  supersededById    String      @default("") // on the PRIOR batch: the re-import that repeated it
   createdAt      DateTime      @default(now())
 
   records ScreenRecord[]
 
   @@index([projectId, fileHash])
+}
+
+// ─── 119.md §1 — the unified deduplication AUDIT trail ────────────────────────
+//
+// One row per deduplication EVENT, from every stage that removes (or restores) a
+// duplicate: the import landing, the Pecan engine's pre-landing classifier, the
+// post-import duplicate worker, and human resolution.
+//
+// AUDIT ONLY. PRISMA keeps deriving its counts from records / batches / runs — this
+// table is never a counter source. That is deliberate: the counters are derived at
+// read time from the live record set, so they self-heal when records are deleted,
+// batches removed or runs rolled back, whereas an event log accumulates history and
+// would double-count the moment a write path was retried. What the events give is
+// the thing counts cannot: WHY a specific record was removed, on what basis, by
+// whom, and whether it was put back.
+//
+// Ids are bare strings (no FK) except the project, mirroring ScreenAuditLog /
+// ScreenDuplicateLabel: an audit row must outlive the record it describes.
+// All additive / defaulted ⇒ `prisma db push` stays safe.
+model ScreenDedupEvent {
+  id                String        @id @default(uuid())
+  projectId         String
+  project           ScreenProject @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  // The REMOVED record. "" when the duplicate was discarded BEFORE insertion (the
+  // import landing and the Pecan engine both drop duplicates pre-insert), which is
+  // exactly the case that has no record-level trace anywhere else.
+  recordId          String        @default("")
+  // The record that was KEPT — what the removed copy was a duplicate OF.
+  canonicalRecordId String        @default("")
+  groupId           String        @default("") // ScreenDuplicateGroup id, when one exists
+  batchId           String        @default("") // ScreenImportBatch id
+  runId             String        @default("") // PecanSearchRun id
+  // import-exact | pecan-exact | pecan-fuzzy | worker-suggestion | human-confirm | human-keepall
+  method            String        @default("")
+  // doi | pmid | title | title-year | registry | fuzzy | identity | "" (unrecorded)
+  basis             String        @default("")
+  classification    String        @default("automatic") // automatic | manual
+  confidence        Int           @default(0) // 0-100; 0 when not applicable (exact identity)
+  // 'system:import' | 'system:pecan' | 'system:worker' | a user id
+  actor             String        @default("")
+  actorName         String        @default("")
+  // Restoration: keep-all on a duplicate group, or an undo, puts the record back.
+  // The original event is never rewritten — it is STAMPED reversed, and the
+  // restoration itself is appended as its own `human-keepall` row.
+  reversed          Boolean       @default(false)
+  restoredAt        DateTime?
+  detail            String        @default("") // short JSON context; never a counter
+  at                DateTime      @default(now())
+
+  @@index([projectId, at])
+  @@index([projectId, method])
+  @@index([projectId, recordId])
+  @@index([batchId])
+  @@index([runId])
 }
 
 // prompt50 WS2 — durable, observable, retryable screening import job. The source
@@ -2903,6 +2979,78 @@ model ProjectEvent {
   @@index([projectId, eventType])
   @@index([projectId, significance])
   @@index([projectId, serverTs])
+  @@index([correlationId])
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// 119.md §8 — PROJECT LOGBOOK. The append-only, Owner/Leader-only activity log.
+//
+// WHY A NEW TABLE (and not more columns on ProjectEvent): ProjectEvent is the
+// SCIENTIFIC provenance ledger (88.md) — significance-classified, blob-diff
+// driven, membership-readable behind the `researchProvenance` flag. The Logbook
+// is an OPERATIONAL access-and-activity record with a different audience
+// (leaders only), a different vocabulary (engine/action/status/actorType), and
+// different retention. Overloading one table would have forced the leader-only
+// read rule onto the existing membership-scoped /api/provenance readers.
+// ProjectEvent (and ScreenAuditLog / ExtractionAuditLog / RobAuditLog) are
+// BRIDGED at read time instead — see server/logbook/logbookQuery.js.
+//
+// Conventions (mirror ProjectEvent above):
+//  - Append-only. No update/delete path exists in the service; rows are never
+//    edited. Corrections are NEW rows (status:'reversed' + relatedEventId).
+//  - Denormalised actor (name + role AT THE TIME), NO FK — "audit-survival".
+//  - JSON stored as bounded, sanitised Strings (SQLite has no Json type).
+//  - Int autoincrement id = global monotonic order; page order = (createdAt, id).
+//  - DUAL PROJECT IDENTITY: `projectId` is the ScreenProject id and
+//    `metaLabProjectId` the linked META·LAB Project id. Writers fill whichever
+//    they know (the service resolves the counterpart best-effort); readers query
+//    OR over both indexed columns, so one Logbook covers both id spaces.
+//  - `mirrors` names a legacy store this row SUPERSEDES ('screen_audit'), so the
+//    on-read union can cut the legacy source over cleanly instead of showing the
+//    same membership change twice.
+//  - Additive new table → `prisma db push` creates it cleanly. After editing,
+//    re-run `node server/scripts/sync-postgres-schema.mjs`.
+// ════════════════════════════════════════════════════════════════════════════
+model ProjectLogEvent {
+  id               Int       @id @default(autoincrement())
+  projectId        String    @default("") // ScreenProject id ("" when unresolved)
+  metaLabProjectId String    @default("") // linked META·LAB Project id ("" when unresolved)
+  createdAt        DateTime  @default(now())
+  clientTs         DateTime? // device clock, when the client supplied one
+  actorId          String    @default("") // "" / "system" for non-user actors
+  actorName        String    @default("") // display name AT THE TIME of the event
+  actorRole        String    @default("") // project role AT THE TIME of the event
+  actorType        String    @default("user") // user | system | automation
+  engine           String    @default("core") // core|protocol|search|screening|extraction|rob|analysis|manuscript|files|logbook
+  action           String // stable vocabulary — server/logbook/vocabulary.js
+  actionCategory   String    @default("") // create|update|delete|run|import|export|decision|access|view|security
+  summary          String    @default("") // human-readable one-liner
+  resourceType     String? // member | record | run | study | section | export | file | …
+  resourceId       String? // stable id of the affected resource
+  resourceLabel    String? // display label at the time (title/name/email)
+  beforeSummary    String    @default("null") // JSON, sanitised + bounded
+  afterSummary     String    @default("null") // JSON, sanitised + bounded
+  status           String    @default("success") // success | failure | reversed | restored
+  via              String    @default("user") // user | undo | redo | system | job | api
+  opId             String? // request/operation id (duplicate-submit correlation)
+  correlationId    String? // groups bulk / multi-event / session operations
+  sessionId        String?
+  relatedEventId   Int? // undo/redo + reversal linkage (this row supersedes that one)
+  severity         Int       @default(1) // 0 (noise) .. 5 (critical) — retention tiering
+  searchText       String    @default("") // LOWERCASED summary+label+action, engine-portable search
+  mirrors          String    @default("") // legacy store this row supersedes ('' = none)
+  metadata         String    @default("{}") // JSON extra context (bounded, secret-free)
+  schemaVersion    Int       @default(1)
+  idempotencyKey   String?   @unique // dedup retried/duplicate submissions
+
+  @@index([projectId, createdAt])
+  @@index([projectId, id])
+  @@index([projectId, engine, id])
+  @@index([projectId, actorId, id])
+  @@index([projectId, action, id])
+  @@index([projectId, status, id])
+  @@index([projectId, mirrors, id])
+  @@index([metaLabProjectId, createdAt])
   @@index([correlationId])
 }
 

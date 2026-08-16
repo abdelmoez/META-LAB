@@ -21,6 +21,9 @@ import { prisma } from '../db/client.js';
 import { runMeta } from '../../src/research-engine/statistics/meta-analysis.js';
 import { isExcludedFromAnalysis } from '../../src/research-engine/statistics/studyFilter.js';
 import { featureAccess } from '../services/featureAccess.js';
+// 119.md §1 — one dedup derivation for every consumer (see server/screening/dedupCounts.js).
+import { loadDedupIdentificationInputs } from '../screening/dedupCounts.js';
+import { derivePrismaIdentification } from '../utils/prismaDerive.js';
 // csvField prefixes =+-@ cells with a quote (CWE-1236 formula-injection guard).
 import { csvField, csvRow } from '../utils/csv.js';
 export { csvField };
@@ -124,18 +127,23 @@ function pickNum(v) {
  */
 async function derivePrisma(spIds) {
   if (!spIds.length) return { prisma: null, includedK: 0 };
-  const [total, batches, decidedRecords, accepted, fullText] = await Promise.all([
+  const [total, dedupInputs, decidedRecords, accepted, fullText] = await Promise.all([
     prisma.screenRecord.count({ where: { projectId: { in: spIds } } }),
-    prisma.screenImportBatch.findMany({ where: { projectId: { in: spIds } }, select: { duplicateCount: true } }),
+    // 119.md §1 — CONSUMER CONVERGENCE. The public synthesis page published a THIRD
+    // set of numbers: import-batch duplicates only, ignoring both the record-level
+    // duplicate flags and every duplicate the automated search engine removed before
+    // landing. It now reads the SAME shared inputs and pure derivation as the flow
+    // service, the dashboard summary and the living digest.
+    loadDedupIdentificationInputs(spIds),
     prisma.screenDecision.findMany({ where: { projectId: { in: spIds }, decision: { in: ['include', 'exclude', 'maybe'] } }, select: { recordId: true }, distinct: ['recordId'] }),
     prisma.screenRecord.count({ where: { projectId: { in: spIds }, finalStatus: 'accepted' } }),
     prisma.screenRecord.count({ where: { projectId: { in: spIds }, currentStage: 'full_text' } }),
   ]);
-  const importDups = batches.reduce((a, b) => a + (b.duplicateCount || 0), 0);
+  const dedupCounts = derivePrismaIdentification({ ...dedupInputs, recordCount: total });
   return {
     prisma: {
-      identified: total + importDups,
-      duplicatesRemoved: importDups,
+      identified: dedupCounts.identified,
+      duplicatesRemoved: dedupCounts.duplicatesRemoved,
       screened: decidedRecords.length,
       fullTextAssessed: fullText + accepted,
       included: accepted,

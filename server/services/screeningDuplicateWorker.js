@@ -41,6 +41,11 @@ import { DEFAULT_MAX_JOB_ATTEMPTS, partitionStuckJobs } from '../utils/jobRetry.
 import { detectDuplicateGroups, pairKey } from '../../src/research-engine/screening/duplicateDetectionEngine.js';
 import { planGroupWrites } from '../../src/research-engine/screening/duplicateGroupPlan.js';
 import { pickBulkPrimary } from '../../src/research-engine/screening/deduplication.js';
+// 119.md §1 — the unified dedup AUDIT trail. The worker flags isDuplicate on the
+// non-primary members of a SUGGESTION group before any human has looked at it, and
+// PRISMA counts that immediately; until now nothing recorded which record was flagged
+// against which primary, or on what basis. Audit only — no count reads these rows.
+import { recordDedupEvents, DEDUP_ACTORS } from '../screening/dedupEvents.js';
 
 // ── Configurable limits (env-tunable; sane defaults for a single-node deploy) ──
 const num = (v, d) => (Number(v) > 0 ? Number(v) : d);
@@ -194,6 +199,19 @@ async function loadRecords(job, frozenIds, beat) {
   return records;
 }
 
+/**
+ * 119.md §1 — which identifier links a flagged member to its primary, for the audit
+ * trail. Mirrors the import landing's precedence (DOI → PMID → title) so one
+ * vocabulary describes every stage. Pure.
+ */
+function matchBasis(rec, primary) {
+  const eq = (a, b) => !!a && !!b && String(a).trim().toLowerCase() === String(b).trim().toLowerCase();
+  if (eq(rec && rec.doi, primary && primary.doi)) return 'doi';
+  if (eq(rec && rec.pmid, primary && primary.pmid)) return 'pmid';
+  if (eq(rec && rec.title, primary && primary.title)) return 'title';
+  return '';
+}
+
 /** Persist one batch of plans inside a single transaction. Returns counters. */
 async function applyPlanBatch(job, batch) {
   const counters = { groupsCreated: 0, groupsUpdated: 0, recordsFlagged: 0, skippedResolvedMidRun: 0 };
@@ -207,6 +225,10 @@ async function applyPlanBatch(job, batch) {
     },
   });
   const byId = new Map(rows.map((r) => [r.id, r]));
+  // 119.md §1 — collected INSIDE the transaction, written AFTER it commits: an audit
+  // failure must never roll back a plan, and a row describing a write that was rolled
+  // back would be a lie.
+  const dedupAudit = [];
 
   await prisma.$transaction(async (tx) => {
     for (const plan of batch) {
@@ -279,8 +301,30 @@ async function applyPlanBatch(job, batch) {
       counters.recordsFlagged += plan.members.reduce(
         (n, id) => n + (id !== primary.id && byId.get(id) && !byId.get(id).isDuplicate ? 1 : 0), 0,
       );
+
+      // 119.md §1 — one audit row per newly-flagged member, naming the primary it was
+      // flagged against and WHICH key matched it. `worker-suggestion` is honest about
+      // the state: the group is unresolved, so this removal is an automatic
+      // suggestion that a human has not yet confirmed (a human-confirm row is appended
+      // when they do, and the removal count does not move — it was already counted).
+      for (const id of others) {
+        const rec = byId.get(id);
+        if (!rec || rec.isDuplicate) continue; // already flagged by an earlier run
+        dedupAudit.push({
+          projectId: job.projectId,
+          recordId: id,
+          canonicalRecordId: primary.id,
+          groupId,
+          method: 'worker-suggestion',
+          basis: matchBasis(rec, primary),
+          classification: 'automatic',
+          actor: DEDUP_ACTORS.worker,
+          detail: JSON.stringify({ jobId: job.id, kind: plan.kind }),
+        });
+      }
     }
   }, { maxWait: 5000, timeout: 20000 }); // explicit budget — SQLite write contention must fail loudly, not hang
+  if (dedupAudit.length) await recordDedupEvents(dedupAudit);
   return counters;
 }
 

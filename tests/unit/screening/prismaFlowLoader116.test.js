@@ -141,6 +141,10 @@ describe('loadPrismaFlow — select shape matches the real schema (116.md §15)'
     expect(Object.keys(rec.args.select)).toEqual(
       expect.arrayContaining(['importBatchId', 'identificationSource', 'sourceDetail', 'rejectedReason']),
     );
+    // 119.md §1 — the batch select must carry the force-re-import lineage, which is
+    // what stops a forced re-upload of the same file inflating the phantom sum.
+    const bat = calls.find((c) => c.client === 'screenImportBatch');
+    expect(Object.keys(bat.args.select)).toContain('supersedesBatchId');
   });
 });
 

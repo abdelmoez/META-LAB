@@ -26,6 +26,9 @@ import { computeRunProgress, TERMINAL_RUN_STATES } from '../../src/research-engi
 // 93.md §5.3 round 2 — first-search activation events (fire-and-forget, never throws).
 import { recordFirstEvent } from '../services/analytics.js';
 import { USAGE } from '../utils/usage.js';
+// 119.md §8 — project Logbook: search-run lifecycle (started / completed /
+// failed / cancelled). Best-effort: a log write must never fail or slow a run.
+import { recordLogEvent } from '../logbook/logbookService.js';
 
 export const ENGINE_VERSION = 'pecan-search-1.0.0';
 
@@ -241,6 +244,22 @@ export async function startRun(params, deps = {}) {
   // (at-most-once per user, DB-enforced; never blocks or fails the run start).
   recordFirstEvent(USAGE.FIRST_SEARCH_STARTED, user.id, { metaLabProjectId });
 
+  // 119.md §8 "Search execution" — the search engine wrote NOTHING project-scoped
+  // about a run's lifecycle before this. Best-effort (never blocks a run start);
+  // the run row itself is the durable record, this is its Logbook entry.
+  void recordLogEvent({
+    action: 'SEARCH_RUN_STARTED',
+    summary: `Started search "${run.name}" across ${selected.length} database${selected.length === 1 ? '' : 's'}`,
+    resourceType: 'searchRun', resourceId: run.id, resourceLabel: run.name,
+    after: { sources: config.sources, origin: runOrigin, caps },
+    correlationId: run.id,
+    metadata: { queryText: renderPlain(canonical).slice(0, 1000), warnings: warnings.slice(0, 10), engineVersion: ENGINE_VERSION },
+  }, {
+    actorId: user.id, actorName: user.name || user.email || '', actorType: 'user',
+    via: runOrigin === 'living' ? 'system' : 'user',
+    projectId: landing.id, metaLabProjectId,
+  });
+
   // Per-source rows with translated queries (exact executed query stored).
   for (const s of selected) {
     const connector = engine.connectors[s.id];
@@ -380,6 +399,40 @@ export async function processRun(job, deps = {}) {
   if (runState === 'completed' && run.initiatedById) {
     recordFirstEvent(USAGE.FIRST_SEARCH_COMPLETED, run.initiatedById, { metaLabProjectId: run.metaLabProjectId });
   }
+
+  /* 119.md §8 "Search execution" + "Failed runs and significant warnings" — the
+   * terminal Logbook row for this run. The ACTOR is the user who started it
+   * (denormalised on the run row), but the actorType is 'automation': the work
+   * was done by the background worker, not by a click. Best-effort; the run row
+   * remains the durable record either way. */
+  try {
+    const agg = aggregateCounts(finalSources);
+    const failedSources = finalSources.filter((s) => s.state === 'failed');
+    const terminalAction = runState === 'failed' ? 'SEARCH_RUN_FAILED'
+      : (runState === 'cancelled' ? 'SEARCH_RUN_CANCELLED' : 'SEARCH_RUN_COMPLETED');
+    void recordLogEvent({
+      action: terminalAction,
+      status: runState === 'failed' ? 'failure' : 'success',
+      summary: runState === 'failed'
+        ? `Search "${run.name}" failed (${failedSources.length} of ${finalSources.length} databases)`
+        : `Search "${run.name}" ${runState}: ${agg.imported} imported, ${agg.existingMatched} already present, ${agg.exactDup + agg.fuzzyDup} duplicates`,
+      resourceType: 'searchRun', resourceId: runId, resourceLabel: run.name,
+      after: {
+        state: runState, rawRetrieved: agg.rawRetrieved, imported: agg.imported,
+        existingMatched: agg.existingMatched, duplicates: agg.exactDup + agg.fuzzyDup,
+        ambiguous: agg.ambiguousDup, failedRecords: agg.failedRecords,
+      },
+      correlationId: runId,
+      metadata: {
+        sources: finalSources.map((s) => ({ provider: s.provider, state: s.state, errorClass: s.errorClass || null })),
+      },
+    }, {
+      actorId: run.initiatedById || 'system',
+      actorName: run.initiatedByName || 'System',
+      actorType: 'automation', via: 'job',
+      projectId: screen.id, metaLabProjectId: run.metaLabProjectId,
+    });
+  } catch { /* the Logbook must never affect the run */ }
 
   // 87.md — structured completion log (correlation id = runId) for observability: who,
   // which project, per-source outcomes/errors, counts, and duration. No secrets/PII.

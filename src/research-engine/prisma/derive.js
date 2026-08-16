@@ -159,6 +159,46 @@ export function derivePrismaFlow(records, opts = {}) {
   ) || 0);
   const phantom = phantomDb + phantomOther;
 
+  // 119.md §1 — WHERE the phantom duplicates were caught, for the §12 stage
+  // breakdown only. Two mechanisms produce never-inserted duplicates now:
+  //   • an import landing discards a copy before insertion (batch.duplicateCount);
+  //   • the automated search engine removes a cross-source duplicate BEFORE landing
+  //     (PecanSearchSource.exactDupCount/fuzzyDupCount).
+  // Both are "counted, never inspectable", but labelling an engine removal
+  // "Discarded at import" would misreport the search methodology. The optional
+  // `dbSearch`/`otherSearch` members carry the search-engine share; the remainder
+  // stays import-discarded, so an older caller passing only { db, other } (or a bare
+  // number) keeps the exact previous labelling. Never more than the arm's total.
+  const phantomDbSearch = Math.min(phantomDb, Math.max(0, Number(
+    phantomIn && typeof phantomIn === 'object' ? phantomIn.dbSearch : 0,
+  ) || 0));
+  const phantomOtherSearch = Math.min(phantomOther, Math.max(0, Number(
+    phantomIn && typeof phantomIn === 'object' ? phantomIn.otherSearch : 0,
+  ) || 0));
+  const phantomDbImport = phantomDb - phantomDbSearch;
+  const phantomOtherImport = phantomOther - phantomOtherSearch;
+  /** The phantom stage rows for one arm — omitted entirely when zero. */
+  const phantomStageRows = (nImport, nSearch) => {
+    const rows = [];
+    if (nSearch > 0) {
+      rows.push({
+        key: 'search_discarded',
+        label: 'Removed during automated search (not stored as records)',
+        n: nSearch,
+        ids: [],
+      });
+    }
+    if (nImport > 0) {
+      rows.push({
+        key: 'import_discarded',
+        label: 'Discarded at import (not stored as records)',
+        n: nImport,
+        ids: [],
+      });
+    }
+    return rows;
+  };
+
   // Decorate once — arm and disposition are each computed a single time per
   // record, so a project with 100k records costs one pass, not one per box (§19).
   const decorated = rows.map((r) => ({
@@ -309,10 +349,8 @@ export function derivePrismaFlow(records, opts = {}) {
       duplicate: { n: removedOtherArmDuplicate.length + phantomOther, ids: removedOtherArmDuplicate.map((r) => r.id) },
       automation: bucket(removedOtherArmAutomation),
       other: bucket(removedOtherArmOther),
-      byStage: (phantomOther
-        ? [{ key: 'import_discarded', label: 'Discarded at import (not stored as records)', n: phantomOther, ids: [] }]
-        : []
-      ).concat(breakdown(removedOtherArmDuplicate, (r) => clean(r.dedupStage) || 'unknown', (k) => ({
+      byStage: phantomStageRows(phantomOtherImport, phantomOtherSearch)
+        .concat(breakdown(removedOtherArmDuplicate, (r) => clean(r.dedupStage) || 'unknown', (k) => ({
         search: 'Removed during automated search',
         import: 'Removed during import',
         screening: 'Removed in the Screening Engine',
@@ -323,10 +361,8 @@ export function derivePrismaFlow(records, opts = {}) {
     // WHERE each duplicate was caught — the "Automated Search 510 / Screening 180 /
     // Manual 52" breakdown §12 asks for. These are slices of ONE set, so they can
     // never sum to more than the duplicates actually removed.
-    byStage: (phantomDb
-      ? [{ key: 'import_discarded', label: 'Discarded at import (not stored as records)', n: phantomDb, ids: [] }]
-      : []
-    ).concat(breakdown(removedDuplicate, (r) => clean(r.dedupStage) || 'unknown', (k) => ({
+    byStage: phantomStageRows(phantomDbImport, phantomDbSearch)
+      .concat(breakdown(removedDuplicate, (r) => clean(r.dedupStage) || 'unknown', (k) => ({
       search: 'Removed during automated search',
       import: 'Removed during import',
       screening: 'Removed in the Screening Engine',

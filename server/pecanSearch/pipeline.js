@@ -34,6 +34,11 @@ import { sanitizeErrorDetail } from './redact.js';
 // every other engine uses; no second, search-only provenance architecture (§40).
 import { recordEvents } from '../provenance/recordEvent.js';
 import { deriveSearchProvenance, reportableDatabases } from '../../src/research-engine/search/searchProvenance.js';
+// 119.md §1 — the unified dedup AUDIT trail. PecanDedupDecision already records the
+// engine's reasoning per provider record; this is the SCREENING-side view of the same
+// event, so "why is this record not in my project?" is answerable from one table
+// regardless of which stage removed it. Audit only — PRISMA counts nothing from here.
+import { recordDedupEvents, DEDUP_ACTORS } from '../screening/dedupEvents.js';
 
 const nt = (s) => normalizeTitle(s || '');
 
@@ -347,6 +352,46 @@ export async function runSource(a) {
       if (decisionRows.length) {
         try { await prisma.pecanDedupDecision.createMany({ data: decisionRows }); } catch { /* advisory; non-fatal */ }
       }
+
+      // ── 119.md §1 — the screening-side AUDIT row for every engine-removed copy. ──
+      //
+      // These are the retrievals PRISMA now counts (loadPrismaFlow reads
+      // PecanSearchSource.exactDupCount/fuzzyDupCount as a db-arm phantom), and until
+      // now nothing outside the search engine's own tables recorded them. `recordId`
+      // is '' because the copy was removed BEFORE landing — there is no ScreenRecord
+      // to point at, which is precisely why the count alone was never inspectable.
+      //
+      // 'ambiguous' is deliberately absent: those records DO land and are audited by
+      // the duplicate worker / human resolution instead. Auditing them here too would
+      // describe one record twice.
+      try {
+        const dedupEventRows = [];
+        for (const norm of records) {
+          const outcome = norm._finalOutcome;
+          if (outcome !== 'exact_dup' && outcome !== 'fuzzy_dup') continue;
+          const v = norm._verdict || {};
+          dedupEventRows.push({
+            projectId: screenProjectId,
+            recordId: '',
+            canonicalRecordId: v.matchedId || norm._screenId || '',
+            runId: sourceRow.runId,
+            method: outcome === 'exact_dup' ? 'pecan-exact' : 'pecan-fuzzy',
+            // 'identity' = a shared authoritative identifier (DOI or PMID) decided it;
+            // anything else reached this outcome through the fuzzy classifier.
+            basis: v.decisionSource === 'identity' ? 'identity' : 'fuzzy',
+            classification: 'automatic',
+            confidence: Math.round(v.score || 0),
+            actor: DEDUP_ACTORS.pecan,
+            actorName: provider,
+            detail: JSON.stringify({
+              provider,
+              providerRecordId: String(norm.providerRecordId || '').slice(0, 120),
+              matchType: shortType(v.type),
+            }),
+          });
+        }
+        await recordDedupEvents(dedupEventRows);
+      } catch { /* audit is additive — never fail a page over it */ }
 
       // ── Page committed: fold page-local counters into the durable totals NOW. ──
       counts.rawCount += pagec.raw;

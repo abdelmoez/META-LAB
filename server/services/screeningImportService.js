@@ -27,6 +27,12 @@ import { prisma } from '../db/client.js';
 import { parseByFormat, normTitle } from '../../src/research-engine/import-export/parsers.js';
 import { mergeFillBlanks, MERGE_FILL_FIELDS } from '../../src/research-engine/screening/deduplication.js';
 import { isResetLocked } from '../screening/resetLock.js';
+// 119.md §1 — the unified deduplication AUDIT trail. Import-time discards used to
+// leave count-only accounting (the batch's duplicateCount) and, worse, several copies
+// of the same article inside one file collapsed onto ONE ScreenRecordSource row
+// because of its composite unique key — so per-instance provenance was lost even
+// though the COUNT was right. These events are audit only; no PRISMA number reads them.
+import { recordDedupEvents, DEDUP_ACTORS } from '../screening/dedupEvents.js';
 import { emitToProjectMembers } from '../realtime/bus.js';
 
 // Insert batch size. createMany on SQLite is bound by the 999-variable limit
@@ -439,7 +445,14 @@ async function dedupeAndInsertRecordsSerialized(projectId, records, opts = {}) {
     if ((doi && seenDois.has(doi)) || (pmid && seenPmids.has(pmid)) || (nt && seenTitles.has(nt))) {
       skippedDuplicates += 1;
       const matchedId = (doi && idByDoi.get(doi)) || (pmid && idByPmid.get(pmid)) || (nt && idByTitle.get(nt)) || '';
-      matches.push({ r, matchedId, keys: { doi, pmid, nt } });
+      // 119.md §1 — WHICH key matched. The count alone could never answer "why was
+      // this removed?"; the basis follows the same precedence the match itself used
+      // (DOI, then PMID, then normalized title), so the audit row states the real
+      // reason rather than a guess reconstructed later.
+      const basis = (doi && seenDois.has(doi)) ? 'doi'
+        : (pmid && seenPmids.has(pmid)) ? 'pmid'
+          : 'title';
+      matches.push({ r, matchedId, basis, keys: { doi, pmid, nt } });
       continue;
     }
     // Invalid-decision warning only for records that will actually be inserted
@@ -460,9 +473,43 @@ async function dedupeAndInsertRecordsSerialized(projectId, records, opts = {}) {
     throw err;
   }
 
+  // ── 119.md §1 — FORCE RE-IMPORT IDEMPOTENCY ─────────────────────────────────
+  //
+  // The fileHash fence (409 duplicate_import) is the only idempotency a file import
+  // has, and `force: true` legitimately bypasses it. Every forced re-upload then
+  // created a batch whose duplicateCount counted the records the FIRST import had
+  // already landed, and the flow service sums all batches forever — live-verified,
+  // one re-upload took identified 4 → 8 and duplicatesRemoved 2 → 6, permanently.
+  //
+  // Re-uploading identical bytes is a RE-OBSERVATION, not a second retrieval: the
+  // same doctrine that makes the Pecan engine count `existing_match` nowhere. So the
+  // newcomer is stamped with the batch it repeats and is excluded from PRISMA's
+  // phantom accounting (dedupCounts.isSupersededImport). The LINEAGE ROOT is the one
+  // that keeps its accounting, because its records are the ones actually in the
+  // project — retiring the older batch instead would drop the accounting for records
+  // that are still there.
+  //
+  // This lives in the LANDING, not in a controller, so the synchronous import, the
+  // durable import worker and any future caller all get it, and it runs inside the
+  // per-project landing lock so two forced uploads cannot both see "no prior batch".
+  // A genuinely different file (an overlapping export from a SECOND database) has a
+  // different hash and is untouched — it still adds instances, as PRISMA requires.
+  let supersedesBatchId = '';
+  if (fileHash) {
+    try {
+      const prior = await prisma.screenImportBatch.findFirst({
+        where: { projectId, fileHash },
+        orderBy: { createdAt: 'asc' },
+        select: { id: true },
+      });
+      if (prior && prior.id) supersedesBatchId = prior.id;
+    } catch { /* lineage is additive — never fail an import over it */ }
+  }
+
   const batch = await prisma.screenImportBatch.create({
     data: {
       projectId, filename, format,
+      supersedesBatchId,
       recordCount: kept.length,
       // 58.md §7 — persist the import-time dedup accounting so PRISMA shows
       // total-identified (preDedup) and duplicates-removed for file AND Pecan imports.
@@ -585,7 +632,41 @@ async function dedupeAndInsertRecordsSerialized(projectId, records, opts = {}) {
       });
     }
     await writeRecordSources(provRows);
+
+    // 119.md §1 — ONE audit row per REMOVED INSTANCE. This is the write point the
+    // report identified as missing: `skippedDuplicates` is per-instance and correct,
+    // but ScreenRecordSource's composite unique key (recordId, runId, batchId,
+    // provider, providerRecordId) collapses three copies of the same article inside
+    // one file onto a single row, so only the number survived. `recordId` stays ''
+    // on purpose — the copy was discarded before insertion and there is nothing to
+    // point at; `canonicalRecordId` names the record that was KEPT.
+    //
+    // AUDIT ONLY: PRISMA still counts these from batch.duplicateCount.
+    await recordDedupEvents(resolvedMatches.map((m) => ({
+      projectId,
+      recordId: '',
+      canonicalRecordId: m.matchedId,
+      batchId: batch.id,
+      runId: searchRunId || '',
+      method: 'import-exact',
+      basis: m.basis || '',
+      classification: 'automatic',
+      actor: importedById || DEDUP_ACTORS.import,
+      actorName: importedByName || '',
+      detail: JSON.stringify({ title: String(m.r.title || '').slice(0, 160), source }),
+    })));
   } catch { /* provenance/merge is additive — never fail the import */ }
+
+  // 119.md §1 — the back-link, so Import History can say "re-imported on …" from the
+  // ORIGINAL batch's side too. Best-effort: the forward link on the newcomer is what
+  // the accounting reads, so losing this never changes a number.
+  if (supersedesBatchId) {
+    try {
+      await prisma.screenImportBatch.update({
+        where: { id: supersedesBatchId }, data: { supersededById: batch.id },
+      });
+    } catch { /* lineage back-link is additive */ }
+  }
 
   const batchPatch = {};
   if (imported !== batch.recordCount) batchPatch.recordCount = imported;
