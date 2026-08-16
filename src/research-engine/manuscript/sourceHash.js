@@ -9,6 +9,10 @@
  * table stale.
  */
 
+// 119.md §6 — the ONE derivation of "which project-field values does this row carry"
+// (fieldRegistry owns the `xf_` storage contract; nothing here restates it).
+import { projectFieldValuesOf } from '../extraction/fieldRegistry.js';
+
 /** FNV-1a 32-bit hash of a string → 8-char hex. Deterministic. */
 export function hashString(str) {
   let h = 0x811c9dc5;
@@ -72,6 +76,12 @@ export function computeBlockHashes(project) {
     n: s.n, nExp: s.nExp, nCtrl: s.nCtrl, a: s.a, b: s.b, c: s.c, d: s.d,
     events: s.events, total: s.total,
     doi: s.doi, pmid: s.pmid, rob: s.rob,
+    // 119.md §6 — the study-characteristics table now renders the project's own
+    // extraction fields (116 §10.3), so their values are table INPUTS: without this a
+    // demographics edit left an inserted table looking fresh while it was out of date.
+    // Strictly value-conditional (projectFieldValuesOf drops empty keys), which is what
+    // keeps a project that never configured a field byte-identical to before.
+    ...projectFieldValuesOf(s),
   }));
 
   const robProj = studies.map((s) => ({ id: s.id, rob: s.rob }));

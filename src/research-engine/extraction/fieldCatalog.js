@@ -69,6 +69,11 @@ export const DEFAULT_FIELD_CATEGORY = 'study';
 export const FIELD_DATA_TYPES = Object.freeze([
   'text', 'longtext', 'integer', 'decimal', 'percentage', 'date',
   'boolean', 'categorical', 'multiselect', 'duration',
+  // 119.md §6 — the two COMPOSITE types. A `statistic` value is whatever the paper
+  // reported (mean±SD, mean±SE, median+IQR, median+range…) and a `count` is n with an
+  // optional reported percentage. Their slots live under the field's own flat key
+  // family (demographics.js), so provenance, undo and autosave work per value.
+  'statistic', 'count',
 ]);
 
 export const FIELD_DATA_TYPE_LABEL = Object.freeze({
@@ -82,7 +87,21 @@ export const FIELD_DATA_TYPE_LABEL = Object.freeze({
   categorical: 'Categorical (one of)',
   multiselect: 'Multi-select',
   duration: 'Time duration',
+  statistic: 'Statistic (mean / median + dispersion)',
+  count: 'Count (n and %)',
 });
+
+/**
+ * 119.md §6 — the composite types whose value is a CELL (several slots + a statistic
+ * type + an empty state), not a single string. Callers that print a value must go
+ * through the demographics cell formatter for these.
+ */
+export const STAT_DATA_TYPES = Object.freeze(['statistic', 'count']);
+
+/** True for a composite demographics data type. */
+export function isStatDataType(t) {
+  return STAT_DATA_TYPES.includes(String(t || ''));
+}
 
 /** True for a known data type. */
 export function isFieldDataType(t) {
@@ -140,12 +159,27 @@ export const EXTRACTION_FIELD_CATALOG = Object.freeze([
   E({ catalogId: 'blinding', label: 'Blinding', category: 'study', dataType: 'categorical', options: ['Open label', 'Single blind', 'Double blind', 'Triple blind', 'Not reported'] }),
   E({ catalogId: 'allocationConcealment', label: 'Allocation concealment', category: 'study', dataType: 'categorical', options: ['Adequate', 'Inadequate', 'Unclear', 'Not reported'] }),
   E({ catalogId: 'dataSource', label: 'Data source', category: 'study', dataType: 'text', mapsTo: 'dataSource', description: 'e.g. trial, registry, claims database.' }),
+  // 119.md §6 — the study-characteristics half of a "Table 1".
+  E({ catalogId: 'studyArms', label: 'Study arms', category: 'study', dataType: 'text', description: 'The arms as the paper names them, e.g. "Drug A vs placebo".' }),
+  E({ catalogId: 'randomizedSample', label: 'Randomized sample', category: 'study', dataType: 'integer', armLevel: true, description: 'Number randomized — often larger than the number analysed.' }),
+  E({ catalogId: 'analyzedSample', label: 'Analyzed sample', category: 'study', dataType: 'integer', armLevel: true, description: 'Number included in the analysis this row reports.' }),
 
   /* ── Population ─────────────────────────────────────────────────────────── */
+  // 119.md §6 — ONE age field that records what the paper actually reported (mean±SD,
+  // mean±SE, median+IQR, median+range…), overall or by arm. The three legacy flat
+  // fields below it stay for projects that already use them; nothing is migrated.
+  E({ catalogId: 'age', label: 'Age', category: 'population', dataType: 'statistic', unit: 'years', armLevel: true, statType: 'mean_sd', description: 'Age as reported — choose the statistic the article used; values are never converted.' }),
   E({ catalogId: 'meanAge', label: 'Mean age', category: 'population', dataType: 'decimal', unit: 'years' }),
   E({ catalogId: 'medianAge', label: 'Median age', category: 'population', dataType: 'decimal', unit: 'years' }),
   E({ catalogId: 'ageRange', label: 'Age range', category: 'population', dataType: 'text', unit: 'years' }),
+  E({ catalogId: 'sexFemale', label: 'Female', category: 'population', dataType: 'count', armLevel: true, statType: 'n_pct', description: 'Number of female participants, with the percentage the article reports.' }),
+  E({ catalogId: 'sexMale', label: 'Male', category: 'population', dataType: 'count', armLevel: true, statType: 'n_pct', description: 'Number of male participants, with the percentage the article reports.' }),
   E({ catalogId: 'sexDistribution', label: 'Sex distribution', category: 'population', dataType: 'text', description: 'e.g. 54% female, or n male / n female.' }),
+  E({ catalogId: 'raceEthnicity', label: 'Race / ethnicity', category: 'population', dataType: 'longtext', description: 'Only when the article reports it and it matters to the review question.' }),
+  E({ catalogId: 'bmi', label: 'BMI', category: 'population', dataType: 'statistic', unit: 'kg/m²', armLevel: true, statType: 'mean_sd' }),
+  E({ catalogId: 'diseaseDuration', label: 'Disease duration', category: 'population', dataType: 'statistic', unit: 'years', armLevel: true, statType: 'mean_sd' }),
+  E({ catalogId: 'previousTreatment', label: 'Previous treatment', category: 'population', dataType: 'text', description: 'Treatment received before enrolment (e.g. treatment-naïve, ≥1 prior line).' }),
+  E({ catalogId: 'attrition', label: 'Attrition / loss to follow-up', category: 'population', dataType: 'count', armLevel: true, statType: 'n_pct' }),
   E({ catalogId: 'baselineCharacteristics', label: 'Baseline characteristics', category: 'population', dataType: 'longtext' }),
   E({ catalogId: 'diseaseDefinition', label: 'Disease definition', category: 'population', dataType: 'longtext' }),
   E({ catalogId: 'diseaseSeverity', label: 'Disease severity', category: 'population', dataType: 'text' }),
@@ -236,6 +270,70 @@ export const ADDABLE_CATALOG = Object.freeze(EXTRACTION_FIELD_CATALOG.filter((e)
 export const ROW_CONTRIBUTION_CATALOG = Object.freeze(
   EXTRACTION_FIELD_CATALOG.filter((e) => e.mapsTo && e.contribution !== false),
 );
+
+/* ════════════════ the §6 demographics / study-characteristics catalog ════════════════ */
+
+/**
+ * DEMOGRAPHICS_GROUPS — 119.md §6's "curated field library", as the GROUPS a Table 1 is
+ * actually built from. This is a VIEW over the one catalog above (ids only, never a
+ * second list of definitions), which is why adding a demographics field and adding an
+ * extraction field are the same act with the same storage contract.
+ *
+ * Order and membership follow the standard biomedical study-characteristics table
+ * (CONSORT/STROBE/PRISMA reporting practice): what the study was, who was in it, what
+ * they got, how long they were followed, and how they were funded.
+ */
+export const DEMOGRAPHICS_GROUPS = Object.freeze([
+  Object.freeze({
+    id: 'identification', label: 'Identification',
+    catalogIds: Object.freeze(['year', 'country', 'region', 'journal', 'trialRegistration']),
+  }),
+  Object.freeze({
+    id: 'design', label: 'Design & setting',
+    catalogIds: Object.freeze(['design', 'prospectivity', 'centres', 'centreType', 'setting', 'enrollPeriod', 'studyArms', 'blinding', 'analysisPopulation']),
+  }),
+  Object.freeze({
+    id: 'sample', label: 'Sample',
+    catalogIds: Object.freeze(['randomizedSample', 'analyzedSample', 'attrition']),
+  }),
+  Object.freeze({
+    id: 'population', label: 'Population',
+    catalogIds: Object.freeze(['populationDef', 'inclusionCriteria', 'exclusionCriteria', 'age', 'sexFemale', 'sexMale', 'raceEthnicity', 'bmi', 'diseaseDuration', 'diseaseSeverity', 'comorbidities', 'previousTreatment']),
+  }),
+  Object.freeze({
+    id: 'exposure', label: 'Intervention & comparator',
+    catalogIds: Object.freeze(['interventionDef', 'dose', 'route', 'interventionDuration', 'comparatorDef', 'coIntervention']),
+  }),
+  Object.freeze({
+    id: 'followup', label: 'Follow-up & reporting',
+    catalogIds: Object.freeze(['followup', 'primaryOutcome', 'funding', 'conflictOfInterest']),
+  }),
+]);
+
+/** Every catalogId the demographics library offers, in group order. */
+export const DEMOGRAPHICS_CATALOG_IDS = Object.freeze(
+  DEMOGRAPHICS_GROUPS.flatMap((g) => g.catalogIds),
+);
+
+/** True when this catalog entry belongs to the §6 demographics library. */
+export function isDemographicsCatalogId(catalogId) {
+  return DEMOGRAPHICS_CATALOG_IDS.includes(String(catalogId || ''));
+}
+
+/**
+ * demographicsCatalogGroups() — [{ id, label, entries[] }] with the real catalog entries
+ * resolved and unknown/managed ids dropped (a managed entry is owned by the effect
+ * measure and can never be added, §36).
+ */
+export function demographicsCatalogGroups() {
+  return DEMOGRAPHICS_GROUPS
+    .map((g) => ({
+      id: g.id,
+      label: g.label,
+      entries: g.catalogIds.map((id) => BY_ID.get(id)).filter((e) => e && !e.managed),
+    }))
+    .filter((g) => g.entries.length > 0);
+}
 
 /**
  * catalogByCategory(entries) — [{ id, label, entries[] }] in §36 order, empty groups

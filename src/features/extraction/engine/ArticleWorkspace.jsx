@@ -161,6 +161,9 @@ export default function ArticleWorkspace({
   caseVariables = [], onSetCaseVariables,
   // 116.md §34-§40 — project-level extraction field definitions + their editor.
   extractionFields = [], onSetExtractionFields,
+  // 119.md §6 — the project blob, read ONLY for the demographics arm columns (which
+  // arms this review records values for). Absent ⇒ overall-only cells, as before.
+  project = null,
 }) {
   // 109.md §29 — display precision for derived proportions. Defaults on the first
   // render (and under renderToStaticMarkup), so nothing changes at the shipped value.
@@ -1055,7 +1058,8 @@ export default function ArticleWorkspace({
           <ProjectFieldsPanel
             fields={extractionFields} study={study} studies={studies}
             readOnly={readOnly} canEdit={editable} canConfigure={canEdit && !readOnly}
-            onSetValue={setField} onSetFields={onSetExtractionFields}
+            onSetValue={setField} onSetValues={(patch) => setFields(patch, { discrete: true })}
+            project={project} onSetFields={onSetExtractionFields}
             hasSource={(f) => hasSourceEvidence(study, f)} onJump={jumpToSource}
             picking={method === 'click' && !readOnly} activeField={activeField}
             onFocusField={(f) => { if (method === 'click') setActiveField(f); }} />

@@ -46,8 +46,18 @@ import {
   catalogEntry, isFieldCategory, isFieldDataType, DEFAULT_FIELD_CATEGORY,
   DEFAULT_FIELD_DATA_TYPE, OPTION_DATA_TYPES, NUMERIC_DATA_TYPES,
   FIELD_CATEGORY_LABEL, FIELD_CATEGORIES, ROW_CONTRIBUTION_CATALOG,
+  isStatDataType,
 } from './fieldCatalog.js';
 import { denominatorPopulationLabel, actionStatusLabel } from './proportionMeta.js';
+// 119.md §6 — the demographics CELL mechanics (statistic types, the four empty states,
+// slot keys). One-way import: demographics.js knows nothing about this module, so the
+// storage contract below stays the single definition of where a value lives.
+import {
+  demoSlotKey, demoSlotKeysOf, readDemoCell, writeDemoCellPatch,
+  formatDemoCell, isStatType, isValueState, valueStateShort,
+  DEFAULT_STAT_TYPE, DEFAULT_COUNT_STAT_TYPE, STATE_SLOT, OVERALL_ARM_ID,
+  demographicsArms,
+} from './demographics.js';
 
 const DEFAULT_ID = () => Math.random().toString(36).slice(2, 10);
 const s = (v) => (v == null ? '' : String(v).trim());
@@ -114,6 +124,12 @@ export function mkExtractionField(partial = {}, idFn = DEFAULT_ID) {
     : (cat && isFieldCategory(cat.category) ? cat.category : DEFAULT_FIELD_CATEGORY);
   const rawOptions = Array.isArray(p.options) ? p.options : (cat && Array.isArray(cat.options) ? cat.options : []);
   const order = Number.isFinite(Number(p.order)) ? Math.max(0, Math.floor(Number(p.order))) : 0;
+  // 119.md §6 — the two demographics facets. Both MATERIALIZE ONLY WHEN SET, so every
+  // definition written before §6 (and every definition that never uses arms) serialises
+  // byte-identically to what 116 wrote (repo invariant: additive, non-churning).
+  const armLevel = p.armLevel === undefined ? !!(cat && cat.armLevel) : !!p.armLevel;
+  const rawStat = s(p.statType) || (cat ? s(cat.statType) : '');
+  const stat = isStatType(rawStat) ? rawStat : '';
   return {
     id,
     catalogId: cat ? cat.catalogId : '',
@@ -126,6 +142,8 @@ export function mkExtractionField(partial = {}, idFn = DEFAULT_ID) {
     order,
     hidden: !!p.hidden,
     archived: !!p.archived,
+    ...(armLevel ? { armLevel: true } : {}),
+    ...(stat ? { statType: stat } : {}),
   };
 }
 
@@ -333,13 +351,128 @@ export function fieldValueOf(study, def) {
   return v == null ? '' : v;
 }
 
-/** How many rows currently carry a value for this field. */
+/* ════════════════════ 119.md §6 — the demographics CELL layer ════════════════════ */
+
+/** True when this field's value is a composite CELL (statistic / count). */
+export function isStatField(def) {
+  return isStatDataType(def && def.dataType);
+}
+
+/** True when this field may be recorded per ARM as well as overall (§6). */
+export function isArmLevelField(def) {
+  return !!(def && def.armLevel);
+}
+
+/**
+ * slotBaseOf(def) — the key family a field's §6 SLOTS live under.
+ *
+ * Always `xf_<id>`, even for a catalog field that ALIASES a built-in row key: the alias
+ * rule (§36 "merge, never duplicate") is about the field's own value, which keeps living
+ * in `country` / `followup` / …, but a statistic slot, an arm-level value and an empty
+ * STATE are new storage that never existed on the row. Keeping them namespaced means
+ * every derivation that already walks `xf_*` — the sync hash, the provenance ledger, the
+ * manuscript dependency slice — picks them up with no list to maintain.
+ */
+export function slotBaseOf(def) {
+  return def && s(def.id) ? fieldKey(def.id) : '';
+}
+
+/** The statistic type a cell falls back to when the row has not stored one. */
+export function defaultStatTypeOf(def) {
+  if (def && isStatType(def.statType)) return def.statType;
+  return (def && def.dataType === 'count') ? DEFAULT_COUNT_STAT_TYPE : DEFAULT_STAT_TYPE;
+}
+
+/**
+ * readFieldCell(study, def, armId) → { type, values, state, hasValue } — ONE cell.
+ *
+ * Two storage shapes, one reader:
+ *   • a STATISTIC/COUNT field stores every slot under its key family (`xf_age__mean`);
+ *   • every other type keeps its OVERALL value in the plain key 116 already used
+ *     (`xf_setting`) — untouched, byte-compatible — and only its ARM-level values in the
+ *     `value` slot of the family (`xf_setting__arm_exp__value`).
+ * Either way an empty state lives in its own `__state` slot, so "not reported" can never
+ * be confused with extracted text.
+ */
+export function readFieldCell(study, def, armId = OVERALL_ARM_ID) {
+  const base = storageKeyOf(def);
+  const slotBase = slotBaseOf(def);
+  const arm = s(armId);
+  if (!base) return { type: DEFAULT_STAT_TYPE, values: {}, state: '', hasValue: false, typeIsStored: false };
+  if (isStatField(def)) return readDemoCell(study, slotBase, { armId: arm, defaultStatType: defaultStatTypeOf(def) });
+  if (arm) return readDemoCell(study, slotBase, { armId: arm, defaultStatType: 'value' });
+  const raw = study && study[base];
+  const state = s(study && study[demoSlotKey(slotBase, STATE_SLOT, '')]);
+  return {
+    type: 'value',
+    typeIsStored: false,
+    values: nonEmpty(raw) ? { value: raw } : {},
+    state: isValueState(state) ? state : '',
+    hasValue: nonEmpty(raw),
+  };
+}
+
+/**
+ * writeFieldCellPatch(study, def, next, armId) → a FLAT patch for the existing extraction
+ * write path (applyRowPatch / writeStudy). `next` = { type?, values?, state? }.
+ * Nothing here converts a statistic or fills a missing number with zero (§6).
+ */
+export function writeFieldCellPatch(study, def, next = {}, armId = OVERALL_ARM_ID) {
+  const base = storageKeyOf(def);
+  const slotBase = slotBaseOf(def);
+  const arm = s(armId);
+  if (!base) return {};
+  if (isStatField(def) || arm) {
+    return writeDemoCellPatch(study, slotBase, next, { armId: arm, defaultStatType: defaultStatTypeOf(def) });
+  }
+  // Overall value of a plain field — the 116 key, plus the §6 state slot.
+  const stateKey = demoSlotKey(slotBase, STATE_SLOT, '');
+  const patch = {};
+  if (next.values && Object.prototype.hasOwnProperty.call(next.values, 'value')) {
+    patch[base] = next.values.value == null ? '' : String(next.values.value);
+    if (nonEmpty(patch[base]) && s(study && study[stateKey])) patch[stateKey] = '';
+  }
+  if (Object.prototype.hasOwnProperty.call(next, 'state')) {
+    const st = isValueState(next.state) ? s(next.state) : '';
+    patch[stateKey] = st;
+    if (st && nonEmpty(study && study[base])) patch[base] = '';
+  }
+  return patch;
+}
+
+/**
+ * formatFieldCell(def, cell) → the display string, or null for the MISSING state.
+ * A plain field routes back through formatFieldValue so units, booleans, percentages and
+ * multi-selects keep formatting exactly as they did in 116.
+ */
+export function formatFieldCell(def, cell) {
+  if (!cell) return null;
+  if (!cell.hasValue) return cell.state ? valueStateShort(cell.state) : null;
+  if (isStatField(def) || cell.type !== 'value') return formatDemoCell(cell, def);
+  return formatFieldValue(def, cell.values.value);
+}
+
+/** The display text for one cell with the §56 missing state applied. */
+export function fieldCellText(def, study, armId = OVERALL_ARM_ID) {
+  const v = formatFieldCell(def, readFieldCell(study, def, armId));
+  return v == null ? MISSING_VALUE_TEXT : v;
+}
+
+/**
+ * How many rows currently carry a value for this field — INCLUDING its per-arm and
+ * statistic slots. The §39 archive/delete guard reads this, so a statistic field whose
+ * only data lives in `xf_age__arm_exp__mean` must count as held: hard-deleting it would
+ * orphan extracted numbers.
+ */
 export function countFieldValues(studies = [], def) {
   const key = storageKeyOf(def);
+  const slotBase = slotBaseOf(def);
   if (!key) return 0;
   let n = 0;
   for (const st of (Array.isArray(studies) ? studies : [])) {
-    if (st && nonEmpty(st[key])) n += 1;
+    if (!st) continue;
+    if (nonEmpty(st[key])) { n += 1; continue; }
+    if (demoSlotKeysOf(st, slotBase).some((k) => nonEmpty(st[k]))) n += 1;
   }
   return n;
 }
@@ -405,12 +538,48 @@ export function projectFieldValuesOf(study) {
  * form. A project with no configured fields returns `[]` ⇒ every export is byte-identical.
  */
 export function projectFieldColumns(project) {
-  return activeExtractionFields(project).map((f) => ({
-    key: storageKeyOf(f),
-    label: fieldDisplayLabel(f),
-    dataType: f.dataType,
-    id: f.id,
-  }));
+  const arms = demographicsArms(project);
+  const out = [];
+  for (const f of activeExtractionFields(project)) {
+    const base = { key: storageKeyOf(f), label: fieldDisplayLabel(f), dataType: f.dataType, id: f.id };
+    // 119.md §6 — an ARM-LEVEL field becomes one column per configured arm, and a
+    // statistic column carries its definition so `fieldColumnText` can compose the cell.
+    // A project with none of either keeps EXACTLY the 116 column shape, which is what
+    // keeps every existing extraction/case CSV byte-identical.
+    if (arms.length && isArmLevelField(f)) {
+      out.push({ ...base, def: f, armId: '' });
+      for (const arm of arms) out.push({ ...base, def: f, armId: arm.id, label: `${base.label} — ${arm.label}` });
+    } else if (isStatField(f)) {
+      out.push({ ...base, def: f });
+    } else {
+      out.push(base);
+    }
+  }
+  return out;
+}
+
+/**
+ * fieldColumnText(column, study) — the CSV / table cell for one projectFieldColumns
+ * entry. Statistic and arm-level cells cannot be read straight off `study[key]`, so every
+ * exporter goes through this one function instead of indexing the row itself.
+ */
+export function fieldColumnText(column, study) {
+  if (!column) return '';
+  const def = column.def;
+  const arm = s(column.armId);
+  // A plain OVERALL cell keeps emitting the RAW stored string, exactly as the 116
+  // exporters did — adding unit decoration here would silently rewrite every existing
+  // extraction CSV. Only the cells 116 could not express (per-arm, statistic, an empty
+  // STATE) are rendered through the formatter.
+  if (!def || (!arm && !isStatField(def))) {
+    const raw = study ? study[column.key] : '';
+    if (nonEmpty(raw)) return raw;
+    if (!def) return '';
+    const st = readFieldCell(study, def, '');
+    return st.state ? valueStateShort(st.state) : '';
+  }
+  const v = formatFieldCell(def, readFieldCell(study, def, arm));
+  return v == null ? '' : v;
 }
 
 /* ════════════════════════ value formatting (§56) ════════════════════════ */
@@ -504,6 +673,9 @@ export function listContributionFields(project) {
       dataType: f.dataType,
       unit: f.unit,
       source: 'project',
+      // 119.md §6 — carried so `contributionCellValue` can render a statistic cell. The
+      // persisted selection is still the KEY (§38), so nothing about it changes.
+      def: f,
     });
   }
   // Project fields first (the review chose them), then the remaining built-ins.
@@ -551,7 +723,19 @@ export function contributionCellValue(field, row) {
     const label = reader(row);
     return label ? label : null;      // '' ⇒ not classified ⇒ the missing state
   }
-  return formatFieldValue(field, row[field.key]);
+  // 119.md §6 — a statistic/count column's value is a CELL, not a row key. `field.def`
+  // is present for project fields (listContributionFields carries it); a built-in row
+  // entry can never be one of these, so the plain read below still answers.
+  if (field.def && (isStatField(field.def) || s(field.armId))) {
+    return formatFieldCell(field.def, readFieldCell(row, field.def, s(field.armId)));
+  }
+  const plain = formatFieldValue(field, row[field.key]);
+  if (plain != null) return plain;
+  if (field.def) {
+    const st = readFieldCell(row, field.def, '');
+    if (st.state) return valueStateShort(st.state);
+  }
+  return null;
 }
 
 /** The cell TEXT — `contributionCellValue` with §56's missing state already applied. */

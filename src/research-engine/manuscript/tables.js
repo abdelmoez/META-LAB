@@ -19,8 +19,16 @@ import { fmtES, fmtNum, fmtP } from '../format/precision.js';
 import { resolveAnalysis } from './analysisDescribe.js';
 import { deriveSearchMethodology } from '../search/searchMethodology.js';
 import { caseDisplayName, caseSeriesCounts } from '../extraction/caseSeries.js';
+// 119.md §6 — the project's configured demographics / study-characteristics columns.
+// This is the ONE place they are defined (extraction owns them); the manuscript renders
+// them, it does not restate them. Closes 116.md §10.3.
+import { demographicsColumns, demographicsCellValue } from '../extraction/demographicsTable.js';
+import { projectDemographicsConfig } from '../extraction/demographics.js';
 // 116.md §41/§46 (r2) — same row-eligibility rule the pools use (see poolableRow).
 import { rowHasEffect } from '../statistics/poolableRow.js';
+
+/** The review's configured table footnotes ([] when it never configured any). */
+const projectDemographicsNotes = (project) => projectDemographicsConfig(project).notes || [];
 
 const clean = (s) => String(s == null ? '' : s).trim();
 const num = (x) => (x === '' || x == null || isNaN(+x) ? null : +x);
@@ -96,14 +104,28 @@ export function buildStudyCharacteristicsTable(project, opts = {}) {
     { key: 'rob', label: 'Risk of bias', get: (s) => clean(rob[s.id]) },
   ];
 
+  /* 119.md §6 — the project's own demographics columns, appended in CONFIGURED order
+     (or, with no saved configuration, the project's active extraction fields — the 116
+     §10.3 fix: this table used to ignore them completely). They are the same columns the
+     Extraction demographics area shows, read through the same cell formatter, so a
+     statistic keeps the shape the article reported it in and an unreported value prints
+     'NR' rather than a blank that reads as "nobody looked yet". */
+  const demoCols = demographicsColumns(project).map((c) => ({
+    key: c.key,
+    label: c.label,
+    get: (s) => { const v = demographicsCellValue(c, s); return v == null ? '' : v; },
+    demographics: c,
+  }));
+  const candidatesAll = [...candidates, ...demoCols];
+
   const rows = studies.map((s) => {
     const row = {};
-    for (const c of candidates) row[c.key] = c.get(s);
+    for (const c of candidatesAll) row[c.key] = c.get(s);
     return row;
   });
 
   // keep "study" always; keep others only if any row populated
-  const columns = candidates.filter((c) => c.key === 'study' || rows.some((r) => clean(r[c.key])));
+  const columns = candidatesAll.filter((c) => c.key === 'study' || rows.some((r) => clean(r[c.key])));
   const warnings = [];
   if (!rows.length) warnings.push('No included studies with extracted data yet.');
   else {
@@ -120,11 +142,22 @@ export function buildStudyCharacteristicsTable(project, opts = {}) {
   return {
     id: 'study_characteristics_table',
     title: 'Characteristics of included studies',
-    columns: columns.map((c) => ({ key: c.key, label: c.label })),
+    // 119.md §6 — a demographics column additionally carries the (field, arm) it renders
+    // and the row identity travels beside the rows, so the Manuscript Editor can write a
+    // cell edit back to the ONE extraction value it came from. Every other column keeps
+    // exactly the { key, label } shape the exporters and the pinned tests read.
+    columns: columns.map((c) => (c.demographics
+      ? { key: c.key, label: c.label, fieldId: c.demographics.fieldId, armId: c.demographics.armId, editable: true, ...(c.demographics.note ? { note: c.demographics.note } : {}) }
+      : { key: c.key, label: c.label })),
+    rowRefs: studies.map((s) => ({ studyId: s.id, isCase: !!caseDisplayName(s) })),
     rows,
-    note: caseSeriesCounts(studies).cases > 0
-      ? 'Generated from included studies and extracted data; one row per extracted case for case-series articles. Empty cells indicate data not yet extracted.'
-      : 'Generated from included studies and extracted data. Empty cells indicate data not yet extracted.',
+    note: [
+      caseSeriesCounts(studies).cases > 0
+        ? 'Generated from included studies and extracted data; one row per extracted case for case-series articles. Empty cells indicate data not yet extracted.'
+        : 'Generated from included studies and extracted data. Empty cells indicate data not yet extracted.',
+      // 119.md §6 — the review's own table footnotes, kept with the table they annotate.
+      ...(demoCols.length ? (projectDemographicsNotes(project) || []) : []),
+    ].join(' '),
     warnings,
     available: rows.length > 0,
     generatedFrom: 'studies',

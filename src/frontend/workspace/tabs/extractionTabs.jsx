@@ -40,8 +40,11 @@ import { isCaseRow, caseInfoOf, caseDisplayName, caseVarKey, normalizeCaseVariab
 // 116.md §34-§40 — the project-level extraction field library: definitions in the blob,
 // values FLAT on the row under the field's storage key (so this surface's existing
 // `ch` write path, autosave and undo carry them unchanged).
-import { projectExtractionFields, normalizeExtractionFields, projectFieldColumns } from "../../../research-engine/extraction/fieldRegistry.js";
+import { projectExtractionFields, normalizeExtractionFields, projectFieldColumns, fieldColumnText } from "../../../research-engine/extraction/fieldRegistry.js";
 import ProjectFieldsPanel from "../../../features/extraction/engine/ProjectFieldsPanel.jsx";
+// 119.md §6 — the project-level Basic Demographics & Study Characteristics area.
+import DemographicsPanel from "../../../features/extraction/engine/DemographicsPanel.jsx";
+import { normalizeDemographicsConfig } from "../../../research-engine/extraction/demographics.js";
 // 108.md §5/§8 — project-wide Undo/Redo for the CLASSIC extraction surface. The engine
 // (PecanExtractionEngine) registers its own executor; only one of the two is mounted at
 // a time, so the `extraction.field` kind always resolves to the surface in view.
@@ -414,7 +417,7 @@ function AddStudyModal({onClose,onAdd}){
 }
 
 /* ════════════ TAB: EXTRACTION ════════════ */
-function StudyCard({s,idx,updStudy,delStudy,dup,onClone,extractionFields=[],onSetExtractionFields,studies=[],readOnly=false}){
+function StudyCard({s,idx,updStudy,delStudy,dup,onClone,extractionFields=[],onSetExtractionFields,studies=[],readOnly=false,project=null}){
   const[open,setOpen]=useState(false);
   const[showMeta,setShowMeta]=useState(false);
   const[showConv,setShowConv]=useState(false);
@@ -597,9 +600,9 @@ function StudyCard({s,idx,updStudy,delStudy,dup,onClone,extractionFields=[],onSe
           field here, so autosave and 108.md undo need no new plumbing. */}
       <div style={{marginTop:12}}>
         <ProjectFieldsPanel
-          fields={extractionFields} study={s} studies={studies}
+          fields={extractionFields} study={s} studies={studies} project={project}
           readOnly={readOnly} canEdit={!readOnly} canConfigure={!readOnly}
-          onSetValue={(k,v)=>ch(k,v)} onSetFields={onSetExtractionFields}/>
+          onSetValue={(k,v)=>ch(k,v)} onSetValues={chFields} onSetFields={onSetExtractionFields}/>
       </div>
 
       {/* Reliability flags */}
@@ -742,7 +745,7 @@ export function buildExtractionCSV(studies=[],project={}){
   const rows=list.map(s=>[
     ...cols.map(c=>esc(cell(s,c))),
     ...caseCols.map(c=>esc(caseCell(s,c))),
-    ...projCols.map(c=>esc(s[c.key])),
+    ...projCols.map(c=>esc(fieldColumnText(c,s))),   // 119.md §6 — statistic + per-arm cells
   ].join(","));
   return [header,...rows].join("\n");
 }
@@ -768,6 +771,16 @@ function ClassicExtractionTab({project,updateProject,activeId,setTab}){
     const list=normalizeExtractionFields(next);
     const out={...p};
     if(list.length) out.extractionFields=list; else delete out.extractionFields;
+    return out;
+  });
+  /* 119.md §6 — the demographics TABLE configuration (which fields, arms, groups,
+     footnotes). Same discipline as the field list: normalized on write, and the key is
+     DELETED when the configuration empties, so a project that never configured a table
+     serialises byte-identically to one from before this feature existed. */
+  const setDemographicsConfig=(next)=>updateProject(activeId,p=>{
+    const cfg=normalizeDemographicsConfig(next);
+    const out={...p};
+    if(Object.keys(cfg).length) out.demographicsTable=cfg; else delete out.demographicsTable;
     return out;
   });
   const addStudy=()=>updateProject(activeId,p=>({...p,studies:[...p.studies,mkStudy()]}));
@@ -1350,6 +1363,11 @@ ${paperText.slice(0,15000)}`;
       </div>
     )}
 
+    {/* 119.md §6 — the demographics / study-characteristics table for this review.
+        Configured once here; the values are extracted per article on the study cards. */}
+    <DemographicsPanel project={project} studies={studies} readOnly={readOnly}
+      onSetFields={setExtractionFields} onSetConfig={setDemographicsConfig}/>
+
     {/* Empty state */}
     {studies.length===0?(<div style={{background:C.card,border:`1px solid ${C.brd}`,borderRadius:8,padding:40,textAlign:"center",color:C.muted}}>
       <div style={{fontSize:36,marginBottom:10}}>📑</div>
@@ -1378,7 +1396,8 @@ ${paperText.slice(0,15000)}`;
             )}
             <div style={{flex:1}}>
               <StudyCard s={s} idx={studies.indexOf(s)} updStudy={updStudy} delStudy={delStudy} dup={dup[s.id]} onClone={cloneForOutcome}
-                extractionFields={extractionFields} onSetExtractionFields={setExtractionFields} studies={studies} readOnly={readOnly}/>
+                extractionFields={extractionFields} onSetExtractionFields={setExtractionFields} studies={studies} readOnly={readOnly}
+                project={project}/>
             </div>
           </div>
         ))}

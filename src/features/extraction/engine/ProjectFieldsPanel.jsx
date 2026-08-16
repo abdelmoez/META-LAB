@@ -33,8 +33,12 @@ import {
   storageKeyOf, fieldDisplayLabel, addCatalogField, addCustomField, renameExtractionField,
   moveExtractionField, setExtractionFieldHidden, setExtractionFieldArchived,
   setExtractionFieldUnit, setExtractionFieldOptions, removeExtractionField,
-  countFieldValues,
+  countFieldValues, isStatField, isArmLevelField, readFieldCell, writeFieldCellPatch,
+  defaultStatTypeOf,
 } from '../../../research-engine/extraction/fieldRegistry.js';
+import {
+  DEMOGRAPHIC_STAT_TYPES, DEMOGRAPHIC_VALUE_STATES, statType, demographicsArms,
+} from '../../../research-engine/extraction/demographics.js';
 
 /** Header string both extraction surfaces show above the section (pinned by SSR tests). */
 export const PROJECT_FIELDS_TITLE = 'PROJECT EXTRACTION FIELDS';
@@ -90,6 +94,92 @@ function ValueInput({ def, value, disabled, onChange, active, onFocusField }) {
         : (def.description || '')}
       style={{ ...common.style, fontFamily: numeric ? "'IBM Plex Mono',monospace" : 'inherit' }}
     />
+  );
+}
+
+/* ══════════════ 119.md §6 — the statistic-type-aware demographics cell ══════════════
+ *
+ * ONE value, several SLOTS, plus the statistic the ARTICLE used and the four distinct
+ * empty states. Everything is written through `onWrite(patch)` — a flat studies[] patch
+ * from `writeFieldCellPatch` — so it rides the surface's existing extraction write path
+ * and inherits autosave, per-value provenance and 108.md undo unchanged.
+ *
+ * Nothing here converts between statistic types or fills a blank slot with zero: changing
+ * "Mean (SD)" to "Median (IQR)" records what the paper said and leaves every number the
+ * reviewer already typed exactly where it is (§6).
+ */
+export const VALUE_STATE_HINT = 'Not reported, not applicable and unclear are different facts — an empty cell only means nobody has extracted it yet.';
+
+function StateSelect({ def, cell, disabled, onWrite, study, armId, testId }) {
+  return (
+    <select
+      data-testid={testId}
+      aria-label={`Value state for ${def.label}`}
+      title={VALUE_STATE_HINT}
+      disabled={disabled}
+      value={cell.state}
+      onChange={(e) => onWrite(writeFieldCellPatch(study, def, { state: e.target.value }, armId))}
+      style={{ ...inp, fontSize: 11, width: 'auto', minWidth: 92, padding: '3px 6px' }}>
+      <option value="">Value…</option>
+      {DEMOGRAPHIC_VALUE_STATES.map((st) => <option key={st.id} value={st.id}>{st.label}</option>)}
+    </select>
+  );
+}
+
+/** One (field, arm) cell: statistic select + its slots + the empty-state select. */
+export function StatCell({ def, study, armId = '', armLabel = '', disabled, onWrite }) {
+  const cell = readFieldCell(study, def, armId);
+  const t = statType(cell.type) || statType(defaultStatTypeOf(def));
+  const slug = armId || 'overall';
+  const stateOn = !!cell.state;
+  return (
+    <div data-testid={`pex-xf-cell-${def.id}-${slug}`} style={{ display: 'flex', gap: 5, alignItems: 'center', flexWrap: 'wrap' }}>
+      {armLabel && <span style={{ fontSize: 10.5, color: C.dim, minWidth: 78 }}>{armLabel}</span>}
+      <select
+        data-testid={`pex-xf-stat-${def.id}-${slug}`}
+        aria-label={`Reported statistic for ${def.label}${armLabel ? ` (${armLabel})` : ''}`}
+        disabled={disabled}
+        value={t.id}
+        onChange={(e) => onWrite(writeFieldCellPatch(study, def, { type: e.target.value }, armId))}
+        style={{ ...inp, fontSize: 11, width: 'auto', minWidth: 120, padding: '3px 6px' }}>
+        {DEMOGRAPHIC_STAT_TYPES.map((x) => <option key={x.id} value={x.id}>{x.label}</option>)}
+      </select>
+      {t.slots.map((slot) => (
+        <input
+          key={slot}
+          data-testid={`pex-xf-slot-${def.id}-${slug}-${slot}`}
+          aria-label={`${t.slotLabels[slot]} of ${def.label}${armLabel ? ` (${armLabel})` : ''}`}
+          placeholder={t.slotLabels[slot]}
+          disabled={disabled || stateOn}
+          value={cell.values[slot] == null ? '' : String(cell.values[slot])}
+          inputMode="decimal"
+          onChange={(e) => onWrite(writeFieldCellPatch(study, def, { values: { [slot]: e.target.value } }, armId))}
+          style={{ ...inp, fontSize: 12, width: 74, padding: '3px 6px', fontFamily: "'IBM Plex Mono',monospace", opacity: stateOn ? 0.5 : 1 }} />
+      ))}
+      {def.unit && <span style={{ fontSize: 10.5, color: C.dim }}>{def.unit}</span>}
+      <StateSelect def={def} cell={cell} disabled={disabled} onWrite={onWrite} study={study} armId={armId}
+        testId={`pex-xf-state-${def.id}-${slug}`} />
+    </div>
+  );
+}
+
+/** One ARM-LEVEL plain field row (text/integer/…) — the value lives in the arm's slot. */
+function ArmValueRow({ def, study, armId, armLabel, disabled, onWrite }) {
+  const cell = readFieldCell(study, def, armId);
+  const slug = armId || 'overall';
+  return (
+    <div style={{ display: 'flex', gap: 5, alignItems: 'center', flexWrap: 'wrap' }}>
+      <span style={{ fontSize: 10.5, color: C.dim, minWidth: 78 }}>{armLabel}</span>
+      <input
+        data-testid={`pex-xf-slot-${def.id}-${slug}-value`}
+        aria-label={`${def.label} (${armLabel})`}
+        disabled={disabled || !!cell.state}
+        value={cell.values.value == null ? '' : String(cell.values.value)}
+        onChange={(e) => onWrite(writeFieldCellPatch(study, def, { values: { value: e.target.value } }, armId))}
+        style={{ ...inp, fontSize: 12, flex: '1 1 90px', minWidth: 80, padding: '3px 6px' }} />
+      <StateSelect def={def} cell={cell} disabled={disabled} onWrite={onWrite} study={study} armId={armId}
+        testId={`pex-xf-state-${def.id}-${slug}`} />
+    </div>
   );
 }
 
@@ -269,8 +359,8 @@ function ManageList({ fields, studies, onPatchFields }) {
  */
 export default function ProjectFieldsPanel({
   fields = [], study = null, studies = [], readOnly = false, canEdit = true, canConfigure = true,
-  onSetValue, onSetFields, hasSource, onJump, picking = false, activeField = '', onFocusField,
-  initialMode = 'values',
+  onSetValue, onSetValues, onSetFields, hasSource, onJump, picking = false, activeField = '', onFocusField,
+  initialMode = 'values', project = null,
 }) {
   const [mode, setMode] = useState(initialMode);
   const configurable = canConfigure && !readOnly && typeof onSetFields === 'function';
@@ -281,6 +371,17 @@ export default function ProjectFieldsPanel({
     .filter((g) => g.list.length > 0), [visible]);
 
   const apply = (res) => { if (res && res.fields && onSetFields) onSetFields(res.fields); };
+  /* 119.md §6 — a demographics cell writes SEVERAL flat keys at once (a mean and its SD,
+     a value and the state it clears). The combined form is preferred so the pair lands in
+     one project update and one 108.md history entry; without it the two halves could be
+     persisted apart — the same rule the 107.md denominator patch already follows. */
+  const writeCell = (patch) => {
+    const keys = Object.keys(patch || {});
+    if (!keys.length) return;
+    if (typeof onSetValues === 'function') { onSetValues(patch); return; }
+    for (const k of keys) if (onSetValue) onSetValue(k, patch[k]);
+  };
+  const arms = useMemo(() => demographicsArms(project || {}), [project]);
 
   return (
     <div data-testid="pex-project-fields" style={{ border: `1px solid ${C.brd}`, borderRadius: 8, background: C.card, padding: 12 }}>
@@ -324,8 +425,13 @@ export default function ProjectFieldsPanel({
               const value = study && study[key] != null ? String(study[key]) : '';
               const active = picking && activeField === key;
               const sourced = !!(hasSource && hasSource(key));
+              // 119.md §6 — a statistic/count field, and any arm-level field on a project
+              // with arm columns, renders as CELLS; every other field is untouched 116.
+              const stat = isStatField(f);
+              const perArm = arms.length > 0 && isArmLevelField(f);
+              const composite = stat || perArm;
               return (
-                <div key={f.id}>
+                <div key={f.id} style={composite ? { gridColumn: '1 / -1' } : undefined}>
                   <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 5 }}>
                     <label style={{ ...lbl, margin: 0, color: active ? C.acc : undefined }} htmlFor={`pex-xf-${f.id}`}>
                       {active ? '◎ ' : ''}{fieldDisplayLabel(f)}
@@ -337,9 +443,27 @@ export default function ProjectFieldsPanel({
                       </button>
                     )}
                   </div>
-                  <ValueInput def={f} value={value} disabled={!valuesEditable} active={active}
-                    onChange={(v) => onSetValue && onSetValue(key, v)}
-                    onFocusField={picking && onFocusField ? () => onFocusField(key) : undefined} />
+                  {composite ? (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
+                      {stat && <StatCell def={f} study={study} armId="" armLabel={perArm ? 'Overall' : ''} disabled={!valuesEditable} onWrite={writeCell} />}
+                      {!stat && (
+                        <div style={{ display: 'flex', gap: 5, alignItems: 'center' }}>
+                          <span style={{ fontSize: 10.5, color: C.dim, minWidth: 78 }}>Overall</span>
+                          <ValueInput def={f} value={value} disabled={!valuesEditable} active={active}
+                            onChange={(v) => onSetValue && onSetValue(key, v)}
+                            onFocusField={picking && onFocusField ? () => onFocusField(key) : undefined} />
+                        </div>
+                      )}
+                      {perArm && arms.map((arm) => (stat
+                        ? <StatCell key={arm.id} def={f} study={study} armId={arm.id} armLabel={arm.label} disabled={!valuesEditable} onWrite={writeCell} />
+                        : <ArmValueRow key={arm.id} def={f} study={study} armId={arm.id} armLabel={arm.label} disabled={!valuesEditable} onWrite={writeCell} />
+                      ))}
+                    </div>
+                  ) : (
+                    <ValueInput def={f} value={value} disabled={!valuesEditable} active={active}
+                      onChange={(v) => onSetValue && onSetValue(key, v)}
+                      onFocusField={picking && onFocusField ? () => onFocusField(key) : undefined} />
+                  )}
                 </div>
               );
             })}

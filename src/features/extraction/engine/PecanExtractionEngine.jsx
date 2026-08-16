@@ -40,6 +40,9 @@ import {
   projectExtractionFields, normalizeExtractionFields, projectFieldColumns,
 } from '../../../research-engine/extraction/fieldRegistry.js';
 import ArticleList from './ArticleList.jsx';
+// 119.md §6 — the Basic Demographics & Study Characteristics area.
+import DemographicsPanel from './DemographicsPanel.jsx';
+import { normalizeDemographicsConfig } from '../../../research-engine/extraction/demographics.js';
 import ArticleWorkspace from './ArticleWorkspace.jsx';
 import OutcomeNavigator from './OutcomeNavigator.jsx';
 import CaseSeriesBar from './CaseSeriesBar.jsx';
@@ -363,6 +366,18 @@ export default function PecanExtractionEngine({ project, updateProject, activeId
     return out;
   }), [updateProject, activeId]);
 
+  /* 119.md §6 — the demographics TABLE configuration, on the same discipline as the
+     field list: normalized on write, key DELETED when the configuration empties. Both
+     extraction surfaces write it, because both must be able to configure the review's
+     study-characteristics table (the engine IS the extraction interface when its flag
+     is on, and the classic tab is the flag-off path). */
+  const setDemographicsConfig = useCallback((next) => updateProject(activeId, (p) => {
+    const cfg = normalizeDemographicsConfig(next);
+    const out = { ...p };
+    if (Object.keys(cfg).length) out.demographicsTable = cfg; else delete out.demographicsTable;
+    return out;
+  }), [updateProject, activeId]);
+
   const onEnableCaseSeries = useCallback((studyId) => {
     // The updater is a React setState function: StrictMode invokes it TWICE in dev and
     // only the last result is kept. Calling Math.random() inside it would therefore mint
@@ -501,7 +516,7 @@ export default function PecanExtractionEngine({ project, updateProject, activeId
             projectId={activeId} study={openStudy} article={openArticleSummary} studies={studies}
             outcomes={outcomes} protocol={protocol} readOnly={readOnly} canEdit={canEdit} saveStatus={saveStatus}
             caseVariables={caseVariables} onSetCaseVariables={setCaseVariables}
-            extractionFields={extractionFields} onSetExtractionFields={setExtractionFields}
+            extractionFields={extractionFields} onSetExtractionFields={setExtractionFields} project={project}
             onBack={() => setOpenId('')} onPrev={goPrev} onNext={goNext} hasPrev={openIdx > 0} hasNext={openIdx >= 0 && openIdx < orderedIds.length - 1}
             onPatchStudy={patchStudy} onAttachProvenance={attachProvenance} onWriteStudy={writeStudy}
             onAddDrafts={addDrafts} onAddParked={addParked} drafts={drafts} parked={parked}
@@ -518,6 +533,10 @@ export default function PecanExtractionEngine({ project, updateProject, activeId
     // is only full-bleed once ArticleWorkspace lifts onWorkspaceChange).
     <div style={{ height: '100%', minHeight: 'calc(100vh - 230px)', display: 'flex', flexDirection: 'column', padding: '10px 4px 4px' }}>
       {banner && <div style={{ padding: '8px 12px', fontSize: 12, color: C.txt, background: C.card, border: `1px solid ${C.brd}`, borderRadius: 8, marginBottom: 8 }}>{banner}</div>}
+      {/* 119.md §6 — configured once for the review; the VALUES are extracted per article
+          inside the workspace (ProjectFieldsPanel), where the PDF and provenance are. */}
+      <DemographicsPanel project={project} studies={studies} readOnly={readOnly || !canEdit}
+        onSetFields={setExtractionFields} onSetConfig={setDemographicsConfig} />
       <ArticleList
         articles={articles} stats={stats} loading={loadingList && !serverArticles && !clientArticles.length}
         error={listErr} canEdit={canEdit} lastArticleId={(project.extractionEngine && project.extractionEngine.lastArticleId) || ''}

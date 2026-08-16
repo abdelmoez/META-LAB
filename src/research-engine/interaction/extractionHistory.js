@@ -79,7 +79,10 @@ export const EXTRACTION_ENTRY_LABEL = 'Extraction change';
 export const EXTRACTION_COALESCE_WINDOW_MS = 4000;
 
 /** Which extraction surface an op must be applied through. */
-export const EXTRACTION_SURFACE = Object.freeze({ ENGINE: 'engine', CLASSIC: 'classic' });
+// 119.md §6 — the third surface: a demographics cell edited from the Manuscript
+// Editor. It writes the SAME studies[] row through the SAME pure applier; naming it
+// keeps the audit honest about where the change was made.
+export const EXTRACTION_SURFACE = Object.freeze({ ENGINE: 'engine', CLASSIC: 'classic', MANUSCRIPT: 'manuscript' });
 
 const isObj = (v) => !!v && typeof v === 'object' && !Array.isArray(v);
 
