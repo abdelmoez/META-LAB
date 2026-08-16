@@ -1731,7 +1731,10 @@ export default function MetaLab({ initialProjectId = null, initialTab = null, on
           {tab==="citation"&&<Suspense fallback={<div style={{padding:24,color:C.muted}}>Loading…</div>}><CitationMiningPanel projectId={activeId} project={project} readOnly={projectPerms(project).readOnly}/></Suspense>}
           {/* 119.md §8 — same component the Stitch stage mounts; legacy tokens keep it
               correct in both shells. `perms` is the projectPerms() annotation. */}
-          {tab==="logbook"&&<Suspense fallback={<div style={{padding:24,color:C.muted}}>Loading…</div>}><LogbookPage project={project} projectId={activeId} perms={projectPerms(project)}/></Suspense>}
+          {/* 120.md §1 — Back uses the SAME tab setter the Project Control entry uses.
+              AppWorkspace mirrors the tab into ?tab= with replace:true, so returning to
+              Control neither reloads the app nor adds a duplicate history entry. */}
+          {tab==="logbook"&&<Suspense fallback={<div style={{padding:24,color:C.muted}}>Loading…</div>}><LogbookPage project={project} projectId={activeId} perms={projectPerms(project)} onBack={()=>setTab("control")}/></Suspense>}
           {tab==="grade"&&<GRADETab project={project} upd={upd}/>}
           {tab==="manuscript"&&<ManuscriptTab project={project} upd={upd}/>}
           {tab==="report"&&<ReportTab project={project} upd={upd}/>}

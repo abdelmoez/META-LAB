@@ -133,6 +133,58 @@ test.describe('Project Logbook — Owner/Leader only (119.md §8)', () => {
     expect(jsonDl.suggestedFilename()).toMatch(/\.json$/);
   });
 
+  /* ── 120.md §1 — the Back button ────────────────────────────────────────────── */
+
+  /**
+   * 120.md §1. The requirement is explicit that `window.history.back()` is not good
+   * enough, because the Logbook is routinely reached from a direct URL, a
+   * notification, a bookmark or a refresh — so BOTH entry paths are driven here:
+   * arriving from Project Control, and arriving cold on a deep link with no in-app
+   * history behind it. The second is the case a history-based Back gets wrong.
+   */
+  test('Back returns to the SAME project\'s Project Control, from a click-through AND from a deep link @smoke', async ({ page, request, seed }) => {
+    const { project } = await seedProject(request, seed);
+    const back = page.getByTestId('logbook-back');
+
+    // ── A. opened from Project Control ────────────────────────────────────────
+    await page.goto(`/app/project/${project.id}?tab=control`);
+    await page.getByTestId('logbook-nav-entry').click();
+    await expect(page.getByTestId('logbook-page')).toBeVisible();
+
+    // §1 accessibility: a real button with an accessible name, reachable by keyboard.
+    await expect(back).toBeVisible();
+    await expect(back).toHaveAttribute('aria-label', 'Back to Project Control');
+    expect(await back.evaluate((el) => el.tagName)).toBe('BUTTON');
+    const box = (await back.boundingBox())!;
+    expect(box.height, 'the click target must be comfortably large').toBeGreaterThanOrEqual(28);
+
+    await back.click();
+    await expect(page).toHaveURL(new RegExp(`/app/project/${project.id}\\?tab=control`));
+    await expect(page.getByRole('heading', { name: 'Project Control', level: 1 })).toBeVisible();
+    await expect(page.getByTestId('logbook-page')).toHaveCount(0);
+
+    // ── B. opened cold, on a direct URL ───────────────────────────────────────
+    // A fresh context-less landing: nothing useful is behind this entry in history,
+    // which is exactly why the button links rather than going back.
+    await page.goto(`/app/project/${project.id}?tab=logbook`);
+    await expect(page.getByTestId('logbook-page')).toBeVisible();
+
+    // …and Space activates it, which a link would not give (§1 "Enter and Space").
+    await back.focus();
+    await page.keyboard.press('Space');
+    await expect(page).toHaveURL(new RegExp(`/app/project/${project.id}\\?tab=control`));
+    await expect(page.getByRole('heading', { name: 'Project Control', level: 1 })).toBeVisible();
+
+    // …the SAME project throughout, and never a full application reset: the SPA
+    // never reloaded, so a marker set on `window` before the click is still there.
+    await page.goto(`/app/project/${project.id}?tab=logbook`);
+    await expect(page.getByTestId('logbook-page')).toBeVisible();
+    await page.evaluate(() => { (window as any).__pecanNoReload = 'alive'; });
+    await back.click();
+    await expect(page.getByRole('heading', { name: 'Project Control', level: 1 })).toBeVisible();
+    expect(await page.evaluate(() => (window as any).__pecanNoReload)).toBe('alive');
+  });
+
   /**
    * §10 scenario 19's "…and with a large Logbook" clause, which r2 found untested:
    * the filters were only ever exercised against a handful of seeded events, so the

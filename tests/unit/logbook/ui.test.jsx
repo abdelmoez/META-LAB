@@ -26,7 +26,7 @@ import {
   timeZoneLabel, actorLine, formatValue,
 } from '../../../src/features/logbook/logbookFormat.js';
 import { filtersToQuery, logbookExportHref, PAGE_SIZE } from '../../../src/features/logbook/logbookApi.js';
-import LogbookPage from '../../../src/features/logbook/LogbookPage.jsx';
+import LogbookPage, { projectControlHref } from '../../../src/features/logbook/LogbookPage.jsx';
 import LogbookEventRow, { LogbookEventDetails } from '../../../src/features/logbook/LogbookEvent.jsx';
 import LogbookTable from '../../../src/features/logbook/LogbookTable.jsx';
 
@@ -247,6 +247,41 @@ describe('119.md §8 — the page renders the whole §8 interface for a leader',
 
   it('starts in the loading state (SSR runs no effects → no unauthorised prefetch)', () => {
     expect(html).toContain('data-testid="logbook-loading"');
+  });
+});
+
+/* ═══════════════════ 120.md §1 — the Back button ══════════════════════════ */
+
+describe('120.md §1 — Back returns to THIS project\'s Project Control', () => {
+  const html = renderToStaticMarkup(h(LogbookPage, { projectId: 'p1', perms: OWNER }));
+
+  it('builds the destination from the active project id, through the route builder', () => {
+    expect(projectControlHref('p1')).toBe('/app/project/p1?tab=control');
+    // The same builder every other project link uses, so the shape cannot drift.
+    expect(projectControlHref('p1')).toBe(projectStageHref('control', { projectId: 'p1' }));
+    // A project id with URL-hostile characters is encoded, never concatenated raw.
+    expect(projectControlHref('a b/c')).toBe('/app/project/a%20b%2Fc?tab=control');
+    // No project (the page never renders then) degrades to the project route root
+    // rather than inventing an id — it can never reach ANOTHER project's Control.
+    expect(projectControlHref('')).toBe('/app/project/?tab=control');
+    expect(projectControlHref(undefined)).toBe('/app/project/?tab=control');
+  });
+
+  it('renders one clearly-labelled Back control in the Logbook header', () => {
+    expect(html).toContain('data-testid="logbook-back"');
+    expect(html).toContain('Back to Project Control');
+    expect(html).toContain('aria-label="Back to Project Control"');
+    // A real <button>: Enter AND Space activate it natively, and the app-wide
+    // `button:focus-visible` ring applies with no bespoke focus styling.
+    expect(html).toMatch(/<button[^>]*data-testid="logbook-back"/);
+    expect(html).toContain('type="button"');
+    // It comes BEFORE the heading — the expected upper-left position.
+    expect(html.indexOf('data-testid="logbook-back"')).toBeLessThan(html.indexOf('<h1'));
+  });
+
+  it('is not offered to someone who is being shown the access card instead', () => {
+    const denied = renderToStaticMarkup(h(LogbookPage, { projectId: 'p1', perms: MEMBER }));
+    expect(denied).not.toContain('data-testid="logbook-back"');
   });
 });
 

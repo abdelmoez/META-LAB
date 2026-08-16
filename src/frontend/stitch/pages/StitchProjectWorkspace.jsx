@@ -460,7 +460,11 @@ function DeepToolPage({ stage }) {
     // resolves `viewLogbook` from it (owner/leader only, site admins deliberately
     // excluded to match server/logbook/logbookAccess.js) and renders the shared
     // AccessDenied card for everyone else without ever calling the API.
-    body = (<LazyLogbook project={project} projectId={projectId} perms={perms} />);
+    // 120.md §1 — Back goes to THIS project's Project Control through the shell's own
+    // stage navigation (projectStageHref + react-router), so the project id comes from
+    // the route params and the move is client-side — never a reload, never history.back().
+    body = (<LazyLogbook project={project} projectId={projectId} perms={perms}
+      onBack={() => goStage('control')} />);
   }
 
   // 78.md #2 — the "Analysis" member permission is now enforced. A member WITHOUT the

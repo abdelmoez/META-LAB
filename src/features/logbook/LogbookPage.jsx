@@ -22,6 +22,11 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { C, btnS, tagS } from '../../frontend/workspace/ui/styles.js';
+import { Icon } from '../../frontend/components/icons.jsx';
+// 120.md §1 — the Back destination is built by the SAME route builder every other
+// project link uses (logbookFormat's resourceLink already does), so the button can
+// never invent a URL shape the router does not serve.
+import { projectStageHref } from '../../frontend/stitch/nav/navConfig.js';
 import AccessDeniedState from '../../frontend/components/access/AccessDeniedState.jsx';
 import { canExportLogbook, logbookViewDecision } from './logbookAccess.js';
 import { fetchLogbookEvents, fetchLogbookFacets, logbookExportHref, PAGE_SIZE } from './logbookApi.js';
@@ -42,7 +47,72 @@ const EMPTY_FILTERS = Object.freeze({
 const QUERY_KEYS = ['q', 'engines', 'actions', 'members', 'roles', 'resourceTypes', 'statuses', 'actorTypes', 'from', 'to', 'sort'];
 const querySignature = (f) => JSON.stringify(QUERY_KEYS.map((k) => f[k]));
 
-export default function LogbookPage({ project, projectId, perms }) {
+/**
+ * 120.md §1 — Project Control FOR THIS PROJECT.
+ *
+ * The whole point of the requirement ("Preserve the active project ID · prevent
+ * accidental navigation to Project Control for a different project") is that the
+ * destination is DERIVED from the project the Logbook is currently showing, never
+ * from history. Exported so the URL construction is unit-testable on its own.
+ */
+export function projectControlHref(projectId) {
+  return projectStageHref('control', { projectId: projectId || '' });
+}
+
+/**
+ * 120.md §1 — the header's Back control.
+ *
+ * A real <button>, for three reasons the requirement states directly: Enter AND
+ * Space activate it for free, the app-wide `button:focus-visible` ring applies
+ * (tokens.js buildThemeCss) with no bespoke focus styling, and it matches the
+ * established PecanRev Back-button shape (Workspace's "Back to Projects",
+ * RobWorkspace's back link) — an icon plus its words, not an icon alone.
+ *
+ * `onBack` is the navigation seam: BOTH shells pass one (Stitch → goStage('control'),
+ * legacy → setTab('control')), so the real navigation is always client-side and never
+ * a reload. The fallback exists only for a host that forgot to wire it — it is a
+ * direct link to the SAME project's Project Control, never window.history.back(),
+ * because the Logbook is routinely opened from a bookmark, a notification or a
+ * refreshed page where "back" is somewhere else entirely.
+ */
+function LogbookBackButton({ projectId, onBack }) {
+  const href = projectControlHref(projectId);
+  const [hover, setHover] = useState(false);
+  const [pressed, setPressed] = useState(false);
+  return (
+    <button
+      type="button"
+      data-testid="logbook-back"
+      aria-label="Back to Project Control"
+      title="Back to Project Control"
+      onClick={() => {
+        if (typeof onBack === 'function') { onBack(); return; }
+        if (typeof window !== 'undefined' && window.location) window.location.assign(href);
+      }}
+      onMouseEnter={() => setHover(true)}
+      onMouseLeave={() => { setHover(false); setPressed(false); }}
+      onMouseDown={() => setPressed(true)}
+      onMouseUp={() => setPressed(false)}
+      onBlur={() => setPressed(false)}
+      style={{
+        ...btnS('ghost'),
+        fontSize: 11.5,
+        // ≥28px tall and comfortably wide: a real pointer/touch target at every
+        // supported width (§1 "Make the click target sufficiently large").
+        padding: '7px 13px',
+        minHeight: 30,
+        color: hover || pressed ? C.txt : C.txt2,
+        borderColor: hover || pressed ? C.acc : C.brd2,
+        background: pressed ? 'var(--t-card2)' : 'transparent',
+      }}
+    >
+      <Icon name="arrowLeft" size={13} />
+      Back to Project Control
+    </button>
+  );
+}
+
+export default function LogbookPage({ project, projectId, perms, onBack }) {
   const pid = projectId || (project && project.id) || '';
   const decision = logbookViewDecision(perms);
   const mayExport = canExportLogbook(perms);
@@ -146,6 +216,12 @@ export default function LogbookPage({ project, projectId, perms }) {
   return (
     <div style={wrap} data-testid="logbook-page">
       <header style={{ marginBottom: 14 }}>
+        {/* 120.md §1 — the expected upper-LEFT position: its own row above the
+            title, so it never competes with the heading for the same line and stays
+            visible (and wrap-free) at every supported width. */}
+        <div style={{ display: 'flex', alignItems: 'center', marginBottom: 10 }}>
+          <LogbookBackButton projectId={pid} onBack={onBack} />
+        </div>
         <div style={{ display: 'flex', alignItems: 'baseline', gap: 10, flexWrap: 'wrap' }}>
           <h1 style={{ fontSize: 20, fontWeight: 800, color: C.txt, margin: 0 }}>Logbook</h1>
           <span style={tagS('blue')}>Owner and leaders only</span>
