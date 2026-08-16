@@ -143,10 +143,21 @@ contract held everywhere.
 
 ## 8. Remaining limitations
 
-1. Abstract subsection editors don't thread citationStyle/chip-menu callbacks (pre-existing;
-   cite chips in the abstract render numeric with no menu — visible in both views).
-2. `m.liveDraft` overlay can survive a regeneration momentarily (derived numbering may lag
-   one beat; document text unaffected — editors mount from the committed draft).
+1. ~~Abstract subsection editors don't thread citationStyle/chip-menu callbacks~~ **CLOSED (r3)** —
+   `editorProps` now projects a `sharedFieldProps(id)` bag (registry + fact layer + citation
+   layer + both chip callbacks), `abstractProps` hands it to `AbstractEditor` as `fieldProps`
+   with the owning section reported as `'abstract'`, and every subsection editor spreads it.
+   Cite chips in the abstract carry the draft's style (Harvard author-year included) and open
+   the same hover card / action menu the body sections do, in BOTH views. `onTableFocus` is
+   deliberately NOT threaded: the floating table controls are still not rendered over the
+   abstract in Section View, so reporting a caret's table context there would set state
+   nothing consumes.
+2. ~~`m.liveDraft` overlay can survive a regeneration momentarily~~ **CLOSED (r3)** — each
+   pending overlay entry now carries the `lastGeneratedAt` it was typed under, and the drop
+   rule (pure `MS.settleLiveSections`) invalidates an entry whose stamp moved. A generation
+   rewrites the section, so text typed before it is superseded by definition and can never
+   match again; the old match-only rule kept it forever. Per-entry: sections nobody
+   regenerated keep their pending text.
 3. §19 is verified structurally, not benchmarked against a 50-section manuscript (the real
    maximum is ~10 sections).
 4. Toolbar wraps the switcher under the tab row at 'compact' density (reachable, not pretty).
@@ -167,8 +178,16 @@ contract held everywhere.
 
 ## 9. Recommended follow-ups
 
-1. Thread citation style + chip callbacks through AbstractEditor (§8.1).
-2. Fix the liveDraft overlay drop rule after regeneration (§8.2).
-3. Collapse the duplicated section-status rule (panels' sectionRowStatus vs the Overview's).
+1. ~~Thread citation style + chip callbacks through AbstractEditor (§8.1).~~ **done (r3)**
+2. ~~Fix the liveDraft overlay drop rule after regeneration (§8.2).~~ **done (r3)**
+3. ~~Collapse the duplicated section-status rule~~ — already collapsed in r2 (§7, minor 7);
+   the r3 pass collapsed the OTHER duplicate the review flagged: Section View's title branch
+   (literal hex) and Continuous View's title block (INK) were two copies of the same UI. One
+   `TitleBlock` component now serves both (INK canonical — the paper is literally white in
+   both themes), testids unchanged (`stitch-manuscript-title-input`, plus a new
+   `stitch-manuscript-title-block` wrapper). State stays with each caller: the two views have
+   different remount rules for the title buffer and the component stores nothing. One visual
+   consequence: Section View's title/keywords rule spacing is now the document's
+   (14px above / 10px below instead of 22px / 18px).
 4. A journal-template-driven reference indent (the 0.25in hanging indent is conventional).
 5. Word SEQ fields for figure/table numbering (behavior change; deliberate 117-era cut).

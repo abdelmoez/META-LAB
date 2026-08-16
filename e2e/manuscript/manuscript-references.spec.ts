@@ -234,6 +234,72 @@ test.describe('Manuscript reference manager (117.md §26-§41, §78, §91)', () 
     await expect(citeChips(page).first()).toHaveText('[1]', { timeout: 10_000 });
   });
 
+  /**
+   * 118.md §8.1 — the ABSTRACT is a citing surface like any other.
+   *
+   * It is the one section rendered by a DIFFERENT component: `AbstractEditor`
+   * mounts one rich editor per labelled subsection. Those editors used to be
+   * mounted without the citation layer, so a citation inserted in the abstract
+   * rendered as a bare numeric chip that did nothing when clicked, while the same
+   * citation in Methods rendered "(Alpha, 2019)" and opened an action menu. Both
+   * halves are asserted here: the STYLE-AWARE label, and the menu.
+   */
+  test('§8.1: a citation in the ABSTRACT gets the styled label and the same action menu', async ({ page, request, tmpProject }) => {
+    await seedStudies(request, tmpProject.id);
+    await openManuscript(page, tmpProject.id);
+    await page.getByTestId('stitch-manuscript-subtab-editor').click();
+
+    // Generate, so the abstract is the STRUCTURED editor (labelled subsections)
+    // rather than the free-form fallback — the subsection editors are the ones the
+    // props never reached.
+    await page.getByTestId('stitch-manuscript-generate').click();
+    await page.getByTestId('stitch-manuscript-section-abstract').click();
+    await expect(page.getByTestId('stitch-manuscript-abstract-editor')).toBeVisible({ timeout: 20_000 });
+
+    // Put the caret in the FIRST subsection editor. (Its generated text is a manual-
+    // input placeholder chip — atomic and non-editable by design, 102.md §3 — so this
+    // test cites rather than types; the citation layer is what §8.1 is about.)
+    const field = page.getByTestId('stitch-manuscript-abstract-field-0');
+    const abstractChips = field.locator('.ms-cite');
+    const before = await abstractChips.count();
+
+    await field.click();
+    await page.keyboard.press('ControlOrMeta+End');
+    await insertCitation(page, 'Alpha', 1);
+    await expect(abstractChips).toHaveCount(before + 1, { timeout: 10_000 });
+
+    // The chip label follows the DRAFT'S citation style — the abstract editors now
+    // know what it is. Harvard is the differential: with no style threaded the chip
+    // falls back to a numeric "[n]".
+    await page.getByLabel('Citation style').selectOption('harvard');
+    await expect(abstractChips.last()).toHaveText(/\(Alpha.*2019\)/, { timeout: 15_000 });
+
+    // …and clicking it opens the citation action menu, anchored in the same page
+    // layer the body sections use (the popovers live in the panel, not the editor).
+    await abstractChips.last().click();
+    const abstractMenu = page.getByTestId('stitch-manuscript-cite-menu');
+    await expect(abstractMenu).toBeVisible();
+    // the menu names the citation it acts on and offers the same actions it offers
+    // for a chip in the body — before the fix there was no menu at all
+    await expect(abstractMenu).toContainText('(Alpha, 2019)');
+    await expect(abstractMenu.getByTestId('stitch-manuscript-cite-remove')).toBeVisible();
+    await expect(abstractMenu.getByTestId('stitch-manuscript-cite-goto-references')).toBeVisible();
+
+    // The write really landed in the ABSTRACT — the abstract serializes every
+    // subsection back into the ONE markdown string the engine persists, and the chip
+    // callbacks report the owning section, so nothing can edit a different one.
+    await expect(page.getByTestId('stitch-manuscript-save-status').first()).toContainText(/Saved/i, { timeout: 25_000 });
+    await expect(async () => {
+      const proj = await (await request.get(`/api/projects/${tmpProject.id}`)).json();
+      const draft = (proj.manuscripts || [])[0] || {};
+      const abstract = String(draft.sections?.abstract?.content || '');
+      expect(abstract).toContain('[[cite:s1]]');
+      // still the STRUCTURED abstract — citing did not flatten the subsections
+      expect(abstract).toContain('**Background.**');
+      expect(abstract).toContain('**Conclusions.**');
+    }).toPass({ timeout: 25_000 });
+  });
+
   test('§91: manual entry → RIS import → merge a duplicate → edit an author → change style → export', async ({ page, request, tmpProject }) => {
     await seedDuplicate(request, tmpProject.id);
     await openManuscript(page, tmpProject.id);

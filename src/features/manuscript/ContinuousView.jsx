@@ -378,6 +378,68 @@ function SectionChrome({ sectionId, label, section, outdated, onRegenerate, onTo
   );
 }
 
+/* ══════════ 118.md §11 / r3 — THE title block, used by BOTH views ══════════
+ *
+ * The manuscript's title + keywords are plain inputs (a title has no rich
+ * structure). Section View and Continuous View used to render two hand-maintained
+ * copies of this markup — one in literal hex, one in INK — and a review flagged the
+ * obvious: two copies of the same UI drift. This is the single copy. INK is
+ * canonical because the page is literally white in both themes (RICH_EDITOR_CSS),
+ * so the theme tokens the surrounding chrome uses would be wrong here.
+ *
+ * State stays with the CALLER: each view already owns a controlled buffer for the
+ * title (Section View's `titleBuf`, this file's `title`) with its own remount rule,
+ * and this component must not become a third place manuscript text can live. It
+ * renders and reports; it stores nothing.
+ *
+ * @param {string} value     current title text (the caller's buffer)
+ * @param {string} keywords  current comma-separated keyword string
+ * @param {boolean} locked   the title section's lock — disables both inputs
+ * @param {function} onTitle (text) => void
+ * @param {function} onKeywords (rawText, parsedList) => void — the caller keeps its
+ *        own raw buffer AND persists the parsed list; the parse lives here so the
+ *        two views can never disagree about what "comma-separated" means.
+ */
+export function TitleBlock({ value, keywords, locked = false, onTitle, onKeywords }) {
+  return (
+    <div data-testid="stitch-manuscript-title-block">
+      <input
+        value={value}
+        onChange={(e) => { if (locked) return; onTitle && onTitle(e.target.value); }}
+        placeholder="Full manuscript title…"
+        disabled={locked}
+        aria-label="Manuscript title"
+        data-testid="stitch-manuscript-title-input"
+        style={{
+          width: '100%', border: 'none', outline: 'none', background: 'transparent',
+          color: INK.text, fontFamily: SERIF, fontSize: 22, fontWeight: 700,
+          lineHeight: 1.45, textAlign: 'center', boxSizing: 'border-box',
+        }} />
+      <div style={{ borderTop: `1px solid ${INK.rule}`, marginTop: 14, paddingTop: 10 }}>
+        <div style={{
+          font: `700 10px/1.6 ${SANS}`, letterSpacing: 0.6, textTransform: 'uppercase',
+          color: INK.soft, marginBottom: 2,
+        }}>
+          Keywords (comma-separated)
+        </div>
+        <input
+          value={keywords}
+          onChange={(e) => {
+            const raw = e.target.value;
+            onKeywords && onKeywords(raw, raw.split(',').map((s) => s.trim()).filter(Boolean));
+          }}
+          placeholder="e.g. systematic review, meta-analysis, …"
+          aria-label="Keywords"
+          disabled={locked}
+          style={{
+            width: '100%', border: 'none', outline: 'none', background: 'transparent',
+            color: INK.text, fontFamily: SERIF, fontSize: 14, boxSizing: 'border-box',
+          }} />
+      </div>
+    </div>
+  );
+}
+
 /** A real document heading (§11) — not a card title. */
 function DocHeading({ children }) {
   return (
@@ -538,39 +600,12 @@ export function ContinuousView({
       {/* ── title block (§11) ── */}
       <section data-ms-section="title" data-testid={docSectionTestId('title')}
         style={{ marginBottom: 4 }}>
-        <input
+        <TitleBlock
           value={title}
-          onChange={(e) => { if (titleLocked) return; setTitle(e.target.value); m.updateSection('title', e.target.value); }}
-          placeholder="Full manuscript title…"
-          disabled={titleLocked}
-          aria-label="Manuscript title"
-          data-testid="stitch-manuscript-title-input"
-          style={{
-            width: '100%', border: 'none', outline: 'none', background: 'transparent',
-            color: INK.text, fontFamily: SERIF, fontSize: 22, fontWeight: 700,
-            lineHeight: 1.45, textAlign: 'center', boxSizing: 'border-box',
-          }} />
-        <div style={{ borderTop: `1px solid ${INK.rule}`, marginTop: 14, paddingTop: 10 }}>
-          <div style={{
-            font: `700 10px/1.6 ${SANS}`, letterSpacing: 0.6, textTransform: 'uppercase',
-            color: INK.soft, marginBottom: 2,
-          }}>
-            Keywords (comma-separated)
-          </div>
-          <input
-            value={kw}
-            onChange={(e) => {
-              setKw(e.target.value);
-              m.setMetaDebounced({ keywords: e.target.value.split(',').map((s) => s.trim()).filter(Boolean) });
-            }}
-            placeholder="e.g. systematic review, meta-analysis, …"
-            aria-label="Keywords"
-            disabled={titleLocked}
-            style={{
-              width: '100%', border: 'none', outline: 'none', background: 'transparent',
-              color: INK.text, fontFamily: SERIF, fontSize: 14, boxSizing: 'border-box',
-            }} />
-        </div>
+          keywords={kw}
+          locked={titleLocked}
+          onTitle={(v) => { setTitle(v); m.updateSection('title', v); }}
+          onKeywords={(raw, list) => { setKw(raw); m.setMetaDebounced({ keywords: list }); }} />
       </section>
 
       {/* ── abstract (§11 — structured subsections, the same editor as Section View) ── */}

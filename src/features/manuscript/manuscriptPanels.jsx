@@ -63,6 +63,9 @@ import { extractOutline, mdToHtml } from './richEditor/mdDom.js';
 import {
   ContinuousView, scrollToSectionId, scrollSectionIntoView, msSectionSelector, prefersReducedMotion,
   useStickyBarHeight, useElementWidth, OUTLINE_STICKY_MIN_WIDTH,
+  // r3 — ONE title block for both views (it lives with the document primitives and
+  // the canonical INK palette; this file renders it for Section View).
+  TitleBlock,
 } from './ContinuousView.jsx';
 // 67.md — Word (.docx) export is a Plus-plan feature (server-enforced). This is
 // UX-only, fail-open: only disable the button once we KNOW the plan lacks it.
@@ -1616,6 +1619,51 @@ export function EditorPanel({ m, exporters, sectionRequest, onOpenAssetPanel, on
     };
   };
 
+  /* 118.md §8.1 — the props that belong to a SECTION rather than to one rendered
+   * field: the asset registry, the fact layer, the citation layer and the chip
+   * callbacks. Body sections take them straight off `editorProps`; the abstract
+   * renders one editor per subsection, so it needs the same bag handed to each of
+   * them. Building it by projection from `editorProps(id)` (never by re-listing the
+   * values) is what keeps §8.1 from regressing: a new shared prop added to the
+   * factory reaches the abstract by being named here, and the values themselves
+   * still have exactly one source.
+   *
+   * Excluded on purpose: `value`/`onChange`/`mountKey`/`apiRef`/`testId`/`ariaLabel`/
+   * `placeholder` (per-field identity, owned by the field that renders), and
+   * `onTableFocus` — the floating table controls are deliberately not rendered over
+   * the abstract in Section View, so reporting a caret's table context from there
+   * would only set state nothing consumes.
+   */
+  const sharedFieldProps = (id) => {
+    const p = editorProps(id);
+    return {
+      orderMap: p.orderMap,
+      assetNumbers: p.assetNumbers,
+      knownAssetIds: p.knownAssetIds,
+      templateId: p.templateId,
+      existingTableIds: p.existingTableIds,
+      // 101.md §4/§5/§6 — the live fact layer.
+      facts: p.facts,
+      factOverrides: p.factOverrides,
+      factChanges: p.factChanges,
+      showChanges: p.showChanges,
+      onPlaceholderFocus: p.onPlaceholderFocus,
+      // 117.md §10/§11 — cross-reference chips.
+      onAssetChipMenu: p.onAssetChipMenu,
+      onAssetChipHover: p.onAssetChipHover,
+      onTableMeta: p.onTableMeta,
+      // 117.md §37/§38/§39 — the citation layer: style-aware chip labels (Harvard
+      // author-year included), the reference metadata behind them, and both chip
+      // callbacks. Every one of these carries `sectionId: id`, so an action opened
+      // from a chip in the abstract routes back to the abstract.
+      citationStyle: p.citationStyle,
+      refsById: p.refsById,
+      yearSuffixes: p.yearSuffixes,
+      onCiteChipMenu: p.onCiteChipMenu,
+      onCiteChipHover: p.onCiteChipHover,
+    };
+  };
+
   /** The abstract is structured (MS-5), so it gets its own factory — same rules. */
   const abstractProps = () => {
     const sec = sections.abstract || {};
@@ -1632,6 +1680,8 @@ export function EditorPanel({ m, exporters, sectionRequest, onOpenAssetPanel, on
       onChange: (md) => commitSection('abstract', md),
       onActivate: handles.abstract ? handles.abstract.activate : setActive,
       readOnly: !!sec.locked,
+      // 118.md §8.1 — everything a body section's editor gets, reported as 'abstract'.
+      fieldProps: sharedFieldProps('abstract'),
     };
   };
 
@@ -1901,29 +1951,17 @@ export function EditorPanel({ m, exporters, sectionRequest, onOpenAssetPanel, on
                 stickyOffset={barH}
               />
             ) : isTitle ? (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 22 }}>
-                <input value={titleBuf} onChange={(e) => onTitleType(e.target.value)} placeholder="Full manuscript title…"
-                  disabled={locked} aria-label="Manuscript title" data-testid="stitch-manuscript-title-input"
-                  style={{
-                    width: '100%', border: 'none', outline: 'none', background: 'transparent',
-                    color: '#1c2330', fontFamily: "Georgia,'Times New Roman',serif",
-                    fontSize: 22, fontWeight: 700, lineHeight: 1.45, textAlign: 'center', boxSizing: 'border-box',
-                  }} />
-                <div style={{ borderTop: '1px solid #e2e6ee', paddingTop: 18 }}>
-                  <div style={{ fontSize: 10, fontWeight: 700, color: '#98a1b3', letterSpacing: 0.6, textTransform: 'uppercase', fontFamily: "'IBM Plex Sans',sans-serif", marginBottom: 6 }}>
-                    Keywords (comma-separated)
-                  </div>
-                  <input value={kw}
-                    onChange={(e) => { setKw(e.target.value); m.setMetaDebounced({ keywords: e.target.value.split(',').map((s) => s.trim()).filter(Boolean) }); }}
-                    placeholder="e.g. systematic review, meta-analysis, …"
-                    aria-label="Keywords"
-                    disabled={locked}
-                    style={{
-                      width: '100%', border: 'none', outline: 'none', background: 'transparent',
-                      color: '#1c2330', fontFamily: "Georgia,'Times New Roman',serif", fontSize: 14, boxSizing: 'border-box',
-                    }} />
-                </div>
-              </div>
+              /* r3 — the SAME TitleBlock the continuous document renders. This
+                 branch used to be a second hand-written copy in literal hex; the
+                 shared component (INK canonical — the page is white in both themes)
+                 is now the only place the title/keywords UI exists. State stays
+                 here: `titleBuf` has Section View's own remount rule. */
+              <TitleBlock
+                value={titleBuf}
+                keywords={kw}
+                locked={locked}
+                onTitle={onTitleType}
+                onKeywords={(raw, list) => { setKw(raw); m.setMetaDebounced({ keywords: list }); }} />
             ) : isAbstract ? (
               <AbstractEditor {...abstractProps()} />
             ) : (

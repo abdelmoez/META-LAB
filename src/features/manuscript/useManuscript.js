@@ -664,6 +664,10 @@ export function useManuscript(project, upd) {
    */
   const [liveSections, setLiveSections] = useState(null);
   const [liveStatements, setLiveStatements] = useState(null);
+  /* 118.md §8.2 — the `lastGeneratedAt` each pending entry was typed under. A
+     generation moves the stamp, which is how the drop effect below tells "the store
+     has not caught up yet" apart from "this text has been superseded". */
+  const liveGenStamps = useRef(new Map());
 
   /** The draft as the researcher currently sees it, pending edits included. */
   const liveDraft = useMemo(() => {
@@ -1281,6 +1285,8 @@ export function useManuscript(project, upd) {
     if (s && s.locked) return; // locked sections are read-only (UI-enforced)
     // 102.md §6 — record what was just typed so the placeholder count drops the
     // moment a field is filled, instead of waiting out the autosave debounce.
+    // 118.md §8.2 — stamp the entry with the generation it was typed against.
+    liveGenStamps.current.set(id, (s && s.lastGeneratedAt) || '');
     setLiveSections((prev) => ({ ...(prev || {}), [id]: content }));
     queueEdit(activeDraft.id, 'section', id, content);
   }, [activeDraft, queueEdit]);
@@ -1808,15 +1814,27 @@ export function useManuscript(project, upd) {
     return () => clearTimeout(t);
   }, [sourcesSettled, resolvedFacts, usedFactKeys]);
 
-  // Once the stored draft catches up with what was typed, drop the overlay so the
-  // two can never drift apart.
+  /* Once the stored draft catches up with what was typed, drop the overlay so the
+     two can never drift apart.
+
+     118.md §8.2 — "catches up" is not the only way an overlay dies. A GENERATION
+     rewrites the section outright, so the pending text captured before it is stale
+     by definition and will never equal the stored content again: the old
+     match-only rule left that entry in place indefinitely, and every derived
+     reader (numbering, placeholder counts, the live registry) kept seeing the
+     pre-generation prose while the editors — which remount on the `lastGeneratedAt`
+     key from the COMMITTED draft — already showed the generated text. So the stamp
+     each entry was written under is recorded beside it, and a changed stamp drops
+     that entry on its own. Sections nobody regenerated are untouched, and when
+     nothing was regenerated this effect behaves exactly as it did. */
   useEffect(() => {
     if (!liveSections || !activeDraft) return;
-    const secs = activeDraft.sections || {};
-    const stillAhead = Object.keys(liveSections).some(
-      (id) => (secs[id] && secs[id].content) !== liveSections[id],
-    );
-    if (!stillAhead) setLiveSections(null);
+    const stamps = liveGenStamps.current;
+    const { next, changed, invalidated } = MS.settleLiveSections(liveSections, activeDraft.sections, stamps);
+    if (!changed) return;
+    for (const id of invalidated) stamps.delete(id);
+    if (!next) stamps.clear();
+    setLiveSections(next);
   }, [activeDraft, liveSections]);
 
   useEffect(() => {

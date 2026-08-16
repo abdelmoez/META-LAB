@@ -16,13 +16,40 @@ import { RichSectionEditor } from './RichSectionEditor.jsx';
 // 117.md §11 — the abstract carries cross-references too, so the registry set and
 // the caption template are threaded straight through to every subsection editor: a
 // reference to a deleted table must read as broken WHEREVER it sits.
+//
+// 118.md §8.1 — …and so does every OTHER shared editor prop. `fieldProps` is the
+// panel's per-section prop bag (the same one `editorProps(sectionId)` builds for
+// body sections, with the owning section reported as 'abstract'), spread into every
+// subsection editor. Without it the abstract mounted editors that knew nothing about
+// the citation style or the reference library, so a citation inserted in the
+// abstract rendered as a bare numeric chip with no hover card and no action menu
+// while the identical citation in Methods rendered "(Smith, 2020)" and opened one.
+// Per-field props (value/onChange/testId/ariaLabel/placeholder/minHeight) are applied
+// AFTER the spread and always win — a bag can never take a field's own identity.
 export function AbstractEditor({
   value, templateId, orderMap, assetNumbers = null, resetKey, onChange, onActivate,
   readOnly = false, knownAssetIds = null, captionTemplateId = null,
+  fieldProps = null,
 }) {
   const parsed = useMemo(() => parseAbstractSubsections(value), [value]);
   const info = useMemo(() => abstractTemplateInfo(templateId), [templateId]);
   const totalWords = abstractWordCount(value);
+
+  /* 118.md §8.1 — ONE bag, built once per render, mounted by every field (and by
+     the free-form fallback). `templateId` here is the CAPTION/label template the
+     rich editor formats with, which is a different prop from this component's own
+     `templateId` (the abstract's STRUCTURE template); the explicit
+     `captionTemplateId` keeps winning, and falls back to the bag's when a caller
+     passes only the bag. */
+  const field = {
+    ...(fieldProps || {}),
+    orderMap,
+    assetNumbers,
+    knownAssetIds,
+    templateId: captionTemplateId != null ? captionTemplateId : ((fieldProps && fieldProps.templateId) || null),
+    onActivate,
+    readOnly,
+  };
 
   // Freshest subsections at edit time (a render is always in flight while typing).
   const subsRef = useRef(parsed.subsections);
@@ -50,9 +77,8 @@ export function AbstractEditor({
         <div style={{ fontSize: 10.5, color: C.muted, marginBottom: 8 }}>
           Free-form abstract — regenerate from the template to get labelled subsections.
         </div>
-        <RichSectionEditor key={resetKey} value={value} orderMap={orderMap} assetNumbers={assetNumbers}
-          knownAssetIds={knownAssetIds} templateId={captionTemplateId}
-          onChange={onChange} onActivate={onActivate} readOnly={readOnly}
+        <RichSectionEditor key={resetKey} {...field} value={value}
+          onChange={onChange}
           ariaLabel="Abstract" placeholder="Write or generate the abstract…" minHeight={280} />
       </div>
     );
@@ -94,14 +120,9 @@ export function AbstractEditor({
               <div style={{ borderLeft: `2px solid ${filled ? '#c8e6c9' : '#e2e6ee'}`, paddingLeft: 12 }}>
                 <RichSectionEditor
                   key={`${resetKey}:${i}`}
+                  {...field}
                   value={sub.text}
-                  orderMap={orderMap}
-                  assetNumbers={assetNumbers}
-                  knownAssetIds={knownAssetIds}
-                  templateId={captionTemplateId}
                   onChange={(md) => onField(i, md)}
-                  onActivate={onActivate}
-                  readOnly={readOnly}
                   ariaLabel={`Abstract — ${sub.label}`}
                   testId={`stitch-manuscript-abstract-field-${i}`}
                   placeholder={`${sub.label}…`}

@@ -212,6 +212,59 @@ export function setStatement(draft, id, value) {
   return { ...draft, statements: { ...draft.statements, [id]: value }, updatedAt: nowIso() };
 }
 
+/**
+ * 118.md §8.2 — WHEN does a pending live-section overlay die?
+ *
+ * `useManuscript` keeps an overlay of text that has been typed but not yet written
+ * back to the stored draft, so everything derived from the manuscript (asset
+ * numbering, placeholder counts, the citation registry) sees the sentence the
+ * moment it exists rather than 600 ms later. The overlay must be dropped again the
+ * moment it stops being AHEAD of the store, or the two drift apart.
+ *
+ * The original rule was "drop when the stored content MATCHES". That is only one of
+ * the two ways an entry stops being ahead. A GENERATION replaces the section's
+ * content outright, so text typed before it is superseded and will never equal the
+ * stored content again: the entry survived forever, and every derived reader kept
+ * reading pre-generation prose while the editors (which remount on the
+ * `lastGeneratedAt` key, from the COMMITTED draft) already showed the new text.
+ *
+ * So each entry carries the `lastGeneratedAt` it was typed under, and a CHANGED
+ * stamp invalidates that entry on its own. Pure, so the rule is testable without a
+ * DOM: generation invalidation is a property of the data, not of React.
+ *
+ * @param {object|null} live    overlay: sectionId → pending markdown
+ * @param {object} sections     the COMMITTED draft's sections
+ * @param {Map|object} stamps   sectionId → lastGeneratedAt captured at write time
+ * @returns {{next: object|null, changed: boolean, invalidated: string[]}}
+ *          `next` is the overlay to keep (null = drop it entirely); `invalidated`
+ *          lists the entries a generation superseded, so the caller can forget
+ *          their stamps.
+ */
+export function settleLiveSections(live, sections, stamps) {
+  const out = { next: live || null, changed: false, invalidated: [] };
+  if (!live) return out;
+  const secs = sections || {};
+  const stampOf = (id) => {
+    if (!stamps) return '';
+    const v = typeof stamps.get === 'function' ? stamps.get(id) : stamps[id];
+    return v || '';
+  };
+  const ids = Object.keys(live);
+
+  // (a) superseded by a generation — the stamp moved under the pending text.
+  const invalidated = ids.filter((id) => (((secs[id] || {}).lastGeneratedAt) || '') !== stampOf(id));
+  if (invalidated.length) {
+    const kept = {};
+    for (const id of ids) if (!invalidated.includes(id)) kept[id] = live[id];
+    return { next: Object.keys(kept).length ? kept : null, changed: true, invalidated };
+  }
+
+  // (b) the store caught up with everything that was typed.
+  const stillAhead = ids.some((id) => ((secs[id] || {}).content) !== live[id]);
+  if (!stillAhead) return { next: null, changed: true, invalidated: [] };
+  return out;
+}
+
 /** Create a fresh additional draft. */
 export function newDraft(project, opts = {}) {
   return normalizeDraft(makeManuscriptDraft({ title: opts.title || (project && project.name) || '', templateId: opts.templateId, nowIso: nowIso() }));
@@ -221,4 +274,5 @@ export default {
   nowIso, ensureDrafts, upsertDraft, setSection, applyGeneratedSections,
   setSectionLocked, computeOutdatedSections,
   markBlockRefreshed, markAllBlocksRefreshed, setMeta, setStatement, newDraft,
+  settleLiveSections,
 };
