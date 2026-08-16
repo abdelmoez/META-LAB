@@ -25,10 +25,16 @@ import { readSource } from '../../helpers/readSource.js';
 import {
   ManuscriptOverview, OverviewIntro,
   continueTarget, attentionSummary, outdatedSections, connectedDataRows, failedSources,
-  submissionChecklist, manuscriptObjects, overviewSectionStatus, exportNotes,
+  submissionChecklist, manuscriptObjects, exportNotes, readinessQualifier,
   INTRO_DISMISS_KEY, EMPTY_COPY, CONTINUE_REASON_COPY, CHECKLIST_CODE_ITEM, NO_PENDING_UPDATES,
 } from '../../../src/features/manuscript/ManuscriptOverview.jsx';
-import { OverviewPanel } from '../../../src/features/manuscript/manuscriptPanels.jsx';
+import { OverviewPanel, sectionRowStatus as panelsSectionRowStatus } from '../../../src/features/manuscript/manuscriptPanels.jsx';
+// r2 (118.md §32) — the section-status rule has ONE home now; the Overview and the
+// panels both read it from here instead of each declaring their own copy.
+import { sectionRowStatus, SECTION_STATUS_CHIP } from '../../../src/features/manuscript/sectionStatusRule.js';
+// r2 — the REAL code the placement scanner emits, so the checklist mapping below is
+// asserted against the emitter rather than against a hand-typed string.
+import { PLAIN_MENTION_CODE, computePlacements, validateExport } from '../../../src/research-engine/manuscript/index.js';
 import { updatesBadge } from '../../../src/features/manuscript/ManuscriptToolbar.jsx';
 import {
   makeManuscriptDraft, normalizeDraft, SECTION_TYPES,
@@ -172,6 +178,41 @@ describe('118.md §30/§69 — the readiness percentage is defined, not decorati
     expect(html2).not.toContain('data-testid="stitch-manuscript-readiness-pct"');
     expect(html2).toContain('data-testid="stitch-manuscript-readiness-skeleton"');
   });
+
+  /* r2 (§69) — computeReadiness scores its OWN eleven checks. Missing project
+     information and unresolved manual placeholders are counted elsewhere, so the
+     page could honestly print "100% prepared" directly above "11 items missing".
+     Two true numbers, arranged into a contradiction. The fix is co-presence, not a
+     second blended percentage: there is no honest one to compute. */
+  it('r2 §69 — a complete readiness score names what it does NOT cover', () => {
+    expect(readinessQualifier({ missing: 0, placeholders: 0 })).toBe('');
+    expect(readinessQualifier({ missing: 11, placeholders: 0 }))
+      .toBe('11 project details still missing — see Needs attention');
+    expect(readinessQualifier({ missing: 1, placeholders: 0 }))
+      .toBe('1 project detail still missing — see Needs attention');
+    expect(readinessQualifier({ missing: 0, placeholders: 3 }))
+      .toBe('3 fields still to fill in — see Needs attention');
+    expect(readinessQualifier({ missing: 2, placeholders: 1 }))
+      .toBe('2 project details still missing · 1 field still to fill in — see Needs attention');
+
+    const clean = view(mockM(populatedDraft()));
+    expect(clean).not.toContain('data-testid="stitch-manuscript-readiness-qualifier"');
+
+    const html = view(mockM(populatedDraft(), {
+      readiness: { items: [{ key: 'title', label: 'Title', complete: true }], score: { done: 11, total: 11, pct: 100 } },
+      missingInfo: Array.from({ length: 11 }, (_x, i) => ({ field: `f${i}`, label: `Field ${i}`, hint: 'h' })),
+      placeholderStats: { manual: 2, pending: 0, total: 2 },
+    }));
+    expect(html).toContain('100%');
+    expect(html).toContain('data-testid="stitch-manuscript-readiness-qualifier"');
+    expect(html).toContain('11 project details still missing');
+    expect(html).toContain('2 fields still to fill in');
+    expect(html).toContain('see Needs attention');
+    // §69 — the percentage keeps its own meaning: still the readiness checklist's
+    // own done/total, and there is exactly ONE score on the page (no blended second).
+    expect(html).toContain('prepared — 11 of 11 readiness checks complete');
+    expect((html.match(/data-testid="stitch-manuscript-readiness-pct"/g) || []).length).toBe(1);
+  });
 });
 
 /* ══════════════ §28.4/§31 — "Where should I start?" ══════════════ */
@@ -224,6 +265,36 @@ describe('118.md §31 — the "Continue writing" target rule', () => {
     d = at(d, 'discussion', '', { userEdited: true });
     d = at(d, 'introduction', '', { userEdited: true });
     expect(continueTarget(d).id).toBe('introduction');
+  });
+
+  /* r2 — a LOCKED section is read-only by contract: the editor disables typing and
+     generation always skips it. "Continue writing" is the strongest CTA on the page,
+     so pointing it at one opens a section that cannot be written in. Locking the
+     section you just finished is the ordinary way to protect it, which makes this
+     the common case rather than an edge one. */
+  it('r2 §31 — a LOCKED section is never the "Continue writing" target', () => {
+    // the only edited section is locked → fall through to the first empty one
+    let d = normalizeDraft(makeManuscriptDraft({ title: 'T' }));
+    d = at(d, 'results', '2026-09-09T00:00:00.000Z', { userEdited: true, locked: true });
+    expect(continueTarget(d)).toEqual({ id: SECTION_TYPES[0].id, reason: 'first-empty' });
+
+    // a locked MOST-RECENT edit yields to the most recent UNLOCKED one
+    let d2 = normalizeDraft(makeManuscriptDraft({ title: 'T' }));
+    d2 = at(d2, 'methods', '2026-01-01T00:00:00.000Z', { userEdited: true });
+    d2 = at(d2, 'discussion', '2026-09-09T00:00:00.000Z', { userEdited: true, locked: true });
+    expect(continueTarget(d2)).toEqual({ id: 'methods', reason: 'last-edited' });
+
+    // a locked EMPTY section is not the first-empty target either
+    let d3 = normalizeDraft(makeManuscriptDraft({ title: 'T' }));
+    for (const sx of SECTION_TYPES) d3 = at(d3, sx.id, '2026-01-01T00:00:00.000Z', { aiGenerated: true });
+    d3.sections.limitations = { ...d3.sections.limitations, content: '', locked: true };
+    d3.sections.conclusion = { ...d3.sections.conclusion, content: '' };
+    expect(continueTarget(d3)).toEqual({ id: 'conclusion', reason: 'first-empty' });
+
+    // everything locked → the honest answer is still the top of the manuscript
+    let d4 = normalizeDraft(makeManuscriptDraft({ title: 'T' }));
+    for (const sx of SECTION_TYPES) d4 = at(d4, sx.id, '2026-01-01T00:00:00.000Z', { userEdited: true, locked: true });
+    expect(continueTarget(d4)).toEqual({ id: SECTION_TYPES[0].id, reason: 'start' });
   });
 
   it('the CTA names the destination and WHY it was chosen', () => {
@@ -387,11 +458,31 @@ describe('118.md §32 — the structure summary is the SECTIONS, not the readine
     for (const label of ['Empty', 'Auto-draft', 'Edited', 'Locked', 'Outdated']) {
       expect(html).toContain(label);
     }
-    expect(overviewSectionStatus({ content: 'x', locked: true }, true)).toBe('locked');
-    expect(overviewSectionStatus({ content: 'x', aiGenerated: true }, true)).toBe('outdated');
-    expect(overviewSectionStatus({ content: 'x', aiGenerated: true }, false)).toBe('ai-draft');
-    expect(overviewSectionStatus({ content: 'x', userEdited: true }, false)).toBe('edited');
-    expect(overviewSectionStatus({ content: '' }, false)).toBe('empty');
+    expect(sectionRowStatus({ content: 'x', locked: true }, true)).toBe('locked');
+    expect(sectionRowStatus({ content: 'x', aiGenerated: true }, true)).toBe('outdated');
+    expect(sectionRowStatus({ content: 'x', aiGenerated: true }, false)).toBe('ai-draft');
+    expect(sectionRowStatus({ content: 'x', userEdited: true }, false)).toBe('edited');
+    expect(sectionRowStatus({ content: '' }, false)).toBe('empty');
+  });
+
+  /* r2 (118.md §32) — the rule and its palette used to exist TWICE: once here and
+     once in manuscriptPanels, whose copy had already drifted to a five-tone palette
+     (Auto-draft yellow, Locked purple). §32's "do not turn the page into a rainbow"
+     is the tie-break, so the four-tone palette is canonical and there is now exactly
+     one implementation for both surfaces to read. */
+  it('r2 §32 — ONE status rule and ONE palette, shared with the panels', () => {
+    expect(panelsSectionRowStatus).toBe(sectionRowStatus);
+    expect(Object.keys(SECTION_STATUS_CHIP).sort())
+      .toEqual(['ai-draft', 'edited', 'empty', 'locked', 'outdated']);
+    // four tones, deliberately — no purple, no fifth colour
+    const tones = new Set(Object.values(SECTION_STATUS_CHIP).map((c) => c.tone));
+    expect([...tones].sort()).toEqual(['blue', 'gray', 'green', 'yellow']);
+    // …and no second copy of the rule survives in either component
+    const panelsSrc = readSource('src/features/manuscript/manuscriptPanels.jsx');
+    const overviewSrc = readSource('src/features/manuscript/ManuscriptOverview.jsx');
+    expect(panelsSrc).not.toContain('const STATUS_CHIP = {');
+    expect(overviewSrc).not.toContain('const SECTION_CHIP = {');
+    expect(overviewSrc).not.toContain('export function overviewSectionStatus');
   });
 
   it('every row can be opened; a locked row cannot be regenerated', () => {
@@ -522,7 +613,10 @@ describe('118.md §35 — the checklist reflects real state, from real export va
     // …and the page says so in words, without ever calling a warning a blocker
     const html = view(mockM(populatedDraft(), {
       assetNumbering: { byId: {}, unresolved: [] },
-      assetPlacements: { bySection: {}, fallback: [], warnings: [{ code: 'plain-mention-mismatch', message: 'Table 2 is mentioned but numbered 3.' }], plainMentions: [] },
+      // r2 — the code the placement scanner REALLY emits, taken from the engine
+      // constant. This literal used to be 'plain-mention-mismatch', which nothing
+      // emits, so the assertion below passed while the page silently mapped nothing.
+      assetPlacements: { bySection: {}, fallback: [], warnings: [{ code: PLAIN_MENTION_CODE, message: 'Table 2 is mentioned but numbered 3.' }], plainMentions: [] },
     }));
     expect(html).toContain('Needs a look');
     expect(html).not.toContain('Blocks export');
@@ -533,6 +627,37 @@ describe('118.md §35 — the checklist reflects real state, from real export va
     for (const code of Object.keys(CHECKLIST_CODE_ITEM)) {
       expect(keys.has(CHECKLIST_CODE_ITEM[code])).toBe(true);
     }
+    // r2 — and no PHANTOM code survives in the map. The Overview shipped
+    // 'plain-mention-mismatch'; the engine emits 'plain-mention-out-of-range'
+    // (placement.js -> exportValidation.js), so the §35 numbering line read "Done"
+    // while the export dialog was warning about exactly that finding. A
+    // mapped-but-never-emitted code is indistinguishable from a clean manuscript.
+    expect(CHECKLIST_CODE_ITEM['plain-mention-mismatch']).toBeUndefined();
+    expect(CHECKLIST_CODE_ITEM[PLAIN_MENTION_CODE]).toBe('objects');
+    /* r2 — and the map is checked against the REAL EMITTER, not against a string
+       typed twice. A draft whose prose names "Table 4" when nothing will export
+       under that number is exactly the drift §35 exists to surface: run the real
+       scanner, take the code it produces, and require the checklist to own it. */
+    const sections = [{ id: 'results', content: 'The pooled estimate is shown in Table 4.' }];
+    const numbering = { orderTables: [], orderFigures: [], byId: {}, mentioned: new Set(), unresolved: [] };
+    const pl = computePlacements({ sections, numbering, assets: [] });
+    expect(pl.warnings.length).toBeGreaterThan(0);
+    for (const w of pl.warnings) {
+      expect(w.code, 'the emitter must produce a code the checklist owns').toBe(PLAIN_MENTION_CODE);
+      expect(CHECKLIST_CODE_ITEM[w.code]).toBe('objects');
+    }
+    // …and it survives the trip through validateExport, which is what the page reads.
+    const v = validateExport({
+      draft: { sections: { results: { content: sections[0].content } } },
+      assets: [], numbering, placements: pl,
+    });
+    const emitted = [...(v.errors || []), ...(v.warnings || [])].map((e) => e.code);
+    expect(emitted).toContain(PLAIN_MENTION_CODE);
+    const line = submissionChecklist({
+      ...base(), validation: { errors: [], warnings: v.warnings.filter((w) => w.code === PLAIN_MENTION_CODE), info: [] },
+    }).find((i) => i.key === 'objects');
+    expect(line.state).toBe('attention');   // a warning, never a blocker (85.md B2)
+
     // findings nobody owns are reported separately — never silently dropped (§69)
     const rest = exportNotes({
       errors: [], warnings: [{ code: 'pending-save', message: 'A manuscript save is still in progress.' }], info: [],

@@ -22,7 +22,7 @@ import {
   // 117.md §J.15 — duplicate caption ids the editor could not have produced.
   collectDuplicateManualTableIds,
 } from './refTokens.js';
-import { sectionBlocks } from './placement.js';
+import { sectionBlocks, PLAIN_MENTION_CODE } from './placement.js';
 // 117.md §39 — citation integrity reads the SAME usage scan the numbering and the
 // References panel read, so the export dialog can never disagree with the page.
 import { collectCitationUsage } from './citations.js';
@@ -348,8 +348,12 @@ export function validateExport(args = {}) {
   }
 
   // Legacy plain-text mention drift (placement's detection-only scan).
+  // r2 — the fallback code is the SAME constant the emitter uses. It used to be a
+  // second, hand-typed string ('plain-mention-mismatch') that nothing else knew, so
+  // a placement warning arriving without a code would have been unmappable by every
+  // consumer downstream. One code, one source.
   for (const w of (pl.warnings || [])) {
-    push(warnings, w.code || 'plain-mention-mismatch', w.message,
+    push(warnings, w.code || PLAIN_MENTION_CODE, w.message,
       'Update or remove the plain-text mention — plain "Table N" text is not renumbered automatically.');
   }
 

@@ -228,6 +228,61 @@ const popoverCard = {
   boxShadow: '0 10px 30px var(--t-shadow)',
 };
 
+/** Breathing room between a clamped popover and the window edge, in px. */
+export const POPOVER_VIEWPORT_MARGIN = 8;
+
+/**
+ * r2 (118.md §41/§51) — keep an anchored popover inside the VIEWPORT.
+ *
+ * These popovers are absolutely positioned against their own trigger, and the
+ * trigger's position in the bar changes with the responsive density. The '⋯' menu
+ * used `right: 0` — correct for a right-aligned trigger, wrong for this one, which
+ * sits at the LEFT end of Level A: at the overflow and minimal densities the 268px
+ * menu (and the 288px New-draft popover nested inside it) hung off the left edge of
+ * the window, measured at x = -75 on a 480px viewport. Every Level-A control lives
+ * in that menu at those widths, so they were simply unreachable.
+ *
+ * Static CSS cannot express "align left, but slide back in if that overflows" — the
+ * correction depends on the trigger's live x and the popover's live width. So it is
+ * measured once per open (and on resize) and applied as a translateX. The base
+ * position stays declarative, the clamp is a nudge on top of it, and with no
+ * measurement (SSR, no layout) the offset is 0 — the popover simply renders at its
+ * declared anchor.
+ *
+ * @param {boolean} open  measurement only happens while the popover exists.
+ * @returns {[object, number]} [ref to attach to the popover, px to shift it by]
+ */
+function useViewportClamp(open) {
+  const ref = useRef(null);
+  const [dx, setDx] = useState(0);
+  useIsoLayout(() => {
+    if (!open) { setDx(0); return undefined; }
+    if (typeof window === 'undefined') return undefined;
+    const measure = () => {
+      const el = ref.current;
+      if (!el || typeof el.getBoundingClientRect !== 'function') return;
+      const rect = el.getBoundingClientRect();
+      const vw = window.innerWidth || (document.documentElement && document.documentElement.clientWidth) || 0;
+      if (!vw || !rect.width) return;
+      setDx((cur) => {
+        // Un-apply the shift already in effect, so the correction is computed from
+        // the DECLARED anchor and can never compound across measurements.
+        const left = rect.left - cur;
+        const right = rect.right - cur;
+        const M = POPOVER_VIEWPORT_MARGIN;
+        let shift = 0;
+        if (right > vw - M) shift = (vw - M) - right;   // pull left off the right edge
+        if (left + shift < M) shift = M - left;         // …but never past the left edge
+        return Math.round(shift);
+      });
+    };
+    measure();
+    window.addEventListener('resize', measure);
+    return () => window.removeEventListener('resize', measure);
+  }, [open]);
+  return [ref, dx];
+}
+
 /** A subtle text action — 118.md §9: reserve real buttons for real primary actions. */
 const subtleAction = (active) => ({
   display: 'inline-flex', alignItems: 'center', gap: 5, whiteSpace: 'nowrap',
@@ -335,12 +390,19 @@ export function AutoDraftNotice({ condensed }) {
  * current draft is untouched and still selectable. A popover, not a modal (§51).
  */
 export function NewDraftConfirm({ currentTitle, onCancel, onConfirm }) {
+  // r2 — 288px, and it can be nested INSIDE the 268px overflow menu at narrow
+  // densities, so it needs the same viewport clamp the menu itself needs.
+  const [ref, dx] = useViewportClamp(true);
   return (
     <div
+      ref={ref}
       role="dialog"
       aria-label="Start a new draft"
       data-testid="stitch-manuscript-new-draft-popover"
-      style={{ ...popoverCard, top: 'calc(100% + 7px)', left: 0, width: 288, padding: 12 }}
+      style={{
+        ...popoverCard, top: 'calc(100% + 7px)', left: 0, width: 288, padding: 12,
+        transform: dx ? `translateX(${dx}px)` : undefined,
+      }}
     >
       <div style={{ fontSize: 12, fontWeight: 700, color: C.txt, marginBottom: 6 }}>Start a new draft?</div>
       <p style={{ margin: '0 0 11px', fontSize: 11.5, lineHeight: 1.6, color: C.txt2 }}>
@@ -392,6 +454,7 @@ function OverflowMenu({ children }) {
   const [open, setOpen] = useState(false);
   const close = useCallback(() => setOpen(false), []);
   useEscape(open, close);
+  const [menuRef, menuDx] = useViewportClamp(open);
   return (
     <span style={{ position: 'relative', display: 'inline-flex' }}>
       <button
@@ -412,10 +475,20 @@ function OverflowMenu({ children }) {
           <div data-testid="stitch-manuscript-toolbar-overflow-catcher" onClick={close}
             style={{ position: 'fixed', inset: 0, zIndex: CATCHER_Z, background: 'transparent' }} />
           <div
+            ref={menuRef}
             role="menu"
             aria-label="Document controls"
             data-testid="stitch-manuscript-toolbar-overflow-menu"
-            style={{ ...popoverCard, top: 'calc(100% + 7px)', right: 0, width: 268, padding: 12 }}
+            /* r2 — anchored to the trigger's LEFT edge, because this trigger sits at
+               the left end of Level A. `right: 0` pinned the menu's right edge to the
+               trigger's right edge and pushed its 268px of width off the left of the
+               window (measured x = -75 at a 480px viewport), taking every Level-A
+               control with it. The clamp then handles the opposite case on a trigger
+               that has drifted right. */
+            style={{
+              ...popoverCard, top: 'calc(100% + 7px)', left: 0, width: 268, padding: 12,
+              transform: menuDx ? `translateX(${menuDx}px)` : undefined,
+            }}
           >
             <div style={{ display: 'flex', flexDirection: 'column', gap: 10, alignItems: 'stretch' }}>
               {children}
@@ -564,12 +637,29 @@ export function ManuscriptWorkspaceNav({ tab, onTabChange, badge, density = 'ful
     return () => ro.disconnect();
   }, [measure]);
 
-  // 118.md §42 — APG tablist keyboard model (roving tabindex + arrows/Home/End).
-  // Deliberately NO modifier chords here: Ctrl/Cmd+Z and friends must reach the
-  // editor untouched (§43).
+  /* 118.md §42 — APG tablist keyboard model (roving tabindex + arrows/Home/End),
+     with MANUAL activation (r2).
+
+     APG offers two variants and is explicit about when to choose which: automatic
+     activation ("selection follows focus") only when showing a panel is cheap.
+     These panels are not. Arrowing past Updates mounted the Updates destination,
+     which fires `refreshSyncPlan` — the deliberately lazy heavy sync plan — and
+     arrowing across the row pushed one `?ms=` history entry PER TAB, so a keyboard
+     user who walked from Overview to Export had to press Back seven times to undo
+     one glance. Arrow/Home/End therefore move FOCUS only; Enter and Space activate,
+     which native <button> gives us for free through onClick.
+
+     Deliberately NO modifier chords here: Ctrl/Cmd+Z and friends must reach the
+     editor untouched (§43). */
+  const [focusId, setFocusId] = useState(null);
+  // The roving tabIndex follows the FOCUSED tab while the list has focus, and the
+  // SELECTED tab otherwise — so tabbing back into the list always lands on the
+  // destination actually on screen.
+  const roving = (focusId && MANUSCRIPT_TAB_IDS.includes(focusId)) ? focusId : tab;
+
   const onKeyDown = (e) => {
     if (e.altKey || e.ctrlKey || e.metaKey || e.shiftKey) return;
-    const i = MANUSCRIPT_TAB_IDS.indexOf(tab);
+    const i = MANUSCRIPT_TAB_IDS.indexOf(roving);
     let next = -1;
     if (e.key === 'ArrowRight') next = (i + 1) % MANUSCRIPT_TAB_IDS.length;
     else if (e.key === 'ArrowLeft') next = (i - 1 + MANUSCRIPT_TAB_IDS.length) % MANUSCRIPT_TAB_IDS.length;
@@ -578,9 +668,16 @@ export function ManuscriptWorkspaceNav({ tab, onTabChange, badge, density = 'ful
     if (next < 0) return;
     e.preventDefault();
     const id = MANUSCRIPT_TAB_IDS[next];
-    onTabChange(id);
+    setFocusId(id);
     const el = tabRefs.current[id];
     if (el && el.focus) el.focus();
+  };
+
+  // Leaving the list entirely hands the roving tabIndex back to the active tab.
+  const onBlur = (e) => {
+    const list = listRef.current;
+    if (list && e.relatedTarget && typeof list.contains === 'function' && list.contains(e.relatedTarget)) return;
+    setFocusId(null);
   };
 
   return (
@@ -591,6 +688,7 @@ export function ManuscriptWorkspaceNav({ tab, onTabChange, badge, density = 'ful
       aria-orientation="horizontal"
       data-testid="stitch-manuscript-nav"
       onKeyDown={onKeyDown}
+      onBlur={onBlur}
       style={{ position: 'relative', display: 'flex', alignItems: 'stretch', gap: condensed ? 1 : 3, minWidth: 0, flexWrap: 'wrap' }}
     >
       {MANUSCRIPT_TABS.map((s) => {
@@ -605,10 +703,10 @@ export function ManuscriptWorkspaceNav({ tab, onTabChange, badge, density = 'ful
             id={msTabDomId(s.id)}
             aria-selected={active ? 'true' : 'false'}
             aria-controls={MS_PANEL_ID}
-            tabIndex={active ? 0 : -1}
+            tabIndex={s.id === roving ? 0 : -1}
             data-testid={`stitch-manuscript-subtab-${s.id}`}
             data-active={active ? 'true' : undefined}
-            onClick={() => onTabChange(s.id)}
+            onClick={() => { setFocusId(s.id); onTabChange(s.id); }}
             className="ms-nav-tab"
             style={{
               display: 'inline-flex', alignItems: 'center', gap: condensed ? 0 : 6,

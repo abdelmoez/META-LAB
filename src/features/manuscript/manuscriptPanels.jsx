@@ -7,7 +7,7 @@
  */
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { C, btnS, inp, tagS } from '../../frontend/workspace/ui/styles.js';
-import { InfoBox, ProgressBar } from '../../frontend/workspace/ui/primitives.jsx';
+import { InfoBox } from '../../frontend/workspace/ui/primitives.jsx';
 import { Icon } from '../../frontend/components/icons.jsx';
 import { alpha } from '../../frontend/theme/tokens.js';
 // 108.md §23 — the ONE keyboard router. Replaces this file's ad-hoc window keydown
@@ -52,6 +52,9 @@ import { AbstractEditor } from './richEditor/AbstractEditor.jsx';
 // needs-attention, structure, connected data, the submission checklist). This file
 // only mounts it; every Overview concern lives in ManuscriptOverview.jsx.
 import { ManuscriptOverview } from './ManuscriptOverview.jsx';
+// r2 (118.md §32) — ONE section-status rule + ONE chip palette, shared with the
+// Overview. This file used to carry a second copy whose tones had already drifted.
+import { sectionRowStatus } from './sectionStatusRule.js';
 import { extractOutline, mdToHtml } from './richEditor/mdDom.js';
 // 118.md §10-§19 — the Continuous Document View and the scroll / active-section
 // mechanics this panel's outline shares with it. The dependency is ONE-WAY
@@ -513,238 +516,11 @@ export function UpdatesPanel({ m, onOpenSection }) {
 
 /* ════════════ 1. OVERVIEW ════════════ */
 
-/** Row status for the section grid / editor chips: Locked > Outdated > content state. */
-export function sectionRowStatus(section, isOutdated) {
-  if (section && section.locked) return 'locked';
-  if (isOutdated) return 'outdated';
-  return sectionStatus(section || {});
-}
-
-const STATUS_CHIP = {
-  empty: { label: 'Empty', tone: 'gray' },
-  'ai-draft': { label: 'Auto-draft', tone: 'yellow' },
-  edited: { label: 'Edited', tone: 'green' },
-  locked: { label: 'Locked', tone: 'purple' },
-  outdated: { label: 'Outdated', tone: 'yellow' },
-};
-
-function StatusChip({ status }) {
-  const c = STATUS_CHIP[status] || STATUS_CHIP.empty;
-  return (
-    <span style={tagS(c.tone)}
-      title={status === 'outdated' ? 'Project data changed since this was generated' : undefined}>
-      {status === 'locked' && <Icon name="lock" size={9} />} {c.label}
-    </span>
-  );
-}
-
-/* ── Data-sources card copy (honest availability from m.dataStatus) ── */
-function dataSourceRows(m) {
-  const ds = m.dataStatus || {};
-  const robCount = m.robAssessments ? Object.keys(m.robAssessments).length : 0;
-  const gradeCount = m.gradeByOutcome ? Object.keys(m.gradeByOutcome).length : 0;
-  const pecanCount = m.perSource ? Object.keys(m.perSource).length : 0;
-  const plural = (n, s) => `${n} ${s}${n === 1 ? '' : 's'}`;
-  return [
-    {
-      key: 'screening', label: 'Screening', state: ds.screening || 'unlinked',
-      detail: ds.screening === 'ok'
-        ? 'Linked — live PRISMA counts feed the flow diagram and narrative.'
-        : ds.screening === 'error'
-          ? 'Could not reach the screening workspace — counts fall back to manual PRISMA entries.'
-          : 'Not linked — counts fall back to manual PRISMA entries.',
-    },
-    {
-      key: 'search', label: 'Search strategy', state: ds.search || 'off',
-      detail: ds.search === 'ok'
-        ? (m.searchMethodsText ? 'Methods text available from the search builder.' : 'Connected — no saved methods text yet.')
-        : ds.search === 'error'
-          ? 'Could not reach the search builder — Methods uses the generic search sentence.'
-          : 'Not enabled — the search table uses the Search tab entries.',
-    },
-    {
-      key: 'rob', label: 'Risk of bias', state: ds.rob || 'off',
-      detail: ds.rob === 'ok'
-        ? (robCount ? `${plural(robCount, 'assessment')} loaded from the Risk of Bias workspace.` : 'Connected — no assessments recorded yet.')
-        : ds.rob === 'error'
-          ? 'Could not load assessments — using per-study judgements from extraction.'
-          : 'Using per-study judgements from extraction.',
-    },
-    {
-      key: 'grade', label: 'GRADE certainty', state: ds.grade || 'off',
-      detail: ds.grade === 'ok'
-        ? (gradeCount ? `${plural(gradeCount, 'outcome rating')} fill the certainty column.` : 'Connected — no certainty ratings yet.')
-        : 'Not enabled — the certainty column stays blank.',
-    },
-    {
-      key: 'pecan', label: 'Search runs', state: ds.pecan || 'off',
-      detail: ds.pecan === 'ok'
-        ? (pecanCount ? `Per-database record counts from the latest completed run (${plural(pecanCount, 'source')}).` : 'No completed search run yet.')
-        : ds.pecan === 'error'
-          ? 'Could not load search runs.'
-          : 'Not enabled.',
-    },
-  ];
-}
-
-const SOURCE_STATE_WORD = { ok: 'Live', error: 'Error', off: 'Off', unlinked: 'Not linked' };
-
-function DataSourcesCard({ m }) {
-  const rows = dataSourceRows(m);
-  return (
-    <Card data-testid="stitch-manuscript-data-sources">
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-        {rows.map((r) => (
-          <div key={r.key} style={{ display: 'flex', gap: 10, alignItems: 'flex-start' }}
-            data-testid={`stitch-manuscript-datasource-${r.key}`}>
-            <span aria-hidden="true" style={{ flexShrink: 0, marginTop: 1, color: r.state === 'ok' ? C.grn : r.state === 'error' ? C.red : C.muted }}>
-              <Icon name={r.state === 'ok' ? 'circleCheck' : r.state === 'error' ? 'alertTriangle' : 'info'} size={13} />
-            </span>
-            <div style={{ minWidth: 0 }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-                <span style={{ fontSize: 12.5, fontWeight: 600, color: C.txt }}>{r.label}</span>
-                <span style={tagS(r.state === 'ok' ? 'green' : r.state === 'error' ? 'red' : 'gray')}>
-                  {SOURCE_STATE_WORD[r.state] || r.state}
-                </span>
-              </div>
-              <div style={{ fontSize: 11.5, color: C.muted, lineHeight: 1.5 }}>{r.detail}</div>
-            </div>
-          </div>
-        ))}
-      </div>
-    </Card>
-  );
-}
-
-/* ── Consistency card (checkConsistency results + jump-to-section) ── */
-function ConsistencyCard({ m, onOpenSection }) {
-  const items = m.consistency || [];
-  if (!items.length) {
-    return <InfoBox color={C.grn}>No inconsistencies detected between the draft and your project data.</InfoBox>;
-  }
-  return (
-    <Card data-testid="stitch-manuscript-consistency">
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-        {items.map((c) => (
-          <div key={c.id} style={{ display: 'flex', gap: 8, alignItems: 'flex-start', flexWrap: 'wrap' }}>
-            <span style={{ ...tagS(c.severity === 'warn' ? 'yellow' : 'blue'), flexShrink: 0 }}>
-              {c.severity === 'warn' ? 'Check' : 'Note'}
-            </span>
-            <span style={{ fontSize: 12, color: C.txt2, lineHeight: 1.6, flex: '1 1 260px' }}>{c.message}</span>
-            {c.section && onOpenSection && (
-              <button onClick={() => onOpenSection(c.section)}
-                aria-label={`Open the ${c.section} section`}
-                data-testid={`stitch-manuscript-consistency-open-${c.id}`}
-                style={{ ...btnS('ghost'), fontSize: 10.5, padding: '3px 10px' }}>
-                Open
-              </button>
-            )}
-          </div>
-        ))}
-      </div>
-    </Card>
-  );
-}
-
-/* ── First-time empty state: no section has any content yet ── */
-function FirstDraftHero({ m }) {
-  const bullets = [
-    'Grounded in your project’s actual data — counts, effects and criteria are never invented.',
-    'Sections you edit are never silently overwritten.',
-    'Regenerate any section as your review evolves.',
-  ];
-  return (
-    <Card data-testid="stitch-manuscript-hero" style={{ textAlign: 'center', padding: '38px 26px', marginBottom: 22 }}>
-      <div style={{ display: 'inline-flex', width: 44, height: 44, borderRadius: 12, background: alpha(C.acc, '14'), color: C.acc, alignItems: 'center', justifyContent: 'center', marginBottom: 12 }}>
-        <Icon name="pencil" size={20} />
-      </div>
-      <h3 style={{ margin: '0 0 6px', fontSize: 16, fontWeight: 700, color: C.txt }}>Generate your first draft</h3>
-      <p style={{ margin: '0 auto 16px', fontSize: 12.5, color: C.muted, lineHeight: 1.6, maxWidth: 460 }}>
-        Draft every section — title to conclusions — from what this project already knows.
-      </p>
-      {/* recs round — generation waits for the live-source fetches to settle so a
-          first draft is never built from empty pre-fetch data. */}
-      <button onClick={() => m.generate({})}
-        data-testid="stitch-manuscript-hero-generate"
-        disabled={m.sourcesSettled === false}
-        style={{ ...btnS('primary'), fontSize: 12.5, padding: '9px 22px', opacity: m.sourcesSettled === false ? 0.6 : 1 }}>
-        <Icon name="sigma" size={14} /> {m.sourcesSettled === false ? 'Loading project data…' : 'Generate your first draft'}
-      </button>
-      <ul style={{ listStyle: 'none', margin: '18px auto 0', padding: 0, maxWidth: 440, textAlign: 'left', display: 'flex', flexDirection: 'column', gap: 6 }}>
-        {bullets.map((b) => (
-          <li key={b} style={{ display: 'flex', gap: 8, fontSize: 11.5, color: C.txt2, lineHeight: 1.55 }}>
-            <span aria-hidden="true" style={{ color: C.grn, flexShrink: 0 }}>✓</span>{b}
-          </li>
-        ))}
-      </ul>
-    </Card>
-  );
-}
-
-/* ── Per-section status grid (8 sections × status chip + Open/Generate) ── */
-function SectionGrid({ m, onOpenSection }) {
-  const [notice, setNotice] = useState(null); // { only:[id], skipped:[...] }
-  const sections = (m.activeDraft && m.activeDraft.sections) || {};
-  const outdatedMap = m.outdated || {};
-  const rowGenerate = (id) => {
-    // recs round — never generate from pre-fetch (empty) live sources.
-    if (m.sourcesSettled === false) return;
-    const res = m.generate({ only: [id] });
-    if (res && res.skipped && res.skipped.length) setNotice({ only: [id], skipped: res.skipped });
-    else setNotice(null);
-  };
-  const overwrite = () => {
-    if (notice) m.generate({ only: notice.only, overwriteEdited: true });
-    setNotice(null);
-  };
-  return (
-    <Card data-testid="stitch-manuscript-section-grid" style={{ padding: '6px 16px' }}>
-      {notice && (
-        <div style={{ margin: '10px 0 4px' }}>
-          <InfoBox color={C.yel}>
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
-              <span>You edited this section — it was preserved and not overwritten.</span>
-              <span style={{ display: 'flex', gap: 8 }}>
-                <button onClick={overwrite} style={{ ...btnS('danger'), fontSize: 11 }}>Overwrite anyway</button>
-                <button onClick={() => setNotice(null)} style={{ ...btnS('ghost'), fontSize: 11 }}>Keep edits</button>
-              </span>
-            </div>
-          </InfoBox>
-        </div>
-      )}
-      {SECTION_TYPES.map((s, i) => {
-        const sect = sections[s.id] || {};
-        const status = sectionRowStatus(sect, !!outdatedMap[s.id]);
-        const locked = status === 'locked';
-        return (
-          <div key={s.id} data-testid={`stitch-manuscript-secrow-${s.id}`}
-            style={{
-              display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', padding: '9px 0',
-              borderTop: i === 0 ? 'none' : `1px solid ${C.brd}`,
-            }}>
-            <span style={{ fontSize: 12.5, fontWeight: 600, color: C.txt, flex: '1 1 120px' }}>{s.label}</span>
-            <StatusChip status={status} />
-            <span style={{ display: 'flex', gap: 6 }}>
-              <button onClick={() => onOpenSection && onOpenSection(s.id)}
-                aria-label={`Open ${s.label} in the editor`}
-                data-testid={`stitch-manuscript-secrow-open-${s.id}`}
-                style={{ ...btnS('ghost'), fontSize: 10.5, padding: '3px 10px' }}>
-                Open
-              </button>
-              <button onClick={() => rowGenerate(s.id)} disabled={locked}
-                aria-label={`Generate ${s.label} from project data`}
-                title={locked ? 'This section is locked — unlock it in the editor to regenerate.' : `Generate ${s.label} from project data`}
-                data-testid={`stitch-manuscript-secrow-generate-${s.id}`}
-                style={{ ...btnS('ghost'), fontSize: 10.5, padding: '3px 10px', opacity: locked ? 0.5 : 1, cursor: locked ? 'not-allowed' : undefined }}>
-                <Icon name="refresh" size={10} /> Generate
-              </button>
-            </span>
-          </div>
-        );
-      })}
-    </Card>
-  );
-}
+/* r2 (118.md §32) — the section-status rule now has ONE home,
+   ./sectionStatusRule.js, shared with ManuscriptOverview. Re-exported here because
+   this module is the rule's historical import site (tests and the Editor's own
+   chips read it from here); the implementation is no longer duplicated. */
+export { sectionRowStatus };
 
 /**
  * 118.md §28-§40 — the Overview redesign. This panel is now a MOUNT POINT: the
@@ -756,84 +532,6 @@ function SectionGrid({ m, onOpenSection }) {
 export function OverviewPanel({ m, exporters, onOpenSection, onNavigate }) {
   return (
     <ManuscriptOverview m={m} exporters={exporters} onOpenSection={onOpenSection} onNavigate={onNavigate} />
-  );
-}
-
-/* ── MS-6: authorship editor (persists to draft.authorship via setMetaDebounced;
-      the docx title page already consumes authors/affiliations/corresponding). ── */
-function normalizeAuthorship(a) {
-  return {
-    authors: Array.isArray(a && a.authors) ? a.authors.map((x) => ({
-      name: (x && x.name) || '',
-      affiliation: (x && x.affiliation) || '',
-      email: (x && x.email) || '',
-      corresponding: !!(x && x.corresponding),
-    })) : [],
-    affiliations: Array.isArray(a && a.affiliations) ? a.affiliations.slice() : [],
-    correspondingNote: (a && a.correspondingNote) || '',
-  };
-}
-
-function AuthorshipCard({ m }) {
-  const [buf, setBuf] = useState(() => normalizeAuthorship(m.activeDraft.authorship));
-  useEffect(() => { setBuf(normalizeAuthorship(m.activeDraft && m.activeDraft.authorship)); }, [m.activeId]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  const commit = (next) => { setBuf(next); m.setMetaDebounced({ authorship: next }); };
-  const setAuthor = (i, patch) => commit({ ...buf, authors: buf.authors.map((a, j) => (j === i ? { ...a, ...patch } : a)) });
-  const removeAuthor = (i) => commit({ ...buf, authors: buf.authors.filter((_a, j) => j !== i) });
-  const addAuthor = () => commit({ ...buf, authors: [...buf.authors, { name: '', affiliation: '', email: '', corresponding: buf.authors.length === 0 }] });
-
-  return (
-    <Card data-testid="stitch-manuscript-authorship">
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }} data-testid="stitch-manuscript-authorship-list">
-        {buf.authors.length === 0 && (
-          <div style={{ fontSize: 11.5, color: C.muted }}>No authors yet — add the author list for the title page.</div>
-        )}
-        {buf.authors.map((au, i) => (
-          <div key={i} style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-            <input value={au.name} onChange={(e) => setAuthor(i, { name: e.target.value })}
-              placeholder="Full name" aria-label={`Author ${i + 1} name`}
-              style={{ ...inp, flex: '2 1 150px', width: 'auto' }} />
-            <input value={au.affiliation} onChange={(e) => setAuthor(i, { affiliation: e.target.value })}
-              placeholder="Affiliation №(s)" aria-label={`Author ${i + 1} affiliation`}
-              title="Affiliation number(s) from the list below, or free text"
-              style={{ ...inp, flex: '1 1 100px', width: 'auto' }} />
-            <input value={au.email} onChange={(e) => setAuthor(i, { email: e.target.value })}
-              placeholder="Email" aria-label={`Author ${i + 1} email`}
-              style={{ ...inp, flex: '1 1 130px', width: 'auto' }} />
-            <label style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 11, color: C.txt2, whiteSpace: 'nowrap', cursor: 'pointer' }}>
-              <input type="checkbox" checked={au.corresponding}
-                onChange={(e) => setAuthor(i, { corresponding: e.target.checked })}
-                aria-label={`Author ${i + 1} is corresponding author`} />
-              Corresponding
-            </label>
-            <button onClick={() => removeAuthor(i)} aria-label={`Remove author ${i + 1}`} title="Remove author"
-              style={{ ...btnS('ghost'), padding: '4px 9px', fontSize: 12 }}>
-              ×
-            </button>
-          </div>
-        ))}
-        <div>
-          <button onClick={addAuthor} data-testid="stitch-manuscript-add-author" style={{ ...btnS('ghost'), fontSize: 11 }}>
-            <Icon name="plus" size={12} /> Add author
-          </button>
-        </div>
-        <Labeled label="Affiliations (one per line, numbered in order)">
-          <textarea value={buf.affiliations.join('\n')}
-            onChange={(e) => commit({ ...buf, affiliations: e.target.value.split('\n') })}
-            onBlur={() => commit({ ...buf, affiliations: buf.affiliations.map((s) => s.trim()).filter(Boolean) })}
-            placeholder={'1. Department of …, University of …\n2. …'}
-            rows={3} aria-label="Affiliations"
-            style={{ ...inp, resize: 'vertical', lineHeight: 1.6 }} />
-        </Labeled>
-        <Labeled label="Corresponding-author note (optional)">
-          <input value={buf.correspondingNote}
-            onChange={(e) => commit({ ...buf, correspondingNote: e.target.value })}
-            placeholder="e.g. These authors contributed equally…"
-            style={inp} />
-        </Labeled>
-      </div>
-    </Card>
   );
 }
 
@@ -1264,16 +962,38 @@ export function EditorPanel({ m, exporters, sectionRequest, onOpenAssetPanel, on
   const apis = useRef(new Map());
   const activeApi = useRef(null);
   const activeSectionRef = useRef(null);
+  /* r2 — the caret-owning section as RENDER state, not just a ref. `sel` cannot
+     serve: in Continuous View it is also written by the IntersectionObserver as the
+     reader scrolls, so it answers "what am I looking at", not "where is my caret".
+     The shared toolbar and the Insert pickers act on the caret, so they are gated on
+     this. Null until a caret has actually landed somewhere. */
+  const [caretSection, setCaretSection] = useState(null);
   const handles = useMemo(() => {
     const out = {};
     for (const s of SECTION_TYPES) {
       out[s.id] = {
         // Stable callback ref: an inline arrow would detach/re-attach the handle on
         // every render of a document that re-renders on every keystroke.
-        apiRef: (api) => { if (api) apis.current.set(s.id, api); else apis.current.delete(s.id); },
+        apiRef: (api) => {
+          if (api) {
+            apis.current.set(s.id, api);
+            /* r2 — a regenerate changes the section's mountKey, so React UNMOUNTS
+               the editor instance and mounts a fresh one. `activeApi` kept pointing
+               at the dead instance, and every toolbar action (Bold, Insert citation,
+               a table op) silently no-op'd against detached DOM until the writer
+               happened to click back into the text. Re-point at the live instance
+               when the caret's own section remounts. */
+            if (activeSectionRef.current === s.id) activeApi.current = api;
+          } else {
+            apis.current.delete(s.id);
+            // …and never keep a handle to an editor that has just been unmounted.
+            if (activeSectionRef.current === s.id) activeApi.current = null;
+          }
+        },
         activate: (api) => {
           activeApi.current = api;
           activeSectionRef.current = s.id;
+          setCaretSection(s.id);
           // The abstract's subsection editors have no ref of their own — activating
           // is how they register, which keeps `apiFor('abstract')` honest.
           if (api) apis.current.set(s.id, api);
@@ -1288,8 +1008,40 @@ export function EditorPanel({ m, exporters, sectionRequest, onOpenAssetPanel, on
   const apiFor = useCallback((id) => (
     apis.current.get(id) || (activeSectionRef.current === id ? activeApi.current : null)
   ), []);
-  const getApi = () => activeApi.current || apis.current.get(sel) || null;
+  /* The editor the shared tools act on. `activeApi` first (the caret's own), then —
+     r2 — the LIVE registry entry for the caret's section, so a remount that cleared
+     `activeApi` still resolves to the same section rather than falling through to
+     whatever `sel` happens to be after a scroll. `sel` remains the last resort, for
+     Section View and for a document nobody has clicked into yet. */
+  const getApi = () => activeApi.current
+    || (activeSectionRef.current ? apis.current.get(activeSectionRef.current) : null)
+    || apis.current.get(sel)
+    || null;
   const setActive = (api) => { activeApi.current = api; };
+
+  /* ══════════ r2 — WHICH section's lock gates the shared editing tools ══════════
+   *
+   * The formatting toolbar and every Insert control write at the CARET. In Section
+   * View the caret is necessarily in `sel`. In Continuous View it is not: `sel` is
+   * driven by scrolling, so gating on it meant that scrolling a locked Results
+   * section into the reading band disabled Bold and greyed out "+ Cite…" for a
+   * caret sitting in an unlocked Methods paragraph four screens up. Scroll position
+   * is not an editing permission.
+   *
+   * `toolSectionId` is the section the tools will really write to; `toolsLocked` is
+   * its lock. With no caret yet in Continuous View, nothing is disabled (there is
+   * nothing to protect and nothing to write); the runtime guards below still resolve
+   * the target section and refuse a locked one, so the enabled control cannot write
+   * where it must not.
+   */
+  const toolSectionId = continuous ? caretSection : sel;
+  const toolsLocked = !!(toolSectionId && (sections[toolSectionId] || {}).locked);
+  /** The lock of the section an insert would ACTUALLY land in, resolved at click. */
+  const targetLocked = () => {
+    if (!continuous) return locked;
+    const id = (activeApi.current && activeSectionRef.current) || caretSection || sel;
+    return !!((sections[id] || {}).locked);
+  };
 
   const pageRef = useRef(null);
   const pendingScroll = useRef(null);
@@ -1455,7 +1207,16 @@ export function EditorPanel({ m, exporters, sectionRequest, onOpenAssetPanel, on
   }, [liveDraft]);
 
   // flush any pending debounced edit before changing section so resync reads fresh content
-  const switchTo = (id) => { if (m.flush) m.flush(); activeApi.current = null; setSel(id); };
+  /* Section View mounts ONE editor, so leaving a section leaves no caret behind:
+     r2 clears the owner too, not just the handle, or `getApi` would keep resolving
+     through the departed section's registry entry. */
+  const switchTo = (id) => {
+    if (m.flush) m.flush();
+    activeApi.current = null;
+    activeSectionRef.current = null;
+    setCaretSection(null);
+    setSel(id);
+  };
 
   /* 118.md §15/§17 — Continuous View never switches away from the document: the
      section navigation SCROLLS, with the sticky toolbar's height accounted for. */
@@ -1692,8 +1453,10 @@ export function EditorPanel({ m, exporters, sectionRequest, onOpenAssetPanel, on
   };
 
   // 117.md §34/§35 — one or MANY ids; the editor turns them into ONE chip.
+  // r2 — guarded on the section the insert will LAND in, not on whatever is
+  // scrolled into view (see `targetLocked`).
   const insertCitation = (refIds) => {
-    if (locked) return;
+    if (targetLocked()) return;
     const api = getApi();
     const ids = Array.isArray(refIds) ? refIds : [refIds];
     if (api && ids.filter(Boolean).length) api.insertCitation(ids.filter(Boolean));
@@ -1710,7 +1473,7 @@ export function EditorPanel({ m, exporters, sectionRequest, onOpenAssetPanel, on
   // (no silent mixed mode; a legacy draft keeps the legacy "(Figure 1)" text and
   // validation warns if modes ever mix).
   const insertPrisma = () => {
-    if (locked) return;
+    if (targetLocked()) return;
     const api = getApi();
     if (api) api.insertMarkdown(studySelectionParagraph(m.prismaCounts, { assetRefs: !!m.draftUsesTokens }));
   };
@@ -1718,7 +1481,7 @@ export function EditorPanel({ m, exporters, sectionRequest, onOpenAssetPanel, on
   // CARET as an inline chip (insertMarkdown would splice a block and split the
   // sentence being written).
   const insertAssetRef = (assetId) => {
-    if (locked || !assetId) return;
+    if (targetLocked() || !assetId) return;
     const api = getApi();
     if (!api) return;
     if (api.insertAssetRef) api.insertAssetRef(assetId);
@@ -2086,13 +1849,35 @@ export function EditorPanel({ m, exporters, sectionRequest, onOpenAssetPanel, on
           </div>
         ) : null}
         {/* 118.md §18 — the formatting toolbar serves whichever editor last held the
-            caret, which is exactly what a ten-editor document needs. */}
+            caret, which is exactly what a ten-editor document needs.
+
+            r2 (§71) — and in Continuous View it STICKS. A writer four thousand
+            pixels into the document had scrolled the only formatting and citation
+            controls off the top of the page; the tools column is not a substitute
+            (it has no Bold, no Italic, no heading levels). It pins directly beneath
+            the manuscript toolbar, whose height is MEASURED (`barH`, the same value
+            the outline pins against, so the two never disagree at a responsive
+            density change), at z=19 — under the manuscript toolbar's 20, above the
+            prose. When the bar has not been measured yet (SSR, no ResizeObserver)
+            barH is 0 and this degrades to a normal, non-sticky toolbar rather than
+            pinning to the wrong place. It stays inside the document COLUMN, so the
+            §15 outline column beside it is untouched at every width. */}
         {(continuous || !isTitle) && (
-          <RichToolbar getApi={getApi} citeRefs={citeRefs} refLabel={refLabel} disabled={locked}
-            /* 117.md §9 — Insert → Cross-reference, at the caret, with search. */
-            crossRefs={crossRefItems} onInsertCrossRef={insertAssetRef}
-            /* 117.md §34/§35 — Insert → Citation, searchable + multi-select. */
-            onInsertCitation={insertCitation} />
+          <div
+            data-testid="stitch-manuscript-toolbar-dock"
+            data-sticky={continuous && barH > 0 ? 'true' : undefined}
+            style={continuous && barH > 0 ? {
+              position: 'sticky', top: barH, zIndex: 19,
+              // Opaque, or the prose scrolls visibly through the pinned bar.
+              background: C.bg, paddingTop: 6, marginTop: -6,
+            } : undefined}
+          >
+            <RichToolbar getApi={getApi} citeRefs={citeRefs} refLabel={refLabel} disabled={toolsLocked}
+              /* 117.md §9 — Insert → Cross-reference, at the caret, with search. */
+              crossRefs={crossRefItems} onInsertCrossRef={insertAssetRef}
+              /* 117.md §34/§35 — Insert → Citation, searchable + multi-select. */
+              onInsertCitation={insertCitation} />
+          </div>
         )}
 
         <div style={{ display: 'flex', justifyContent: 'center' }}>
@@ -2228,17 +2013,18 @@ export function EditorPanel({ m, exporters, sectionRequest, onOpenAssetPanel, on
                   multi-select picker the toolbar uses. It replaces the old bare
                   <select>, which could not search and could not express a
                   multi-reference citation. */}
-              <CiteRefPicker items={citeItems} disabled={(!continuous && isTitle) || locked} block
+              {/* r2 — the caret's own section gates these, not the scroll position. */}
+              <CiteRefPicker items={citeItems} disabled={(!continuous && isTitle) || toolsLocked} block
                 testIdPrefix="stitch-manuscript-tools-cite"
                 label="+ Insert citation…" onInsert={insertCitation} />
               {citeRefs.length === 0 && (
                 <div style={{ fontSize: 10.5, color: C.muted }}>References appear here once your project has included studies.</div>
               )}
-              <button onClick={insertPrisma} disabled={(!continuous && isTitle) || locked}
+              <button onClick={insertPrisma} disabled={(!continuous && isTitle) || toolsLocked}
                 aria-label="Insert PRISMA study-selection summary at the cursor"
                 title="Insert the PRISMA study-selection paragraph (from your live counts) as editable text"
                 data-testid="stitch-manuscript-insert-prisma"
-                style={{ ...btnS('ghost'), justifyContent: 'center', opacity: ((!continuous && isTitle) || locked) ? 0.5 : 1 }}>
+                style={{ ...btnS('ghost'), justifyContent: 'center', opacity: ((!continuous && isTitle) || toolsLocked) ? 0.5 : 1 }}>
                 <Icon name="flow" size={12} /> Insert PRISMA summary
               </button>
               {/* 117.md §9 — the Tools entry point to the SAME picker the toolbar
@@ -2246,7 +2032,7 @@ export function EditorPanel({ m, exporters, sectionRequest, onOpenAssetPanel, on
                   replaces the old bare <select>, which had no search, could not
                   show a number, and spliced a block into the sentence. */}
               {availableAssets.length > 0 && (
-                <CrossRefPicker items={crossRefItems} disabled={(!continuous && isTitle) || locked} block
+                <CrossRefPicker items={crossRefItems} disabled={(!continuous && isTitle) || toolsLocked} block
                   testIdPrefix="stitch-manuscript-tools-crossref"
                   label="⧉ Reference a table/figure…"
                   onPick={insertAssetRef} />

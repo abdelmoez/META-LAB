@@ -25,7 +25,7 @@ import {
   ManuscriptToolbar, ManuscriptToolbarSkeleton, ManuscriptWorkspaceNav, NewDraftConfirm,
   AutoDraftNotice, ToolbarSelect, MANUSCRIPT_TABS, MANUSCRIPT_TAB_IDS, MS_PANEL_ID, msTabDomId,
   updatesBadge, toolbarDensity, levelAInline, LEVEL_A_CONTROLS, TOOLBAR_BREAKPOINTS, AUTO_DRAFT_FULL,
-  MANUSCRIPT_TOOLBAR_CSS,
+  MANUSCRIPT_TOOLBAR_CSS, POPOVER_VIEWPORT_MARGIN,
 } from '../../../src/features/manuscript/ManuscriptToolbar.jsx';
 import { makeManuscriptDraft, normalizeDraft } from '../../../src/research-engine/manuscript/model.js';
 
@@ -213,6 +213,47 @@ describe('118.md §52 — the New draft confirmation says what it actually does'
   });
 });
 
+/* ══════════════ r2 §41/§51 — anchored popovers stay in the viewport ══════════════
+
+   The '⋯' trigger sits at the LEFT end of Level A, but the menu was anchored with
+   `right: 0` — its right edge pinned to the trigger's, throwing its 268px of width
+   off the left of the window (measured x = -75 on a 480px viewport). At the
+   overflow and minimal densities that menu holds EVERY Level-A control, so §41's
+   "do not hide core actions without another access route" was being violated by
+   geometry. The 288px New-draft popover nests inside it and inherits the problem. */
+
+describe('r2 §41/§51 — the overflow menu and its nested popover stay on screen', () => {
+  const src = readSource('src/features/manuscript/ManuscriptToolbar.jsx');
+
+  it('the menu anchors to the trigger LEFT edge, never off the left of the window', () => {
+    // the old right-alignment is gone …
+    expect(src).not.toContain("top: 'calc(100% + 7px)', right: 0, width: 268");
+    // … and the menu is left-anchored with a measured clamp on top of it
+    expect(src).toContain("...popoverCard, top: 'calc(100% + 7px)', left: 0, width: 268, padding: 12,");
+    expect(src).toContain('transform: menuDx ? `translateX(${menuDx}px)` : undefined,');
+  });
+
+  it('the nested New-draft popover is clamped by the SAME mechanism', () => {
+    expect(src).toContain("...popoverCard, top: 'calc(100% + 7px)', left: 0, width: 288, padding: 12,");
+    expect(src).toContain('transform: dx ? `translateX(${dx}px)` : undefined,');
+    expect((src.match(/useViewportClamp\(/g) || []).length).toBe(3); // 1 definition + 2 uses
+  });
+
+  it('the clamp measures from the DECLARED anchor, so corrections never compound', () => {
+    expect(src).toContain('const left = rect.left - cur;');
+    expect(src).toContain('const right = rect.right - cur;');
+    expect(src).toContain('if (right > vw - M) shift = (vw - M) - right;');
+    expect(src).toContain('if (left + shift < M) shift = M - left;');
+    expect(POPOVER_VIEWPORT_MARGIN).toBe(8);
+  });
+
+  it('SSR renders the declared anchor with no transform at all', () => {
+    const html = renderToStaticMarkup(<NewDraftConfirm currentTitle="" onCancel={noop} onConfirm={noop} />);
+    expect(html).not.toContain('translateX');
+    expect(html).toContain('left:0');
+  });
+});
+
 describe('118.md §41 — condensed Level A controls stay complete', () => {
   it('the auto-draft chip drops its tail but never its full explanation', () => {
     const html = renderToStaticMarkup(<AutoDraftNotice condensed />);
@@ -251,6 +292,35 @@ describe('118.md §6/§9/§42 — Level B is a TAB LIST, not eight CTA buttons',
     expect((html.match(new RegExp(`aria-controls="${MS_PANEL_ID}"`, 'g')) || []).length).toBe(MANUSCRIPT_TABS.length);
     expect((html.match(/tabindex="0"/g) || []).length).toBe(1);
     expect((html.match(/tabindex="-1"/g) || []).length).toBe(MANUSCRIPT_TABS.length - 1);
+  });
+
+  /* r2 §42 — APG offers automatic activation ("selection follows focus") and manual
+     activation, and is explicit that automatic is only for panels that are cheap to
+     show. These are not: arrowing past Updates MOUNTED the Updates destination,
+     firing the deliberately lazy `refreshSyncPlan`, and every arrow press pushed a
+     `?ms=` history entry — walking Overview → Export took seven Backs to undo. So
+     arrows move FOCUS; Enter/Space (native <button> activation) selects. */
+  it('r2 §42 — arrow keys move FOCUS only; activation is manual', () => {
+    const src = readSource('src/features/manuscript/ManuscriptToolbar.jsx');
+    // scoped to the NAV's own handler (the view switcher has one of its own)
+    const nav = src.indexOf('export function ManuscriptWorkspaceNav');
+    expect(nav).toBeGreaterThan(-1);
+    const at = src.indexOf('const onKeyDown = (e) => {', nav);
+    expect(at).toBeGreaterThan(-1);
+    const handler = src.slice(at, src.indexOf('  };', at));
+    // the arrow branch sets the roving focus and focuses the element …
+    expect(handler).toContain('setFocusId(id);');
+    expect(handler).toContain('if (el && el.focus) el.focus();');
+    // … and NEVER activates the destination it merely passed over
+    expect(handler).not.toContain('onTabChange(');
+    // the roving tabindex follows focus while the list has it, selection otherwise
+    expect(src).toContain("const roving = (focusId && MANUSCRIPT_TAB_IDS.includes(focusId)) ? focusId : tab;");
+    expect(src).toContain('tabIndex={s.id === roving ? 0 : -1}');
+    // leaving the list hands the roving tabindex back to the SELECTED destination
+    expect(src).toContain('const onBlur = (e) => {');
+    expect(src).toContain('setFocusId(null);');
+    // clicking still activates, exactly as before
+    expect(src).toContain('onClick={() => { setFocusId(s.id); onTabChange(s.id); }}');
   });
 
   it('keeps the eight destinations and their stable test ids', () => {

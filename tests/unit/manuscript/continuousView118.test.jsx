@@ -271,11 +271,66 @@ describe('118.md §13/§18 — one state, one prop factory, one write path', () 
 
   it('one api per mounted section; the toolbar still follows the caret', () => {
     expect(panels).toContain('const apis = useRef(new Map());');
-    expect(panels).toContain('const getApi = () => activeApi.current || apis.current.get(sel) || null;');
+    // r2 — the fallback chain: the caret's own handle, then the LIVE registry entry
+    // for the caret's section (a regenerate remounts that editor and drops the
+    // handle), and only then the selected section.
+    expect(panels).toContain('const getApi = () => activeApi.current\n'
+      + '    || (activeSectionRef.current ? apis.current.get(activeSectionRef.current) : null)\n'
+      + '    || apis.current.get(sel)\n'
+      + '    || null;');
     // chip menus / table ops are routed by the OWNING section, not by the caret
     expect(panels).toContain('setChipMenu({ ...info, sectionId: id })');
     expect(panels).toContain('onCiteChipMenu: (info) => openCiteMenu({ ...info, sectionId: id })');
     expect(panels).toContain('getApi={() => apiFor(tableCtx.sectionId) || getApi()}');
+  });
+
+  /* r2 — a regenerate changes the section's mountKey, so React unmounts the editor
+     instance the caret was in. `activeApi` used to keep pointing at the dead one and
+     every toolbar action silently no-op'd until the writer clicked back into the
+     text. The registry callback ref is the ONE place that knows an instance died. */
+  it('r2 — a remounted section replaces (never orphans) the caret handle', () => {
+    expect(panels).toContain('if (activeSectionRef.current === s.id) activeApi.current = api;');
+    expect(panels).toContain('if (activeSectionRef.current === s.id) activeApi.current = null;');
+    // …and leaving a section in Section View clears the OWNER, not just the handle.
+    expect(panels).toContain('activeSectionRef.current = null;');
+  });
+
+  /* r2 — in Continuous View `sel` is written by the IntersectionObserver as the
+     reader scrolls. Gating the shared editing tools on it meant a locked section
+     drifting through the reading band disabled Bold and "+ Cite…" for a caret in an
+     unlocked section four screens up. Scroll position is not an editing permission. */
+  it('r2 — the editing tools are gated on the CARET-owning section, not on scroll', () => {
+    expect(panels).toContain('const toolSectionId = continuous ? caretSection : sel;');
+    expect(panels).toContain('const toolsLocked = !!(toolSectionId && (sections[toolSectionId] || {}).locked);');
+    expect(panels).toContain('disabled={toolsLocked}');
+    // every Insert control in the Tools column follows the same rule …
+    expect(panels).not.toMatch(/disabled=\{\(!continuous && isTitle\) \|\| locked\}/);
+    // … and the runtime guards resolve the section the insert would LAND in.
+    expect(panels).toContain('const targetLocked = () => {');
+    for (const guard of ['insertCitation', 'insertPrisma', 'insertAssetRef']) {
+      const at = panels.indexOf(`const ${guard} = (`);
+      expect(at, guard).toBeGreaterThan(-1);
+      expect(panels.slice(at, at + 260)).toContain('targetLocked()');
+    }
+    // the caret owner is real render state, written where the caret actually lands
+    expect(panels).toContain('const [caretSection, setCaretSection] = useState(null);');
+    expect(panels).toContain('setCaretSection(s.id);');
+  });
+
+  /* r2 §71 — a writer four thousand pixels into the document had scrolled the only
+     formatting and citation controls off the top of the page. The tools column is
+     not a substitute: it has no Bold, no Italic, no heading levels. */
+  it('r2 §71 — the format toolbar sticks below the manuscript toolbar in Continuous View', () => {
+    expect(panels).toContain("position: 'sticky', top: barH, zIndex: 19,");
+    // MEASURED offset (the same value the outline pins against), never a constant …
+    expect(panels).toContain('const barH = useStickyBarHeight();');
+    // … and it degrades to a normal toolbar when the bar has not been measured.
+    expect(panels).toContain('data-testid="stitch-manuscript-toolbar-dock"');
+    expect(panels).toContain("data-sticky={continuous && barH > 0 ? 'true' : undefined}");
+    expect(panels).toContain('style={continuous && barH > 0 ? {');
+    // z stays UNDER the manuscript toolbar's 20 (ARCH-118: sticky chrome ≤ 20).
+    const at = panels.indexOf("position: 'sticky', top: barH, zIndex: 19,");
+    expect(panels.slice(at, at + 220)).toContain('background: C.bg');
   });
 
   it('the RICH_EDITOR_CSS is still injected exactly once', () => {
@@ -464,6 +519,38 @@ describe('118.md §12/§47 — the view preference is remembered, per user', () 
     expect(setView.indexOf('m.flush()')).toBeLessThan(setView.indexOf('setViewState(id)'));
   });
 
+  /* r2 — DATA LOSS. `setView` is not the only way the view changes: browser
+     Back/Forward (and any host href) walks `?msv=` and lands in the [initialView]
+     reconcile effect instead. That path wrote the new view WITHOUT flushing, so
+     text still inside the 600 ms field-patch debounce mounted the other view's
+     editors from a COMMITTED draft that did not contain it — and the next keystroke
+     committed over it. Same seam, same flush, same order. */
+  it('§45/r2 — the URL-driven view change (Back/Forward) flushes too', () => {
+    const ws = readSource('src/features/manuscript/ManuscriptWorkspace.jsx');
+    const at = ws.indexOf('  }, [initialView]);');
+    expect(at).toBeGreaterThan(-1);
+    const effect = ws.slice(ws.lastIndexOf('useEffect(() => {', at), at);
+    expect(effect).toContain('if (flushRef.current) flushRef.current();');
+    expect(effect.indexOf('flushRef.current()')).toBeLessThan(effect.indexOf('setViewState(id)'));
+    // the flush handle is a live ref, so the effect stays keyed on the URL prop
+    // alone (a `m`-shaped dependency would re-run it on every keystroke).
+    expect(ws).toContain('const flushRef = useRef(m.flush);');
+    expect(ws).toContain('flushRef.current = m.flush;');
+  });
+
+  /* r2 — re-selecting the destination you are already on is not a navigation:
+     it pushed a duplicate history entry (so Back appeared to do nothing) and
+     re-ran the deliberately lazy Updates sync plan. */
+  it('r2 — an unchanged destination pushes no history and re-runs no sync plan', () => {
+    const ws = readSource('src/features/manuscript/ManuscriptWorkspace.jsx');
+    const setTab = ws.slice(ws.indexOf('const setTab = useCallback('), ws.indexOf('}, []);', ws.indexOf('const setTab = useCallback(')));
+    expect(setTab).toContain('if (id === tabRef.current) return;');
+    expect(setTab.indexOf('if (id === tabRef.current) return;'))
+      .toBeLessThan(setTab.indexOf('refreshPlanRef.current()'));
+    expect(setTab.indexOf('if (id === tabRef.current) return;'))
+      .toBeLessThan(setTab.indexOf('hostNavRef.current('));
+  });
+
   it('§47 — the URL carries the view only when it is not the default', () => {
     const nav = readSource('src/frontend/stitch/nav/navConfig.js');
     expect(nav).toContain("const view = ctx.view === 'continuous' ? '&msv=continuous' : '';");
@@ -485,7 +572,10 @@ describe('118.md §64/§65 — "View in manuscript" points at the SAME object', 
   it('an update card can open the section it is about', () => {
     expect(panels).toContain('data-testid={`stitch-manuscript-update-view-${id}`}');
     expect(panels).toContain('View in manuscript');
-    expect(ws).toContain('<UpdatesPanel m={m} onNavigate={setTab} onOpenSection={openSection} />');
+    // r2 — UpdatesPanel takes `onOpenSection` only; the `onNavigate` that used to be
+    // passed alongside it was never read by the panel or its cards.
+    expect(ws).toContain('<UpdatesPanel m={m} onOpenSection={openSection} />');
+    expect(panels).toContain('export function UpdatesPanel({ m, onOpenSection })');
   });
 
   it('a table/figure row resolves its real place in the text, or shows nothing', () => {

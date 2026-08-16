@@ -32,6 +32,17 @@ const HEADING_RE = /^#{1,3}\s+/;
 const LIST_RE = /^(?:[-*]\s+|\d+\.\s+)/;
 
 /**
+ * r2 — THE code for "the prose names a Table/Figure number that will not exist".
+ *
+ * It is emitted here, re-pushed verbatim by exportValidation, and mapped to a line
+ * in the Overview's submission checklist. Three files, one string: exported as a
+ * constant so a consumer can never hand-type a near-miss (the Overview shipped
+ * 'plain-mention-mismatch', which nothing ever emits, so the §35 numbering line
+ * read "Done" while the export dialog was warning about it).
+ */
+export const PLAIN_MENTION_CODE = 'plain-mention-out-of-range';
+
+/**
  * Decompose a markdown section into ordered blocks. Line ranges are 0-based
  * inclusive over the section's own lines; blank lines belong to no block.
  * @returns [{ type:'paragraph'|'heading'|'list'|'table', startLine, endLine, text }]
@@ -162,7 +173,7 @@ export function computePlacements({ sections, numbering, assets } = {}) {
     if (pm.number > (counts[pm.kind] || 0)) {
       const label = assetKindLabel(pm.kind);
       warnings.push({
-        code: 'plain-mention-out-of-range',
+        code: PLAIN_MENTION_CODE,
         sectionId: pm.sectionId,
         message: `The text mentions "${label} ${pm.number}" but only ${counts[pm.kind] || 0} ${pm.kind}${(counts[pm.kind] || 0) === 1 ? '' : 's'} will be exported.`,
       });

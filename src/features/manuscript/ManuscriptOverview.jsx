@@ -52,7 +52,14 @@ import {
   // 85.md B2 / 117.md §39 — the same pure pre-export validation the Word export
   // runs, so the checklist can never disagree with the export dialog (§35).
   validateExport,
+  // r2 — the code the placement scanner REALLY emits for a plain "Table N" mention
+  // that no longer exists. Imported as a constant, never re-typed, so the checklist
+  // and the export dialog cannot drift apart again (see CHECKLIST_CODE_ITEM).
+  PLAIN_MENTION_CODE,
 } from '../../research-engine/manuscript/index.js';
+// r2 (118.md §32) — ONE section-status rule + ONE chip palette, shared with
+// manuscriptPanels. `overviewSectionStatus` was a second copy of the same rule.
+import { sectionRowStatus, SECTION_STATUS_CHIP } from './sectionStatusRule.js';
 // 67.md — Word export is a Plus-plan feature (server-enforced). UX-only, fail-open:
 // only disable once we KNOW the plan lacks it.
 import { useEntitlements } from '../../frontend/entitlements';
@@ -89,6 +96,15 @@ const sectionLabel = (id) => (SECTION_TYPES.find((s) => s.id === id) || {}).labe
  *   3. otherwise the first section — a complete, never-hand-edited draft has no
  *      "where I left off", so the honest answer is "start at the top".
  *
+ * r2 — LOCKED sections are skipped at steps 1 and 2. A locked section is read-only
+ * by contract (the editor disables typing and generation always skips it), so
+ * "Continue writing" pointing at one opens a section that cannot be written in —
+ * the single strongest CTA on the page landing on a dead end. Locking the section
+ * you just finished editing is the ordinary way to protect it, so this is the
+ * COMMON case, not an edge one. Step 3 is unchanged: when every candidate is
+ * locked the honest answer is still the top of the manuscript, and the researcher
+ * can see the lock there.
+ *
  * @returns {{id:string, reason:'last-edited'|'first-empty'|'start'}}  Pure.
  */
 export function continueTarget(draft) {
@@ -96,6 +112,7 @@ export function continueTarget(draft) {
   let best = null;
   for (const s of SECTION_TYPES) {
     const sec = sections[s.id] || {};
+    if (sec.locked) continue;
     if (!sec.userEdited || !clean(sec.content)) continue;
     const at = String(sec.updatedAt || '');
     // Strict > keeps ties on the CANONICAL order (the earlier section wins), which
@@ -104,7 +121,8 @@ export function continueTarget(draft) {
   }
   if (best) return { id: best.id, reason: 'last-edited' };
   for (const s of SECTION_TYPES) {
-    if (!clean((sections[s.id] || {}).content)) return { id: s.id, reason: 'first-empty' };
+    const sec = sections[s.id] || {};
+    if (!sec.locked && !clean(sec.content)) return { id: s.id, reason: 'first-empty' };
   }
   return { id: SECTION_TYPES[0].id, reason: 'start' };
 }
@@ -310,7 +328,14 @@ export function failedSources(dataStatus) {
 export const CHECKLIST_CODE_ITEM = {
   'unknown-asset-ref': 'objects', 'duplicate-numbering': 'objects', 'unsupported-asset-kind': 'objects',
   'missing-caption': 'objects', 'included-not-mentioned': 'objects', 'ref-unavailable': 'objects',
-  'duplicate-table-id': 'objects', 'mixed-references': 'objects', 'plain-mention-mismatch': 'objects',
+  'duplicate-table-id': 'objects', 'mixed-references': 'objects',
+  /* r2 — the REAL code the placement scanner emits, taken from the engine constant
+     rather than typed here. The map previously carried 'plain-mention-mismatch',
+     which no emitter produces: the export dialog warned that the prose names a
+     "Table 4" that will not exist, while this checklist's numbering line still read
+     "Done". A mapped-but-never-emitted code is indistinguishable from a clean
+     manuscript, which is exactly the §35 failure mode ("reflect REAL state"). */
+  [PLAIN_MENTION_CODE]: 'objects',
   'stale-asset': 'objects',
   'cite-unknown': 'citations', 'cite-suppressed': 'citations', 'cited-ref-incomplete': 'citations',
   'duplicate-references': 'citations',
@@ -544,24 +569,14 @@ function LoadingNote({ children }) {
 /* 118.md §32 — the section status vocabulary. Four tones, deliberately: green for
    real progress, yellow for "the project moved on", grey for everything neutral,
    and blue only for "generated, not yet read". "Do not turn the page into a
-   rainbow." Labels are stable — the workspace, the editor and the tests share them. */
-const SECTION_CHIP = {
-  empty: { label: 'Empty', tone: 'gray' },
-  'ai-draft': { label: 'Auto-draft', tone: 'blue' },
-  edited: { label: 'Edited', tone: 'green' },
-  locked: { label: 'Locked', tone: 'gray' },
-  outdated: { label: 'Outdated', tone: 'yellow' },
-};
+   rainbow." Labels are stable — the workspace, the editor and the tests share them.
 
-/** Locked > Outdated > content state (the sectionRowStatus rule, kept identical). */
-export function overviewSectionStatus(section, isOutdated) {
-  if (section && section.locked) return 'locked';
-  if (isOutdated) return 'outdated';
-  return sectionStatus(section || {});
-}
-
+   r2 — both the rule and this palette now live in ./sectionStatusRule.js. This page
+   used to declare its own `overviewSectionStatus` + `SECTION_CHIP`, and the panels
+   file declared a second pair whose tones had drifted (Auto-draft yellow, Locked
+   purple). §32 is the tie-break: the four-tone palette below is canonical. */
 function SectionChip({ status }) {
-  const c = SECTION_CHIP[status] || SECTION_CHIP.empty;
+  const c = SECTION_STATUS_CHIP[status] || SECTION_STATUS_CHIP.empty;
   return (
     <span style={{ ...tagS(c.tone), flexShrink: 0 }}
       title={status === 'outdated' ? 'Project data changed since this was generated' : undefined}>
@@ -663,11 +678,44 @@ function FirstDraftHero({ m }) {
 
 /* ════════════ A. Manuscript readiness (§30) + Continue writing (§31) ════════════ */
 
+/**
+ * r2 (118.md §69) — what the readiness percentage does NOT cover.
+ *
+ * `computeReadiness` scores its own eleven checks. Missing project information and
+ * unresolved manual placeholders are counted elsewhere and are NOT part of that
+ * denominator, so a manuscript can honestly reach 11/11 while "Needs attention" is
+ * listing eleven missing project details right underneath. On screen that read as
+ * "100% prepared" beside "11 items missing" — two true numbers arranged into a
+ * contradiction.
+ *
+ * The fix is co-presence, not arithmetic: the percentage keeps its own meaning and
+ * a qualifier names what it excludes. §69 forbids inventing a second, blended
+ * score, and there is no honest one to invent — the two denominators are different
+ * kinds of thing.
+ *
+ * @returns {string} '' when there is nothing outstanding. Pure.
+ */
+export function readinessQualifier({ missing, placeholders } = {}) {
+  const missingN = Number(missing) || 0;
+  const placeholderN = Number(placeholders) || 0;
+  const parts = [];
+  if (missingN > 0) parts.push(`${missingN} project detail${missingN === 1 ? '' : 's'} still missing`);
+  if (placeholderN > 0) parts.push(`${placeholderN} field${placeholderN === 1 ? '' : 's'} still to fill in`);
+  if (!parts.length) return '';
+  return `${parts.join(' · ')} — see Needs attention`;
+}
+
 function ReadinessHeader({ m, settled, onOpenSection, onNavigate, attention }) {
   const [showWhat, setShowWhat] = useState(false);
   const r = m.readiness;
   const target = useMemo(() => continueTarget(m.activeDraft), [m.activeDraft]);
   const freshness = m.freshness;
+  // r2/§69 — the outstanding counts the readiness score does NOT include.
+  const ps = m.placeholderStats || {};
+  const qualifier = readinessQualifier({
+    missing: (attention && attention.missing) ? attention.missing.length : 0,
+    placeholders: (Number(ps.manual) || 0) + (Number(ps.pending) || 0),
+  });
 
   return (
     <Group
@@ -699,6 +747,17 @@ function ReadinessHeader({ m, settled, onOpenSection, onNavigate, attention }) {
               prepared — {r.score.done} of {r.score.total} readiness checks complete
             </span>
           </div>
+          {/* r2/§69 — the percentage counts the readiness checks and nothing else.
+              When information is still outstanding OUTSIDE that denominator, the
+              header says so in the same breath instead of letting "100% prepared"
+              stand next to a list of missing project details. */}
+          {qualifier && (
+            <div data-testid="stitch-manuscript-readiness-qualifier"
+              style={{ marginTop: 6, fontSize: 11.5, color: C.txt2, lineHeight: 1.6 }}>
+              <span aria-hidden="true" style={{ color: C.yel, marginRight: 6 }}>●</span>
+              {qualifier}
+            </div>
+          )}
           <div style={{ margin: '10px 0 0', height: 5, borderRadius: 99, background: C.brd, overflow: 'hidden', maxWidth: 420 }}>
             <div style={{
               width: `${r.score.pct}%`, height: '100%', borderRadius: 99,
@@ -980,7 +1039,7 @@ function StructureGroup({ m, settled, onOpenSection }) {
         )}
         {SECTION_TYPES.map((s, i) => {
           const sect = sections[s.id] || {};
-          const status = overviewSectionStatus(sect, !!outdatedMap[s.id]);
+          const status = sectionRowStatus(sect, !!outdatedMap[s.id]);
           const locked = status === 'locked';
           return (
             <Row key={s.id} divider={i > 0} testid={`stitch-manuscript-secrow-${s.id}`}

@@ -114,12 +114,31 @@ test.describe('Manuscript toolbar (118.md)', () => {
     const panelId = await page.getByTestId('stitch-manuscript-subtab-editor').getAttribute('aria-controls');
     await expect(page.locator(`#${panelId}`)).toHaveAttribute('role', 'tabpanel');
 
-    // §42 — the tablist is arrow-navigable (APG roving tabindex).
+    /* §42 — the tablist is arrow-navigable (APG roving tabindex), with MANUAL
+       activation (r2). APG reserves "selection follows focus" for panels that are
+       cheap to show; these are not — arrowing past Updates used to MOUNT Updates,
+       firing the deliberately lazy sync plan, and each arrow press pushed a ?ms=
+       history entry, so walking the row took seven Backs to undo. Arrows move
+       FOCUS; Enter/Space selects. */
     await page.getByTestId('stitch-manuscript-subtab-overview').focus();
+    const urlBefore = page.url();
     await page.keyboard.press('ArrowRight');
-    await expect(page.getByTestId('stitch-manuscript-subtab-updates')).toHaveAttribute('aria-selected', 'true');
+    // focus moved …
+    await expect(page.getByTestId('stitch-manuscript-subtab-updates')).toBeFocused();
+    // … the selection did NOT, and nothing was pushed to history
+    await expect(page.getByTestId('stitch-manuscript-subtab-updates')).toHaveAttribute('aria-selected', 'false');
+    await expect(page.getByTestId('stitch-manuscript-subtab-overview')).toHaveAttribute('aria-selected', 'true');
+    expect(page.url()).toBe(urlBefore);
     await page.keyboard.press('End');
+    await expect(page.getByTestId('stitch-manuscript-subtab-export')).toBeFocused();
+    await expect(page.getByTestId('stitch-manuscript-subtab-export')).toHaveAttribute('aria-selected', 'false');
+    expect(page.url()).toBe(urlBefore);
+    // Enter is what activates — one destination change, one history entry.
+    await page.keyboard.press('Enter');
     await expect(page.getByTestId('stitch-manuscript-subtab-export')).toHaveAttribute('aria-selected', 'true');
+    await expect(page).toHaveURL(/ms=export/);
+    await page.goBack();
+    await expect(page.getByTestId('stitch-manuscript-subtab-overview')).toHaveAttribute('aria-selected', 'true');
 
     // The header never grows a second copy of the save pill (§44 — one home).
     await expect(page.getByTestId('stitch-manuscript-save-status')).toHaveCount(1);
@@ -380,6 +399,46 @@ test.describe('Manuscript toolbar (118.md)', () => {
     // the bar more room than 1100px does. That is the shell's contract, not a bug —
     // asserting monotonicity here would pin a falsehood.)
     expect(new Set(seen).size).toBeGreaterThan(1);
+  });
+
+  /* ── r2 §41/§51: the overflow menu has to be ON SCREEN to be a route ───────── */
+
+  test('r2 §41: the ⋯ menu and its nested popover stay inside the viewport at narrow widths', async ({ page, tmpProject }) => {
+    await openManuscript(page, tmpProject.id);
+
+    for (const width of [480, 640]) {
+      await page.setViewportSize({ width, height: 900 });
+
+      const more = page.getByTestId('stitch-manuscript-toolbar-overflow');
+      await expect(more).toBeVisible({ timeout: 10_000 });
+      await more.click();
+
+      // The menu holds every Level-A control that left the bar; §41's "another
+      // access route" is only true if that route is reachable with a pointer.
+      const menu = page.getByTestId('stitch-manuscript-toolbar-overflow-menu');
+      await expect(menu).toBeVisible();
+      const box = (await menu.boundingBox())!;
+      expect(box, `menu has no box at ${width}px`).toBeTruthy();
+      expect(box.x, `menu clipped off the LEFT at ${width}px`).toBeGreaterThanOrEqual(0);
+      expect(box.x + box.width, `menu clipped off the RIGHT at ${width}px`).toBeLessThanOrEqual(width);
+
+      // …and so does the 288px New-draft popover NESTED inside the 268px menu.
+      await menu.getByTestId('stitch-manuscript-new-draft').click();
+      const pop = page.getByTestId('stitch-manuscript-new-draft-popover');
+      await expect(pop).toBeVisible();
+      const pbox = (await pop.boundingBox())!;
+      expect(pbox, `popover has no box at ${width}px`).toBeTruthy();
+      expect(pbox.x, `New-draft popover clipped off the LEFT at ${width}px`).toBeGreaterThanOrEqual(0);
+      expect(pbox.x + pbox.width, `New-draft popover clipped off the RIGHT at ${width}px`)
+        .toBeLessThanOrEqual(width);
+      // Reachable means CLICKABLE — its own controls answer the pointer.
+      await expect(menu.getByTestId('stitch-manuscript-new-draft-cancel')).toBeVisible();
+      await menu.getByTestId('stitch-manuscript-new-draft-cancel').click();
+      await expect(pop).toHaveCount(0);
+
+      await page.keyboard.press('Escape');
+      await expect(menu).toHaveCount(0);
+    }
   });
 
   /* ── §6/§69: the Updates badge is a real number ────────────────────────────── */

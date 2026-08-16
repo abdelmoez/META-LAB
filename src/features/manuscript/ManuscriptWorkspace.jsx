@@ -122,9 +122,21 @@ export function ManuscriptWorkspace({ project, upd, initialSubtab, onSubtabChang
   refreshPlanRef.current = m.refreshSyncPlan;
   const tabRef = useRef(tab);
   tabRef.current = tab;
+  /* Live handle for `m.flush`: the reconcile effects below are keyed on the URL
+     props alone (a `m`-shaped dependency would re-run them on every keystroke),
+     but they still owe the §45 flush. */
+  const flushRef = useRef(m.flush);
+  flushRef.current = m.flush;
 
   const setTab = useCallback((next) => {
     const id = normalizeSubtab(next);
+    /* r2 — clicking the destination you are ALREADY on is not a navigation. Without
+       this guard a same-tab click (the nav tab, an Overview CTA that lands where you
+       already are, a keyboard re-activation) pushed a duplicate history entry, so
+       browser Back appeared to do nothing; and re-clicking Updates re-ran the heavy
+       sync plan. `refreshSyncPlan` belongs to genuine ENTRY, which is what this is. */
+    if (id === tabRef.current) return;
+    tabRef.current = id;
     setTabState(id);
     // 84.md — the Updates destination owns a heavy plan that is computed on entry only.
     if (id === 'updates' && refreshPlanRef.current) refreshPlanRef.current();
@@ -159,7 +171,17 @@ export function ManuscriptWorkspace({ project, upd, initialSubtab, onSubtabChang
     if (typeof hostNavRef.current !== 'function') return;
     if (initialView == null && !viewTouched.current) return;
     const id = normalizeManuscriptView(initialView || DEFAULT_MANUSCRIPT_VIEW);
-    if (id !== viewRef.current) setViewState(id);
+    if (id === viewRef.current) return;
+    /* r2 (118.md §45) — a view change that arrives through the URL (browser
+       Back/Forward, a white side-menu href, a deep link) is the SAME view toggle as
+       the switcher's, so it owes the SAME flush. `setView` flushes; this path did
+       not, and the two debounces (600 ms field patch → 800 ms blob autosave) are
+       usually still armed when someone types a sentence and reaches for Back. The
+       other view mounts its editors from the COMMITTED draft, so the un-flushed
+       words mounted as absent and the next keystroke overwrote them for good.
+       Flush BEFORE the state write, exactly as the switcher does. */
+    if (flushRef.current) flushRef.current();
+    setViewState(id);
   }, [initialView]);
 
   /* 118.md §47/§48 — the URL is authoritative wherever the host supplies it. The
@@ -377,7 +399,10 @@ export function ManuscriptWorkspace({ project, upd, initialSubtab, onSubtabChang
             an Overview CTA and a nav tab take exactly the same path (Updates plan
             refresh + the ?ms= round-trip included). */}
         {tab === 'overview' && <OverviewPanel m={m} exporters={exporters} onOpenSection={openSection} onNavigate={setTab} />}
-        {tab === 'updates' && <UpdatesPanel m={m} onNavigate={setTab} onOpenSection={openSection} />}
+        {/* r2 — UpdatesPanel takes `onOpenSection` only: its cards' "View in
+            manuscript" goes through openSection, which already switches to the
+            Editor. The `onNavigate` that used to be passed here was never read. */}
+        {tab === 'updates' && <UpdatesPanel m={m} onOpenSection={openSection} />}
         {/* 117.md §10 — "Edit table" on a GENERATED object opens the panel that owns
             it (a builder table has no prose to jump to). */}
         {tab === 'editor' && (

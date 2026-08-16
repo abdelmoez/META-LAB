@@ -161,6 +161,59 @@ test.describe('Manuscript continuous document view (118.md §10-§19)', () => {
     await expect(page.getByTestId('stitch-manuscript-rich-editor')).toContainText(first, { timeout: 15_000 });
   });
 
+  /* r2 (§45) — DATA LOSS. `setView` flushes; the URL-driven view change did not.
+     Browser Back/Forward walks `?msv=`, so the reconcile effect switched views with
+     the 600 ms field-patch debounce still armed: the other view mounts its editors
+     from the COMMITTED draft, the un-flushed words mounted as absent, and the very
+     next keystroke committed over them. Both texts must survive to the server. */
+  test('§45/r2: typing → browser Back (the view walks) → typing again keeps BOTH texts', async ({ page, request, tmpProject }) => {
+    await desktop(page);
+    await openManuscript(page, tmpProject.id);
+
+    // Put a `?msv=` in the history: Section View → Continuous View → Section View.
+    // Back now walks a real VIEW change, which is the path that skipped the flush.
+    await toContinuous(page);
+    await expect(page).toHaveURL(/msv=continuous/);
+    await toSections(page);
+
+    // Type in Section View and press Back IMMEDIATELY — inside both debounces.
+    await page.getByTestId('stitch-manuscript-section-introduction').click();
+    const sectionEditor = page.getByTestId('stitch-manuscript-rich-editor');
+    await expect(sectionEditor).toBeVisible();
+    await sectionEditor.click();
+    const first = `Back-nav marker ${Date.now()}`;
+    await page.keyboard.type(first);
+    await page.goBack();
+
+    // The history entry we returned to is the continuous one …
+    await expect(page.getByTestId('stitch-manuscript-continuous')).toBeVisible({ timeout: 15_000 });
+    const introDoc = page.getByTestId('stitch-manuscript-rich-editor-introduction');
+    // … and the text typed a moment ago is IN it (this is the flush).
+    await expect(introDoc).toContainText(first, { timeout: 15_000 });
+
+    // Keep writing in the SAME section, in the view Back landed on.
+    await introDoc.click();
+    await page.keyboard.press('ControlOrMeta+End');
+    const second = ` and after-back marker ${Date.now()}`;
+    await page.keyboard.type(second);
+
+    // BOTH texts reach the server: the second edit did not overwrite the first.
+    await expect(page.getByTestId('stitch-manuscript-save-status')).toContainText(/Saved/i, { timeout: 25_000 });
+    await expect(async () => {
+      const proj = await (await request.get(`/api/projects/${tmpProject.id}`)).json();
+      const blob = JSON.stringify(proj.manuscripts || []);
+      expect(blob).toContain(first);
+      expect(blob).toContain(second.trim());
+    }).toPass({ timeout: 25_000 });
+
+    // …and a reload proves it is really persisted, in one section, in order.
+    await page.reload();
+    await expect(page.getByTestId('stitch-manuscript-workspace')).toBeVisible({ timeout: 20_000 });
+    const intro = page.getByTestId('stitch-manuscript-rich-editor-introduction');
+    await expect(intro).toContainText(first, { timeout: 20_000 });
+    await expect(intro).toContainText(second.trim());
+  });
+
   /* ── §11/§60: it is ONE document ───────────────────────────────────────────── */
 
   test('§11/§60: the whole manuscript is one scrollable document — title to references', async ({ page, request, tmpProject }) => {
@@ -290,6 +343,109 @@ test.describe('Manuscript continuous document view (118.md §10-§19)', () => {
     await toSections(page);
     await page.getByTestId('stitch-manuscript-section-discussion').click();
     await expect(page.getByTestId('stitch-manuscript-rich-editor')).toContainText('Earlier work agrees', { timeout: 15_000 });
+  });
+
+  /* r2 (§18) — in Continuous View `sel` is written by the IntersectionObserver as
+     the reader scrolls, and the shared toolbar + every Insert guard read the LOCK of
+     `sel`. So a locked section drifting through the reading band disabled Bold and
+     greyed out "+ Cite…" for a caret four screens up in an unlocked section. Scroll
+     position is not an editing permission. */
+  test('§18/r2: a LOCKED section scrolling past never disables the tools for a caret elsewhere', async ({ page, request, tmpProject }) => {
+    await desktop(page);
+    await seedData(request, tmpProject.id);
+    await openManuscript(page, tmpProject.id);
+    await generateAll(page);
+    await toContinuous(page);
+
+    // Lock Results, from its own chrome row inside the document.
+    await page.getByTestId('stitch-manuscript-doc-lock-results').click();
+    await expect(page.getByTestId('stitch-manuscript-doc-locked-results')).toBeVisible({ timeout: 10_000 });
+
+    // Caret in METHODS, which is NOT locked.
+    const methods = page.getByTestId('stitch-manuscript-rich-editor-methods');
+    await methods.click();
+    await page.keyboard.press('ControlOrMeta+End');
+    await page.keyboard.type(' Eligibility was assessed in duplicate.');
+
+    // Bring the LOCKED section into the reading band, without touching the caret.
+    await page.getByTestId('stitch-manuscript-doc-results')
+      .evaluate((el) => el.scrollIntoView({ block: 'start' }));
+    // …the outline follows the scroll (that is `sel` moving under our feet) …
+    await expect.poll(() => activeSection(page), { timeout: 10_000 })
+      .toBe('stitch-manuscript-section-results');
+
+    // …and the tools are STILL live for the caret's own, unlocked section.
+    await expect(page.getByTestId('stitch-manuscript-tb-bold')).toBeEnabled();
+    const cite = page.getByTestId('stitch-manuscript-insert-citation');
+    await expect(cite).toBeVisible();
+    await expect(cite).toBeEnabled();
+
+    // Bold really applies, at the caret, in Methods. (The generated prose already
+    // contains bold runs, so this is a DELTA, not an absolute count.)
+    const boldBefore = await methods.locator('b, strong').count();
+    await page.keyboard.press('Shift+Home');
+    await page.getByTestId('stitch-manuscript-tb-bold').click();
+    await expect.poll(async () => methods.locator('b, strong').count(), { timeout: 10_000 })
+      .toBeGreaterThan(boldBefore);
+
+    // …and a citation inserts into METHODS, not into the section on screen.
+    await page.keyboard.press('ControlOrMeta+End');
+    const citesBefore = await methods.locator('.ms-cite').count();
+    await cite.click();
+    const picker = page.getByTestId('stitch-manuscript-insert-citation-popover');
+    await expect(picker).toBeVisible();
+    await picker.getByRole('option').first().click();
+    await expect(methods.locator('.ms-cite')).toHaveCount(citesBefore + 1, { timeout: 10_000 });
+    // the LOCKED section is untouched
+    await expect(page.getByTestId('stitch-manuscript-rich-editor-results'))
+      .toHaveAttribute('contenteditable', 'false');
+
+    await expect(page.getByTestId('stitch-manuscript-save-status')).toContainText(/Saved/i, { timeout: 25_000 });
+    await expect(async () => {
+      const proj = await (await request.get(`/api/projects/${tmpProject.id}`)).json();
+      const draft = (proj.manuscripts || [])[0] || {};
+      expect(String(draft.sections?.methods?.content || '')).toContain('[[cite:');
+    }).toPass({ timeout: 25_000 });
+  });
+
+  /* r2 (§71) — a writer four thousand pixels into the document had scrolled the only
+     formatting and citation controls off the top of the page. The tools column is no
+     substitute: it has no Bold, no Italic and no heading levels. */
+  test('§71/r2: the format toolbar stays visible while the document scrolls', async ({ page, tmpProject }) => {
+    await desktop(page);
+    await openManuscript(page, tmpProject.id);
+    await generateAll(page);
+    await toContinuous(page);
+
+    const toolbar = page.getByTestId('stitch-manuscript-toolbar');
+    await expect(toolbar).toBeVisible();
+    await expect(page.getByTestId('stitch-manuscript-toolbar-dock'))
+      .toHaveAttribute('data-sticky', 'true');
+
+    // Scroll all the way to Discussion — several screens down.
+    await page.getByTestId('stitch-manuscript-doc-discussion')
+      .evaluate((el) => el.scrollIntoView({ block: 'start' }));
+    await expect.poll(async () => (await page.getByTestId(SCROLLER).evaluate((el) => el.scrollTop)) as number,
+      { timeout: 10_000 }).toBeGreaterThan(300);
+
+    // Still on screen, and still BELOW the manuscript toolbar it pins under (§7: the
+    // engine header owns z=20; this bar is under it, never over it).
+    await expect(toolbar).toBeInViewport();
+    const tb = (await toolbar.boundingBox())!;
+    const bar = (await page.getByTestId(HEADER).boundingBox())!;
+    expect(Math.round(tb.y - (bar.y + bar.height))).toBeGreaterThanOrEqual(-1);
+
+    // …and it still acts on the caret where the reader actually is.
+    const discussion = page.getByTestId('stitch-manuscript-rich-editor-discussion');
+    await discussion.click();
+    await page.keyboard.press('ControlOrMeta+End');
+    await page.keyboard.type('Pinned-toolbar marker.');
+    const boldBefore = await discussion.locator('b, strong').count();
+    await page.keyboard.press('Shift+Home');
+    await page.getByTestId('stitch-manuscript-tb-bold').click();
+    await expect.poll(async () => discussion.locator('b, strong').count(), { timeout: 10_000 })
+      .toBeGreaterThan(boldBefore);
+    await expect(page.getByTestId('stitch-manuscript-save-status')).toContainText(/Saved/i, { timeout: 25_000 });
   });
 
   /* ── §43/§66: the editor's own keyboard still owns the document ────────────── */
