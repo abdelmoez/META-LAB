@@ -43,7 +43,7 @@
  * Pure — no DOM/React/network, deterministic.
  */
 
-import { SECTION_TYPES } from './model.js';
+import { SECTION_TYPES, draftSectionTypes, draftSectionLabel } from './model.js';
 
 /* ════════════ 117.md §69/§70 — the ONE kind registry ════════════ */
 
@@ -83,8 +83,22 @@ export const ASSET_TOKEN_RE = new RegExp(`\\[\\[(${ASSET_KIND_ALTERNATION}):([a-
 /** Plain-text "Table 3"/"Figure 1" prose (DETECTION-ONLY — placement.js scans with it). */
 export const PLAIN_MENTION_RE = new RegExp(`\\b(${ASSET_KINDS.map((k) => k.label).join('|')})\\s+(\\d+)\\b`, 'g');
 
-/** Placement/numbering zone: introduction..conclusion (abstract/title excluded). */
+/**
+ * Placement/numbering zone: introduction..conclusion (abstract/title excluded).
+ *
+ * 119.md §7 — this is the CORE list, and it stays exported because callers that
+ * hold only an ordered `[{id,content}]` array (no draft) still need a default. A
+ * draft-aware caller reads `sec.group` off `orderedSections`, which carries the
+ * draft's own structure, so a template's extra body sections (CARE's Timeline,
+ * CONSORT's Harms…) participate in numbering without being listed here.
+ */
 export const BODY_SECTION_IDS = SECTION_TYPES.filter((s) => s.group === 'body').map((s) => s.id);
+
+/** True when this ordered-section row belongs to the placement/numbering zone. */
+export function isBodySection(sec, bodySet) {
+  if (sec && typeof sec.group === 'string') return sec.group === 'body';
+  return (bodySet || new Set(BODY_SECTION_IDS)).has(sec && sec.id);
+}
 
 /** Build the stable token for a full asset id ('table:study' → '[[table:study]]'). Pure. */
 export function assetToken(assetId) {
@@ -355,8 +369,14 @@ export function dropDuplicateFigureMarkers(md, used) {
   return { md: out.join('\n'), dropped };
 }
 
-/** The human label for a canonical section id ('methods' → 'Methods'). Pure. */
-export function sectionLabelOf(sectionId) {
+/**
+ * The human label for a section id ('methods' → 'Methods'). 119.md §7 — when the
+ * caller has the draft, its OWN structure names the section (a renamed or
+ * template-introduced section reads as itself); without one, the core registry
+ * answers and an unknown id renders as its id rather than a blank. Pure.
+ */
+export function sectionLabelOf(sectionId, draft) {
+  if (draft && !Array.isArray(draft) && draft.sections) return draftSectionLabel(draft, sectionId);
   const s = SECTION_TYPES.find((x) => x.id === sectionId);
   return s ? s.label : String(sectionId == null ? '' : sectionId);
 }
@@ -394,7 +414,7 @@ export function collectDuplicateManualTableIds(draftOrSections) {
   }
   return order
     .filter((e) => e.count > 1)
-    .map((e) => ({ ...e, sectionLabels: e.sectionIds.map(sectionLabelOf) }));
+    .map((e) => ({ ...e, sectionLabels: e.sectionIds.map((id) => sectionLabelOf(id, draftOrSections)) }));
 }
 
 /* Monotonic within a process run — combined with a hash of the counter so ids look
@@ -513,13 +533,21 @@ export function formatAssetCaption(kindOrId, number, title, opts = {}) {
 
 /**
  * Normalize the `sections` argument: accepts an ordered [{id, content}] array as-is,
- * or a draft (reads draft.sections in canonical SECTION_TYPES order). Pure.
+ * or a draft.
+ *
+ * 119.md §7 — for a draft this reads the DRAFT'S OWN section order
+ * (`draftSectionTypes`), not the module-level core list, which is what makes a
+ * template's section set reach asset numbering, placement, the caption registry and
+ * the export in ONE edit. A draft that never chose a structure resolves to exactly
+ * the core eight, so every pre-119 numbering is byte-identical. `group` rides along
+ * so `isBodySection` can answer for custom sections too. Pure.
  */
 export function orderedSections(draftOrSections) {
   if (Array.isArray(draftOrSections)) return draftOrSections;
   const secs = (draftOrSections && draftOrSections.sections) || {};
-  return SECTION_TYPES.map((s) => ({
+  return draftSectionTypes(draftOrSections).map((s) => ({
     id: s.id,
+    group: s.group,
     content: (secs[s.id] && typeof secs[s.id].content === 'string') ? secs[s.id].content : '',
   }));
 }
@@ -568,7 +596,7 @@ export function resolveNumbering({ sections, assets } = {}) {
   const anchorSeen = new Set();
 
   for (const sec of secs) {
-    const isBody = bodySet.has(sec && sec.id);
+    const isBody = isBodySection(sec, bodySet);
     // ONE positional stream per section: caption markers (manual tables) and
     // cross-reference tokens interleaved by character offset. Captions sort BEFORE
     // a token at the same offset — they cannot actually collide (different
@@ -680,6 +708,7 @@ export default {
   ASSET_TOKEN_RE,
   PLAIN_MENTION_RE,
   BODY_SECTION_IDS,
+  isBodySection,
   MANUAL_TABLE_ID_RE,
   TABLE_CAPTION_LINE_RE,
   TABLE_CAPTION_TOKEN_RE,

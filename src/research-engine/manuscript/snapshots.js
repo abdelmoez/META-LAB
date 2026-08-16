@@ -13,7 +13,7 @@
 import { collectEngineVersions } from './versions.js';
 import { computeDependencyState } from './dependencies.js';
 import { computePrismaCounts } from './prismaCounts.js';
-import { SECTION_IDS, capSnapshots } from './model.js';
+import { draftSectionIds, normalizeStructure, capSnapshots } from './model.js';
 
 const SYNC_LOG_CAP = 100;
 
@@ -23,10 +23,15 @@ function appendSyncLog(draft, entry) {
   return next.length > SYNC_LOG_CAP ? next.slice(next.length - SYNC_LOG_CAP) : next;
 }
 
-/** Content-only projection of the draft's sections (stable snapshot shape). */
+/**
+ * Content-only projection of the draft's sections (stable snapshot shape).
+ * 119.md §7 — over the DRAFT'S OWN section list, so a snapshot of a CARE report
+ * captures Timeline and Patient perspective too. Legacy drafts resolve to the core
+ * eight, so their snapshots keep exactly the shape they always had.
+ */
 function snapshotSections(draft) {
   const out = {};
-  for (const id of SECTION_IDS) {
+  for (const id of draftSectionIds(draft)) {
     const s = (draft.sections && draft.sections[id]) || {};
     out[id] = {
       content: typeof s.content === 'string' ? s.content : '',
@@ -65,6 +70,16 @@ function contentSnapshot(draft, meta) {
     sections: snapshotSections(draft),
     statements: { ...(draft.statements || {}) },
     references: Array.isArray(draft.references) ? [...draft.references] : [],
+    /* 119.md §7 — a snapshot records the STRUCTURE and the format dimensions it was
+       taken under, which is what makes "Undo a template change" and "Restore a
+       prior manuscript snapshot" the same mechanism rather than two.
+         `null`  → the draft was on the implicit core structure;
+         ABSENT  → the snapshot predates §7, and restore leaves the current
+                   structure alone rather than guessing that it was IMRAD.
+       The key is therefore always written by this build and never back-filled. */
+    structure: draft.structure ? JSON.parse(JSON.stringify(draft.structure)) : null,
+    templateId: draft.templateId || null,
+    citationStyle: draft.citationStyle || null,
   };
 }
 
@@ -115,9 +130,29 @@ export function restoreSnapshot(draft, snapshotId, opts = {}) {
   const safety = contentSnapshot(draft, { id: nextSnapshotId(draft, nowIso), label: 'Before restore', frozen: false, nowIso });
   const snapshots = capSnapshots([...list, safety]);
 
+  /* 119.md §7 — restore the structure the snapshot was taken under. A pre-§7
+     snapshot has no `structure` key at all; then the current structure stands (the
+     old behaviour), because inventing IMRAD for it could delete a section the
+     researcher added afterwards. */
+  const hasStructure = Object.prototype.hasOwnProperty.call(snap, 'structure');
+  const restoredStructure = hasStructure ? normalizeStructure(snap.structure) : (draft.structure || null);
+
+  /* Walk the UNION of the ids the restored structure names, the ids the snapshot
+     captured and the ids the draft holds now. A section that exists only now is
+     restored to the snapshot's state (empty) — restore replaces, and the safety
+     backup above is what makes that reversible — but it can never be silently
+     dropped from the object without the researcher being able to get it back. */
+  const ids = [];
+  const seen = new Set();
+  const push = (id) => { if (id && !seen.has(id)) { seen.add(id); ids.push(id); } };
+  const baseIds = restoredStructure ? restoredStructure.sections.map((s) => s.id) : draftSectionIds(draft);
+  for (const id of baseIds) push(id);
+  for (const id of Object.keys((snap.sections) || {})) push(id);
+  for (const id of Object.keys((draft.sections) || {})) push(id);
+
   const sections = {};
   const skippedLocked = [];
-  for (const id of SECTION_IDS) {
+  for (const id of ids) {
     const cur = (draft.sections && draft.sections[id]) || {};
     // A locked section keeps its CURRENT content on restore — never overwritten.
     if (cur.locked) { sections[id] = { ...cur }; skippedLocked.push(id); continue; }
@@ -140,6 +175,14 @@ export function restoreSnapshot(draft, snapshotId, opts = {}) {
     snapshots,
     syncLog: appendSyncLog(draft, { at: nowIso, sectionId: null, action: 'restore', reasons: [], snapshotId: snap.id }),
   };
+  if (hasStructure) {
+    if (restoredStructure) nextDraft.structure = restoredStructure;
+    else delete nextDraft.structure;
+    // §7 — the format dimensions travel with the snapshot for the same reason the
+    // structure does, and stay INDEPENDENT of each other on the way back in.
+    if (typeof snap.templateId === 'string' && snap.templateId) nextDraft.templateId = snap.templateId;
+    if (typeof snap.citationStyle === 'string' && snap.citationStyle) nextDraft.citationStyle = snap.citationStyle;
+  }
   return { draft: nextDraft, restored: true, skippedLocked };
 }
 
@@ -152,11 +195,19 @@ export function removeSnapshot(draft, id, opts = {}) {
   return { draft: { ...draft, snapshots: list.filter((s) => s.id !== id) }, removed: true };
 }
 
-/** Per-section changed flag between a snapshot and the live draft. Pure. */
+/**
+ * Per-section changed flag between a snapshot and the live draft. 119.md §7 — over
+ * the union of both sides' ids, so a section that only one of them has reads as
+ * CHANGED instead of vanishing from the comparison. Pure.
+ */
 export function diffSnapshot(snapshot, draft) {
   const snapSecs = (snapshot && snapshot.sections) || {};
   const liveSecs = (draft && draft.sections) || {};
-  return SECTION_IDS.map((sectionId) => {
+  const ids = [];
+  const seen = new Set();
+  for (const id of draftSectionIds(draft || {})) if (!seen.has(id)) { seen.add(id); ids.push(id); }
+  for (const id of Object.keys(snapSecs)) if (!seen.has(id)) { seen.add(id); ids.push(id); }
+  return ids.map((sectionId) => {
     const a = String((snapSecs[sectionId] && snapSecs[sectionId].content) || '');
     const b = String((liveSecs[sectionId] && liveSecs[sectionId].content) || '');
     return { sectionId, changed: a !== b };

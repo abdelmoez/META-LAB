@@ -46,6 +46,7 @@ import { Icon } from '../../frontend/components/icons.jsx';
 import { alpha } from '../../frontend/theme/tokens.js';
 import {
   SECTION_TYPES, JOURNAL_TEMPLATES, STATEMENT_TYPES, sectionStatus,
+  draftSectionTypes, draftSectionLabel,
   // 84.md — the CHEAP "why is this section out of date" pair: a hash comparison
   // against the fingerprint the section already stores, no regeneration (§34).
   diffDeps, explainKeys,
@@ -83,7 +84,16 @@ const WORD_EXPORT_LOCKED_MSG = 'Word export is available on the Plus plan and ab
 /* ════════════ pure models (exported so the contract is unit-testable) ════════════ */
 
 const clean = (s) => String(s == null ? '' : s).trim();
-const sectionLabel = (id) => (SECTION_TYPES.find((s) => s.id === id) || {}).label || id;
+/* 119.md §7 — the DRAFT names its own sections when one is in hand (a renamed or
+   template-introduced section then reads as itself); the core registry answers
+   otherwise, which is what a project-derived finding that predates the draft gets. */
+const sectionLabel = (id, draft) => (draft
+  ? draftSectionLabel(draft, id)
+  : ((SECTION_TYPES.find((s) => s.id === id) || {}).label || id));
+
+/* 119.md §7 — every list below walks the DRAFT'S section set (its template's, plus
+   anything preserved from a previous one). A draft that never chose a structure
+   resolves to exactly SECTION_TYPES, so the 118 behaviour is unchanged. */
 
 /**
  * 118.md §31 — where "Continue writing" goes. "Do not always send them to the
@@ -109,8 +119,9 @@ const sectionLabel = (id) => (SECTION_TYPES.find((s) => s.id === id) || {}).labe
  */
 export function continueTarget(draft) {
   const sections = (draft && draft.sections) || {};
+  const types = draftSectionTypes(draft || {});
   let best = null;
-  for (const s of SECTION_TYPES) {
+  for (const s of types) {
     const sec = sections[s.id] || {};
     if (sec.locked) continue;
     if (!sec.userEdited || !clean(sec.content)) continue;
@@ -120,11 +131,11 @@ export function continueTarget(draft) {
     if (!best || at > best.at) best = { id: s.id, at };
   }
   if (best) return { id: best.id, reason: 'last-edited' };
-  for (const s of SECTION_TYPES) {
+  for (const s of types) {
     const sec = sections[s.id] || {};
     if (!sec.locked && !clean(sec.content)) return { id: s.id, reason: 'first-empty' };
   }
-  return { id: SECTION_TYPES[0].id, reason: 'start' };
+  return { id: types[0].id, reason: 'start' };
 }
 
 export const CONTINUE_REASON_COPY = {
@@ -146,7 +157,7 @@ export function outdatedSections({ draft, outdated, freshDepState }) {
   const map = outdated || {};
   const fresh = freshDepState || {};
   const rows = [];
-  for (const s of SECTION_TYPES) {
+  for (const s of draftSectionTypes(draft || {})) {
     if (!map[s.id]) continue;
     const sec = sections[s.id] || {};
     rows.push({
@@ -369,7 +380,7 @@ export function submissionChecklist({ draft, validation, attention, readiness, t
 
   // 1. Generated numbers must be READ by a human. Real state: sections that are
   //    still exactly what the generator wrote (auto-drafted, never edited).
-  const unreviewed = SECTION_TYPES.filter((s) => {
+  const unreviewed = draftSectionTypes(draft || {}).filter((s) => {
     const sec = sections[s.id] || {};
     return !!sec.aiGenerated && !sec.userEdited && !!clean(sec.content);
   });
@@ -796,12 +807,12 @@ function ReadinessHeader({ m, settled, onOpenSection, onNavigate, attention }) {
         <button type="button"
           onClick={() => onOpenSection && onOpenSection(target.id)}
           data-testid="stitch-manuscript-continue-writing"
-          aria-label={`Continue writing in ${sectionLabel(target.id)}`}
+          aria-label={`Continue writing in ${sectionLabel(target.id, m.activeDraft)}`}
           style={{ ...btnS('primary'), fontSize: 12.5, padding: '9px 18px' }}>
           <Icon name="pencil" size={13} /> Continue writing
         </button>
         <span style={{ fontSize: 11.5, color: C.muted, lineHeight: 1.6 }}>
-          Opens <strong style={{ color: C.txt2 }}>{sectionLabel(target.id)}</strong> — {CONTINUE_REASON_COPY[target.reason]}.
+          Opens <strong style={{ color: C.txt2 }}>{sectionLabel(target.id, m.activeDraft)}</strong> — {CONTINUE_REASON_COPY[target.reason]}.
         </span>
         {settled && attention && attention.headline > 0 && (
           <button type="button" onClick={() => onNavigate && onNavigate('updates')}
@@ -925,9 +936,9 @@ function AttentionGroup({ m, attention, settled, onNavigate, onOpenSection }) {
           </span>
           {c.section && (
             <button type="button" onClick={() => onOpenSection && onOpenSection(c.section)}
-              aria-label={`Open the ${sectionLabel(c.section)} section`}
+              aria-label={`Open the ${sectionLabel(c.section, m.activeDraft)} section`}
               style={linkAction}>
-              Open {sectionLabel(c.section)} <Icon name="arrowRight" size={11} />
+              Open {sectionLabel(c.section, m.activeDraft)} <Icon name="arrowRight" size={11} />
             </button>
           )}
         </Row>
@@ -966,9 +977,9 @@ function AttentionGroup({ m, attention, settled, onNavigate, onOpenSection }) {
           {f.section && (
             <button type="button" onClick={() => onOpenSection && onOpenSection(f.section)}
               data-testid={f.id ? `stitch-manuscript-consistency-open-${f.id}` : undefined}
-              aria-label={`Open the ${sectionLabel(f.section)} section`}
+              aria-label={`Open the ${sectionLabel(f.section, m.activeDraft)} section`}
               style={linkAction}>
-              Open {sectionLabel(f.section)} <Icon name="arrowRight" size={11} />
+              Open {sectionLabel(f.section, m.activeDraft)} <Icon name="arrowRight" size={11} />
             </button>
           )}
         </Row>
@@ -998,7 +1009,8 @@ function AttentionGroup({ m, attention, settled, onNavigate, onOpenSection }) {
 
 function StructureGroup({ m, settled, onOpenSection }) {
   const [notice, setNotice] = useState(null); // { only:[id], skipped:[...] }
-  const sections = (m.activeDraft && m.activeDraft.sections) || {};
+  const draft = m.activeDraft || {};
+  const sections = draft.sections || {};
   const outdatedMap = m.outdated || {};
   const objects = useMemo(() => manuscriptObjects(m), [m]);
 
@@ -1014,7 +1026,8 @@ function StructureGroup({ m, settled, onOpenSection }) {
     setNotice(null);
   };
 
-  const done = SECTION_TYPES.filter((s) => sectionStatus(sections[s.id] || {}) !== 'empty').length;
+  const types = draftSectionTypes(draft);
+  const done = types.filter((s) => sectionStatus(sections[s.id] || {}) !== 'empty').length;
 
   return (
     <>
@@ -1022,7 +1035,7 @@ function StructureGroup({ m, settled, onOpenSection }) {
         testid="stitch-manuscript-section-grid"
         title="Manuscript sections"
         desc="Where each section stands. Open one to write, or regenerate it from the project data."
-        right={<span style={{ fontSize: 11.5, color: C.muted }}>{done} of {SECTION_TYPES.length} drafted</span>}
+        right={<span style={{ fontSize: 11.5, color: C.muted }}>{done} of {types.length} drafted</span>}
       >
         {notice && (
           <div style={{ margin: '10px 0 0' }}>
@@ -1037,7 +1050,7 @@ function StructureGroup({ m, settled, onOpenSection }) {
             </InfoBox>
           </div>
         )}
-        {SECTION_TYPES.map((s, i) => {
+        {types.map((s, i) => {
           const sect = sections[s.id] || {};
           const status = sectionRowStatus(sect, !!outdatedMap[s.id]);
           const locked = status === 'locked';
@@ -1363,7 +1376,7 @@ function ExportEntry({ exporters, onNavigate, blocked }) {
 export function ManuscriptOverview({ m, exporters, onOpenSection, onNavigate }) {
   const draft = m.activeDraft || {};
   const sections = draft.sections || {};
-  const allEmpty = SECTION_TYPES.every((s) => sectionStatus(sections[s.id] || {}) === 'empty');
+  const allEmpty = draftSectionTypes(draft).every((s) => sectionStatus(sections[s.id] || {}) === 'empty');
   // §49 — everything derived from the live sources waits for them. `undefined`
   // (a host that never reports) is treated as settled, exactly like the hero's
   // generate gate, so a shell without the fetch never freezes on skeletons.

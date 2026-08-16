@@ -14,7 +14,8 @@ import { alpha } from '../../frontend/theme/tokens.js';
 // listener (which also had no dependency array — see the binding below).
 import { useShortcut, TIER } from '../../frontend/shortcuts/ShortcutProvider.jsx';
 import {
-  SECTION_TYPES, SECTION_IDS, STATEMENT_TYPES, CITATION_STYLES, JOURNAL_TEMPLATES, sectionStatus,
+  SECTION_TYPES, STATEMENT_TYPES, CITATION_STYLES, JOURNAL_TEMPLATES, sectionStatus,
+  draftSectionTypes, draftSectionIds, draftSectionLabel, draftStructure,
   collectCitationOrder, draftSectionTexts, studySelectionParagraph,
   explainKeys, SECTION_DEPENDENCIES,
   // 85.md B2 — structured asset references (tokens ↔ live numbering).
@@ -45,6 +46,9 @@ import {
 } from './richEditor/RichSectionEditor.jsx';
 // 101.md §34 — the optional "recent manuscript updates" panel paired with Show Changes.
 import { ChangeTrackingPanel } from './ChangeTrackingPanel.jsx';
+// 119.md §7 — the guideline/journal provenance renderers and the ONE no-compliance
+// wording, shared with the structure switcher so both surfaces say the same thing.
+import { StructureProvenance, JournalProfileNotes, NO_COMPLIANCE_NOTE } from './StructureSwitcher.jsx';
 // 102.md §2/§5 — the manual-field counter, prev/next controls and section list.
 import { ManualFieldsPanel } from './ManualFieldsPanel.jsx';
 import { AbstractEditor } from './richEditor/AbstractEditor.jsx';
@@ -55,6 +59,11 @@ import { ManuscriptOverview } from './ManuscriptOverview.jsx';
 // r2 (118.md §32) — ONE section-status rule + ONE chip palette, shared with the
 // Overview. This file used to carry a second copy whose tones had already drifted.
 import { sectionRowStatus } from './sectionStatusRule.js';
+// 119.md §6 — the demographics cell vocabulary (statistic types + the four empty
+// states). The manuscript RENDERS them; extraction owns them.
+import {
+  statType, DEFAULT_STAT_TYPE, DEMOGRAPHIC_VALUE_STATES,
+} from '../../research-engine/extraction/demographics.js';
 import { extractOutline, mdToHtml } from './richEditor/mdDom.js';
 // 118.md §10-§19 — the Continuous Document View and the scroll / active-section
 // mechanics this panel's outline shares with it. The dependency is ONE-WAY
@@ -86,7 +95,8 @@ export function sectionStatingFact(draft, factKey) {
   if (!draft || !factKey) return '';
   const token = factToken(factKey);
   const secs = draft.sections || {};
-  for (const s of SECTION_TYPES) {
+  // 119.md §7 — "in canonical manuscript order" is the DRAFT'S order now.
+  for (const s of draftSectionTypes(draft)) {
     const content = (secs[s.id] && secs[s.id].content) || '';
     if (content.includes(token)) return s.id;
   }
@@ -1082,9 +1092,13 @@ export function EditorPanel({ m, exporters, sectionRequest, onOpenAssetPanel, on
      The shared toolbar and the Insert pickers act on the caret, so they are gated on
      this. Null until a caret has actually landed somewhere. */
   const [caretSection, setCaretSection] = useState(null);
+  /* 119.md §7 — one handle per section THIS draft has. Rebuilt when the section
+     SET changes (never on a keystroke), so a template switch gives the new sections
+     working editors and a preserved one keeps its own. */
+  const handleSig = draftSectionIds(m.activeDraft).join(',');
   const handles = useMemo(() => {
     const out = {};
-    for (const s of SECTION_TYPES) {
+    for (const s of draftSectionTypes(m.activeDraft)) {
       out[s.id] = {
         // Stable callback ref: an inline arrow would detach/re-attach the handle on
         // every render of a document that re-renders on every keystroke.
@@ -1118,7 +1132,8 @@ export function EditorPanel({ m, exporters, sectionRequest, onOpenAssetPanel, on
       };
     }
     return out;
-  }, []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [handleSig]);
   const apiFor = useCallback((id) => (
     apis.current.get(id) || (activeSectionRef.current === id ? activeApi.current : null)
   ), []);
@@ -1268,10 +1283,13 @@ export function EditorPanel({ m, exporters, sectionRequest, onOpenAssetPanel, on
      nothing remounts on scroll, so the epoch is the generation stamps alone —
      closing the menus while the reader merely scrolls would be a bug, not safety. */
   const genSignature = useMemo(
-    () => SECTION_TYPES.map((s) => ((m.activeDraft.sections || {})[s.id] || {}).lastGeneratedAt || '').join('|'),
+    () => draftSectionTypes(m.activeDraft).map((s) => ((m.activeDraft.sections || {})[s.id] || {}).lastGeneratedAt || '').join('|'),
     [m.activeDraft],
   );
-  const mountEpoch = continuous ? genSignature : `${sel}:${lastGen || ''}`;
+  // 119.md §7 — a structure switch / snapshot restore remounts every editor, so the
+  // anchored popovers die with the DOM they were anchored to, exactly as on a
+  // generation.
+  const mountEpoch = `${continuous ? genSignature : `${sel}:${lastGen || ''}`}:${m.contentEpoch || 0}`;
   useEffect(() => {
     setChipMenu(null); setChipHover(null); setRelinking(false); setTableDelete(null);
     setCiteMenu(null); setCiteHover(null); setTableCtx(null);
@@ -1320,7 +1338,7 @@ export function EditorPanel({ m, exporters, sectionRequest, onOpenAssetPanel, on
   // the outline in BOTH views (never a single-section buffer override).
   const outline = useMemo(() => {
     const map = {};
-    for (const s of SECTION_TYPES) {
+    for (const s of draftSectionTypes(liveDraft)) {
       if (s.id === 'title') continue;
       const md = ((liveDraft.sections || {})[s.id] || {}).content || '';
       const entries = extractOutline(md).filter((h) => h.level <= 2);
@@ -1497,7 +1515,8 @@ export function EditorPanel({ m, exporters, sectionRequest, onOpenAssetPanel, on
      scrolls to it — §15's "do not switch out of Continuous View" applies to every
      caller, not just the outline. */
   useEffect(() => {
-    if (!sectionRequest || !sectionRequest.id || !SECTION_IDS.includes(sectionRequest.id)) return;
+    // 119.md §7 — a request may name a template-introduced or preserved section.
+    if (!sectionRequest || !sectionRequest.id || !draftSectionIds(m.activeDraft).includes(sectionRequest.id)) return;
     const id = sectionRequest.id;
     const wantsAsset = !!(sectionRequest.assetId || sectionRequest.manualId);
     if (continuous) {
@@ -1723,7 +1742,7 @@ export function EditorPanel({ m, exporters, sectionRequest, onOpenAssetPanel, on
   const status = sectionStatus(section);
   const isTitle = sel === 'title';
   const isAbstract = sel === 'abstract';
-  const sectionLabelOf = (id) => (SECTION_TYPES.find((s) => s.id === id) || {}).label || 'Section';
+  const sectionLabelOf = (id) => draftSectionLabel(m.activeDraft, id) || 'Section';
 
   /* ══════════ 118.md §13/§18 — the ONE editor prop factory ══════════
    *
@@ -1743,7 +1762,11 @@ export function EditorPanel({ m, exporters, sectionRequest, onOpenAssetPanel, on
     const secLocked = !!sec.locked;
     const h = handles[id];
     return {
-      mountKey: `${m.activeId}:${id}:${sec.lastGeneratedAt || ''}`,
+      /* 119.md §7 — `contentEpoch` joins the key: a snapshot restore and a
+         structure merge both replace a section's text without moving its
+         generation stamp, and an editor that did not remount would show the old
+         paragraph and then commit it back over the new one. */
+      mountKey: `${m.activeId}:${id}:${sec.lastGeneratedAt || ''}:${m.contentEpoch || 0}`,
       apiRef: h ? h.apiRef : undefined,
       // Section View keeps the historical single test id; the continuous document
       // needs one per mounted section (ten editors on one page).
@@ -1852,7 +1875,7 @@ export function EditorPanel({ m, exporters, sectionRequest, onOpenAssetPanel, on
   /** The abstract is structured (MS-5), so it gets its own factory — same rules. */
   const abstractProps = () => {
     const sec = sections.abstract || {};
-    const key = `${m.activeId}:abstract:${sec.lastGeneratedAt || ''}`;
+    const key = `${m.activeId}:abstract:${sec.lastGeneratedAt || ''}:${m.contentEpoch || 0}`;
     return {
       value: sec.content || '',
       templateId: m.activeDraft.templateId,
@@ -1926,7 +1949,7 @@ export function EditorPanel({ m, exporters, sectionRequest, onOpenAssetPanel, on
           } : {}),
         }}>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-          {SECTION_TYPES.map((s) => {
+          {draftSectionTypes(liveDraft).map((s) => {
             const sec = sections[s.id] || {};
             const st = sectionStatus(sec);
             const active = s.id === sel;
@@ -2739,6 +2762,131 @@ function useAssetOverridesBuffer(m) {
   return [buf, commit];
 }
 
+/* ══════ 119.md §6 — the study-characteristics table, edited from HERE ══════
+ *
+ * §6: a value changed in the Manuscript Editor "must update the same structured source
+ * model, not create a disconnected copy", and the editor "must clearly indicate that the
+ * underlying extracted project data will change".
+ *
+ * So an editable cell here is NOT a manuscript field. Clicking one resolves the cell to
+ * the extraction value behind it (`m.demographicsCell`) and shows exactly which study,
+ * which field and which arm is about to change; saving routes through
+ * `m.editDemographicsCell` -> the extraction write path (per-value provenance, autosave,
+ * 108.md undo, collaborator preconditions). Cells the builder derives itself (Study,
+ * Design, Outcome...) are not editable from here — they are edited where they live.
+ */
+export const DEMO_UPSTREAM_NOTICE = 'This changes the extracted project data, not just this table.';
+export const DEMO_SAVED_NOTICE = 'Saved to Extraction — the study record now holds this value. Ctrl+Z undoes it.';
+const demoSlug = (x) => String(x || '').replace(/[^a-zA-Z0-9]+/g, '-');
+
+function DemographicsCellEditor({ m, columnKey, studyId, onClose }) {
+  const ref = m.demographicsCell ? m.demographicsCell(columnKey, studyId) : null;
+  const [draft, setDraft] = useState(() => (ref ? { ...ref.cell.values } : {}));
+  const [state, setState] = useState(() => (ref ? ref.cell.state : ''));
+  const [err, setErr] = useState('');
+  if (!ref) return null;
+  const t = statType(ref.cell.type) || statType(DEFAULT_STAT_TYPE);
+  const slots = ref.isStat ? t.slots : ['value'];
+  const who = `${ref.study.author || ref.study.title || 'this study'}${ref.study.year ? ` ${ref.study.year}` : ''}`;
+  const save = () => {
+    const values = {};
+    for (const slot of slots) values[slot] = draft[slot] == null ? '' : draft[slot];
+    const r = m.editDemographicsCell(columnKey, studyId, state ? { state } : { values, state: '' });
+    if (!r || !r.ok) { setErr((r && r.detail) || 'That value could not be saved.'); return; }
+    onClose(DEMO_SAVED_NOTICE);
+  };
+  return (
+    <div data-testid="stitch-manuscript-demo-editor"
+      style={{ border: `1px solid ${C.acc}`, borderRadius: 8, padding: 10, marginTop: 8, background: C.card }}>
+      <div data-testid="stitch-manuscript-demo-upstream" style={{ fontSize: 11.5, color: C.txt, lineHeight: 1.6, marginBottom: 8 }}>
+        <strong style={{ color: C.acc }}>{DEMO_UPSTREAM_NOTICE}</strong>{' '}
+        Editing <strong>{ref.label}</strong>{ref.armLabel ? ` (${ref.armLabel})` : ''} for <strong>{who}</strong>
+        {ref.isCase ? ' — an individual case row, not the publication.' : '.'}
+      </div>
+      <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
+        {slots.map((slot) => (
+          <label key={slot} style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 11, color: C.muted }}>
+            {ref.isStat ? t.slotLabels[slot] : ref.label}
+            <input data-testid={`stitch-manuscript-demo-input-${slot}`} value={draft[slot] == null ? '' : String(draft[slot])}
+              disabled={!!state} aria-label={`${ref.isStat ? t.slotLabels[slot] : ref.label} for ${who}`}
+              onChange={(e) => setDraft((d) => ({ ...d, [slot]: e.target.value }))}
+              style={{ ...inp, fontSize: 12, width: ref.isStat ? 84 : 200, padding: '3px 6px' }} />
+          </label>
+        ))}
+        <select data-testid="stitch-manuscript-demo-state" value={state} aria-label="Value state"
+          onChange={(e) => setState(e.target.value)} style={{ ...inp, fontSize: 11, width: 'auto', padding: '3px 6px' }}>
+          <option value="">Value…</option>
+          {DEMOGRAPHIC_VALUE_STATES.map((x) => <option key={x.id} value={x.id}>{x.label}</option>)}
+        </select>
+        <button data-testid="stitch-manuscript-demo-save" onClick={save} style={{ ...btnS('primary'), fontSize: 11 }}>Save to extraction</button>
+        <button onClick={() => onClose('')} style={{ ...btnS('ghost'), fontSize: 11 }}>Cancel</button>
+      </div>
+      {err && <div data-testid="stitch-manuscript-demo-error" style={{ fontSize: 11, color: C.red, marginTop: 6 }}>{err}</div>}
+    </div>
+  );
+}
+
+/** The study-characteristics table with its demographics cells editable in place. */
+export function DemographicsDataTable({ m, table, onNotice }) {
+  const [open, setOpen] = useState(null);         // { columnKey, studyId }
+  if (!table) return null;
+  if (!table.available) return <InfoBox color={C.muted}>{table.note || 'Not enough data to build this table yet.'}</InfoBox>;
+  const refs = table.rowRefs || [];
+  const editable = !!m.editDemographicsCell;
+  return (
+    <div>
+      <div style={{ overflowX: 'auto', border: `1px solid ${C.brd}`, borderRadius: 10 }}>
+        <table style={{ borderCollapse: 'collapse', width: '100%' }}>
+          <thead>
+            <tr>{table.columns.map((c) => <th key={c.key} style={cellTh}>{c.label}</th>)}</tr>
+          </thead>
+          <tbody>
+            {(table.rows || []).map((row, i) => (
+              <tr key={i}>
+                {table.columns.map((c) => {
+                  const v = row[c.key];
+                  const studyId = (refs[i] || {}).studyId || '';
+                  const canEdit = editable && c.editable && studyId;
+                  const isOpen = open && open.columnKey === c.key && open.studyId === studyId;
+                  return (
+                    <td key={c.key} style={{ ...cellTd, ...(canEdit ? { cursor: 'pointer' } : null), ...(isOpen ? { outline: `1px solid ${C.acc}` } : null) }}>
+                      {canEdit ? (
+                        <button data-testid={`stitch-manuscript-demo-cell-${demoSlug(studyId)}-${demoSlug(c.key)}`}
+                          onClick={() => setOpen(isOpen ? null : { columnKey: c.key, studyId })}
+                          title={`${c.label} — edit the extracted value`}
+                          style={{ background: 'none', border: 'none', padding: 0, font: 'inherit', color: 'inherit', cursor: 'pointer', textDecoration: 'underline dotted' }}>
+                          {v == null || v === '' ? '—' : String(v)}
+                        </button>
+                      ) : (v == null || v === '' ? '—' : String(v))}
+                    </td>
+                  );
+                })}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      {open && (
+        /* KEYED PER CELL: the editor seeds its draft from the cell it opens on, so moving
+           to another cell must give it a fresh instance — without this React reuses the
+           mounted one and the previous cell's draft (and its "not reported" state, which
+           disables the inputs) leaks onto the new one. */
+        <DemographicsCellEditor key={`${open.columnKey}:${open.studyId}`} m={m}
+          columnKey={open.columnKey} studyId={open.studyId}
+          onClose={(msg) => { setOpen(null); if (msg && onNotice) onNotice(msg); }} />
+      )}
+      {editable && table.columns.some((c) => c.editable) && (
+        <div style={{ fontSize: 10.5, color: C.dim, marginTop: 6, lineHeight: 1.6 }}>
+          Underlined cells are project extraction data — changing one here changes the study record itself.
+        </div>
+      )}
+      {table.columns.filter((c) => c.note).map((c) => (
+        <div key={c.key} style={{ fontSize: 10.5, color: C.muted, marginTop: 4 }}>{c.label}: {c.note}</div>
+      ))}
+    </div>
+  );
+}
+
 export function TablesPanel({ m, onOpenAsset }) {
   const [buf, commit] = useAssetOverridesBuffer(m);
   const [notice, setNotice] = useState('');
@@ -2779,10 +2927,12 @@ export function TablesPanel({ m, onOpenAsset }) {
               {isManual ? (
                 <div data-testid={`stitch-manuscript-asset-manual-${assetTestSlug(asset.id)}`}
                   style={{ fontSize: 11.5, color: C.muted, lineHeight: 1.6 }}>
-                  Typed in the {(SECTION_TYPES.find((s) => s.id === asset.sectionId) || {}).label || 'manuscript'} section —
+                  Typed in the {draftSectionLabel(m.activeDraft, asset.sectionId) || 'manuscript'} section —
                   edit its rows and its title there. It is numbered with the generated tables and exports with a caption.
                 </div>
-              ) : <DataTable table={t} />}
+              ) : (t && t.id === 'study_characteristics_table'
+                ? <DemographicsDataTable m={m} table={t} onNotice={setNotice} />
+                : <DataTable table={t} />)}
             </div>
             {((t && t.warnings) || []).map((w, i) => <InfoBox key={i} color={C.yel}>{w}</InfoBox>)}
           </Card>
@@ -3960,10 +4110,117 @@ function fmtLogTime(iso) {
   } catch { return '—'; }
 }
 
+/* ════════════ 119.md §7 — reporting structure (the FIRST of three dimensions) ════════════
+ *
+ * The block that owns "Customize the resulting structure": the section list of the
+ * draft, in order, each row renameable and movable. It writes through the pure
+ * engine writers (`renameDraftSection` / `moveDraftSection` via the hook), so a
+ * customization is exactly as byte-stable as a template switch and normalizes
+ * through the same `normalizeStructure`.
+ *
+ * Reordering deliberately excludes the front sections: the title block leads the
+ * document in both views and in the .docx, and it is not a body section.
+ */
+function StructureBlock({ m, onOpenStructure }) {
+  const draft = m.activeDraft || {};
+  const structure = draftStructure(draft);
+  const rows = draftSectionTypes(draft);
+  const [editing, setEditing] = useState(null);   // { id, value }
+
+  const commitRename = () => {
+    if (!editing) return;
+    const v = String(editing.value || '').trim();
+    if (v && m.renameSection) m.renameSection(editing.id, v);
+    setEditing(null);
+  };
+
+  const bodyRows = rows.filter((s) => s.group !== 'front');
+
+  return (
+    <Block title="Reporting structure"
+      desc="Which sections this manuscript has, and in what order. Based on a published reporting guideline — it is a writing aid, not a compliance check.">
+      <Card data-testid="stitch-manuscript-structure-block">
+        <div style={{ display: 'flex', alignItems: 'flex-start', gap: 12, flexWrap: 'wrap', marginBottom: 10 }}>
+          <div style={{ flex: '1 1 240px', minWidth: 0 }}>
+            <div style={{ fontSize: 13, fontWeight: 700, color: C.txt }} data-testid="stitch-manuscript-structure-name">
+              {structure.label}
+            </div>
+            <div style={{ marginTop: 4 }}>
+              <StructureProvenance structure={structure} />
+            </div>
+          </div>
+          <button type="button" onClick={() => onOpenStructure && onOpenStructure()}
+            data-testid="stitch-manuscript-structure-change"
+            disabled={!onOpenStructure}
+            style={{ ...btnS('ghost'), fontSize: 11.5, flexShrink: 0 }}>
+            Change structure…
+          </button>
+        </div>
+
+        <div style={{ display: 'flex', flexDirection: 'column' }}>
+          {rows.map((s, i) => {
+            const isEditing = editing && editing.id === s.id;
+            const bodyIndex = bodyRows.findIndex((b) => b.id === s.id);
+            return (
+              <div key={s.id} data-testid={`stitch-manuscript-structure-section-${s.id}`}
+                data-retained={s.retained ? 'true' : undefined}
+                style={{
+                  display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap',
+                  padding: '6px 0', borderTop: i > 0 ? `1px solid ${C.brd}` : 'none',
+                }}>
+                {isEditing ? (
+                  <input autoFocus value={editing.value}
+                    aria-label={`Rename ${s.label}`}
+                    data-testid={`stitch-manuscript-structure-rename-input-${s.id}`}
+                    onChange={(e) => setEditing({ id: s.id, value: e.target.value })}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') { e.preventDefault(); commitRename(); }
+                      if (e.key === 'Escape') { e.preventDefault(); setEditing(null); }
+                    }}
+                    onBlur={commitRename}
+                    style={{ ...inp, flex: '1 1 160px', fontSize: 12 }} />
+                ) : (
+                  <span style={{ fontSize: 12.5, fontWeight: 600, color: C.txt, flex: '1 1 160px', minWidth: 0 }}>
+                    {s.label}
+                    {s.retained && (
+                      <span data-testid={`stitch-manuscript-structure-kept-${s.id}`}
+                        style={{ marginLeft: 6, fontSize: 9.5, fontWeight: 700, letterSpacing: 0.4, textTransform: 'uppercase', color: C.yel }}>
+                        Kept from a previous structure
+                      </span>
+                    )}
+                  </span>
+                )}
+                <span style={{ display: 'flex', gap: 10, flexShrink: 0 }}>
+                  <button type="button" onClick={() => setEditing({ id: s.id, value: s.label })}
+                    data-testid={`stitch-manuscript-structure-rename-${s.id}`}
+                    aria-label={`Rename ${s.label}`}
+                    style={{ ...btnS('ghost'), fontSize: 11, padding: '3px 8px' }}>Rename</button>
+                  <button type="button" onClick={() => m.moveSection && m.moveSection(s.id, -1)}
+                    disabled={s.group === 'front' || bodyIndex <= 0}
+                    data-testid={`stitch-manuscript-structure-up-${s.id}`}
+                    aria-label={`Move ${s.label} up`}
+                    style={{ ...btnS('ghost'), fontSize: 11, padding: '3px 8px', opacity: (s.group === 'front' || bodyIndex <= 0) ? 0.4 : 1 }}>↑</button>
+                  <button type="button" onClick={() => m.moveSection && m.moveSection(s.id, 1)}
+                    disabled={s.group === 'front' || bodyIndex < 0 || bodyIndex >= bodyRows.length - 1}
+                    data-testid={`stitch-manuscript-structure-down-${s.id}`}
+                    aria-label={`Move ${s.label} down`}
+                    style={{ ...btnS('ghost'), fontSize: 11, padding: '3px 8px', opacity: (s.group === 'front' || bodyIndex < 0 || bodyIndex >= bodyRows.length - 1) ? 0.4 : 1 }}>↓</button>
+                </span>
+              </div>
+            );
+          })}
+        </div>
+        <InfoBox color={C.muted}>{NO_COMPLIANCE_NOTE}</InfoBox>
+      </Card>
+    </Block>
+  );
+}
+
 /* ════════════ 7. EXPORT ════════════ */
-export function ExportPanel({ m, exporters }) {
+export function ExportPanel({ m, exporters, onOpenStructure }) {
   const tpl = JOURNAL_TEMPLATES.find((t) => t.id === m.activeDraft.templateId);
-  const sectionsDone = SECTION_TYPES.filter((s) => sectionStatus((m.activeDraft.sections && m.activeDraft.sections[s.id]) || {}) !== 'empty').length;
+  const draftSections = draftSectionTypes(m.activeDraft);
+  const sectionsDone = draftSections.filter((s) => sectionStatus((m.activeDraft.sections && m.activeDraft.sections[s.id]) || {}) !== 'empty').length;
   const items = [
     { icon: 'fileText', title: 'Word manuscript (.docx)', desc: 'Title page, structured abstract, IMRAD body, declarations, numbered references, data tables, and embedded PRISMA + forest figures.' },
     { icon: 'download', title: 'Reproducibility package (.zip)', desc: 'Manuscript, PRISMA diagram + checklists, datasets, analysis settings, methods text, and a manifest — everything a reviewer needs to reproduce the review.' },
@@ -3975,7 +4232,7 @@ export function ExportPanel({ m, exporters }) {
       <Block title="Summary">
         <Card>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(180px,1fr))', gap: 14 }}>
-            <Stat label="Sections drafted" value={`${sectionsDone}/${SECTION_TYPES.length}`} />
+            <Stat label="Sections drafted" value={`${sectionsDone}/${draftSections.length}`} />
             <Stat label="References" value={(m.references || []).length} />
             <Stat label="Studies included" value={(m.prismaCounts.counts && m.prismaCounts.counts.included != null) ? m.prismaCounts.counts.included : '—'} />
             <Stat label="Readiness" value={m.readiness ? `${m.readiness.score.pct}%` : '—'} />
@@ -3989,14 +4246,31 @@ export function ExportPanel({ m, exporters }) {
         <SnapshotsBlock m={m} />
       </Block>
 
-      <Block title="Journal template">
+      {/* 119.md §7 — THREE dimensions, three blocks, in the order they matter.
+          Reporting structure decides which sections exist; the journal profile
+          decides how the manuscript is formatted for one journal; the citation
+          style decides how a citation reads. Changing one never changes another —
+          in particular, a citation-style change can never rewrite the structure. */}
+      <StructureBlock m={m} onOpenStructure={onOpenStructure} />
+
+      <Block title="Journal profile" desc="A journal's house formatting: abstract shape, word limits and required declarations. Separate from the manuscript structure — switching profiles never changes your sections.">
         <Labeled label="Template">
           <Select value={m.activeDraft.templateId} onChange={(e) => m.setMeta({ templateId: e.target.value })}>
             {JOURNAL_TEMPLATES.map((t) => <option key={t.id} value={t.id}>{t.label}</option>)}
           </Select>
         </Labeled>
         {tpl && tpl.note && <div style={{ marginTop: 8, fontSize: 11.5, color: C.muted, lineHeight: 1.6 }}>{tpl.note}</div>}
-        <InfoBox color={C.yel}>Journal templates are formatting aids. Always verify against the journal's current author instructions before submission.</InfoBox>
+        <div style={{ marginTop: 8 }}><JournalProfileNotes templateId={m.activeDraft.templateId} /></div>
+        <InfoBox color={C.yel}>Journal profiles are formatting aids. They do not check or guarantee submission compliance — always verify against the journal's current author instructions before submission.</InfoBox>
+      </Block>
+
+      <Block title="Citation style" desc="How an in-text citation and its reference-list entry read. Changing it re-renders every citation — it never adds, removes or reorders a section.">
+        <Labeled label="Citation style">
+          <Select value={m.activeDraft.citationStyle} data-testid="stitch-manuscript-export-citation-select"
+            onChange={(e) => m.setMeta({ citationStyle: e.target.value })}>
+            {CITATION_STYLES.map((s) => <option key={s.id} value={s.id}>{s.label}</option>)}
+          </Select>
+        </Labeled>
       </Block>
 
       <Block title="Declarations" desc="Short statements included verbatim in the Word export. Required statements depend on the journal template.">

@@ -65,6 +65,11 @@ export function buildSyncPlan(args = {}) {
   let conflicts = 0;
   let critical = 0;
 
+  /* 119.md §7 — the plan is about sections the GENERATOR can propose text for, and
+     the generator's domain is the closed core registry. A template-introduced
+     section (CARE's Timeline, CONSORT's Harms) is authored by hand and has no
+     project-data link, so it is not "outdated", cannot be auto-applied, and must
+     not appear here as an entry offering to replace it with nothing. */
   for (const id of SECTION_IDS) {
     const section = sections[id] || {};
     const proposed = typeof (generated && generated[id]) === 'string' ? generated[id] : '';

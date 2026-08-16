@@ -248,8 +248,17 @@ describe('118.md §13/§18 — one state, one prop factory, one write path', () 
     expect(doc).toContain('<RichSectionEditor key={props.mountKey} ref={props.apiRef} {...props} />');
   });
 
-  it('the per-section mount key is section identity + generation stamp', () => {
-    expect(panels).toContain('mountKey: `${m.activeId}:${id}:${sec.lastGeneratedAt || \'\'}`');
+  /* RE-PINNED by 119.md §7. The key was section identity + generation stamp, which
+     covered the two ways prose changed from outside the editor at the time (a
+     generate, a draft switch). Two more arrived since — a snapshot RESTORE and a
+     structure switch that MERGES one section's text into another — and neither
+     moves `lastGeneratedAt`, so the mounted editor kept rendering the pre-change
+     paragraph and the next keystroke committed it back over the new text. The
+     `contentEpoch` component is a mount-lifetime counter (never persisted) meaning
+     "the draft's prose was replaced wholesale". The 118 contract is otherwise
+     unchanged: one DOM render per key, mounted from the COMMITTED draft. */
+  it('the per-section mount key is section identity + generation stamp + content epoch', () => {
+    expect(panels).toContain('mountKey: `${m.activeId}:${id}:${sec.lastGeneratedAt || \'\'}:${m.contentEpoch || 0}`');
     // …and the MOUNT VALUE is the committed draft, never a buffer.
     expect(panels).toContain("value: sec.content || ''");
   });

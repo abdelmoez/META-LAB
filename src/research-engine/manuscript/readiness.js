@@ -9,7 +9,7 @@ import { computePrismaCounts } from './prismaCounts.js';
 import { primaryAnalysis } from './draft.js';
 import { evaluateStaleness } from './sourceHash.js';
 import { auditReferences, referencesFromProject } from './citations.js';
-import { SECTION_IDS } from './model.js';
+import { draftSectionIds } from './model.js';
 import { describeSynthesisModel, resolveAnalysis } from './analysisDescribe.js';
 import { checkConsistency } from './consistency.js';
 import { countPublications, caseSeriesCounts } from '../extraction/caseSeries.js';
@@ -124,7 +124,8 @@ export function smartInsights(project, draft, opts = {}) {
 
   // AI-drafted, unreviewed
   if (draft) {
-    const aiUnverified = SECTION_IDS.filter((id) => sect[id] && sect[id].aiGenerated && !sect[id].userEdited && clean(sect[id].content));
+    // 119.md §7 — the DRAFT'S sections, so a template-introduced section counts too.
+    const aiUnverified = draftSectionIds(draft).filter((id) => sect[id] && sect[id].aiGenerated && !sect[id].userEdited && clean(sect[id].content));
     if (aiUnverified.length) push('ai-review', 'info', `${aiUnverified.length} auto-drafted section(s) have not been reviewed/edited — verify before submission.`);
   }
 

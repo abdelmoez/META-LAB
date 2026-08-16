@@ -23,7 +23,7 @@
  *   §37  Styles are a formatting layer over the metadata, not a property of it.
  */
 
-import { SECTION_IDS } from './model.js';
+import { draftSectionIds } from './model.js';
 
 const clean = (s) => String(s == null ? '' : s).trim();
 
@@ -556,10 +556,16 @@ export function collectCitationOrder(texts, opts = {}) {
   return { orderMap, orderedIds };
 }
 
-/** The ordered section texts of a draft (canonical section order). Pure. */
+/**
+ * The ordered section texts of a draft. 119.md §7 — in the DRAFT'S OWN section
+ * order, so citation numbering follows the template's reading order (a CARE report
+ * numbers its first citation in Patient information, not in a Methods section it
+ * does not have). A draft with no structure resolves to the core eight, so every
+ * pre-119 numbering is unchanged. Pure.
+ */
 export function draftSectionTexts(draft) {
   if (!draft || !draft.sections) return [];
-  return SECTION_IDS.map((id) => draft.sections[id] && draft.sections[id].content);
+  return draftSectionIds(draft).map((id) => draft.sections[id] && draft.sections[id].content);
 }
 
 /**
@@ -767,7 +773,9 @@ export function collectCitationUsage(draft, opts = {}) {
   const cited = new Set();
   const raw = new Set();
   const texts = draftSectionTexts(draft);
-  SECTION_IDS.forEach((sectionId, i) => {
+  // 119.md §7 — the same id list draftSectionTexts just walked, or the two would
+  // disagree about which section a citation is in the moment a template adds one.
+  draftSectionIds(draft).forEach((sectionId, i) => {
     const s = String(texts[i] == null ? '' : texts[i]);
     const re = new RegExp(CITATION_TOKEN_RE.source, 'g');
     let m;

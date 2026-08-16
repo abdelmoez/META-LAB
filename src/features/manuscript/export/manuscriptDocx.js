@@ -47,7 +47,7 @@ import {
   computePlacements,
   sectionBlocks,
 } from '../../../research-engine/manuscript/index.js';
-import { SECTION_TYPES, STATEMENT_TYPES } from '../../../research-engine/manuscript/model.js';
+import { SECTION_TYPES, STATEMENT_TYPES, draftSectionTypes } from '../../../research-engine/manuscript/model.js';
 // 117.md §69 — the kind set, the caption grammar and the caption FORMATTER all come
 // from the one registry, so the Word file and the editor can never disagree about
 // what a construct is or how a caption reads.
@@ -811,13 +811,24 @@ export async function buildManuscriptDocx(project, draft, opts = {}) {
      groups markdownToParagraphs emits (sectionBlocks mirrors it), and emitted
      assets are spliced AFTER the block holding their first mention. Sections
      without placements go through the identical whole-section conversion. */
-  const bodyOrder = ['introduction', 'methods', 'results', 'discussion', 'limitations', 'conclusion'];
-  for (const id of bodyOrder) {
-    const meta = SECTION_TYPES.find((s) => s.id === id);
+  /* 119.md §7 — the body order is the DRAFT'S OWN structure, not a second hardcoded
+     literal that could disagree with the editor. Everything after the title block
+     and the abstract is emitted here, in the order the researcher reads it on
+     screen, under the labels their template gave those sections — including a
+     PRESERVED section whose template no longer lists it, which is what keeps
+     "never delete content" true of the export and not only of the blob. */
+  const bodySections = draftSectionTypes(draft).filter((s) => s.group !== 'front');
+  for (const s of bodySections) {
+    const id = s.id;
+    const label = s.label || (SECTION_TYPES.find((x) => x.id === id) || {}).label || id;
     const sect = draft.sections[id];
-    children.push(h1(meta ? meta.label : id, D));
+    children.push(h1(label, D));
+    // A section the current template does not contain still prints its text — with
+    // one honest line saying why it is here, so the export never looks like an
+    // accident and never silently loses the paragraph.
+    if (s.retained) children.push(note(`[Kept from a previous manuscript structure — not part of the ${(draft.structure && draft.structure.label) || 'current'} template.]`, D));
     const content = sect && sect.content.trim();
-    if (!content) { children.push(note(`[${meta ? meta.label : id} not yet drafted]`, D)); continue; }
+    if (!content) { children.push(note(`[${label} not yet drafted]`, D)); continue; }
     const md = secMd(id);
     const inserts = (placements.bySection && placements.bySection[id]) || [];
     if (!inserts.length) {

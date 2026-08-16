@@ -36,7 +36,7 @@
  * Pure — no DOM/React/network/Date.
  */
 
-import { SECTION_TYPES } from './model.js';
+import { draftSectionTypes } from './model.js';
 
 export const PLACEHOLDER_KINDS = Object.freeze(['manual', 'pending']);
 
@@ -230,7 +230,8 @@ export function collectPlaceholders(draft) {
   const d = draft || {};
   const sections = d.sections || {};
   const out = [];
-  for (const s of SECTION_TYPES) {
+  // 119.md §7 — the draft's own sections (template set + preserved content).
+  for (const s of draftSectionTypes(d)) {
     const content = (sections[s.id] && sections[s.id].content) || '';
     for (const p of findPlaceholders(content, s.id)) {
       out.push({ ...p, sectionLabel: s.label, group: 'section' });

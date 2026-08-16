@@ -27,7 +27,7 @@ import Tooltip from '../../frontend/components/Tooltip.jsx';
 // 117.md §44 — an overlay that consumes Escape must CLAIM the fullscreen exit that
 // Escape also causes, or dismissing a popover drops the whole Focus-Mode layout.
 import { markOverlayEscape } from '../../frontend/focus/overlayEscapeLatch.js';
-import { CITATION_STYLES, JOURNAL_TEMPLATES } from '../../research-engine/manuscript/index.js';
+import { CITATION_STYLES, JOURNAL_TEMPLATES, draftStructure } from '../../research-engine/manuscript/index.js';
 import { SaveStatusPill } from './manuscriptPanels.jsx';
 
 /* ── the eight workspace destinations (118.md §6) ───────────────────────────── */
@@ -96,7 +96,11 @@ export function toolbarDensity(width) {
 }
 
 /** Every Level-A control, in the order a writer reaches for them. */
-export const LEVEL_A_CONTROLS = ['draft', 'newDraft', 'template', 'citation', 'autoDraft'];
+/* 119.md §7 — 'structure' joins Level A as its OWN control. Structure, journal
+   profile and citation style are three dimensions (§7's first ask), so they are
+   three controls; 'template' keeps its id, its testid and its meaning (the JOURNAL
+   profile it always was) so nothing that drives it has to change. */
+export const LEVEL_A_CONTROLS = ['draft', 'newDraft', 'structure', 'template', 'citation', 'autoDraft'];
 
 /**
  * 118.md §41 — which Level-A controls stay in the bar at a given density. Whatever is
@@ -300,6 +304,47 @@ const subtleAction = (active) => ({
  * NATIVE <select>: keyboard behaviour, mobile pickers, `selectOption` in e2e and
  * screen-reader semantics all stay exactly what the platform gives for free.
  */
+/**
+ * 119.md §7 — the same visual control as ToolbarSelect, but a BUTTON: it opens a
+ * surface instead of committing a value. Used for Structure, whose change is a
+ * document rewrite and therefore needs a preview + diff + mapping step (§7) — a
+ * native <select> that applied on change could not offer any of them.
+ */
+export function ToolbarButton({ label, value, onClick, testid, condensed, title }) {
+  return (
+    <button
+      type="button"
+      data-testid={testid}
+      className="ms-tb-select"
+      onClick={onClick}
+      title={title || undefined}
+      aria-label={`${label}: ${value}`}
+      style={{
+        display: 'inline-flex', alignItems: 'center', height: 28, maxWidth: condensed ? 210 : 300,
+        background: C.card2, border: `1px solid ${C.brd}`, borderRadius: 8,
+        flexShrink: 1, minWidth: 0, cursor: 'pointer', padding: 0,
+        fontFamily: "'IBM Plex Sans',sans-serif",
+        transition: 'border-color 0.15s ease, box-shadow 0.15s ease',
+      }}
+    >
+      <span style={{
+        padding: '0 1px 0 10px', fontSize: 10.5, fontWeight: 700, color: C.muted,
+        letterSpacing: 0.3, whiteSpace: 'nowrap', flexShrink: 0,
+      }}>{label}:</span>
+      <span style={{
+        color: C.txt, fontSize: 11.5, fontWeight: 600, padding: '0 3px 0 5px',
+        textOverflow: 'ellipsis', overflow: 'hidden', whiteSpace: 'nowrap', minWidth: 0,
+      }}>{value}</span>
+      <span aria-hidden="true" style={{
+        marginRight: 6, pointerEvents: 'none', color: C.muted,
+        display: 'inline-flex', alignItems: 'center',
+      }}>
+        <Icon name="chevronDown" size={11} />
+      </span>
+    </button>
+  );
+}
+
 export function ToolbarSelect({ label, value, onChange, options, testid, condensed }) {
   return (
     <span
@@ -806,7 +851,13 @@ export function ManuscriptWorkspaceNav({ tab, onTabChange, badge, density = 'ful
  *                                 the whole workspace. Takes a node or a function of
  *                                 the bar's own density, exactly like `viewSwitcher`.
  */
-export function ManuscriptToolbar({ m, tab, onTabChange, stickyTop = 0, viewSwitcher = null, splitToggle = null }) {
+export function ManuscriptToolbar({
+  m, tab, onTabChange, stickyTop = 0, viewSwitcher = null, splitToggle = null,
+  /* 119.md §7 — the structure control OPENS a dialog rather than committing a
+     dropdown change: §7 requires a preview, a diff and a mapping step before any
+     write, so the bar reports the intent and the workspace owns the surface. */
+  onOpenStructure = null,
+}) {
   const rootRef = useRef(null);
   const width = useContainerWidth(rootRef);
   const density = toolbarDensity(width);
@@ -814,6 +865,10 @@ export function ManuscriptToolbar({ m, tab, onTabChange, stickyTop = 0, viewSwit
 
   const draft = m.activeDraft || {};
   const drafts = m.drafts || [];
+  const structure = useMemo(() => draftStructure(draft), [draft]);
+  const structureLabel = structure.label || 'Generic biomedical IMRAD';
+  const customizedStructure = !!(draft.structure && draft.structure.sections
+    && draft.structure.sections.some((s) => s.retained));
   const badge = useMemo(() => updatesBadge(m.freshness, m.outdatedCount), [m.freshness, m.outdatedCount]);
   const draftTitle = draft.title || (drafts.length ? `Draft ${drafts.findIndex((d) => d.id === draft.id) + 1}` : '');
 
@@ -843,6 +898,11 @@ export function ManuscriptToolbar({ m, tab, onTabChange, stickyTop = 0, viewSwit
     newDraft: (
       <NewDraftAction key="newDraft" currentTitle={draftTitle} condensed={condensed && inline.includes('newDraft')}
         onCreate={() => m.addDraft({})} />
+    ),
+    structure: (
+      <ToolbarButton key="structure" label="Structure" testid="stitch-manuscript-structure-select" condensed={condensed}
+        value={structureLabel} onClick={onOpenStructure}
+        title={`Manuscript structure: ${structureLabel}${customizedStructure ? ' (customized)' : ''} — preview and switch reporting structures`} />
     ),
     template: (
       <ToolbarSelect key="template" label="Template" testid="stitch-manuscript-template-select" condensed={condensed}
@@ -910,9 +970,13 @@ export function ManuscriptToolbar({ m, tab, onTabChange, stickyTop = 0, viewSwit
         )}
         {inline.includes('draft') && controls.draft}
         {inline.includes('newDraft') && controls.newDraft}
-        {inline.includes('template') && (
+        {(inline.includes('structure') || inline.includes('template')) && (
           <span aria-hidden="true" style={{ width: 1, height: 18, background: C.brd, flexShrink: 0 }} />
         )}
+        {/* 119.md §7 — the three format dimensions, left to right in the order they
+            matter: which sections exist · how the journal wants them · how a
+            citation reads. Three controls because they are three things. */}
+        {inline.includes('structure') && controls.structure}
         {inline.includes('template') && controls.template}
         {inline.includes('citation') && controls.citation}
         {inline.includes('autoDraft') && (

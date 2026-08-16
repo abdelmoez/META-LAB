@@ -6,7 +6,7 @@
  */
 import {
   readManuscripts, makeManuscriptDraft, migrateLegacyManuscript, normalizeDraft, SECTION_IDS,
-  STATEMENT_IDS, JOURNAL_TEMPLATES,
+  draftSectionIds, STATEMENT_IDS, JOURNAL_TEMPLATES,
 } from '../../research-engine/manuscript/model.js';
 import { computeBlockHashes } from '../../research-engine/manuscript/sourceHash.js';
 
@@ -35,7 +35,10 @@ export function upsertDraft(drafts, draft) {
 
 /** Set one narrative section's markdown. Marks it user-edited by default. */
 export function setSection(draft, id, content, opts = {}) {
-  if (!SECTION_IDS.includes(id)) return draft;
+  // 119.md §7 — the guard is the DRAFT'S section set: a template-introduced or
+  // preserved section is as editable as a core one, and an id this draft does not
+  // have is still refused (that is what stops a stray write minting a section).
+  if (!draftSectionIds(draft).includes(id)) return draft;
   const prev = draft.sections[id] || {};
   return {
     ...draft,
@@ -70,6 +73,10 @@ export function setSection(draft, id, content, opts = {}) {
  * @returns {{ draft:object, skipped:string[], skippedLocked:string[] }}
  */
 export function applyGeneratedSections(draft, generated, opts = {}) {
+  /* 119.md §7 — the generator's domain is the CLOSED core registry, and this loop
+     writes only ids it produced, over a COPY of every existing section. A
+     template-introduced or preserved section is therefore carried through
+     untouched: nothing generates it, and nothing here may erase it. */
   const out = { ...draft, sections: { ...draft.sections } };
   const skipped = [];
   const skippedLocked = [];
@@ -131,7 +138,7 @@ export function applyGeneratedSections(draft, generated, opts = {}) {
  * normalizeDraft drops (only `locked === true` is persisted). Pure.
  */
 export function setSectionLocked(draft, id, locked) {
-  if (!SECTION_IDS.includes(id)) return draft;
+  if (!draftSectionIds(draft).includes(id)) return draft;
   const prev = draft.sections[id] || {};
   return {
     ...draft,
@@ -153,6 +160,8 @@ export function setSectionLocked(draft, id, locked) {
 export function computeOutdatedSections(draft, freshHashes, currentAvailability) {
   const out = {};
   if (!draft || !draft.sections || !freshHashes) return out;
+  // Core ids only, and deliberately: `freshHashes` is keyed by the generator's own
+  // section domain, so a hand-authored template section can never be 'outdated'.
   for (const id of SECTION_IDS) {
     const s = draft.sections[id];
     if (!s) continue;

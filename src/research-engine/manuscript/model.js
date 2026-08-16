@@ -19,7 +19,13 @@
  *     stale-but-look-fresh.
  */
 
-/** Narrative, free-text (markdown) sections, in canonical manuscript order. */
+/**
+ * The CLOSED CORE section registry — the eight sections every generator, every
+ * source-input map and every legacy draft is built on. 119.md §7 does NOT open
+ * this list: a template's section SET is layered OVER it (see templates.js and
+ * `draftSectionTypes` below), so a draft that never chose a structure keeps
+ * exactly these ids in exactly this order and normalizes byte-identically.
+ */
 export const SECTION_TYPES = [
   { id: 'title', label: 'Title', group: 'front' },
   { id: 'abstract', label: 'Abstract', group: 'front' },
@@ -32,6 +38,132 @@ export const SECTION_TYPES = [
 ];
 
 export const SECTION_IDS = SECTION_TYPES.map((s) => s.id);
+
+/** Fast membership test for "is this one of the eight core sections?". */
+export const CORE_SECTION_ID_SET = new Set(SECTION_IDS);
+
+/* ════════════ 119.md §7 — per-draft SECTION STRUCTURE ════════════
+ *
+ * A draft MAY carry `draft.structure`: an ordered list of section descriptors that
+ * a reporting-structure template (IMRAD / PRISMA 2020 / CONSORT / CARE / …) put
+ * there, plus the guideline provenance that template recorded. It is materialized
+ * ONLY when a structure is actually chosen — absent means "the core eight", which
+ * is what every pre-119 draft is, so nothing about those drafts changes on disk.
+ *
+ * The three rules that make this safe:
+ *   1. ids are STABLE and are the storage keys (`draft.sections[id]`) — renaming a
+ *      section changes its `label` in the structure, never where its text lives;
+ *   2. `normalizeDraft` NEVER drops a section that holds content, whether or not
+ *      the current structure lists it (119.md §7: "Never delete content merely
+ *      because the selected template does not contain a matching section");
+ *   3. `draftSectionTypes(draft)` is the ONE resolver every consumer reads, so
+ *      ordering (asset numbering, citation numbering, the docx body, the outline)
+ *      can never disagree between two modules.
+ */
+
+/** Section ids are `[a-z0-9-]` so they stay inside every token/testid grammar. */
+export const SECTION_ID_RE = /^[a-z][a-z0-9-]*$/;
+
+const SECTION_GROUPS = ['front', 'body'];
+
+/** 'follow-up-outcomes' → 'Follow up outcomes'. Last-resort label only. Pure. */
+export function humanizeSectionId(id) {
+  const s = String(id == null ? '' : id).replace(/-+/g, ' ').trim();
+  if (!s) return 'Section';
+  return s.charAt(0).toUpperCase() + s.slice(1);
+}
+
+/** The label a section id carries when nothing else names it. Pure. */
+export function defaultSectionLabel(id) {
+  const core = SECTION_TYPES.find((s) => s.id === id);
+  return core ? core.label : humanizeSectionId(id);
+}
+
+/**
+ * Validate + canonicalize a stored `draft.structure`. Returns null for anything
+ * that is not a usable structure (which is how a legacy draft stays legacy).
+ * SHAPE ONLY — no catalog lookup, so this module stays dependency-free and the
+ * template registry can grow without touching the normalizer. Pure.
+ */
+export function normalizeStructure(raw) {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  if (!Array.isArray(raw.sections) || !raw.sections.length) return null;
+  const seen = new Set();
+  const sections = [];
+  for (const e of raw.sections) {
+    if (!e || typeof e !== 'object') continue;
+    const id = typeof e.id === 'string' ? e.id.trim() : '';
+    if (!SECTION_ID_RE.test(id) || seen.has(id)) continue;
+    seen.add(id);
+    const entry = {
+      id,
+      label: (typeof e.label === 'string' && e.label.trim()) ? e.label.trim() : defaultSectionLabel(id),
+      group: SECTION_GROUPS.includes(e.group) ? e.group : (CORE_SECTION_ID_SET.has(id) ? (SECTION_TYPES.find((s) => s.id === id) || {}).group : 'body'),
+    };
+    // Additive flags, materialized only when true (no phantom keys).
+    if (e.custom === true || !CORE_SECTION_ID_SET.has(id)) entry.custom = true;
+    if (e.retained === true) entry.retained = true;
+    if (typeof e.guidance === 'string' && e.guidance.trim()) entry.guidance = e.guidance.trim();
+    sections.push(entry);
+  }
+  if (!sections.length) return null;
+  const out = { sections };
+  for (const k of ['id', 'label', 'guideline', 'guidelineVersion', 'reviewedAt', 'source', 'appliedAt', 'note']) {
+    if (typeof raw[k] === 'string' && raw[k]) out[k] = raw[k];
+  }
+  if (Number.isFinite(raw.version)) out.version = raw.version;
+  // Key order is deliberate and stable: metadata first, `sections` last, so a
+  // re-normalized structure serializes byte-identically to the one just written.
+  const ordered = {};
+  for (const k of ['id', 'label', 'guideline', 'guidelineVersion', 'version', 'reviewedAt', 'source', 'note', 'appliedAt']) {
+    if (out[k] !== undefined) ordered[k] = out[k];
+  }
+  ordered.sections = out.sections;
+  return ordered;
+}
+
+/**
+ * THE section resolver. Returns the ordered `[{id,label,group,custom?,retained?}]`
+ * this draft is actually made of:
+ *   - the draft's chosen structure, or the core eight when it has none;
+ *   - PLUS any section that still holds text but is not in that list, appended as
+ *     a `retained` entry. That last clause is the never-delete rule made visible:
+ *     unmapped content is not merely kept on disk, it keeps a place in the
+ *     document, the outline, the export and the numbering.
+ * Pure and cheap (one pass) — safe to call per render.
+ */
+export function draftSectionTypes(draft) {
+  const st = draft && draft.structure;
+  const base = (st && Array.isArray(st.sections) && st.sections.length) ? st.sections : SECTION_TYPES;
+  const secs = (draft && draft.sections && typeof draft.sections === 'object') ? draft.sections : null;
+  if (!secs) return base;
+  let extra = null;
+  const known = new Set(base.map((s) => s.id));
+  for (const id of Object.keys(secs)) {
+    if (known.has(id)) continue;
+    const s = secs[id];
+    if (!s || typeof s !== 'object' || !String(s.content || '').trim()) continue;
+    if (!extra) extra = [];
+    extra.push({ id, label: defaultSectionLabel(id), group: 'body', custom: !CORE_SECTION_ID_SET.has(id), retained: true });
+  }
+  return extra ? [...base, ...extra] : base;
+}
+
+/** The ordered section ids of a draft (see draftSectionTypes). Pure. */
+export function draftSectionIds(draft) {
+  return draftSectionTypes(draft).map((s) => s.id);
+}
+
+/** The draft's placement/numbering zone (group 'body'). Pure. */
+export function draftBodySectionIds(draft) {
+  return draftSectionTypes(draft).filter((s) => s.group === 'body').map((s) => s.id);
+}
+
+/** The label this draft gives a section id ('methods' → 'Methods'). Pure. */
+export function draftSectionLabel(draft, sectionId) {
+  const hit = draftSectionTypes(draft).find((s) => s.id === sectionId);
+  return hit ? hit.label : defaultSectionLabel(sectionId);
+}
 
 /** Short structured statements (single-line / short prose), separate from sections. */
 export const STATEMENT_TYPES = [
@@ -252,37 +384,66 @@ export function normalizeDraft(raw, nowIso = null) {
   out.templateId = JOURNAL_TEMPLATE_IDS.includes(raw.templateId) ? raw.templateId : base.templateId;
   out.citationStyle = CITATION_STYLE_IDS.includes(raw.citationStyle) ? raw.citationStyle : base.citationStyle;
   out.status = ['draft', 'reviewing', 'ready'].includes(raw.status) ? raw.status : 'draft';
+  /* 119.md §7 — the draft's SECTION STRUCTURE, normalized before the sections it
+     orders. Invalid or absent → the key is deleted, which is exactly what every
+     pre-119 draft is, so those blobs still normalize byte-identically. */
+  const structure = normalizeStructure(raw.structure);
+  if (structure) out.structure = structure; else delete out.structure;
   // sections — the base shape stays schemaVersion 2; the 73.md Part 8 provenance
   // fields ({sources, missing, inputsHash, locked}) are OPTIONAL and additive:
   // they are preserved when a stored blob has them and simply absent otherwise,
   // so old blobs normalize byte-identically and never need a migration.
-  out.sections = {};
-  for (const s of SECTION_TYPES) {
-    const r = (raw.sections && raw.sections[s.id]) || {};
-    out.sections[s.id] = {
+  const normalizeSection = (r0) => {
+    const r = r0 || {};
+    const sec = {
       content: typeof r.content === 'string' ? r.content : '',
       aiGenerated: !!r.aiGenerated,
       userEdited: !!r.userEdited,
       lastGeneratedAt: r.lastGeneratedAt || null,
       updatedAt: r.updatedAt || null,
     };
-    if (Array.isArray(r.sources)) out.sections[s.id].sources = r.sources;
-    if (Array.isArray(r.missing)) out.sections[s.id].missing = r.missing;
-    if (typeof r.inputsHash === 'string' && r.inputsHash) out.sections[s.id].inputsHash = r.inputsHash;
-    if (r.locked === true) out.sections[s.id].locked = true;
+    if (Array.isArray(r.sources)) sec.sources = r.sources;
+    if (Array.isArray(r.missing)) sec.missing = r.missing;
+    if (typeof r.inputsHash === 'string' && r.inputsHash) sec.inputsHash = r.inputsHash;
+    if (r.locked === true) sec.locked = true;
     // recs round — the availability vector of the live sources the generation saw
     // (guards OUTDATED detection against fetch blips). Optional + additive.
     if (r.sourceAvailability && typeof r.sourceAvailability === 'object') {
-      out.sections[s.id].sourceAvailability = { ...r.sourceAvailability };
+      sec.sourceAvailability = { ...r.sourceAvailability };
     }
     // 84.md — additive live-sync section fields (detached/approval/review stamps,
     // per-section dependency fingerprint, last-linked info). Preserved only when
     // present, so pre-84 blobs normalize byte-identically.
-    if (r.detached === true) out.sections[s.id].detached = true;
-    if (typeof r.approvedAt === 'string' && r.approvedAt) out.sections[s.id].approvedAt = r.approvedAt;
-    if (typeof r.reviewedAt === 'string' && r.reviewedAt) out.sections[s.id].reviewedAt = r.reviewedAt;
-    if (r.depState && typeof r.depState === 'object') out.sections[s.id].depState = { ...r.depState };
-    if (r.lastLinked && typeof r.lastLinked === 'object') out.sections[s.id].lastLinked = { ...r.lastLinked };
+    if (r.detached === true) sec.detached = true;
+    if (typeof r.approvedAt === 'string' && r.approvedAt) sec.approvedAt = r.approvedAt;
+    if (typeof r.reviewedAt === 'string' && r.reviewedAt) sec.reviewedAt = r.reviewedAt;
+    if (r.depState && typeof r.depState === 'object') sec.depState = { ...r.depState };
+    if (r.lastLinked && typeof r.lastLinked === 'object') sec.lastLinked = { ...r.lastLinked };
+    return sec;
+  };
+  out.sections = {};
+  const order = structure ? structure.sections : SECTION_TYPES;
+  const emitted = new Set();
+  for (const s of order) {
+    emitted.add(s.id);
+    out.sections[s.id] = normalizeSection(raw.sections && raw.sections[s.id]);
+  }
+  /* 119.md §7 (PINNED) — "Never delete content merely because the selected template
+     does not contain a matching section". Before this, normalizeDraft rebuilt
+     `sections` over a fixed id list and silently dropped everything else, so a
+     structure switch could not be made safe at any higher layer. Any section that
+     still holds text survives normalization whether the structure lists it or not;
+     `draftSectionTypes` then gives it a visible place as a RETAINED section.
+     Empty unlisted sections are dropped — nothing is lost and no phantom key
+     accumulates. Legacy drafts hold only core ids, so this loop adds nothing and
+     their bytes are unchanged. */
+  if (raw.sections && typeof raw.sections === 'object' && !Array.isArray(raw.sections)) {
+    for (const id of Object.keys(raw.sections)) {
+      if (emitted.has(id) || !SECTION_ID_RE.test(id)) continue;
+      const r = raw.sections[id];
+      if (!r || typeof r !== 'object' || !String(r.content || '').trim()) continue;
+      out.sections[id] = normalizeSection(r);
+    }
   }
   // statements
   out.statements = {};
@@ -409,4 +570,11 @@ export default {
   readManuscripts,
   migrateLegacyManuscript,
   sectionStatus,
+  // 119.md §7 — the per-draft structure layer.
+  normalizeStructure,
+  draftSectionTypes,
+  draftSectionIds,
+  draftBodySectionIds,
+  draftSectionLabel,
+  defaultSectionLabel,
 };

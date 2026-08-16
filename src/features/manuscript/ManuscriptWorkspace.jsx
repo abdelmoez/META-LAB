@@ -15,12 +15,14 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { C } from '../../frontend/workspace/ui/styles.js';
 import { InfoBox } from '../../frontend/workspace/ui/primitives.jsx';
-import { SECTION_IDS } from '../../research-engine/manuscript/index.js';
+import { draftSectionIds } from '../../research-engine/manuscript/index.js';
 import { useManuscript } from './useManuscript.js';
 import {
   OverviewPanel, EditorPanel, TablesPanel, FiguresPanel, ReferencesPanel, PrismaPanel, ExportPanel,
   UpdatesPanel, ExportValidationDialog,
 } from './manuscriptPanels.jsx';
+// 119.md §7 — the reporting-structure switcher (preview · diff · mapping · undo).
+import { StructureSwitcher, StructureChangeUndo } from './StructureSwitcher.jsx';
 import {
   ManuscriptToolbar, ManuscriptToolbarSkeleton, ManuscriptViewSwitcher,
   MANUSCRIPT_TAB_IDS, MS_PANEL_ID, msTabDomId,
@@ -223,6 +225,18 @@ export function ManuscriptWorkspace({ project, upd, initialSubtab, onSubtabChang
     if (id === 'updates' && refreshPlanRef.current) refreshPlanRef.current();
   }, [initialSubtab]);
 
+  /* 119.md §7 — the structure dialog lives HERE, above the panel host, for the same
+     reason ExportValidationDialog does: it is reachable from the toolbar and from
+     the Export destination, and applying a structure re-lays the whole document —
+     so it must not be a child of the panel it is about to rebuild. */
+  const [structureOpen, setStructureOpen] = useState(false);
+  const openStructure = useCallback(() => {
+    // A structure change re-reads the COMMITTED draft, so pending prose is flushed
+    // before the preview is computed (118.md §45) — the diff must be of real text.
+    if (m.flush) m.flush();
+    setStructureOpen(true);
+  }, [m]);
+
   const [exporting, setExporting] = useState(null); // null | 'word' | 'repro' | 'prisma' | 'prismaS'
   const [exportError, setExportError] = useState('');
   // 85.md B2 — pre-export validation review ({ model, validation, fetchedAt })
@@ -234,10 +248,12 @@ export function ManuscriptWorkspace({ project, upd, initialSubtab, onSubtabChang
   const [sectionRequest, setSectionRequest] = useState(null);
   const openSection = useCallback((id) => {
     if (id === 'references') { setTab('references'); return; }
-    if (!SECTION_IDS.includes(id)) { setTab('editor'); return; }
+    // 119.md §7 — the DRAFT'S sections: a jump can legitimately name a section a
+    // template introduced (CARE's Timeline) or one preserved from an older one.
+    if (!draftSectionIds(m.activeDraft).includes(id)) { setTab('editor'); return; }
     setSectionRequest({ id, at: Date.now() });
     setTab('editor');
-  }, [setTab]);
+  }, [setTab, m.activeDraft]);
 
   /* 118.md §65 — "View in manuscript" from the Tables / Figures managers. The
      manager and the inline representation are the SAME entity, so this navigates to
@@ -523,6 +539,8 @@ export function ManuscriptWorkspace({ project, upd, initialSubtab, onSubtabChang
        reading column). */
     <div data-testid="stitch-manuscript-workspace" style={splitOpen ? SPLIT_SHELL_STYLE : SHELL_STYLE}>
       <ManuscriptToolbar m={m} tab={tab} onTabChange={setTab}
+        /* 119.md §7 — "Structure: <name> ▾" opens the preview/diff/mapping dialog. */
+        onOpenStructure={openStructure}
         /* 118.md §12 — the documented right-hand slot, filled. It renders only on
            the Editor destination (the toolbar enforces that) and condenses with the
            rest of Level B. */
@@ -533,6 +551,16 @@ export function ManuscriptWorkspace({ project, upd, initialSubtab, onSubtabChang
         splitToggle={({ condensed }) => (
           <ManuscriptSplitToggle open={splitOpen} onToggle={toggleSplit} condensed={condensed} />
         )} />
+
+      {/* 119.md §7 — the structure switcher, and the in-context undo the switch
+          leaves behind. Both sit above the panels: the undo bar must stay visible
+          from whichever destination the researcher lands on after applying. */}
+      {structureOpen && <StructureSwitcher m={m} onClose={() => setStructureOpen(false)} />}
+      {m.lastStructureChange && (
+        <div style={{ maxWidth: 900, margin: '0 auto' }}>
+          <StructureChangeUndo m={m} />
+        </div>
+      )}
 
       {/* 85.md B2 — pre-export validation review. 118.md keeps it mounted ABOVE
           every panel so it is visible from whichever destination started the export. */}
@@ -651,7 +679,7 @@ export function ManuscriptWorkspace({ project, upd, initialSubtab, onSubtabChang
                 }} />
             )}
             {tab === 'prisma' && <PrismaPanel m={m} exporters={exporters} onNavigate={setTab} />}
-            {tab === 'export' && <ExportPanel m={m} exporters={exporters} onNavigate={setTab} />}
+            {tab === 'export' && <ExportPanel m={m} exporters={exporters} onNavigate={setTab} onOpenStructure={openStructure} />}
           </div>
         </div>
 

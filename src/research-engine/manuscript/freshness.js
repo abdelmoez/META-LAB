@@ -9,7 +9,7 @@
  * Pure — no DOM/React/network.
  */
 
-import { SECTION_IDS } from './model.js';
+import { draftSectionIds } from './model.js';
 
 /**
  * @param {object} args { outdated:{[id]:true}, contradictions:[{severity,section}],
@@ -63,7 +63,10 @@ export function perSectionStatus(draft, outdated = {}, contradictions = []) {
   const sections = (draft && draft.sections) || {};
   const withIssue = new Set((Array.isArray(contradictions) ? contradictions : []).map((c) => c && c.section).filter(Boolean));
   const out = {};
-  for (const id of SECTION_IDS) {
+  // 119.md §7 — the DRAFT'S sections, so a template-introduced section gets an
+  // outline badge like any other (it is simply never 'outdated': nothing generates
+  // it, so it carries no inputsHash).
+  for (const id of draftSectionIds(draft || {})) {
     const s = sections[id] || {};
     if (!String(s.content || '').trim()) { out[id] = 'empty'; continue; }
     if (s.locked) { out[id] = 'locked'; continue; }

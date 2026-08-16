@@ -14,7 +14,7 @@ import { computePrismaCounts } from './prismaCounts.js';
 import { getOutcomePairs, filterStudiesForOutcome } from '../import-export/journalSubmission.js';
 import { resolveAnalysis } from './analysisDescribe.js';
 import { TAU2_LABELS } from '../statistics/tau2.js';
-import { SECTION_TYPES } from './model.js';
+import { draftSectionTypes } from './model.js';
 import { checkPrismaConsistency } from '../search/searchMethodology.js';
 import { countPublications, caseSeriesCounts } from '../extraction/caseSeries.js';
 
@@ -137,7 +137,9 @@ export function checkConsistency(project, draft, opts = {}) {
   }
 
   // (e) Sections still containing [bracketed placeholders].
-  for (const s of SECTION_TYPES) {
+  // 119.md §7 — every section THIS draft has, so a leftover placeholder in a
+  // template-introduced or preserved section is reported like any other.
+  for (const s of draftSectionTypes(draft || {})) {
     const t = text(s.id);
     if (!clean(t)) continue;
     const n = (t.match(PLACEHOLDER_RE) || []).length;

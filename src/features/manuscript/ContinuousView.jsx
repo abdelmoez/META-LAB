@@ -22,7 +22,7 @@
  */
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
-  SECTION_TYPES, STATEMENT_TYPES, JOURNAL_TEMPLATES, sectionStatus,
+  SECTION_TYPES, STATEMENT_TYPES, JOURNAL_TEMPLATES, sectionStatus, draftSectionTypes,
 } from '../../research-engine/manuscript/index.js';
 import { RichSectionEditor } from './richEditor/RichSectionEditor.jsx';
 import { AbstractEditor } from './richEditor/AbstractEditor.jsx';
@@ -44,11 +44,25 @@ export const INK = {
 const SERIF = "Georgia,'Times New Roman',serif";
 const SANS = "'IBM Plex Sans',sans-serif";
 
-/** The sections that carry prose in the document body (title/abstract lead it). */
+/**
+ * The sections that carry prose in the document body (title/abstract lead it).
+ * 119.md §7 — the CORE default; `bodySectionsOf(draft)` is what the document
+ * actually renders, so a template's own sections take their place in the page.
+ */
 export const BODY_SECTIONS = SECTION_TYPES.filter((s) => s.id !== 'title' && s.id !== 'abstract');
 
-/** Every section the continuous document anchors, in reading order. */
+/** Every section the continuous document anchors, in reading order (core default). */
 export const DOC_SECTION_IDS = SECTION_TYPES.map((s) => s.id);
+
+/** The body sections of ONE draft, in its own structure's order. Pure. */
+export function bodySectionsOf(draft) {
+  return draftSectionTypes(draft).filter((s) => s.id !== 'title' && s.id !== 'abstract');
+}
+
+/** Every section id the continuous document anchors for ONE draft. Pure. */
+export function docSectionIdsOf(draft) {
+  return draftSectionTypes(draft).map((s) => s.id);
+}
 
 /** Attribute that marks a scroll/observe anchor: `[data-ms-section="methods"]`. */
 export const MS_SECTION_ATTR = 'data-ms-section';
@@ -583,6 +597,12 @@ export function ContinuousView({
     return (tpl && tpl.requiredStatements) || [];
   }, [draft.templateId]);
 
+  /* 119.md §7 — the document's own section list. Derived from the LIVE draft, so
+     applying a template re-lays the page immediately (and a preserved section keeps
+     its editor rather than disappearing with the researcher's paragraph in it). */
+  const bodySections = useMemo(() => bodySectionsOf(draft), [draft]);
+  const docSectionIds = useMemo(() => bodySections.map((s) => s.id), [bodySections]);
+
   // 118.md §16 — the observer is rebuilt when the mounted section SET changes; it
   // is not rebuilt on every keystroke (the anchors are stable DOM nodes).
   useActiveSectionObserver(rootRef, {
@@ -592,7 +612,7 @@ export function ContinuousView({
     // The reading band is measured from the toolbar, so a toolbar that changes
     // height (responsive density, Focus Mode) rebuilds the observer rather than
     // leaving the band a row out of place.
-    deps: `${m.activeId}:${stickyOffset}:${DOC_SECTION_IDS.join(',')}`,
+    deps: `${m.activeId}:${stickyOffset}:${docSectionIds.join(',')}`,
   });
 
   return (
@@ -618,19 +638,33 @@ export function ContinuousView({
         <AbstractEditor {...abstractProps()} />
       </section>
 
-      {/* ── body (§11/§60) ── */}
-      {BODY_SECTIONS.map((s) => {
+      {/* ── body (§11/§60; 119.md §7 — the draft's own structure) ── */}
+      {bodySections.map((s) => {
         const sec = sections[s.id] || {};
         // `mountKey` is the editor's own remount identity (section + generation
         // stamp): the DOM is rendered from props exactly ONCE per key, so it must
         // be applied as the React key here, not merely spread as a prop.
         const props = editorProps(s.id);
         return (
-          <section key={s.id} data-ms-section={s.id} data-testid={docSectionTestId(s.id)}>
+          <section key={s.id} data-ms-section={s.id} data-testid={docSectionTestId(s.id)}
+            data-retained={s.retained ? 'true' : undefined}>
             <SectionChrome sectionId={s.id} label={s.label} section={sec}
               outdated={!!outdated[s.id]} onRegenerate={onRegenerate} onToggleLock={onToggleLock}
               onToggleWhy={toggleWhy} whyOpen={whyOpen === s.id} />
             <DocHeading>{s.label}</DocHeading>
+            {/* 119.md §7 — the "clearly labeled area" for content the current
+                template has no home for. It is IN the document, editable, exported,
+                and says exactly why it is here. Nothing is ever deleted for it. */}
+            {s.retained && (
+              <div data-testid={`stitch-manuscript-retained-${s.id}`}
+                style={{
+                  fontFamily: SANS, fontSize: 11, color: INK.amber, background: INK.amberBg,
+                  border: `1px solid ${INK.amber}33`, borderRadius: 6,
+                  padding: '5px 9px', margin: '0 0 8px', lineHeight: 1.55,
+                }}>
+                Not part of the current template — kept from your previous structure. Nothing was deleted; move this text into another section whenever you like.
+              </div>
+            )}
             {whyOpen === s.id && renderWhy && renderWhy(s.id, sec)}
             <RichSectionEditor key={props.mountKey} ref={props.apiRef} {...props} />
           </section>

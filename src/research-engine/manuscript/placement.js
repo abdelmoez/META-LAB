@@ -23,7 +23,7 @@
  */
 
 import {
-  ASSET_TOKEN_RE, BODY_SECTION_IDS, orderedSections,
+  ASSET_TOKEN_RE, BODY_SECTION_IDS, isBodySection, orderedSections,
   PLAIN_MENTION_RE, TABLE_CAPTION_LINE_RE, assetKindLabel,
 } from './refTokens.js';
 
@@ -145,7 +145,10 @@ export function computePlacements({ sections, numbering, assets } = {}) {
 
   for (const sec of secs) {
     const content = (sec && sec.content) || '';
-    if (bodySet.has(sec && sec.id)) {
+    // 119.md §7 — a template's own body sections (CARE's Timeline, CONSORT's
+    // Harms…) place assets exactly like the core six; `orderedSections` carries
+    // the draft's group so this never needs the core id list when it has a draft.
+    if (isBodySection(sec, bodySet)) {
       const blocks = sectionBlocks(content);
       for (let bi = 0; bi < blocks.length; bi += 1) {
         const re = new RegExp(ASSET_TOKEN_RE.source, 'g');

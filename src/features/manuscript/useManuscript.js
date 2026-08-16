@@ -50,7 +50,12 @@ import {
   assetToken,
   // 117.md §5 — the canonical section id list, for the live structural signature
   // that decides when the derived object registry must be rebuilt.
-  SECTION_IDS,
+  // 119.md §7 — read PER DRAFT, so a template's own sections are in the signature.
+  draftSectionIds, draftSectionTypes,
+  // 119.md §7 — the template registry: preview/apply a reporting structure, and
+  // the pure customization writers (rename/move one section).
+  planStructureSwitch, applyStructureSwitch, renameDraftSection, moveDraftSection,
+  draftStructure,
   // 101.md §4/§5/§8/§9/§10 — the live fact layer: resolve project-derived facts
   // at render time, notice when one changes, and let a researcher pin a previous
   // wording without falsifying the project record.
@@ -88,6 +93,15 @@ import { gradeCertaintyEnabled, sofCertaintyMap } from '../../frontend/workspace
 // returns a no-op shape), so the manuscript keeps working in any shell that has not
 // mounted one yet.
 import { useProjectHistory } from '../../frontend/history/HistoryContext.jsx';
+// 119.md §6 — a demographics value edited from the manuscript is an EXTRACTION write.
+// It goes through the same pure applier, the same history contract and the same
+// per-value provenance the extraction surfaces use; there is no second copy of the data.
+import {
+  buildExtractionEntry, applyExtractionWrite, findStudyRow, matchesExpected,
+  isExtractionRowLocked, EXTRACTION_HISTORY_KIND, EXTRACTION_SURFACE,
+  EXTRACTION_LOCKED_REFUSAL,
+} from '../../research-engine/interaction/extractionHistory.js';
+import { demographicsCellRef, demographicsCellPatch } from '../../research-engine/extraction/demographicsTable.js';
 // 108.md §17 / 117.md §88 — the shared undo-feedback queue (the bottom-left snackbar
 // with an entry-targeted Undo button). Inert outside a provider, exactly like
 // useProjectHistory, so a shell that has not mounted one simply gets no toast.
@@ -783,7 +797,9 @@ export function useManuscript(project, upd) {
     if (!liveDraft) return '';
     const re = new RegExp(CITATION_TOKEN_RE.source, 'g');
     let sig = '';
-    for (const s of SECTION_IDS) {
+    // 119.md §7 — the draft's own sections, so a citation typed into a section a
+    // template introduced still moves the bibliography.
+    for (const s of draftSectionIds(liveDraft)) {
       const c = (liveDraft.sections && liveDraft.sections[s] && liveDraft.sections[s].content) || '';
       if (c.indexOf('[[cite:') === -1) continue;
       sig += `${s}:${(c.match(re) || []).join(',')};`;
@@ -928,7 +944,7 @@ export function useManuscript(project, upd) {
     // every other figure's number lags behind the document).
     const re = /\[\[(?:tblcap|figcap|table|figure):[a-z0-9:-]+\]\]/g;
     let sig = '';
-    for (const s of SECTION_IDS) {
+    for (const s of draftSectionIds(liveDraft)) {
       const c = (liveDraft.sections && liveDraft.sections[s] && liveDraft.sections[s].content) || '';
       if (c.indexOf('[[') === -1) continue;
       sig += `${s}:${(c.match(re) || []).join(',')};`;
@@ -1352,14 +1368,107 @@ export function useManuscript(project, upd) {
     })));
   }, [mutateActive, project, genOpts, prismaCounts, primary]);
 
+  /* 119.md §7 — the EXTERNAL-REPLACEMENT epoch.
+   *
+   * `RichSectionEditor` renders its DOM exactly once per mount key (ARCH-118), and
+   * that key is section identity + GENERATION stamp — which is correct for the two
+   * ways prose used to change from outside the editor (a generate, a draft switch)
+   * and silently wrong for the two that arrived later: a snapshot RESTORE and a
+   * structure switch that MERGES one section's text into another. Both rewrite
+   * `sections[id].content` without touching `lastGeneratedAt`, so the mounted editor
+   * kept showing the pre-restore text while the stored draft held the new one — and
+   * the next keystroke committed the stale DOM back over it.
+   *
+   * The epoch is a mount-lifetime counter, never persisted (no blob change, no
+   * byte-stability question): it simply says "the draft's prose was replaced
+   * wholesale — every editor must re-mount from the committed draft".
+   */
+  const [contentEpoch, setContentEpoch] = useState(0);
+  const bumpContentEpoch = useCallback(() => setContentEpoch((n) => n + 1), []);
+
   const restoreSnapshotById = useCallback((id) => {
     mutateActive((draft) => draftOf(restoreSnapshot(draft, id, { nowIso: new Date().toISOString() })));
+    bumpContentEpoch();
     refreshSyncPlan();
-  }, [mutateActive, refreshSyncPlan]);
+  }, [mutateActive, refreshSyncPlan, bumpContentEpoch]);
 
   const removeSnapshotById = useCallback((id, opts = {}) => {
     mutateActive((draft) => draftOf(removeSnapshot(draft, id, { force: !!opts.force })));
   }, [mutateActive]);
+
+  /* ── 119.md §7 — reporting STRUCTURE (template) switching ───────────────────
+   *
+   * Three rules make this safe, and all three are structural:
+   *   1. PREVIEW is computed from the same pure planner APPLY consumes, so the
+   *      dialog can never show a diff the write does not perform;
+   *   2. APPLY takes a snapshot of the whole draft FIRST, inside the SAME
+   *      `mutateActive` (one serialized write, one autosave) — that snapshot IS
+   *      the undo, so "Undo a template change" and "Restore a prior manuscript
+   *      snapshot" are one mechanism rather than two that could disagree;
+   *   3. nothing here touches `templateId` or `citationStyle`. A structure is not
+   *      a journal profile and is not a citation style (§7's whole first ask).
+   */
+  const [lastStructureChange, setLastStructureChange] = useState(null);
+
+  /** Pure preview against the LIVE draft — no write, safe to call per keystroke. */
+  const previewStructure = useCallback((structureId, mapping) => {
+    const d = liveDraft || activeDraft;
+    if (!d) return null;
+    return planStructureSwitch(d, structureId, { mapping: mapping || {} });
+  }, [liveDraft, activeDraft]);
+
+  const applyStructure = useCallback((structureId, mapping) => {
+    if (!activeDraft) return null;
+    // Pending prose must be IN the draft before it is re-laid-out, or a sentence
+    // typed 300 ms ago would be mapped from the pre-edit text (118.md §45 flush).
+    if (flushPending) flushPending();
+    let outcome = null;
+    mutateActive((draft) => {
+      const nowIso = new Date().toISOString();
+      const before = createSnapshot(draft, projectRef.current, {
+        label: `Before structure change → ${structureId}`,
+        frozen: false, author: actorNameRef.current,
+        appVersion: (typeof window !== 'undefined' && window.__APP_VERSION__) || null,
+        nowIso, genOpts: { ...genOpts, prismaCounts, primary },
+      });
+      const res = applyStructureSwitch(before.draft, structureId, { mapping: mapping || {}, nowIso });
+      if (!res.applied) { outcome = { applied: false, reason: res.reason }; return draft; }
+      outcome = {
+        applied: true, structureId, snapshotId: before.snapshot.id,
+        merged: res.merged, preserved: res.preserved, at: nowIso,
+        label: (res.draft.structure && res.draft.structure.label) || structureId,
+      };
+      return res.draft;
+    });
+    if (outcome && outcome.applied) {
+      setLastStructureChange(outcome);
+      // A merge rewrites a section's content from outside its editor — remount.
+      bumpContentEpoch();
+    }
+    // The plan diffs CURRENT vs PROPOSED per section; the section set just moved.
+    refreshSyncPlan();
+    return outcome;
+  }, [activeDraft, flushPending, mutateActive, genOpts, prismaCounts, primary, refreshSyncPlan, bumpContentEpoch]);
+
+  /** §7 "Undo a template change" — restore the snapshot apply took first. */
+  const undoStructureChange = useCallback(() => {
+    if (!lastStructureChange || !lastStructureChange.snapshotId) return false;
+    restoreSnapshotById(lastStructureChange.snapshotId);
+    setLastStructureChange(null);
+    return true;
+  }, [lastStructureChange, restoreSnapshotById]);
+
+  const dismissStructureChange = useCallback(() => setLastStructureChange(null), []);
+
+  /** §7 "Customize the resulting structure" — rename / reorder ONE section. */
+  const renameSection = useCallback((sectionId, label) => {
+    mutateActive((draft) => draftOf(renameDraftSection(draft, sectionId, label, { nowIso: new Date().toISOString() })));
+  }, [mutateActive]);
+
+  const moveSection = useCallback((sectionId, delta) => {
+    if (flushPending) flushPending();
+    mutateActive((draft) => draftOf(moveDraftSection(draft, sectionId, delta, { nowIso: new Date().toISOString() })));
+  }, [mutateActive, flushPending]);
 
   /* ── mutations ── */
   const updateSection = useCallback((id, content) => {
@@ -1645,6 +1754,123 @@ export function useManuscript(project, upd) {
    * named, undoable action ("Merge references", "Delete reference", …). The op id is
    * null on the undo/redo path — an executor must never record what it is replaying.
    */
+
+  /* ═══════════ 119.md §6 — editing extraction data FROM the manuscript ═══════════
+   *
+   * §6: "Editing a data value from the Manuscript Editor must clearly indicate that the
+   * underlying extracted project data will change" and "such edits must update the same
+   * structured source model, not create a disconnected copy". So this is not a manuscript
+   * write at all — it is an extraction write issued from here:
+   *
+   *   • the value lands on the studies[] row through `applyExtractionWrite`, the same
+   *     pure applier the Pecan engine and its undo executor share;
+   *   • it is stamped with per-value provenance (method 'manual', this actor, now), so
+   *     the audit trail says a human typed it and where;
+   *   • it records a 108.md history entry with complete prior payload + preconditions,
+   *     so Ctrl+Z reverses it and refuses if a collaborator moved the value first;
+   *   • a completed/locked article, and a read-only project, are refused outright.
+   *
+   * Returns { ok } or { ok:false, reason, detail } — the caller shows the reason; nothing
+   * here silently no-ops.
+   */
+  const persistProjectStudies = useCallback((list) => {
+    // The SAME wholesale project write every other project-level surface uses
+    // (`upd(field, value)` — cf. writeLibrary below); no second save channel (118 §J).
+    try {
+      const r = upd('studies', list);
+      if (r && typeof r.then === 'function') {
+        r.then(() => { setSaveState('saved'); setLastError(null); })
+          .catch((e) => { setSaveState('error'); setLastError((e && e.message) || 'Could not save the extracted value.'); });
+      } else { setSaveState('saved'); setLastError(null); }
+      return true;
+    } catch (e) {
+      setSaveState('error');
+      setLastError((e && e.message) || 'Could not save the extracted value.');
+      return false;
+    }
+  }, [upd]);
+
+  /* THE extraction applier — the very function the Pecan engine's own writeStudy uses
+     (108.md §8): article-level fan-out to sibling case rows, provenance attached where a
+     value was set and DELETED where the entry is null (which is what makes an undo
+     restore "no source" instead of a fabricated 'manual' stub). */
+  const writeExtractionRow = useCallback((studies, id, patch, provenance, at) => (
+    applyExtractionWrite(studies, id, patch, provenance || {}, { at })
+  ), []);
+
+  const editExtractionValue = useCallback((studyId, patch, opts = {}) => {
+    const proj = projectRef.current || {};
+    if ((proj._permissions && proj._permissions.readOnly) || proj._readOnly) {
+      return { ok: false, reason: 'read-only', detail: 'This project is read-only for you.' };
+    }
+    const studies = Array.isArray(proj.studies) ? proj.studies : [];
+    const row = findStudyRow(studies, studyId);
+    if (!row) return { ok: false, reason: 'not-found', detail: 'That study is no longer in this project.' };
+    if (isExtractionRowLocked(row)) return { ok: false, reason: 'locked', detail: EXTRACTION_LOCKED_REFUSAL };
+    const keys = Object.keys(patch || {});
+    if (!keys.length) return { ok: false, reason: 'empty' };
+
+    const at = new Date().toISOString();
+    const provenance = {};
+    for (const k of keys) {
+      if (patch[k] === '' || patch[k] == null) continue;   // clearing leaves no source claim
+      provenance[k] = { method: 'manual', at, by: actorNameRef.current || '' };
+    }
+    const entry = buildExtractionEntry({
+      study: row, patch, provenanceNext: provenance,
+      surface: EXTRACTION_SURFACE.MANUSCRIPT, fieldLabel: opts.fieldLabel || '', discrete: true, at: Date.now(),
+    });
+    if (!entry) return { ok: false, reason: 'unchanged' };
+    setSaveState('saving');
+    persistProjectStudies(writeExtractionRow(studies, studyId, patch, provenance, at));
+    historyRef.current.record(entry);
+    return { ok: true };
+  }, [writeExtractionRow, persistProjectStudies]);
+
+  /* The 108.md executor for the entries above. It re-validates against the FRESHEST
+     project (never the closure the entry was recorded in), refuses a locked row or a
+     value a collaborator has since moved, and writes the inverse through the SAME
+     applier — so undo is the forward path run backwards, not a second write channel.
+
+     One registration per kind: the Extraction surfaces register the same kind, and only
+     ONE of them is ever mounted (they are different workspace tabs, rendered
+     conditionally). Should that ever change, the last mount wins — and it still applies
+     the inverse through the same pure applier, so an undo stays correct either way. */
+  const registerHistoryExecutor = history.registerExecutor;
+  useEffect(() => registerHistoryExecutor(EXTRACTION_HISTORY_KIND, async (op) => {
+    const proj = projectRef.current || {};
+    if ((proj._permissions && proj._permissions.readOnly) || proj._readOnly) return { ok: false, reason: 'refused' };
+    const studies = Array.isArray(proj.studies) ? proj.studies : [];
+    const row = findStudyRow(studies, op && op.studyId);
+    if (!row) return { ok: false, reason: 'refused' };
+    if (isExtractionRowLocked(row)) return { ok: false, reason: 'refused', detail: EXTRACTION_LOCKED_REFUSAL };
+    if (!matchesExpected(row, op.expect)) return { ok: false, reason: 'refused' };
+    const at = new Date().toISOString();
+    persistProjectStudies(writeExtractionRow(studies, op.studyId, op.fields, op.provenance, at));
+    return true;
+  }), [registerHistoryExecutor, writeExtractionRow, persistProjectStudies]);
+
+  /**
+   * §6 — resolve a table cell to the extraction value behind it BEFORE anything is
+   * written, so the editor can name the study, the field and the arm in its
+   * upstream-impact notice. Returns null for a cell that is not project extraction data
+   * (the builder's own Study / Design / Outcome columns), which is exactly how the UI
+   * knows which cells are editable.
+   */
+  const demographicsCell = useCallback((columnKey, studyId) => (
+    demographicsCellRef(projectRef.current || {}, columnKey, studyId)
+  ), []);
+
+  /** §6 — write one demographics cell: { type?, values?, state? } → the extraction row. */
+  const editDemographicsCell = useCallback((columnKey, studyId, next) => {
+    const ref = demographicsCellRef(projectRef.current || {}, columnKey, studyId);
+    if (!ref) return { ok: false, reason: 'not-found' };
+    const patch = demographicsCellPatch(ref, next);
+    if (!Object.keys(patch).length) return { ok: false, reason: 'empty' };
+    return editExtractionValue(ref.studyId, patch, {
+      fieldLabel: ref.armLabel ? `${ref.label} (${ref.armLabel})` : ref.label,
+    });
+  }, [editExtractionValue]);
 
   /**
    * 117.md §88 — one history entry per library action, plus the undo-carrying
@@ -2182,6 +2408,11 @@ export function useManuscript(project, upd) {
     runMeta,
     gradeByOutcome,
     prismaCounts, primary, tables, references, readiness, insights, staleness,
+    /* 119.md §6 — the demographics/study-characteristics table stays CONNECTED to the
+       extraction data it renders: `demographicsCell` resolves a cell to the value behind
+       it (for the upstream-impact notice) and `editDemographicsCell` writes it back
+       through the extraction path with provenance, autosave and undo. */
+    demographicsCell, editDemographicsCell, editExtractionValue,
     /* 117.md §26-§39 — the reference-library surface. `references` above is the
        ORDERED, formatted bibliography (each row carrying `cited`); everything here
        is what the library manager, the citation picker and the chip menu need. */
@@ -2262,6 +2493,15 @@ export function useManuscript(project, upd) {
     syncPlan, refreshSyncPlan, decide, acceptAllSafe,
     snapshots: (activeDraft && activeDraft.snapshots) || [],
     createSnapshotNow, restoreSnapshotById, removeSnapshotById,
+    /* 119.md §7 — the template surface. `structure` is the RESOLVED structure (an
+       absent key resolves to IMRAD), `sectionTypes` the ordered section list every
+       view renders from, and the rest is preview → apply → undo → customize. */
+    structure: draftStructure(activeDraft || {}),
+    sectionTypes: draftSectionTypes(liveDraft || activeDraft || {}),
+    previewStructure, applyStructure, undoStructureChange, dismissStructureChange,
+    lastStructureChange, renameSection, moveSection,
+    // The mount-key epoch every editor factory must fold in (see bumpContentEpoch).
+    contentEpoch,
     updateSection, generate, refreshBlock, refreshAllBlocks,
     setMeta, setMetaDebounced, setStatement, updateDraft, addDraft, removeDraft,
     flush: flushPending,

@@ -6,6 +6,11 @@
  */
 
 export * from './model.js';
+// 119.md §7 — the template registry: reporting STRUCTURES (section sets layered
+// over the closed core registry, each carrying its guideline + version + reviewed
+// date), the journal-PROFILE provenance layer, and the pure switch/preview/apply
+// primitives. Structure ≠ journal profile ≠ citation style — three dimensions.
+export * from './templates.js';
 export * from './sourceHash.js';
 export * from './prismaCounts.js';
 export * from './citations.js';
