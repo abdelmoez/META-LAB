@@ -30,7 +30,7 @@ import { alpha } from '../../../frontend/theme/tokens.js';
 import {
   mdToHtml, htmlToMd, citeChipHtml, citeChipLabel, citeChipAria,
   assetChipHtml, assetChipLabel, assetChipAria,
-  factChipText, factOf,
+  factChipText, factOf, stripInlineMd,
   CITE_CHIP_CLASS, ASSET_CHIP_CLASS, FACT_CHIP_CLASS, INPUT_CHIP_CLASS,
   TABLE_CAPTION_CLASS, TABLE_CAPTION_NUM_CLASS, TABLE_CAPTION_TITLE_CLASS,
   // 119.md §5 — the uploaded-figure block.
@@ -45,10 +45,18 @@ import { parseCiteIds } from '../../../research-engine/manuscript/citations.js';
 // 117.md §4 — a new table is inserted WITH its caption marker (identity + title).
 import { makeCaptionedTableMd, applyTableOp } from './tableOps.js';
 import {
-  mintManualTableId, remintDuplicateCaptions, formatCaptionPrefix, tableCaptionLine,
+  mintManualTableId, formatCaptionPrefix, tableCaptionLine,
   // 119.md §5 — the uploaded-figure marker grammar.
-  figureCaptionLine, dropDuplicateFigureMarkers,
+  figureCaptionLine,
 } from '../../../research-engine/manuscript/refTokens.js';
+/* 120.md §7 — the PURE half of the Office-table import (identity minting, the Word
+   caption harvest, the TSV grid test, the duplicate re-mint and the figure-marker
+   rule). It is a separate module so the whole pipeline is unit-testable in Node —
+   the editor below only supplies the clipboard and the one insertion call. */
+import { transformPastedMd, hasPipeTableBlock, tsvToPipeTable } from './pasteTransform.js';
+/* 120.md §5 — the PURE half of the picker-session caret bookmark: the rule that
+   decides whether a remembered position is still the same place in the text. */
+import { logicalContext, resolveContext } from './caretBookmark.js';
 import { SHOW_CHANGES_CSS, indexFactChanges, factChipTitle } from '../showChanges.js';
 // 117.md §44 — an overlay that consumes an Escape owns the fullscreen exit it causes.
 import { markOverlayEscape } from '../../../frontend/focus/overlayEscapeLatch.js';
@@ -283,6 +291,12 @@ export function ensureTrailingParagraph(el) {
   p.appendChild(doc.createElement('br'));
   el.appendChild(p);
   return true;
+}
+
+/** 120.md §7 — the first line of a clipboard payload, for the one-line title
+    islands. Pure; exported so the unit suite can pin it. */
+export function firstLineOf(s) {
+  return String(s == null ? '' : s).replace(/\r\n?/g, '\n').split('\n')[0].trim();
 }
 
 export const RichSectionEditor = forwardRef(function RichSectionEditor({
@@ -1334,7 +1348,25 @@ export const RichSectionEditor = forwardRef(function RichSectionEditor({
      See api.insertTable for why this is idempotency rather than debouncing. */
   const insertOpIds = useRef(new Map());
 
+  /* ══════════ 120.md §5 — the "citation lands at the start of the section" bug ══
+   *
+   * `rememberSelection` is wired to the root's onFocus. `focusWithSelection` calls
+   * el.focus() to bring DOM focus back after a toolbar button or a picker took it —
+   * and that focus() fires onFocus SYNCHRONOUSLY, AFTER the browser has installed
+   * its own default caret for a newly-focused contentEditable, which is position 0.
+   * So the very act of restoring focus overwrote `savedRange.current` with a
+   * position-0 caret BEFORE the restore could read it: every insertion whose live
+   * selection had been lost landed at the beginning of the section, and the
+   * intended caret-at-END fallback below was dead code that could never run.
+   *
+   * The flag makes restoration ATOMIC: while it is set, the passive refreshers
+   * (focus/keyup/mouseup/input) do not touch the saved caret. It is set and cleared
+   * synchronously around the focus() call, so nothing else can observe it.
+   */
+  const restoringRef = useRef(false);
+
   const rememberSelection = () => {
+    if (restoringRef.current) return;
     const sel = typeof window !== 'undefined' && window.getSelection && window.getSelection();
     if (!sel || !sel.rangeCount || !rootRef.current) return;
     const r = sel.getRangeAt(0);
@@ -1367,13 +1399,23 @@ export const RichSectionEditor = forwardRef(function RichSectionEditor({
     if (inside && live) return true;
     const sel0 = typeof window !== 'undefined' && window.getSelection && window.getSelection();
     const keep = (live && sel0 && sel0.rangeCount) ? sel0.getRangeAt(0).cloneRange() : null;
-    el.focus();
+    /* 120.md §5 — read the saved caret into a LOCAL before focus() can clobber it,
+       and suppress the passive refresher for the duration of the call. Belt and
+       braces on purpose: the local is what this function uses, the flag is what
+       protects every OTHER reader of savedRange (the bookmark, the table ops) from
+       a position-0 caret this restoration invented. */
+    const saved = savedRange.current;
+    restoringRef.current = true;
+    try { el.focus(); } finally { restoringRef.current = false; }
     const sel = window.getSelection();
     if (!sel) return true;
     sel.removeAllRanges();
     if (keep) sel.addRange(keep);
-    else if (savedRange.current && el.contains(savedRange.current.commonAncestorContainer)) {
-      sel.addRange(savedRange.current);
+    else if (saved && el.contains(saved.commonAncestorContainer)) {
+      // Clone: a Range handed to the selection is live in some engines, and the
+      // saved caret must not be dragged along by the next cursor movement.
+      savedRange.current = saved;
+      sel.addRange(saved.cloneRange());
     } else {
       const r = document.createRange();
       r.selectNodeContents(el);
@@ -1851,6 +1893,292 @@ export const RichSectionEditor = forwardRef(function RichSectionEditor({
     return true;
   };
 
+  /* ══════════ 120.md §5 — the picker-session caret bookmark ══════════
+   *
+   * §5's required lifecycle is: capture the selection BEFORE the popover, the
+   * search input or the portal takes focus; let the researcher search
+   * asynchronously; map the saved position through whatever happened to the
+   * document meanwhile; insert THERE; and if it cannot be found again, say so
+   * rather than inserting somewhere else.
+   *
+   * `savedRange` cannot serve on its own. It is a raw DOM Range that is passively
+   * refreshed, and it dies whenever the section remounts (mount key = active draft
+   * + section + generation stamp + content epoch), whenever a whole-table
+   * replacement swaps the DOM out from under it, and whenever Section View
+   * switches away. A bookmark therefore carries BOTH:
+   *
+   *   · `range`   — the live Range, used when its container is still connected to
+   *                 this root. Exact, and the case that holds ~always.
+   *   · `logical` — { blockIndex, charOffset, before, after }: which top-level
+   *                 block, how far into its text, and what the text either side
+   *                 said. Survives a remount, because it describes the TEXT rather
+   *                 than the nodes. The context strings are verified before the
+   *                 position is used, and an ambiguous match is refused (see
+   *                 caretBookmark.js).
+   *
+   * There is no third fallback. "Insert at the start of the section" is the exact
+   * behaviour §5 exists to remove.
+   */
+  const bookmarkRef = useRef(null);
+
+  /** The nested editing island (a caption/figure title) a node sits in, or null. */
+  const titleHostOf = (node) => {
+    let el = node && (node.nodeType === 1 ? node : node.parentElement);
+    while (el && el !== rootRef.current) {
+      if (el.getAttribute && el.getAttribute('contenteditable') === 'true') return el;
+      el = el.parentElement;
+    }
+    return null;
+  };
+
+  /** Snapshot a caret position as { blockIndex, charOffset, before, after }. */
+  const caretLogicalOf = (r) => {
+    const el = rootRef.current;
+    if (!el || !r) return null;
+    const top = topBlockOf(r.endContainer);
+    if (!top) return null;
+    const blockIndex = significantChildren(el).indexOf(top);
+    if (blockIndex < 0) return null;
+    let offset = 0;
+    try {
+      const pre = document.createRange();
+      pre.selectNodeContents(top);
+      pre.setEnd(r.endContainer, r.endOffset);
+      offset = pre.toString().length;
+    } catch { return null; }
+    return { blockIndex, ...logicalContext(top.textContent || '', offset) };
+  };
+
+  /** Character offset within a block → a collapsed Range, never inside an atomic
+      chip (a chip is contenteditable=false; a caret "inside" one is not a caret). */
+  const rangeAtTextOffset = (top, offset) => {
+    if (!top || typeof document === 'undefined') return null;
+    /* A top-level block is not necessarily an ELEMENT. Typing the first run into an
+       empty contentEditable leaves the text as a bare text node child of the
+       editing host in Blink, and that node is a perfectly ordinary block of this
+       document — treating it as "not a block" made every bookmark taken in a
+       freshly typed section unresolvable. Reproduced in
+       manuscript-citation-caret-120.spec.ts. */
+    if (top.nodeType === 3) {
+      const rt = document.createRange();
+      rt.setStart(top, Math.max(0, Math.min(offset, (top.nodeValue || '').length)));
+      rt.collapse(true);
+      return rt;
+    }
+    const walker = document.createTreeWalker(top, NodeFilter.SHOW_TEXT, null);
+    let seen = 0;
+    let node = null;
+    while (walker.nextNode()) {
+      const t = walker.currentNode;
+      const len = (t.nodeValue || '').length;
+      if (seen + len >= offset) { node = t; break; }
+      seen += len;
+    }
+    const r = document.createRange();
+    if (!node) { r.selectNodeContents(top); r.collapse(false); return r; }
+    let atomic = null;
+    let up = node.parentElement;
+    while (up && up !== top && up !== rootRef.current) {
+      if (up.getAttribute && up.getAttribute('contenteditable') === 'false') atomic = up;
+      up = up.parentElement;
+    }
+    if (atomic) { r.setStartAfter(atomic); r.collapse(true); return r; }
+    const max = (node.nodeValue || '').length;
+    r.setStart(node, Math.max(0, Math.min(offset - seen, max)));
+    r.collapse(true);
+    return r;
+  };
+
+  /** Re-resolve a logical position against the CURRENT DOM, or null (refuse). */
+  const rangeFromLogical = (logical) => {
+    const el = rootRef.current;
+    if (!el || !logical) return null;
+    // Elements AND bare text nodes — see rangeAtTextOffset for why both are blocks.
+    const blocks = significantChildren(el);
+    const offsetIn = (b) => resolveContext(b.textContent || '', logical);
+    const top0 = blocks[logical.blockIndex] || null;
+    let top = top0;
+    let off = top ? offsetIn(top) : null;
+    if (off == null) {
+      /* The block itself moved (a paste or a generation inserted blocks above it).
+         Accept a match elsewhere ONLY when exactly one block in the section can
+         claim this context — two candidates is exactly the "never insert into the
+         wrong paragraph silently" case, and it refuses. */
+      let hit = null;
+      for (const b of blocks) {
+        const o = offsetIn(b);
+        if (o == null) continue;
+        if (hit) return null;
+        hit = { b, o };
+      }
+      if (!hit) return null;
+      top = hit.b;
+      off = hit.o;
+    }
+    return rangeAtTextOffset(top, off);
+  };
+
+  /**
+   * Is the bookmark's LIVE range still the place it was taken from?
+   *
+   * A DOM Range is live in a way that defeats the obvious test. When the nodes it
+   * points at are removed, the browser does not invalidate it — it RE-POINTS it at
+   * the surviving parent. A section whose children are all replaced (a regenerate,
+   * a snapshot restore, a structure merge) therefore leaves the saved range
+   * collapsed at `(root, 0)`, which `root.contains(...)` accepts without complaint
+   * — and inserting there is exactly the start-of-section behaviour §5 exists to
+   * remove. Reproduced under chromium in manuscript-citation-caret-120.spec.ts.
+   *
+   * So the live range counts only when the TEXT around it still says what it said
+   * when the bookmark was taken. If it does not, the logical re-resolution runs and
+   * may still find the position honestly; if that fails too, the caller refuses.
+   */
+  const liveRangeStillValid = (r, logical) => {
+    if (!logical) return true;            // nothing to verify against — best effort
+    const now = caretLogicalOf(r);
+    return !!now && now.before === logical.before && now.after === logical.after;
+  };
+
+  /** Install a resolved caret and hand DOM focus to whichever host owns it. */
+  const applyCaretRange = (r) => {
+    const el = rootRef.current;
+    if (!el || !r || typeof window === 'undefined' || !window.getSelection) return false;
+    const sel = window.getSelection();
+    if (!sel) return false;
+    const host = titleHostOf(r.startContainer) || el;
+    restoringRef.current = true;
+    try { host.focus(); } finally { restoringRef.current = false; }
+    sel.removeAllRanges();
+    sel.addRange(r.cloneRange());
+    savedRange.current = r.cloneRange();
+    return true;
+  };
+
+  /* ══════════ 120.md §5 — citation GROUPING ══════════
+   *
+   * "Inserting a second citation adjacent to an existing citation should follow the
+   * current style engine's grouping rules rather than producing malformed
+   * duplicated brackets." One chip carrying [a,b] renders "[1,2]" (or the
+   * author-year equivalent) through the SAME citeChipLabel every other chip uses,
+   * so the grouping is the style engine's, not a second implementation of it.
+   *
+   * Adjacency is measured as TEXT: the run between the chip and the caret must be
+   * empty or a single space/nbsp (the chip inserter leaves one nbsp behind, which
+   * is exactly the gap a researcher's second citation appears in). Anything else —
+   * a word, a comma, a full stop — is content between two citations, and merging
+   * across it would change what the sentence says. Scoped to the caret's own LINE
+   * block, because Range.toString() reports nothing for a block boundary and would
+   * otherwise call the end of the previous paragraph "adjacent".
+   */
+  const LINE_BLOCK_TAGS = new Set(['P', 'LI', 'TD', 'TH', 'H1', 'H2', 'H3', 'H4', 'H5', 'H6', 'BLOCKQUOTE', 'DIV', 'PRE']);
+  const NON_SPACE_RE = /\S/;
+
+  const lineBlockOf = (node) => {
+    const el = rootRef.current;
+    let n = node && (node.nodeType === 1 ? node : node.parentElement);
+    while (n && n !== el) {
+      if (LINE_BLOCK_TAGS.has(String(n.tagName || '').toUpperCase())) return n;
+      n = n.parentElement;
+    }
+    return el;
+  };
+
+  // The regex space class already covers U+00A0, so the `&nbsp;` a chip insertion
+  // leaves behind counts as joinable while a comma or a full stop never does.
+  const joinableGap = (s) => s.length <= 1 && !NON_SPACE_RE.test(s);
+
+  /** A collapsed Range at one boundary point (start/end of a node, or the caret). */
+  const pointAt = (fn) => { const p = document.createRange(); fn(p); p.collapse(true); return p; };
+
+  /**
+   * The citation chip the collapsed caret is immediately beside, or null.
+   *
+   * The DIRECTION has to be established before the gap is measured. A Range whose
+   * end is set BEFORE its start does not throw — the spec collapses it onto the end
+   * point — so a naive "gap from the chip's end to the caret" probe reports an
+   * empty string for every chip that sits AFTER the caret, and the reverse probe
+   * does the same for every chip before it. The result was that any chip anywhere in
+   * the paragraph read as adjacent, and a citation typed a whole sentence later
+   * merged into it. Reproduced under chromium in manuscript-citation-caret-120.
+   */
+  const adjacentCiteChip = () => {
+    const el = rootRef.current;
+    const r = collapsedCaretRange();
+    if (!el || !r) return null;
+    const line = lineBlockOf(r.startContainer);
+    if (!line || typeof line.querySelectorAll !== 'function') return null;
+    const chips = Array.from(line.querySelectorAll(`span.${CITE_CHIP_CLASS}[data-cite]`));
+    for (const chip of chips) {
+      if (lineBlockOf(chip) !== line) continue;      // a chip in a nested block is not beside us
+      try {
+        const caret = pointAt((p) => p.setStart(r.startContainer, r.startOffset));
+        const end = pointAt((p) => p.setStartAfter(chip));
+        const gap = document.createRange();
+        if (end.compareBoundaryPoints(Range.START_TO_START, caret) <= 0) {
+          gap.setStart(end.startContainer, end.startOffset);       // …chip] gap [caret…
+          gap.setEnd(caret.startContainer, caret.startOffset);
+        } else {
+          const start = pointAt((p) => p.setStartBefore(chip));    // …caret] gap [chip…
+          gap.setStart(caret.startContainer, caret.startOffset);
+          gap.setEnd(start.startContainer, start.startOffset);
+        }
+        if (joinableGap(gap.toString())) return chip;
+      } catch { /* the chip is not comparable with the caret → not adjacent */ }
+    }
+    return null;
+  };
+
+  /**
+   * 120.md §5 — the sacrificial wrapper that keeps an inline chip an ELEMENT.
+   *
+   * §5 lists "inside a list item" among the positions insertion must work in, and
+   * it did not: Blink's `execCommand('insertHTML')` UNWRAPS the outermost element
+   * of the inserted fragment when the caret is inside an `<li>`. It returns true,
+   * and what lands is the chip's TEXT — "[1]" as literal characters, with no
+   * data-cite, no chip element, no hover card, no action menu, and nothing for the
+   * renumbering effect to find, so it froze at "[?]" forever. The same class of
+   * silent-success trap as WebKit's no-op execCommand, in the other engine.
+   *
+   * The repair is a SHAPE, not a browser check (no UA sniffing, and no retry that
+   * would cost a second undo step): give the engine a throwaway outer `<span>` to
+   * unwrap. Verified in Blink across `<p>`, `<h2>`, `<td>` and `<li>` — the wrapper
+   * is consumed in every one of them and the chip element survives intact. The
+   * trailing `&nbsp;` stays OUTSIDE the wrapper, where it is ordinary text either
+   * way. Same idea as removeFigureBlock's sacrificial empty blocks (119.md §5).
+   */
+  const wrapInlineChip = (chipHtml) => `<span>${chipHtml}</span>`;
+
+  /** Merge ids into an existing chip through the SAME replaceNode + citeChipLabel
+      path removeCitation uses: one node swap, one native undo step. */
+  const mergeIntoCiteChip = (chip, ids) => {
+    const cur = parseCiteIds(chip.getAttribute('data-cite') || '');
+    const next = cur.slice();
+    for (const id of ids) if (!next.includes(String(id))) next.push(String(id));
+    // Already cited here → the sentence already says what the researcher asked for.
+    // Rewriting the chip to itself would only cost them an undo step.
+    if (next.length === cur.length) return true;
+    const ro = refOptsRef.current || {};
+    const { label, broken } = citeChipLabel(next, orderMapRef.current, ro.citationStyle, ro.refsById, ro.yearSuffixes);
+    return replaceNode(chip, wrapInlineChip(citeChipHtml(next, label, { broken })));
+  };
+
+  /** 120.md §5 "Selected-text behavior" — a citation/cross-reference inserted over
+      a SELECTION lands AFTER it: the selected words are not deleted and none of
+      their inline marks (bold, italic, superscript, links, chips) are disturbed.
+      Replacement is not an insertion, and §5 forbids doing it silently. */
+  const collapseSelectionToEnd = () => {
+    if (typeof window === 'undefined' || !window.getSelection) return;
+    const sel = window.getSelection();
+    if (!sel || !sel.rangeCount || sel.isCollapsed) return;
+    const r = sel.getRangeAt(0);
+    if (!rootRef.current || !rootRef.current.contains(r.commonAncestorContainer)) return;
+    const end = r.cloneRange();
+    end.collapse(false);
+    sel.removeAllRanges();
+    sel.addRange(end);
+    savedRange.current = end.cloneRange();
+  };
+
   const api = useMemo(() => ({
     exec,
     focus: () => rootRef.current && rootRef.current.focus(),
@@ -1957,10 +2285,70 @@ export const RichSectionEditor = forwardRef(function RichSectionEditor({
     insertCitation: (refId) => {
       const ids = (Array.isArray(refId) ? refId : parseCiteIds(refId)).filter(Boolean);
       if (!ids.length || readOnlyRef.current) return;
+      /* 120.md §5 — resolve the caret FIRST (this is the restore that used to be
+         clobbered by its own focus() call), then decide between grouping and a new
+         chip. Calling it here as well as inside insertHtml is free: once the live
+         selection is inside this root, it returns immediately. */
+      if (!focusWithSelection()) return;
+      collapseSelectionToEnd();
+      const chip = adjacentCiteChip();
+      if (chip) { mergeIntoCiteChip(chip, ids); return; }
       const ro = refOptsRef.current || {};
       const { label, broken } = citeChipLabel(ids, orderMapRef.current, ro.citationStyle, ro.refsById, ro.yearSuffixes);
-      insertHtml(`${citeChipHtml(ids, label, { broken })}&nbsp;`);
+      insertHtml(`${wrapInlineChip(citeChipHtml(ids, label, { broken }))}&nbsp;`);
     },
+    /* ── 120.md §5 — the picker-session bookmark (see the block above the api) ── */
+    /** Snapshot the caret the moment a picker opens, BEFORE it takes focus. */
+    saveCaretBookmark: () => {
+      const el = rootRef.current;
+      if (!el || typeof window === 'undefined' || !window.getSelection) return null;
+      let r = null;
+      const sel = window.getSelection();
+      if (sel && sel.rangeCount) {
+        const live = sel.getRangeAt(0);
+        if (el.contains(live.commonAncestorContainer)) r = live.cloneRange();
+      }
+      if (!r && savedRange.current && el.contains(savedRange.current.commonAncestorContainer)) {
+        r = savedRange.current.cloneRange();
+      }
+      if (!r) { bookmarkRef.current = null; return null; }
+      /* §5 "Selected-text behavior": collapse to the END of the selection now, so
+         the citation lands AFTER the selected words and nothing is deleted. Only
+         our bookmark is collapsed — the researcher's visible selection is left
+         exactly as they made it while the picker is open. */
+      const end = r.cloneRange();
+      end.collapse(false);
+      const bm = { range: end, hadSelection: !r.collapsed, logical: caretLogicalOf(end) };
+      bookmarkRef.current = bm;
+      return bm;
+    },
+    /**
+     * Resolve a bookmark and put the caret back on it. Returns FALSE when the
+     * position cannot be re-found safely — the caller then says so instead of
+     * inserting somewhere else (§5 "Do not fall back to the beginning of the
+     * section"). A locked section always refuses.
+     */
+    restoreCaretBookmark: (bmIn) => {
+      const el = rootRef.current;
+      const bm = bmIn || bookmarkRef.current;
+      bookmarkRef.current = null;
+      if (!el || !bm || readOnlyRef.current) return false;
+      let r = null;
+      const live = bm.range;
+      const anchor = live && live.commonAncestorContainer;
+      // Still the same DOM AND still the same place in the text (see above — the
+      // second half is not optional, a live Range survives its own nodes' removal).
+      if (anchor && el.contains(anchor) && liveRangeStillValid(live, bm.logical)) {
+        r = live.cloneRange();
+      }
+      if (!r) r = rangeFromLogical(bm.logical);
+      if (!r) return false;
+      r.collapse(false);
+      return applyCaretRange(r);
+    },
+    /** §5 "Canceling the picker must clear the saved bookmark without modifying
+        the manuscript" — this touches no DOM at all. */
+    clearCaretBookmark: () => { bookmarkRef.current = null; },
     /**
      * 117.md §38 — "Remove citation". Removing ONE id from a multi-cite chip leaves
      * the others in place (the sentence keeps the citations it still means);
@@ -1975,7 +2363,7 @@ export const RichSectionEditor = forwardRef(function RichSectionEditor({
       if (!next.length) return replaceNode(chip, null);
       const ro = refOptsRef.current || {};
       const { label, broken } = citeChipLabel(next, orderMapRef.current, ro.citationStyle, ro.refsById, ro.yearSuffixes);
-      return replaceNode(chip, citeChipHtml(next, label, { broken }));
+      return replaceNode(chip, wrapInlineChip(citeChipHtml(next, label, { broken })));
     },
     /** Forget the citation chip the menu was bound to (dismissed without acting). */
     clearActiveCitation: () => { activeCiteRef.current = null; },
@@ -1989,9 +2377,13 @@ export const RichSectionEditor = forwardRef(function RichSectionEditor({
      */
     insertAssetRef: (assetId) => {
       if (!assetId || readOnlyRef.current) return;
+      // 120.md §5 — same caret discipline as insertCitation: resolve first, and a
+      // selection is never silently replaced (the chip lands after it).
+      if (!focusWithSelection()) return;
+      collapseSelectionToEnd();
       const ro = refOptsRef.current || {};
       const { label, broken } = assetChipLabel(assetId, assetNumbersRef.current, ro.knownAssetIds, ro.templateId);
-      insertHtml(`${assetChipHtml(assetId, label, { broken })}&nbsp;`);
+      insertHtml(`${wrapInlineChip(assetChipHtml(assetId, label, { broken }))}&nbsp;`);
     },
     /** 117.md §10 — "Remove cross-reference": the CHIP goes, the table stays. */
     removeCrossRef: () => {
@@ -2006,7 +2398,7 @@ export const RichSectionEditor = forwardRef(function RichSectionEditor({
       if (!chip || !assetId) return false;
       const ro = refOptsRef.current || {};
       const { label, broken } = assetChipLabel(assetId, assetNumbersRef.current, ro.knownAssetIds, ro.templateId);
-      return replaceNode(chip, assetChipHtml(assetId, label, { broken }));
+      return replaceNode(chip, wrapInlineChip(assetChipHtml(assetId, label, { broken })));
     },
     /** Forget the chip the menu was bound to (menu dismissed without an action). */
     clearActiveCrossRef: () => { activeChipRef.current = null; },
@@ -2378,11 +2770,131 @@ export const RichSectionEditor = forwardRef(function RichSectionEditor({
     }).catch(() => { /* the parent surfaces its own error — never throw into paste */ });
   };
 
+  /** The caption/figure TITLE island the current selection sits in, or null. */
+  const titleRegionAtCaret = () => {
+    const el = rootRef.current;
+    if (!el || typeof window === 'undefined' || !window.getSelection) return null;
+    const sel = window.getSelection();
+    if (!sel || !sel.rangeCount) return null;
+    const r = sel.getRangeAt(0);
+    if (!el.contains(r.commonAncestorContainer)) return null;
+    const cap = captionFromNode(r.commonAncestorContainer);
+    const t = cap ? captionTitleOf(cap) : null;
+    if (!t) return null;
+    return (t === r.commonAncestorContainer || t.contains(r.commonAncestorContainer)) ? t : null;
+  };
+
+  /**
+   * 120.md §7 — insert clipboard content as PLAIN TEXT.
+   *
+   * Used for the one position where block markup is meaningless: a media object's
+   * title. A title is one line of prose in the marker grammar (cleanCaptionTitle
+   * strips newlines and bracket grammar on the way out), so pasting three
+   * paragraphs and a table into it can only ever be flattened — this flattens it
+   * VISIBLY and at insertion time instead of silently at the next save.
+   *
+   * WebKit doctrine: execCommand may report success and do nothing, so the result
+   * is verified against the host's own text and the Range fallback runs on a
+   * PROVABLE failure rather than on a browser name.
+   */
+  const insertPlainText = (text) => {
+    const s = String(text == null ? '' : text);
+    if (!focusWithSelection()) return;
+    const host = titleRegionAtCaret() || rootRef.current;
+    const was = host ? (host.textContent || '') : '';
+    let ok = false;
+    try { ok = document.execCommand('insertText', false, s); } catch { ok = false; }
+    const moved = host ? (host.textContent || '') !== was : false;
+    if ((!ok || !moved) && s) {
+      const sel = window.getSelection();
+      if (sel && sel.rangeCount) {
+        const r = sel.getRangeAt(0);
+        r.deleteContents();
+        const node = document.createTextNode(s);
+        r.insertNode(node);
+        r.setStartAfter(node);
+        r.collapse(true);
+        sel.removeAllRanges();
+        sel.addRange(r);
+      }
+    }
+    rememberSelection();
+    emit();
+  };
+
+  /**
+   * 120.md §7 steps 4-14 — the ONE insertion path for pasted markdown.
+   *
+   * Identity minting, the Word-caption harvest, the duplicate re-mint and the
+   * figure-marker rule are all in the pure `transformPastedMd`; this does the two
+   * things only the editor can do — put the result through the single
+   * `insertHtml` call (ONE native undo step, ONE autosave emit: §7 "Record the
+   * insertion as one undoable transaction", "Undo must remove the entire pasted
+   * table in one logical action") and report each minted table's provenance.
+   */
+  const pasteMarkdown = (e, md0, opts = {}) => {
+    e.preventDefault();
+    const { md, mintedTables } = transformPastedMd(md0, {
+      usedTableIds: usedTableIds(),
+      usedFigureKeys: usedFigureKeys(),
+    });
+    /* 119.md §2 — a BLOCK paste while the caret sits in a caption title (or a
+       cell) would nest one table inside another object, which the pipe grammar
+       cannot round-trip: the same hoist insertTable uses applies, and it is also
+       §7's "follow the editor's established cell-paste behavior rather than
+       creating an unintended nested table" — cells pasted into an existing table
+       land AFTER the whole object, never as a table inside a cell. A paste with no
+       block in it is ordinary inline/prose content and keeps the caret exactly
+       where the researcher put it. */
+    const hasBlock = opts.table
+      || /^\s*\|/m.test(md) || /\[\[tblcap:/.test(md) || /\[\[figcap:/.test(md);
+    insertHtml(mdToHtml(md, {
+      orderMap: orderMapRef.current, assetNumbers: assetNumbersRef.current,
+      ...factOptsRef.current, ...refOptsRef.current, figures: figuresRef.current,
+    }), { hoistFromIslands: hasBlock });
+    /* §7 step 8/9 — the pasted table is a first-class manuscript object from the
+       first frame: numbered by manuscript order, cross-referenceable, exportable.
+       `origin:'paste'` is the honest provenance (it was imported, not typed), and
+       it is stamped AFTER the insertion for the same reason insertTable does it —
+       the caption is in the document by then, so the registry entry it creates has
+       something to belong to. */
+    const cb = onTableMetaRef.current;
+    if (cb && mintedTables.length) {
+      const createdAt = new Date().toISOString();
+      for (const t of mintedTables) cb(t.id, { origin: 'paste', createdAt });
+    }
+  };
+
+  /* ══════════ 120.md §7 — the paste LADDER ══════════
+   *
+   * ONE handler, mutually-exclusive returns, no beforeinput layer and no second
+   * listener (§7: "Ensure that only one handler consumes the paste event").
+   *
+   * THE ORDERING FIX. The image branch used to run FIRST, before text/html was
+   * ever read. Excel, PowerPoint and Word all put a BITMAP of the selection on the
+   * clipboard beside the structured HTML, so `imageFilesFrom` found a file every
+   * time and the table was imported as a screenshot — 120.md §7's explicit
+   * anti-goal ("Do not import the table as an opaque image when structured
+   * clipboard data is available"). The HTML is now sanitized first and the
+   * RESULT — never the raw string — is asked whether it contains a real table.
+   *
+   * The rungs, in order:
+   *   1. readOnly swallows the paste entirely (unchanged).
+   *   2. the §4 caption-gap redirect (unchanged).
+   *   3. text/html → htmlToMd → does it contain a pipe table?  → TABLE route.
+   *   4. image FILES on the clipboard → the figure upload path (a genuine
+   *      screenshot paste: an image item and no table HTML).
+   *   5. no text/html at all → tab-separated text → TABLE route; this is also the
+   *      Safari degradation §7 names, reached by construction and not by sniffing.
+   *   6. a non-table paste into a media TITLE → plain text, first line only.
+   *   7. text/html without a table → the ordinary sanitized prose path.
+   *   8. anything else → the browser's own text paste, untouched.
+   */
   const onPaste = (e) => {
     if (readOnly) { e.preventDefault(); return; }
     /* 120.md §4 — a paste with the caret parked in the caption/table gap would put
        a block INSIDE the object. Move the insertion point into the title first;
-       a BLOCK paste is then hoisted past the whole object by the §2 rule below,
+       a BLOCK paste is then hoisted past the whole object by the §2 rule above,
        and an inline paste lands in the title, which is the only editable region
        the researcher could have meant. */
     const gapCap = captionGapCaption();
@@ -2392,36 +2904,34 @@ export const RichSectionEditor = forwardRef(function RichSectionEditor({
     }
     const cd = e.clipboardData;
     if (!cd) return;
-    // 119.md §5 — image files first, BEFORE any HTML sanitisation.
+    const html = (cd.getData && cd.getData('text/html')) || '';
+    /* Word/Docs/Excel HTML → markdown subset (everything outside it drops to text;
+       scripts, styles, mso-* fragments, event handlers and form elements are
+       dropped outright by htmlToMd's DROP_TAGS + escape-first parser).
+       117.md §4(c)/(d) + 119.md §5 — the identity rules for a marker that came
+       along with the copy live in `transformPastedMd`. */
+    const mdHtml = html ? htmlToMd(html) : '';
+    if (hasPipeTableBlock(mdHtml)) { pasteMarkdown(e, mdHtml, { table: true }); return; }
+    // 119.md §5 — an image FILE (never <img> markup) still becomes a figure, and
+    // the bytes still take the validated server path a file-picker upload takes.
     if (onImageFilesRef.current) {
       const imgs = imageFilesFrom(cd);
       if (imgs.length) { e.preventDefault(); placeImageFiles(imgs); return; }
     }
-    const html = cd.getData && cd.getData('text/html');
-    if (!html) return; // plain-text paste → browser default (inserted as text)
-    e.preventDefault();
-    // Word/Docs HTML → markdown subset → clean HTML (everything else drops to text)
-    // 117.md §4(c)/(d) — the caption marker survives sanitization (htmlToMd knows
-    // data-tblcap), and a DUPLICATE id is re-minted: copying a table produces a new
-    // table, never a second claimant to the original's identity. Moving a table
-    // (cut → paste) keeps its id, so its cross-references survive the move.
-    const { md } = remintDuplicateCaptions(htmlToMd(html), usedTableIds());
-    /* 119.md §5 — a copied FIGURE marker cannot be re-minted the way a table id is:
-       the picture's bytes live in a server row keyed by that figKey, and a fresh
-       key would point at nothing. So a marker for a figure that is ALREADY placed
-       is dropped (the copy would otherwise give two blocks one identity), while
-       moving a figure (cut → paste) keeps its key and every cross-reference. */
-    const { md: md2 } = dropDuplicateFigureMarkers(md, usedFigureKeys());
-    // 119.md §2 — pasting a TABLE while the caret sits in a caption title (or a
-    // cell) would nest one table inside another object, which the pipe grammar
-    // cannot round-trip: the same hoist insertTable uses applies. A paste with no
-    // table in it is ordinary inline/prose content and keeps the caret exactly
-    // where the researcher put it.
-    const hasBlockTable = /^\s*\|/m.test(md2) || /\[\[tblcap:/.test(md2) || /\[\[figcap:/.test(md2);
-    insertHtml(mdToHtml(md2, {
-      orderMap: orderMapRef.current, assetNumbers: assetNumbersRef.current,
-      ...factOptsRef.current, ...refOptsRef.current, figures: figuresRef.current,
-    }), { hoistFromIslands: hasBlockTable });
+    const plain = (cd.getData && cd.getData('text/plain')) || '';
+    const titleEl = titleRegionAtCaret();
+    if (!html) {
+      const tsv = tsvToPipeTable(plain);
+      if (tsv) { pasteMarkdown(e, tsv, { table: true }); return; }
+      if (titleEl && plain) { e.preventDefault(); insertPlainText(firstLineOf(plain)); return; }
+      return;   // plain-text paste → browser default (inserted as text)
+    }
+    if (titleEl) {
+      e.preventDefault();
+      insertPlainText(firstLineOf(plain || stripInlineMd(mdHtml)));
+      return;
+    }
+    pasteMarkdown(e, mdHtml);
   };
 
   /* 119.md §5 "Drag and drop" — dropping image files anywhere in the section
@@ -2794,16 +3304,29 @@ export function CrossRefPicker({
   items, onPick, disabled, testIdPrefix = 'stitch-manuscript-crossref',
   label = '⧉ Cross-reference', title = 'Insert a reference to a table or figure at the cursor',
   block = false,
+  // 120.md §5 — the picker SESSION. `onSessionStart` fires before this popover
+  // exists (so the caret is bookmarked before any portal, list or search input can
+  // take focus); `onSessionEnd` fires on every close that did NOT insert, which is
+  // §5's "canceling the picker must clear the saved bookmark without modifying the
+  // manuscript". An insert closes through `pick`, which hands the session to the
+  // caller instead of ending it.
+  onSessionStart = null, onSessionEnd = null,
 }) {
   const [open, setOpen] = useState(false);
   const pick = (id) => { setOpen(false); if (onPick) onPick(id); };
+  const cancel = () => { setOpen(false); if (onSessionEnd) onSessionEnd(); };
+  const toggle = () => {
+    if (open) { cancel(); return; }
+    if (onSessionStart) onSessionStart();
+    setOpen(true);
+  };
   return (
     <span style={{ position: 'relative', display: block ? 'block' : 'inline-flex' }}>
       <button type="button" aria-label="Insert cross-reference" title={title}
         disabled={disabled} aria-haspopup="dialog" aria-expanded={open}
         data-testid={`${testIdPrefix}-open`}
         onMouseDown={(e) => e.preventDefault()}
-        onClick={() => setOpen((v) => !v)}
+        onClick={toggle}
         style={{
           ...btnS('ghost'), padding: '5px 9px', fontSize: 11.5, border: '1px solid transparent',
           background: 'transparent', color: C.txt2, opacity: disabled ? 0.5 : 1,
@@ -2813,7 +3336,7 @@ export function CrossRefPicker({
       </button>
       {open && !disabled && (
         <>
-          <div onMouseDown={(e) => { e.preventDefault(); setOpen(false); }}
+          <div onMouseDown={(e) => { e.preventDefault(); cancel(); }}
             style={{ position: 'fixed', inset: 0, zIndex: 40, background: 'transparent' }} />
           <div role="dialog" aria-label="Insert cross-reference"
             data-testid={`${testIdPrefix}-popover`}
@@ -2965,16 +3488,28 @@ export function CiteRefList({
 export function CiteRefPicker({
   items, onInsert, disabled, testIdPrefix = 'stitch-manuscript-insert-citation',
   label = '+ Cite…', title = 'Insert a citation at the cursor', block = false,
+  // 120.md §5 — the picker SESSION; see CrossRefPicker above for the contract.
+  // This one matters most: CiteRefList's search input carries autoFocus, and
+  // WebKit drops the document selection the moment focus reaches a control
+  // (documented in-repo at the citation-menu comment below), so the caret has to
+  // be bookmarked BEFORE `setOpen(true)` renders the popover.
+  onSessionStart = null, onSessionEnd = null,
 }) {
   const [open, setOpen] = useState(false);
   const insert = (ids) => { setOpen(false); if (onInsert) onInsert(ids); };
+  const cancel = () => { setOpen(false); if (onSessionEnd) onSessionEnd(); };
+  const toggle = () => {
+    if (open) { cancel(); return; }
+    if (onSessionStart) onSessionStart();
+    setOpen(true);
+  };
   return (
     <span style={{ position: 'relative', display: block ? 'block' : 'inline-flex' }}>
       <button type="button" aria-label="Insert citation" title={title}
         disabled={disabled} aria-haspopup="dialog" aria-expanded={open}
         data-testid={testIdPrefix}
         onMouseDown={(e) => e.preventDefault()}
-        onClick={() => setOpen((v) => !v)}
+        onClick={toggle}
         style={{
           ...btnS('ghost'), padding: '5px 9px', fontSize: 11.5, border: '1px solid transparent',
           background: 'transparent', color: C.txt2, opacity: disabled ? 0.5 : 1,
@@ -2984,7 +3519,7 @@ export function CiteRefPicker({
       </button>
       {open && !disabled && (
         <>
-          <div onMouseDown={(e) => { e.preventDefault(); setOpen(false); }}
+          <div onMouseDown={(e) => { e.preventDefault(); cancel(); }}
             style={{ position: 'fixed', inset: 0, zIndex: 40, background: 'transparent' }} />
           <div role="dialog" aria-label="Insert citation"
             data-testid={`${testIdPrefix}-popover`}
@@ -3012,6 +3547,11 @@ export function RichToolbar({
   // 119.md §5 — Insert → Picture. Rendered only when the host supplies the seam,
   // so a shell without a figure store never shows a control that cannot act (§69).
   onInsertPicture = null,
+  // 120.md §5 — both Insert pickers bookmark the caret before they open and clear
+  // the bookmark when they close without inserting. The toolbar only forwards;
+  // the workspace owns the session (it is the one that knows WHICH section's
+  // editor the caret was in).
+  onInsertSessionStart = null, onInsertSessionEnd = null,
 }) {
   const run = (cmd) => {
     const api = getApi && getApi();
@@ -3054,6 +3594,7 @@ export function RichToolbar({
       )}
       {/* 117.md §9 — Insert → Cross-reference, at the caret */}
       <CrossRefPicker items={crossRefs || []} disabled={disabled}
+        onSessionStart={onInsertSessionStart} onSessionEnd={onInsertSessionEnd}
         onPick={(id) => {
           if (onInsertCrossRef) { onInsertCrossRef(id); return; }
           const api = getApi && getApi();
@@ -3069,6 +3610,7 @@ export function RichToolbar({
           <span style={{ width: 1, alignSelf: 'stretch', background: C.brd, margin: '0 4px' }} />
           <CiteRefPicker
             items={(citeRefs || []).map((r) => citeItemOf(r, refLabel))}
+            onSessionStart={onInsertSessionStart} onSessionEnd={onInsertSessionEnd}
             onInsert={(ids) => {
               if (onInsertCitation) { onInsertCitation(ids); return; }
               const api = getApi && getApi();

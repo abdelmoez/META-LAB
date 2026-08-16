@@ -926,6 +926,17 @@ export function CiteRefMenu({
 export const TABLE_DELETE_UNDO_NOTE = 'Press Ctrl+Z (Cmd+Z) right after deleting to restore the table, its caption and its references.';
 
 /**
+ * 120.md §5 — "If the original location no longer exists and cannot be resolved
+ * safely, show a clear non-destructive message and ask the user to place the caret
+ * again. Do not fall back to the beginning of the section."
+ *
+ * This is that message. It is shown INSTEAD of an insertion — nothing is written,
+ * nothing is deleted, the undo stack is untouched — and it says what the researcher
+ * has to do next rather than what went wrong internally.
+ */
+export const CARET_LOST_TEXT = 'The place you were writing could not be found — this section changed while the picker was open. Click where the reference belongs and insert it again.';
+
+/**
  * 119.md §5 — "Deleting a referenced figure must warn the user and identify
  * affected references. Undo must restore the figure and its references."
  *
@@ -1128,6 +1139,18 @@ export function EditorPanel({ m, exporters, sectionRequest, onOpenAssetPanel, on
           // §16 — putting the caret in a section makes it the active section, in the
           // outline as well. Same value → React bails out, so this is free.
           if (continuousRef.current) setSel((cur) => (cur === s.id ? cur : s.id));
+        },
+        /* 120.md §5 — the missing HALF of `activate`, for the editors that register
+           through it: drop the registry entry when the handle that owns it is
+           unmounted. Identity-checked, because the abstract mounts several editors
+           under ONE section id — a field unmounting while another field holds the
+           caret must change nothing. Without this, `apis['abstract']` outlived its
+           DOM after every regenerate / template switch / snapshot restore and
+           swallowed inserts into detached nodes. Mirrors the `apiRef` body exactly. */
+        release: (api) => {
+          if (!api) return;
+          if (apis.current.get(s.id) === api) apis.current.delete(s.id);
+          if (activeApi.current === api) activeApi.current = null;
         },
       };
     }
@@ -1594,14 +1617,77 @@ export function EditorPanel({ m, exporters, sectionRequest, onOpenAssetPanel, on
     setGenNotice(null);
   };
 
-  // 117.md §34/§35 — one or MANY ids; the editor turns them into ONE chip.
-  // r2 — guarded on the section the insert will LAND in, not on whatever is
-  // scrolled into view (see `targetLocked`).
-  const insertCitation = (refIds) => {
+  /* ══════════ 120.md §5 — the picker-session caret bookmark ══════════
+   *
+   * §5's lifecycle in three calls, owned HERE because this is the only layer that
+   * knows which section's editor the caret was in:
+   *
+   *   beginInsertSession()  a picker is opening. Bookmark the caret NOW, before the
+   *                         popover, its list or its autoFocus'd search input can
+   *                         take focus (WebKit drops the document selection the
+   *                         moment focus reaches a control — the same defect
+   *                         documented for the table-delete confirmation below).
+   *   endInsertSession()    the picker closed without inserting: clear the bookmark
+   *                         and touch nothing else ("Canceling the picker must clear
+   *                         the saved bookmark without modifying the manuscript").
+   *   withBookmarkedCaret() an item was chosen: route to the BOOKMARKED SECTION'S
+   *                         editor — never through getApi()'s activeApi → scroll-sel
+   *                         chain, which in Continuous View could resolve to
+   *                         whatever section the reader had scrolled into view — and
+   *                         insert only if that editor can put the caret back.
+   *
+   * When it cannot, nothing is inserted anywhere and the notice says so. That is
+   * the whole point: §5 forbids the start-of-section fallback, and a wrong-place
+   * insertion in a manuscript is worse than an insertion that did not happen.
+   */
+  const caretSectionId = () => (activeApi.current && activeSectionRef.current) || caretSection || sel;
+  const insertSession = useRef(null);          // { sectionId, bm }
+  const [insertNotice, setInsertNotice] = useState(null);
+
+  const beginInsertSession = () => {
+    setInsertNotice(null);
+    const sectionId = caretSectionId();
+    const api = apiFor(sectionId) || getApi();
+    const bm = api && api.saveCaretBookmark ? api.saveCaretBookmark() : null;
+    insertSession.current = bm ? { sectionId, bm } : null;
+  };
+
+  const endInsertSession = () => {
+    const s = insertSession.current;
+    insertSession.current = null;
+    if (!s) return;
+    const api = apiFor(s.sectionId);
+    if (api && api.clearCaretBookmark) api.clearCaretBookmark();
+  };
+
+  const withBookmarkedCaret = (run) => {
+    const s = insertSession.current;
+    insertSession.current = null;
+    if (s) {
+      // The bookmark names the section, so the lock check names it too — a routed
+      // insert must still refuse a locked section (`targetLocked` answers for the
+      // CARET's section, which is the same one here, but this is explicit).
+      if ((sections[s.sectionId] || {}).locked) return;
+      const api = apiFor(s.sectionId);
+      if (api && api.restoreCaretBookmark && api.restoreCaretBookmark(s.bm)) { run(api); return; }
+      setInsertNotice(CARET_LOST_TEXT);
+      return;
+    }
+    /* No session at all — a caller that inserts without opening a picker. The
+       pre-120 behaviour is exactly right there: the caret's own editor, guarded on
+       the section the insert will LAND in rather than on whatever is scrolled into
+       view (r2's `targetLocked`). */
     if (targetLocked()) return;
     const api = getApi();
-    const ids = Array.isArray(refIds) ? refIds : [refIds];
-    if (api && ids.filter(Boolean).length) api.insertCitation(ids.filter(Boolean));
+    if (api) run(api);
+  };
+
+  // 117.md §34/§35 — one or MANY ids; the editor turns them into ONE chip.
+  // 120.md §5 — routed through the picker session (see above).
+  const insertCitation = (refIds) => {
+    const ids = (Array.isArray(refIds) ? refIds : [refIds]).filter(Boolean);
+    if (!ids.length) return;
+    withBookmarkedCaret((api) => { if (api.insertCitation) api.insertCitation(ids); });
   };
 
   /** 117.md §38 — remove one id from the active chip (null → the whole chip). */
@@ -1622,12 +1708,14 @@ export function EditorPanel({ m, exporters, sectionRequest, onOpenAssetPanel, on
   // 85.md B2 / 117.md §9 — insert a live [[table:…]]/[[figure:…]] reference AT THE
   // CARET as an inline chip (insertMarkdown would splice a block and split the
   // sentence being written).
+  // 120.md §5 — same picker-session routing as insertCitation: the cross-reference
+  // lands on the caret the researcher left, in the section they left it in.
   const insertAssetRef = (assetId) => {
-    if (targetLocked() || !assetId) return;
-    const api = getApi();
-    if (!api) return;
-    if (api.insertAssetRef) api.insertAssetRef(assetId);
-    else api.insertMarkdown(assetToken(assetId)); // abstract subfields, older handles
+    if (!assetId) return;
+    withBookmarkedCaret((api) => {
+      if (api.insertAssetRef) api.insertAssetRef(assetId);
+      else api.insertMarkdown(assetToken(assetId)); // abstract subfields, older handles
+    });
   };
 
   /* ── 117.md §10/§11 — chip menu actions ── */
@@ -1887,6 +1975,8 @@ export function EditorPanel({ m, exporters, sectionRequest, onOpenAssetPanel, on
       resetKey: key,
       onChange: (md) => commitSection('abstract', md),
       onActivate: handles.abstract ? handles.abstract.activate : setActive,
+      // 120.md §5 — …and the un-registration the abstract never had.
+      onRelease: handles.abstract ? handles.abstract.release : null,
       readOnly: !!sec.locked,
       // 118.md §8.1 — everything a body section's editor gets, reported as 'abstract'.
       fieldProps: sharedFieldProps('abstract'),
@@ -2148,6 +2238,25 @@ export function EditorPanel({ m, exporters, sectionRequest, onOpenAssetPanel, on
             barH is 0 and this degrades to a normal, non-sticky toolbar rather than
             pinning to the wrong place. It stays inside the document COLUMN, so the
             §15 outline column beside it is untouched at every width. */}
+        {/* 120.md §5 — the honest refusal. Shown INSTEAD of an insertion when the
+            bookmarked position cannot be resolved safely: nothing was written and
+            nothing was deleted, so the only thing to do is dismiss it and put the
+            caret back. Sits directly above the toolbar that opened the picker, in
+            both views, and clears itself the next time a picker opens. */}
+        {insertNotice && (
+          <div style={{ marginBottom: 10 }}>
+            <InfoBox color={C.yel}>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
+                <span data-testid="stitch-manuscript-insert-notice" role="status" aria-live="polite">
+                  {insertNotice}
+                </span>
+                <button onClick={() => setInsertNotice(null)}
+                  data-testid="stitch-manuscript-insert-notice-ok"
+                  style={{ ...btnS('ghost'), fontSize: 11 }}>OK</button>
+              </div>
+            </InfoBox>
+          </div>
+        )}
         {(continuous || !isTitle) && (
           <div
             data-testid="stitch-manuscript-toolbar-dock"
@@ -2163,6 +2272,10 @@ export function EditorPanel({ m, exporters, sectionRequest, onOpenAssetPanel, on
               crossRefs={crossRefItems} onInsertCrossRef={insertAssetRef}
               /* 117.md §34/§35 — Insert → Citation, searchable + multi-select. */
               onInsertCitation={insertCitation}
+              /* 120.md §5 — bookmark the caret before either picker opens; clear it
+                 when one closes without inserting. */
+              onInsertSessionStart={beginInsertSession}
+              onInsertSessionEnd={endInsertSession}
               /* 119.md §5 — Insert → Picture. Opens the ONE hidden file input; the
                  upload, the validation and the marker insertion are the same path
                  paste and drag-and-drop take. */
@@ -2306,6 +2419,9 @@ export function EditorPanel({ m, exporters, sectionRequest, onOpenAssetPanel, on
               {/* r2 — the caret's own section gates these, not the scroll position. */}
               <CiteRefPicker items={citeItems} disabled={(!continuous && isTitle) || toolsLocked} block
                 testIdPrefix="stitch-manuscript-tools-cite"
+                /* 120.md §5 — the Tools entry point runs the same picker session as
+                   the toolbar one: same bookmark, same honest refusal. */
+                onSessionStart={beginInsertSession} onSessionEnd={endInsertSession}
                 label="+ Insert citation…" onInsert={insertCitation} />
               {citeRefs.length === 0 && (
                 <div style={{ fontSize: 10.5, color: C.muted }}>References appear here once your project has included studies.</div>
@@ -2325,6 +2441,8 @@ export function EditorPanel({ m, exporters, sectionRequest, onOpenAssetPanel, on
                 <CrossRefPicker items={crossRefItems} disabled={(!continuous && isTitle) || toolsLocked} block
                   testIdPrefix="stitch-manuscript-tools-crossref"
                   label="⧉ Reference a table/figure…"
+                  /* 120.md §5 — same picker session as the toolbar control. */
+                  onSessionStart={beginInsertSession} onSessionEnd={endInsertSession}
                   onPick={insertAssetRef} />
               )}
             </div>

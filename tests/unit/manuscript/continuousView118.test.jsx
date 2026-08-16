@@ -319,11 +319,23 @@ describe('118.md §13/§18 — one state, one prop factory, one write path', () 
     expect(panels).not.toMatch(/disabled=\{\(!continuous && isTitle\) \|\| locked\}/);
     // … and the runtime guards resolve the section the insert would LAND in.
     expect(panels).toContain('const targetLocked = () => {');
-    for (const guard of ['insertCitation', 'insertPrisma', 'insertAssetRef']) {
+    expect(panels.slice(panels.indexOf('const insertPrisma = ('), panels.indexOf('const insertPrisma = (') + 260))
+      .toContain('targetLocked()');
+    /* 120.md §5 re-pin: the two PICKER inserts now route through the caret bookmark,
+       so their lock guard moved one level down into `withBookmarkedCaret` — which
+       guards BOTH ways: a routed insert refuses the BOOKMARKED section's lock (it
+       knows the section by name), and a caller with no picker session still refuses
+       `targetLocked()`. The property is unchanged: neither can write into a locked
+       section, and neither is gated on scroll position. */
+    for (const guard of ['insertCitation', 'insertAssetRef']) {
       const at = panels.indexOf(`const ${guard} = (`);
       expect(at, guard).toBeGreaterThan(-1);
-      expect(panels.slice(at, at + 260)).toContain('targetLocked()');
+      expect(panels.slice(at, at + 320), guard).toContain('withBookmarkedCaret(');
     }
+    const wb = panels.slice(panels.indexOf('const withBookmarkedCaret = (run) => {'));
+    const body = wb.slice(0, wb.indexOf('\n  };'));
+    expect(body).toContain('if ((sections[s.sectionId] || {}).locked) return;');
+    expect(body).toContain('if (targetLocked()) return;');
     // the caret owner is real render state, written where the caret actually lands
     expect(panels).toContain('const [caretSection, setCaretSection] = useState(null);');
     expect(panels).toContain('setCaretSection(s.id);');

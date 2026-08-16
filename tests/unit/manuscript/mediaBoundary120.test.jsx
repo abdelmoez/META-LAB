@@ -378,7 +378,15 @@ describe('120.md §3/§4 — editor wiring', () => {
     const fn = EDITOR.slice(EDITOR.indexOf('const onPaste = (e) => {'),
       EDITOR.indexOf('const onDragStart = (e) => {'));
     expect(fn).toContain('const gapCap = captionGapCaption();');
-    expect(fn.indexOf('placeCaretInTitle(gapTitle);')).toBeLessThan(fn.indexOf('insertHtml(mdToHtml(md2'));
+    /* 120.md §7 re-pin: the insertion itself moved into `pasteMarkdown` (one call
+       shared by the three rungs of the reordered ladder), so the ordering property
+       is pinned against the FIRST rung that can consume the paste instead of
+       against the insertion call. Same guarantee: the caret is out of the gap
+       before anything decides where the content goes. */
+    expect(fn.indexOf('placeCaretInTitle(gapTitle);'))
+      .toBeLessThan(fn.indexOf('const html = (cd.getData'));
+    expect(fn.indexOf('placeCaretInTitle(gapTitle);'))
+      .toBeLessThan(fn.indexOf('if (hasPipeTableBlock(mdHtml))'));
   });
 
   it('refuses the native drag of a media island (§4 separation vector)', () => {

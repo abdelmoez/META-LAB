@@ -88,7 +88,13 @@ describe('119.md §2(b) — creating one table creates exactly one table', () =>
     expect(EDITOR).toContain('if (opts && opts.hoistFromIslands) hoistInsertionPoint({ blockLevel: !!(opts && opts.blockLevel) });');
     // the two BLOCK insertion paths ask for it …
     expect(EDITOR).toContain('insertHtml(`${html}<p><br></p>`, { hoistFromIslands: true });');
-    expect(EDITOR).toContain('}), { hoistFromIslands: hasBlockTable });');
+    /* 120.md §7 re-pin: the paste path's single insertion moved into `pasteMarkdown`
+       (the ladder now has three rungs that reach it — Office HTML, tab-separated
+       text, and ordinary prose — and they must all insert through ONE call). The
+       hoist request is unchanged; only the local's name is. */
+    expect(EDITOR).toContain('}), { hoistFromIslands: hasBlock });');
+    expect(EDITOR.match(/const pasteMarkdown = \(e, md0, opts = \{\}\) => \{[\s\S]*?\n  \};/)[0]
+      .match(/insertHtml\(/g)).toHaveLength(1);
     // … and the INLINE ones deliberately do not (a chip inside a cell is legal).
     const cite = EDITOR.slice(EDITOR.indexOf('insertCitation: (refId) => {'));
     expect(cite.slice(0, 600)).not.toContain('hoistFromIslands');

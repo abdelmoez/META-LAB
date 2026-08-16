@@ -26,10 +26,21 @@ import { RichSectionEditor } from './RichSectionEditor.jsx';
 // while the identical citation in Methods rendered "(Smith, 2020)" and opened one.
 // Per-field props (value/onChange/testId/ariaLabel/placeholder/minHeight) are applied
 // AFTER the spread and always win — a bag can never take a field's own identity.
+// 120.md §5 — the abstract's registry entry must DIE with its editors.
+//
+// A body section registers through `apiRef` and un-registers when React detaches
+// it. The abstract has no ref of its own: its sub-editors register by ACTIVATING
+// (that is what makes `apiFor('abstract')` honest about which field holds the
+// caret), and there was no cleanup at all — so after a regenerate, a template
+// switch or a snapshot restore, `apis['abstract']` still pointed at an editor
+// whose DOM had been thrown away, and every insert routed to it silently
+// disappeared into detached nodes. `onRelease(api)` is the missing half: the
+// workspace drops the entry only when the handle being released is the one it
+// holds, so a field unmounting while ANOTHER field owns the caret changes nothing.
 export function AbstractEditor({
   value, templateId, orderMap, assetNumbers = null, resetKey, onChange, onActivate,
   readOnly = false, knownAssetIds = null, captionTemplateId = null,
-  fieldProps = null,
+  fieldProps = null, onRelease = null,
 }) {
   const parsed = useMemo(() => parseAbstractSubsections(value), [value]);
   const info = useMemo(() => abstractTemplateInfo(templateId), [templateId]);
@@ -55,6 +66,28 @@ export function AbstractEditor({
   const subsRef = useRef(parsed.subsections);
   subsRef.current = parsed.subsections;
 
+  /* 120.md §5 — one STABLE ref callback per field slot. Stability is the whole
+     point: an inline arrow would be a new callback on every render, React would
+     detach and re-attach the ref each time, and the release would fire (dropping a
+     LIVE registry entry) on every keystroke. Cached by index, so a callback is
+     created once per slot and fires with null exactly when that slot's editor is
+     genuinely unmounted. */
+  const releaseRef = useRef(onRelease);
+  releaseRef.current = onRelease;
+  const fieldApis = useRef(new Map());
+  const fieldRefs = useRef(new Map());
+  const refFor = (slot) => {
+    if (!fieldRefs.current.has(slot)) {
+      fieldRefs.current.set(slot, (apiHandle) => {
+        if (apiHandle) { fieldApis.current.set(slot, apiHandle); return; }
+        const prev = fieldApis.current.get(slot);
+        fieldApis.current.delete(slot);
+        if (prev && releaseRef.current) releaseRef.current(prev);
+      });
+    }
+    return fieldRefs.current.get(slot);
+  };
+
   const overLimit = info.wordLimit != null && totalWords > info.wordLimit;
   const counter = (
     <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 10 }}>
@@ -77,7 +110,7 @@ export function AbstractEditor({
         <div style={{ fontSize: 10.5, color: C.muted, marginBottom: 8 }}>
           Free-form abstract — regenerate from the template to get labelled subsections.
         </div>
-        <RichSectionEditor key={resetKey} {...field} value={value}
+        <RichSectionEditor key={resetKey} ref={refFor('free')} {...field} value={value}
           onChange={onChange}
           ariaLabel="Abstract" placeholder="Write or generate the abstract…" minHeight={280} />
       </div>
@@ -120,6 +153,7 @@ export function AbstractEditor({
               <div style={{ borderLeft: `2px solid ${filled ? '#c8e6c9' : '#e2e6ee'}`, paddingLeft: 12 }}>
                 <RichSectionEditor
                   key={`${resetKey}:${i}`}
+                  ref={refFor(i)}
                   {...field}
                   value={sub.text}
                   onChange={(md) => onField(i, md)}

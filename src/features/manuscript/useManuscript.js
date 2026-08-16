@@ -2059,9 +2059,20 @@ export function useManuscript(project, upd) {
     return applied ? true : { ok: false, reason: 'failed' };
   }), [registerExecutor, writeLibrary]);
 
-  // 85.md B2 — "Insert reference" from the Tables/Figures panels: no editor is
-  // mounted there, so the token is appended to the END of Results (the caller
-  // tells the researcher so). Returns false when Results is locked.
+  /* 85.md B2 — "Insert reference" from the Tables/Figures panels: no editor is
+   * mounted there, so the token is appended to the END of Results (the caller
+   * tells the researcher so). Returns false when Results is locked.
+   *
+   * 120.md §5 — deliberately NOT converted to the picker-session caret bookmark.
+   * §5's rule is about the CARET, and these two functions are the one family of
+   * callers that has no caret to honour: the Tables, Figures and References panels
+   * are separate destinations with no editor mounted at all, so there is no
+   * position to bookmark, nothing to resolve and nothing to refuse. What §5 forbids
+   * is silently choosing a position when one WAS available — which is why both
+   * callers announce the append out loud ("Reference added to the end of Results —
+   * open the Editor to move it where it belongs") and then send the researcher to
+   * the editor. Every path that DOES have a mounted editor now routes through the
+   * bookmark (manuscriptPanels' withBookmarkedCaret). */
   const insertAssetReference = useCallback((assetId) => {
     if (!assetId) return false;
     let ok = false;
