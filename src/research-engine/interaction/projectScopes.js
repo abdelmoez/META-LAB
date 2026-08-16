@@ -30,6 +30,10 @@ export const HISTORY_SCOPES = Object.freeze([
   'overview', 'control', 'pico', 'prospero', 'search', 'living', 'citation',
   'screening', 'prisma', 'extraction', 'rob', 'analysis', 'forest', 'sensitivity',
   'subgroup', 'nma', 'grade', 'manuscript', 'report', 'methods', 'history',
+  // 119.md §8 — the Logbook. A READ-ONLY stage: it owns a scope so nothing it does
+  // can ever share (or clear) another page's undo stack, but the stack stays empty
+  // because an append-only audit trail has no undoable action to record.
+  'logbook',
   // 116.md §86 — the ONE scope that is not a workflow stage. The PDF viewer is
   // mounted INSIDE other stages (screening, RoB, extraction), and 116.md §86 is
   // explicit that "annotation undo must not unexpectedly undo an unrelated
@@ -111,8 +115,8 @@ export function legacyTabScope(tab) {
  *     nothing about them, and clearing the scope would destroy valid undo state
  *     for highlights that persisted perfectly well (the same reasoning that keeps
  *     `screening` and `prisma` out);
- *   - `living` / `citation` / `methods` / `history` / `overview` — no blob writes
- *     that this round records.
+ *   - `living` / `citation` / `methods` / `history` / `logbook` / `overview` — no
+ *     blob writes that this round records (the Logbook has no write path at all).
  */
 export const BLOB_SCOPES = Object.freeze(new Set([
   'control', 'pico', 'prospero', 'extraction', 'rob',

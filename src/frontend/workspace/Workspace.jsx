@@ -185,6 +185,10 @@ import LivingReviewTab from "../../features/livingReview/LivingReviewTab.jsx";
 // LAZY-loaded so its viz chunk (incl. the shared worldGeo geometry) only loads when the
 // citation tab is actually opened — the legacy workspace bundle is otherwise unchanged.
 const CitationMiningPanel = lazy(() => import("../../features/citationMining/CitationMiningPanel.jsx"));
+// 119.md §8 — the Owner/Leader-only Logbook. Reachable in the legacy shell through
+// the Project Control entry (setTab("logbook")); the page resolves `viewLogbook`
+// itself, so a non-leader who reaches this tab some other way gets the access card.
+const LogbookPage = lazy(() => import("../../features/logbook/LogbookPage.jsx"));
 
 /* ════════════ TABS: ANALYSIS / FOREST / SENSITIVITY / SUBGROUP (extracted prompt46 Phase 6g — verbatim) ════════════
    AnalysisTab, DataBehindAnalysis, ResearchExport, ResultsWriteup, ForestTab,
@@ -1725,6 +1729,9 @@ export default function MetaLab({ initialProjectId = null, initialTab = null, on
           {tab==="nma"&&<NmaTab project={project} updateProject={updateProject} activeId={activeId}/>}
           {tab==="living"&&<LivingReviewTab projectId={activeId}/>}
           {tab==="citation"&&<Suspense fallback={<div style={{padding:24,color:C.muted}}>Loading…</div>}><CitationMiningPanel projectId={activeId} project={project} readOnly={projectPerms(project).readOnly}/></Suspense>}
+          {/* 119.md §8 — same component the Stitch stage mounts; legacy tokens keep it
+              correct in both shells. `perms` is the projectPerms() annotation. */}
+          {tab==="logbook"&&<Suspense fallback={<div style={{padding:24,color:C.muted}}>Loading…</div>}><LogbookPage project={project} projectId={activeId} perms={projectPerms(project)}/></Suspense>}
           {tab==="grade"&&<GRADETab project={project} upd={upd}/>}
           {tab==="manuscript"&&<ManuscriptTab project={project} upd={upd}/>}
           {tab==="report"&&<ReportTab project={project} upd={upd}/>}

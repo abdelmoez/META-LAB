@@ -236,6 +236,13 @@ export const TABS=[
   // only workflow/reference/project groups) — surfaced only via the flag-gated entry in
   // Project Control + the ?tab=history deep link, exactly like Living Review / Citation.
   {id:"history",    icon:"clock",       label:"Project History",      phase:null,  group:"history"},
+  // 119.md §8 — the Owner/Leader-only project Logbook. group:"history" keeps it out
+  // of the numbered workflow map, the progress denominator, the "Next step" walker
+  // AND the legacy sidebar, exactly like Project History: the ONLY entries are the
+  // leadership-gated row in Project Control and the ?tab=logbook deep link, both of
+  // which resolve `viewLogbook` before rendering (features/logbook/logbookAccess.js).
+  // A non-leader never sees a nav item, and the server refuses the API regardless.
+  {id:"logbook",    icon:"clock",       label:"Logbook",              phase:null,  group:"history"},
   {id:"pico",       icon:"target",      label:"PICO & Question",      phase:"Plan",    num:1},
   {id:"prospero",   icon:"clipboard",   label:"Protocol",             phase:"Plan",    num:2},
   // prompt60 — the former two search tabs (Search Builder + Search & Discovery) are

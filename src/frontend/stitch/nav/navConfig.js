@@ -396,6 +396,7 @@ export function categoryForStage(stageId) {
   if (!stageId || stageId === 'overview') return 'overview';
   if (stageId === 'control') return 'control';
   if (stageId === 'history') return 'control'; // 88.md — Project History lives under Project Control
+  if (stageId === 'logbook') return 'control'; // 119.md §8 — the Logbook lives under Project Control (leaders only)
   if (stageId === 'methods') return 'reference';
   if (stageId === 'living') return 'search'; // 66.md P6 — Living Review lives in Search
   if (stageId === 'citation') return 'search'; // P15 — Citation Mining lives in Search

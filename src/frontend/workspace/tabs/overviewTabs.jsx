@@ -25,6 +25,9 @@ import { poolPrimaryOutcome } from "../../../research-engine/statistics/summaryP
 // `pooled: k=…` line printed a few lines below them from the view-aware pool.
 import { rowHasEffect, rowIsPoolable } from "../../../research-engine/statistics/poolableRow.js";
 import { useResearchProvenanceEnabled } from "../../../features/provenance/useResearchProvenanceEnabled.js";
+// 119.md §8 — the ONE predicate that decides whether a Logbook entry point may be
+// rendered at all (owner/leader only; mirrors server/logbook/logbookAccess.js).
+import { canViewLogbook } from "../../../features/logbook/logbookAccess.js";
 import { C, btnS, inp, tagS } from "../ui/styles.js";
 import { SwitchToggle, SectionHeader, InfoBox, ProgressBar } from "../ui/primitives.jsx";
 import { TABS, readinessCheck, stepStatus, auditProject, projectPerms, linkedSiftId, CTRL_STATUS_OPTIONS } from "../projectHelpers.js";
@@ -692,6 +695,24 @@ function ControlTab({project,onAnnotate,setTab,presence,onDeleted}){
         <span style={{flex:1,minWidth:0}}>
           <span style={{display:"block",fontSize:13,fontWeight:700,color:C.txt}}>Research Provenance &amp; Project History</span>
           <span style={{display:"block",fontSize:11.5,color:C.muted,marginTop:2}}>Every meaningful change to this study — with scientific significance and manuscript impact.</span>
+        </span>
+        <span style={{fontSize:12,color:C.brand||C.txt2,fontWeight:600,whiteSpace:"nowrap"}}>Open →</span>
+      </button>
+    )}
+
+    {/* 119.md §8 — the Logbook entry. NAVIGATION VISIBILITY is the first of the
+        seven enforcement layers: canViewLogbook() resolves the SAME `viewLogbook`
+        capability the server enforces, so a member/contributor/viewer never sees
+        this row at all (no disabled affordance, no "leaders only" tease — the
+        entry simply does not exist for them). No feature flag: leadership IS the
+        gate, and the API refuses a hand-typed ?tab=logbook regardless. */}
+    {canViewLogbook(perms)&&(
+      <button type="button" data-testid="logbook-nav-entry" onClick={()=>setTab("logbook")}
+        style={{width:"100%",textAlign:"left",background:C.card,border:`1px solid ${C.brd}`,borderRadius:8,padding:"12px 14px",marginBottom:14,cursor:"pointer",display:"flex",alignItems:"center",gap:12}}>
+        <span style={{fontSize:18}}>📓</span>
+        <span style={{flex:1,minWidth:0}}>
+          <span style={{display:"block",fontSize:13,fontWeight:700,color:C.txt}}>Logbook</span>
+          <span style={{display:"block",fontSize:11.5,color:C.muted,marginTop:2}}>Every meaningful action in this project, by members and by the system — visible to the owner and leaders only.</span>
         </span>
         <span style={{fontSize:12,color:C.brand||C.txt2,fontWeight:600,whiteSpace:"nowrap"}}>Open →</span>
       </button>

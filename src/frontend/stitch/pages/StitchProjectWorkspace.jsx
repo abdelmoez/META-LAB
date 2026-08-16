@@ -100,6 +100,9 @@ const LazyLiving      = lazy(() => import('../../../features/livingReview/Living
 const LazyCitation    = lazy(() => import('../../../features/citationMining/CitationMiningPanel.jsx'));
 // 88.md — Research Provenance / Project History (flag `researchProvenance`; own dir).
 const LazyHistory     = lazy(() => import('../../../features/provenance/ProjectHistoryPanel.jsx'));
+// 119.md §8 — the Owner/Leader-only project Logbook (own feature dir; no flag — the
+// LEADERSHIP gate is the gate). Lazy so a member who never opens it never pays for it.
+const LazyLogbook     = lazy(() => import('../../../features/logbook/LogbookPage.jsx'));
 const LazyExportDialog = lazy(() => import('../../components/ExportDialog.jsx'));
 
 // Every workflow stage that has a native page here. Anything not in this set falls
@@ -110,6 +113,10 @@ const SCOPE = new Set([
   'control', 'pico', 'prospero', 'search', 'living', 'citation', 'screening', 'prisma',
   'extraction', 'rob', 'analysis', 'forest', 'sensitivity', 'subgroup', 'nma', 'grade',
   'manuscript', 'report', 'methods', 'history',
+  // 119.md §8 — ?tab=logbook. In SCOPE so the stage renders natively; the component
+  // itself resolves `viewLogbook` and shows an access card (never a request) for a
+  // member/contributor/viewer who hand-types the URL. The server refuses regardless.
+  'logbook',
 ]);
 const STAGE_LABEL = TABS.reduce((m, t) => { m[t.id] = t.label; return m; }, {});
 // Workflow order (the legacy stepper order) → used for the next-step action.
@@ -448,6 +455,12 @@ function DeepToolPage({ stage }) {
     // 88.md — the append-only Research Provenance ledger (flag `researchProvenance`;
     // the panel + API 404 when off, so a stray deep link degrades to an error card).
     body = (<LazyHistory project={project} projectId={projectId} />);
+  } else if (stage === 'logbook') {
+    // 119.md §8 — the Logbook. `perms` is the projectPerms() annotation; the page
+    // resolves `viewLogbook` from it (owner/leader only, site admins deliberately
+    // excluded to match server/logbook/logbookAccess.js) and renders the shared
+    // AccessDenied card for everyone else without ever calling the API.
+    body = (<LazyLogbook project={project} projectId={projectId} perms={perms} />);
   }
 
   // 78.md #2 — the "Analysis" member permission is now enforced. A member WITHOUT the
