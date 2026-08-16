@@ -21,8 +21,9 @@ import {
   canViewLogbook, canExportLogbook, logbookAccessContext, logbookViewDecision,
 } from '../../../src/features/logbook/logbookAccess.js';
 import {
-  changePairs, countActiveFilters, dayLabel, emptyStateCopy, engineLabel, focusBanner,
-  groupByDay, resourceLink, resourceText, statusMeta, timeZoneLabel, actorLine, formatValue,
+  changePairs, completenessState, countActiveFilters, dayLabel, emptyStateCopy, engineLabel,
+  focusBanner, groupByDay, resourceLink, resourceText, scanIncompleteCopy, statusMeta,
+  timeZoneLabel, actorLine, formatValue,
 } from '../../../src/features/logbook/logbookFormat.js';
 import { filtersToQuery, logbookExportHref, PAGE_SIZE } from '../../../src/features/logbook/logbookApi.js';
 import LogbookPage from '../../../src/features/logbook/LogbookPage.jsx';
@@ -164,6 +165,28 @@ describe('119.md §8 — presentation helpers', () => {
     expect(focusBanner({ engines: ['analysis'] }, facets).label).toBe('All Analysis activity in this project');
     expect(focusBanner({ engines: ['analysis', 'search'] }, facets)).toBe(null);
     expect(focusBanner({}, facets)).toBe(null);
+  });
+
+  // 119.md §8 — the server never claims to have reached the end of the history when
+  // its scan stopped early (server/logbook/logbookQuery.js → scanIncomplete). The
+  // interface must not turn that into "nothing matched".
+  it('distinguishes a finished search, more results, and history nobody has read yet', () => {
+    expect(completenessState({ loaded: 12, cursor: null })).toBe('complete');
+    expect(completenessState({ loaded: 50, cursor: 'c', scanIncomplete: false })).toBe('more');
+    expect(completenessState({ loaded: 3, cursor: 'c', scanIncomplete: true })).toBe('partial');
+    expect(completenessState({ loaded: 0, cursor: 'c', scanIncomplete: true })).toBe('searching');
+    // A page with nothing on it AND no cursor is the only honest "nothing matched".
+    expect(completenessState({ loaded: 0, cursor: null })).toBe('complete');
+    expect(completenessState()).toBe('complete');
+  });
+
+  it('says we stopped looking — never that nothing matched — while history is unread', () => {
+    const copy = scanIncompleteCopy();
+    expect(copy.title).toBe('Nothing matched in the history searched so far');
+    expect(copy.body).toContain('the older entries have not been searched');
+    expect(copy.notice).toBe('Older entries have not been searched yet — keep loading to continue.');
+    // The two states must not be confusable.
+    expect(copy.title).not.toBe(emptyStateCopy({ engines: ['search'] }).title);
   });
 });
 

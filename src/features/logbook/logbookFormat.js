@@ -228,6 +228,35 @@ export function emptyStateCopy(filters = {}) {
   };
 }
 
+/**
+ * 119.md §8 — how COMPLETE the loaded page really is.
+ *
+ * The server drains each history source until it can fill a page, but a selective
+ * filter over deep bridged history can hit its scan bound first; the response then
+ * carries `scanIncomplete`, meaning "this page came back short because we stopped
+ * looking, not because the history ended". The interface must not translate that
+ * into an empty state that says nothing matched — nobody checked yet.
+ *
+ *   complete  everything matching these filters is on screen
+ *   more      there are definitely more matching entries behind the cursor
+ *   partial   some entries are shown; older history has not been searched yet
+ *   searching nothing found so far, and older history has not been searched yet
+ */
+export function completenessState({ loaded = 0, cursor = null, scanIncomplete = false } = {}) {
+  if (!cursor) return 'complete';
+  if (!loaded) return 'searching';
+  return scanIncomplete ? 'partial' : 'more';
+}
+
+/** The copy for the two honest "we stopped looking, we did not finish" states. */
+export function scanIncompleteCopy() {
+  return {
+    title: 'Nothing matched in the history searched so far',
+    body: 'This project has more history than one page can search. Nothing here matches these filters yet, and the older entries have not been searched — keep loading to continue.',
+    notice: 'Older entries have not been searched yet — keep loading to continue.',
+  };
+}
+
 /** How many filters the viewer has actually applied (drives the empty state + the Clear button). */
 export function countActiveFilters(f = {}) {
   let n = 0;
@@ -263,5 +292,5 @@ export default {
   engineLabel, statusMeta, actorTypeLabel, viewerTimeZone, timeZoneLabel,
   dayKey, dayLabel, clockTime, fullTime, isoTime, groupByDay,
   formatValue, changePairs, resourceLink, resourceText, actorLine,
-  emptyStateCopy, countActiveFilters, focusBanner,
+  emptyStateCopy, completenessState, scanIncompleteCopy, countActiveFilters, focusBanner,
 };

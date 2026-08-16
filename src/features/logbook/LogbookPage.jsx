@@ -25,7 +25,10 @@ import { C, btnS, tagS } from '../../frontend/workspace/ui/styles.js';
 import AccessDeniedState from '../../frontend/components/access/AccessDeniedState.jsx';
 import { canExportLogbook, logbookViewDecision } from './logbookAccess.js';
 import { fetchLogbookEvents, fetchLogbookFacets, logbookExportHref, PAGE_SIZE } from './logbookApi.js';
-import { countActiveFilters, emptyStateCopy, focusBanner, groupByDay, timeZoneLabel } from './logbookFormat.js';
+import {
+  completenessState, countActiveFilters, emptyStateCopy, focusBanner, groupByDay,
+  scanIncompleteCopy, timeZoneLabel,
+} from './logbookFormat.js';
 import LogbookFilters from './LogbookFilters.jsx';
 import LogbookEventRow from './LogbookEvent.jsx';
 import LogbookTable from './LogbookTable.jsx';
@@ -48,6 +51,10 @@ export default function LogbookPage({ project, projectId, perms }) {
   const [mode, setMode] = useState('timeline'); // timeline | table
   const [events, setEvents] = useState([]);
   const [cursor, setCursor] = useState(null);
+  // 119.md §8 — the server's honest "this page stopped short of the end of the
+  // history" signal. It is NOT the same as having a cursor: a cursor can mean
+  // "more matching entries are waiting", this means "we have not looked yet".
+  const [scanIncomplete, setScanIncomplete] = useState(false);
   const [facets, setFacets] = useState({ engines: [], actions: [], statuses: [], actors: [], roles: [] });
   const [state, setState] = useState('loading'); // loading | ready | error
   const [error, setError] = useState(null);
@@ -73,6 +80,7 @@ export default function LogbookPage({ project, projectId, perms }) {
         if (cancelled || seq !== reqRef.current) return;
         setEvents(page.events || []);
         setCursor(page.nextCursor || null);
+        setScanIncomplete(!!page.scanIncomplete);
         setAvailable(page.available !== false);
         setExpandedId(null);
         setState('ready');
@@ -101,6 +109,7 @@ export default function LogbookPage({ project, projectId, perms }) {
       const page = await fetchLogbookEvents(pid, filters, cursor);
       setEvents((prev) => [...prev, ...(page.events || [])]);
       setCursor(page.nextCursor || null);
+      setScanIncomplete(!!page.scanIncomplete);
     } catch (e) {
       setError(e.message || 'More events could not be loaded.');
     } finally { setLoadingMore(false); }
@@ -119,6 +128,8 @@ export default function LogbookPage({ project, projectId, perms }) {
   const focus = focusBanner(filters, facets);
   const days = useMemo(() => groupByDay(events), [events]);
   const tz = timeZoneLabel();
+  const completeness = completenessState({ loaded: events.length, cursor, scanIncomplete });
+  const scanCopy = scanIncompleteCopy();
 
   if (!allowed) {
     return (
@@ -224,10 +235,19 @@ export default function LogbookPage({ project, projectId, perms }) {
         </div>
       )}
 
-      {state === 'ready' && events.length === 0 && (
+      {/* "Nothing matched" is only honest once the server has actually reached the
+          end of the history. While it is still searching, say THAT instead. */}
+      {state === 'ready' && events.length === 0 && completeness !== 'searching' && (
         <div data-testid="logbook-empty" style={{ padding: '32px 16px', textAlign: 'center', border: `1px solid ${C.brd}`, borderRadius: 8, background: C.card }}>
           <div style={{ fontSize: 13.5, fontWeight: 700, color: C.txt, marginBottom: 6 }}>{emptyStateCopy(filters).title}</div>
           <div style={{ fontSize: 12.5, color: C.txt2, maxWidth: 520, margin: '0 auto' }}>{emptyStateCopy(filters).body}</div>
+        </div>
+      )}
+
+      {state === 'ready' && completeness === 'searching' && (
+        <div data-testid="logbook-scan-incomplete" style={{ padding: '32px 16px', textAlign: 'center', border: `1px solid ${C.brd}`, borderRadius: 8, background: C.card }}>
+          <div style={{ fontSize: 13.5, fontWeight: 700, color: C.txt, marginBottom: 6 }}>{scanCopy.title}</div>
+          <div style={{ fontSize: 12.5, color: C.txt2, maxWidth: 520, margin: '0 auto' }}>{scanCopy.body}</div>
         </div>
       )}
 
@@ -255,16 +275,23 @@ export default function LogbookPage({ project, projectId, perms }) {
           onFocusMember={setFocusMember} onFocusEngine={setFocusEngine} />
       )}
 
-      {state === 'ready' && events.length > 0 && (
-        <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginTop: 16 }}>
-          <span style={{ fontSize: 11.5, color: C.muted }} data-testid="logbook-count">
-            Showing {events.length} event{events.length === 1 ? '' : 's'}{cursor ? ' so far' : ''}
-          </span>
+      {state === 'ready' && (events.length > 0 || cursor) && (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginTop: 16, flexWrap: 'wrap' }}>
+          {events.length > 0 && (
+            <span style={{ fontSize: 11.5, color: C.muted }} data-testid="logbook-count">
+              Showing {events.length} event{events.length === 1 ? '' : 's'}{cursor ? ' so far' : ''}
+            </span>
+          )}
+          {completeness === 'partial' && (
+            <span style={{ fontSize: 11.5, color: C.muted }} data-testid="logbook-scan-notice">{scanCopy.notice}</span>
+          )}
           <span style={{ flex: 1 }} />
+          {/* Honest label: only a page the server confirmed has more matching
+              entries can promise a number — the other states are a search. */}
           {cursor && (
             <button type="button" data-testid="logbook-load-more" disabled={loadingMore} onClick={loadMore}
               style={{ ...btnS('ghost'), fontSize: 11.5 }}>
-              {loadingMore ? 'Loading…' : `Load ${PAGE_SIZE} more`}
+              {loadingMore ? 'Loading…' : (completeness === 'more' ? `Load ${PAGE_SIZE} more` : 'Keep looking')}
             </button>
           )}
         </div>

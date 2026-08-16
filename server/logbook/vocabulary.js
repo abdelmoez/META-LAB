@@ -205,6 +205,23 @@ export function classifyScreenAuditAction(action) {
 }
 
 /**
+ * Every ScreenAuditLog action the EXACT table names, and the subset belonging to a
+ * requested engine set. 119.md §8 — the reader uses these to push the engine filter
+ * into the legacy SQL (logbookQuery.readScreenAudit): an action this table names is
+ * classified by it with certainty, so excluding the ones that belong to OTHER engines
+ * can never drop a row the in-memory classifier would have kept. The PREFIX families
+ * are deliberately absent — expressing them in SQL needs LIKE, and a LIKE pattern
+ * cannot reproduce `classifyScreenAuditAction` exactly (see the reader's comment), so
+ * those rows are read and decided in memory instead of being narrowed on a guess.
+ */
+export const SCREEN_AUDIT_EXACT_ACTIONS = Object.freeze(Object.keys(SCREEN_AUDIT_EXACT));
+
+export function screenAuditExactActionsForEngines(engines = []) {
+  const want = new Set(engines);
+  return SCREEN_AUDIT_EXACT_ACTIONS.filter((a) => want.has(SCREEN_AUDIT_EXACT[a].engine));
+}
+
+/**
  * The ScreenAuditLog actions the 119.md §8 writer now ALSO emits natively.
  *
  * Going forward these rows exist in BOTH stores (writeAudit keeps its 41-action
@@ -227,6 +244,28 @@ const PROJECT_EVENT_MODULE = Object.freeze({
   search: 'search', screening: 'screening', extraction: 'extraction',
   rob: 'rob', analysis: 'analysis', manuscript: 'manuscript', core: 'core',
 });
+
+/** The `module` values the taxonomy names. Anything else degrades to 'core'. */
+export const PROJECT_EVENT_MODULES = Object.freeze(Object.keys(PROJECT_EVENT_MODULE));
+
+/**
+ * projectEventModuleMatch(engines) — how ProjectEvent's `module` COLUMN maps onto a
+ * requested engine set, so the bridge can push the §8 engine filter into SQL instead
+ * of reading rows it will only throw away (logbookQuery.readProjectEvent).
+ *
+ * `modules`  the named modules whose engine was asked for.
+ * `unmapped` true when a module the taxonomy does NOT name — or none at all — still
+ *            qualifies, because classifyProjectEvent degrades those to 'core'.
+ * `known`    every named module, so the caller can write "not one of these".
+ */
+export function projectEventModuleMatch(engines = []) {
+  const want = new Set(engines);
+  return {
+    modules: PROJECT_EVENT_MODULES.filter((m) => want.has(PROJECT_EVENT_MODULE[m])),
+    unmapped: want.has('core'),
+    known: PROJECT_EVENT_MODULES,
+  };
+}
 
 /** Classify a bridged ProjectEvent row (module + category + significance). */
 export function classifyProjectEvent(row) {
@@ -264,6 +303,8 @@ export default {
   LOG_ENGINES, LOG_CATEGORIES, LOG_STATUSES, LOG_ACTOR_TYPES, LOG_VIA, LOG_SEVERITY,
   LOG_ACTIONS, LOG_ACTION_KEYS, actionSpec,
   LEGACY_SOURCES, MIRRORED_SCREEN_AUDIT_ACTIONS, MIRROR_SCREEN_AUDIT,
+  SCREEN_AUDIT_EXACT_ACTIONS, screenAuditExactActionsForEngines,
+  PROJECT_EVENT_MODULES, projectEventModuleMatch,
   classifyScreenAuditAction, classifyProjectEvent, classifyExtractionAuditAction,
   classifyRobAuditAction, humaniseAction,
 };

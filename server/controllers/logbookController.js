@@ -123,7 +123,11 @@ export async function exportLogbook(req, res) {
 
     const format = String(req.query.format || 'csv').toLowerCase() === 'json' ? 'json' : 'csv';
     const filters = normalizeFilters(req.query || {});
-    const { rows, truncated } = await collectForExport(gate.scope, filters);
+    // `incomplete` = the scan budget stopped the walk before the end of the
+    // matching history (a selective filter over deep bridged history). It travels
+    // into the audit row AND the JSON header so a partial file is never mistaken
+    // for the whole record.
+    const { rows, truncated, incomplete } = await collectForExport(gate.scope, filters);
 
     // 119.md §8 "Logbook security → Exporting it". NOT coalesced: every export
     // of an audit trail is individually accountable.
@@ -132,7 +136,10 @@ export async function exportLogbook(req, res) {
       summary: `Exported ${rows.length} Logbook event${rows.length === 1 ? '' : 's'} as ${format.toUpperCase()}`,
       resourceType: 'logbook',
       resourceId: 'export',
-      metadata: { format, rowCount: rows.length, truncated, maxRows: EXPORT_MAX_ROWS, filters: describeFilters(filters) },
+      metadata: {
+        format, rowCount: rows.length, truncated, incomplete: !!incomplete,
+        maxRows: EXPORT_MAX_ROWS, filters: describeFilters(filters),
+      },
     }, { ...actorCtx(req, gate), ...gate.scope }).catch(() => {});
 
     const stamp = new Date().toISOString().slice(0, 10);
@@ -146,7 +153,7 @@ export async function exportLogbook(req, res) {
         exportedAt: new Date().toISOString(),
         timezone: 'UTC',
         filters: describeFilters(filters),
-        truncated, maxRows: EXPORT_MAX_ROWS, count: rows.length,
+        truncated, incomplete: !!incomplete, maxRows: EXPORT_MAX_ROWS, count: rows.length,
         events: rows,
       }, null, 2));
     }
