@@ -245,6 +245,23 @@ const LABORATORY = [
 ];
 
 /**
+ * 120.md r2 — the LATIN scholarly words that survive on their own.
+ *
+ * The multi-word phrases (`et al.`, `in vivo`, `de novo`) are firewalled as PHRASES
+ * in tokenize.js, which is the right place for them: it keeps a bare `al` — a
+ * plausible typo for `all` — checkable. But the same words are also written
+ * HYPHENATED in real manuscripts (`in-vivo model`, `ex-vivo perfusion`), and a
+ * hyphenated run is split by `subWords`, so the second half reaches the dictionary
+ * alone. These are the halves that are genuinely words of scientific English and
+ * cannot be confused with an English typo; `et`, `al`, `de` and `ex` are deliberately
+ * NOT here, because each of them is one keystroke away from a real word.
+ */
+const LATIN_SCHOLARLY = [
+  'vivo', 'vitro', 'silico', 'novo', 'situ', 'utero', 'hoc', 'libitum',
+  'priori', 'posteriori', 'sensu', 'lato', 'stricto', 'versa',
+];
+
+/**
  * Terms whose CASE carries meaning. Checked exactly; a case mismatch is not a spelling
  * error but feeds consistency.js ("Different capitalization of the same database").
  */
@@ -259,6 +276,7 @@ const CASE_SENSITIVE = [
 
 const ALL_CURATED = [
   ...DATABASES, ...METHODS, ...STATISTICS, ...EPIDEMIOLOGY, ...CLINICAL, ...LABORATORY,
+  ...LATIN_SCHOLARLY,
 ];
 
 /** Flat, de-duplicated term list — also what feeds nspell's personal dictionary. */

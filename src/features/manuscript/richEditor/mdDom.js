@@ -1073,6 +1073,58 @@ function dropOrphanCaptionBlocks(blocks) {
 const isTableBlock = (b) => typeof b === 'string' && /^\s*\|/.test(b);
 const isCaptionBlock = (b) => typeof b === 'string' && TABLE_CAPTION_LINE_RE.test(b);
 
+/** The manual-table id a caption marker line claims, or null. */
+const captionIdOf = (b) => {
+  const m = isCaptionBlock(b) ? String(b).match(TABLE_CAPTION_LINE_RE) : null;
+  return m ? m[1] : null;
+};
+
+/**
+ * 120.md r2 — the IDENTITY of a pipe table, as far as a serializer can know it.
+ *
+ * Its header row, whitespace-folded and case-folded. That is the one part of a table
+ * that a caption's own table keeps across the edits that can separate the two (typing
+ * a paragraph into the gap, an Enter, an inline paste) and that a DIFFERENT table
+ * essentially never shares. Column edits DO change it, but a column edit leaves the
+ * caption adjacent to its table, and `captionTablePairs` is recomputed on that emit.
+ */
+export function tableHeaderKey(block) {
+  if (!isTableBlock(block)) return null;
+  return String(block).split('\n')[0].replace(/\s+/g, ' ').trim().toLowerCase();
+}
+
+/**
+ * 120.md r2 — which table each caption was sitting on, from a set of blocks.
+ *
+ * The editor keeps the previous emit's answer and hands it back to the next one, so
+ * `repairCaptionBlocks` can tell "my table is still right there, one paragraph away"
+ * from "my table is gone and that is somebody else's table". Accepts either an array
+ * of blocks or a markdown string (blocks are joined with a blank line and no block of
+ * the grammar contains one, so the split is exact).
+ */
+export function captionTablePairs(blocks) {
+  const src = Array.isArray(blocks)
+    ? blocks
+    : String(blocks == null ? '' : blocks).split(/\n{2,}/);
+  const pairs = new Map();
+  for (let i = 0; i < src.length; i += 1) {
+    const id = captionIdOf(src[i]);
+    if (!id || !isTableBlock(src[i + 1])) continue;
+    pairs.set(id, tableHeaderKey(src[i + 1]));
+  }
+  return pairs;
+}
+
+/**
+ * How far a caption may reach for a table it has never been seen with.
+ *
+ * The §4 gap interloper is one keystroke, one Enter or one inline paste, so the
+ * realistic distance is 1-3 blocks; anything further away is a caption looking for a
+ * table it has no claim to. Pinned at 3 by mediaBoundary120's "moves it across MANY
+ * interlopers" case, which is the widest gap the feature ever promised to repair.
+ */
+const MAX_UNVERIFIED_CAPTION_GAP = 3;
+
 /**
  * 120.md §4 — REPAIR a separated caption instead of deleting it.
  *
@@ -1104,9 +1156,41 @@ const isCaptionBlock = (b) => typeof b === 'string' && TABLE_CAPTION_LINE_RE.tes
  *
  * PURE and IDEMPOTENT: after one pass every surviving caption is immediately
  * followed by its table, so repair(repair(x)) === repair(x).
+ *
+ * ── 120.md r2 — THE REUNION IS BOUNDED, AND IT PREFERS PROOF ────────────────────
+ *
+ * "A pipe table still follows it" was too weak a claim, because caption-LESS tables
+ * are a real, acknowledged state (legacy pre-117 manuscripts, and pipe prose that
+ * round-trips into a headerless table; only PASTED tables are minted an identity).
+ * The 119.md §2 orphan case — the caption's own table removed by a native
+ * selection-delete — is INDISTINGUISHABLE at block level from the §4 gap case when
+ * such a table exists further down: caption, prose, table. The repair then moved the
+ * caption onto a table the researcher never captioned, taking its number, its title
+ * and every `[[table:id]]` cross-reference with it, byte-stably and silently — worse
+ * than the honest 119 drop it replaced, and exactly the "dangerous guess when the
+ * relationship is genuinely ambiguous" §4's own migration rule forbids.
+ *
+ * So the claim now needs evidence, in this order:
+ *   · `opts.captionPairs` — what the PREVIOUS emit saw this caption sitting on (the
+ *     editor keeps it; see RichSectionEditor's emit). A remembered table matches by
+ *     header key → reunion at any distance, because it provably IS this table. A
+ *     remembered table that does NOT match → this caption's table is gone: orphan.
+ *   · no memory at all (a pure caller, a first emit) → the bounded fallback: at most
+ *     MAX_UNVERIFIED_CAPTION_GAP prose blocks in between, which is what a keystroke,
+ *     an Enter or an inline paste can produce and what §4 promised to repair.
+ *
+ * @param {string[]} blocks
+ * @param {{captionPairs?: Map<string,string>|Object}} [opts] the previous emit's
+ *   caption-id → table-header-key map, from `captionTablePairs`.
  */
-export function repairCaptionBlocks(blocks) {
+export function repairCaptionBlocks(blocks, opts) {
   const src = Array.isArray(blocks) ? blocks : [];
+  const pairs = (opts && opts.captionPairs) || null;
+  const rememberedTable = (id) => {
+    if (!id || !pairs) return undefined;
+    if (typeof pairs.get === 'function') return pairs.get(id);
+    return Object.prototype.hasOwnProperty.call(pairs, id) ? pairs[id] : undefined;
+  };
   /** table block index → the caption block that must be emitted before it. */
   const moveTo = new Map();
   const relocated = new Set();
@@ -1121,6 +1205,14 @@ export function repairCaptionBlocks(blocks) {
       if (isTableBlock(src[k])) { table = k; break; }
     }
     if (table < 0 || moveTo.has(table)) continue;      // orphan → the drop pass takes it
+    const known = rememberedTable(captionIdOf(src[i]));
+    if (known === undefined || known === null) {
+      // Nothing remembered about this caption → the bounded gap is all we may assume.
+      if (table - i - 1 > MAX_UNVERIFIED_CAPTION_GAP) continue;
+    } else if (known !== tableHeaderKey(src[table])) {
+      // We know which table this caption owned, and this is not it → honest orphan.
+      continue;
+    }
     moveTo.set(table, i);
     relocated.add(i);
   }
@@ -1145,11 +1237,16 @@ export function repairCaptionBlocks(blocks) {
  *   name (it is a pinned contract with the editor), but it now means REPAIR FIRST,
  *   drop only what is genuinely orphaned: 120.md §4 turned the caption/table
  *   adjacency rule from a silent deletion into a reunion.
+ * @param {Map<string,string>|Object} [opts.captionPairs] 120.md r2 — caption id →
+ *   table header key as of the PREVIOUS emit (`captionTablePairs`). With it the
+ *   reunion is verified rather than guessed; without it the bounded fallback applies.
  */
 export function htmlToMd(html, opts) {
   const blocks = [];
   walkBlocks(parseHtml(html).children, blocks);
-  const kept = (opts && opts.dropOrphanCaptions) ? repairCaptionBlocks(blocks) : blocks;
+  const kept = (opts && opts.dropOrphanCaptions)
+    ? repairCaptionBlocks(blocks, { captionPairs: opts.captionPairs })
+    : blocks;
   return kept.join('\n\n');
 }
 
@@ -1197,7 +1294,7 @@ export default {
   assetChipHtml, assetChipLabel,
   tableCaptionHtml, figureBlockHtml, figureInfoOf, factChipHtml,
   factChipText, factOf, parsePipeTable, serializePipeTable, escapePipeCell,
-  extractOutline, stripInlineMd, repairCaptionBlocks,
+  extractOutline, stripInlineMd, repairCaptionBlocks, captionTablePairs, tableHeaderKey,
   CITE_CHIP_CLASS, ASSET_CHIP_CLASS, FACT_CHIP_CLASS, INPUT_CHIP_CLASS,
   TABLE_CAPTION_CLASS, TABLE_CAPTION_NUM_CLASS, TABLE_CAPTION_TITLE_CLASS,
   TABLE_CAPTION_PLACEHOLDER,

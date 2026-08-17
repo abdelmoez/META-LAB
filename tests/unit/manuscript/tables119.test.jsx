@@ -240,7 +240,14 @@ describe('119.md §2 — an orphan caption does not outlive its table', () => {
   it('runs on the editor emit path only, which is what makes it undo-safe', () => {
     // A native undo puts the table back in the DOM; the very next serialization
     // then emits caption + table again, so the repair is never a lost table.
-    expect(EDITOR).toContain('onChangeRef.current(htmlToMd(el.innerHTML, { dropOrphanCaptions: true }))');
+    /* 120.md r2 — RE-PINNED shape, same contract. The emit now also hands the repair
+       the previous emit's caption→table pairing (`captionPairs`) so a caption whose own
+       table was deleted cannot claim a stranger's table, which meant the single-line
+       call became a three-line one. What this test guards is unchanged: the flag is set
+       on the EDITOR'S serialization and nowhere else. */
+    expect(EDITOR).toContain('const md = htmlToMd(el.innerHTML, {');
+    expect(EDITOR).toContain('dropOrphanCaptions: true, captionPairs: captionPairsRef.current,');
+    expect(EDITOR).toContain('onChangeRef.current(md)');
     expect(EDITOR).not.toContain('htmlToMd(el.innerHTML)');
   });
 });

@@ -325,7 +325,11 @@ describe('119.md §4 — the structural guarantees (source pins)', () => {
      Back/Forward and the pane's own exit button. The guarantee is unchanged and is
      what this pins: it flushes BEFORE it changes the layout. */
   it('flushes pending edits before a layout transition, and never on a resize', () => {
-    expect(ws).toMatch(/const setSplitTo = useCallback\(\(next\) => \{\s*\n\s*if \(splitOpenRef\.current === next\) return;\s*\n\s*if \(m\.flush\) m\.flush\(\);/);
+    /* 120.md r2 — one line earlier now: the path also records that the PANE STATE IS
+       THE USER'S (`splitTouched`), so a late localStorage hydration cannot reopen a
+       pane they just closed. The flush-before-layout guarantee is what this pins and
+       it is unchanged — the touched flag is a ref write, not a transition. */
+    expect(ws).toMatch(/const setSplitTo = useCallback\(\(next\) => \{\s*\n[^\n]*\n\s*splitTouched\.current = true;\s*\n\s*if \(splitOpenRef\.current === next\) return;\s*\n\s*if \(m\.flush\) m\.flush\(\);/);
     // Every route into the pane goes through that one body …
     expect(ws).toContain('setSplitRef.current = setSplitTo;');
     expect(ws).toContain("if (id === PDF_VIEW_TAB) { if (setSplitRef.current) setSplitRef.current(true); }");
@@ -377,6 +381,35 @@ describe('119.md §4 — the structural guarantees (source pins)', () => {
   it('a ?ms=pdfview deep link opens the pane on the FIRST render (no second transition)', () => {
     expect(ws).toContain('const [tab, setTabState] = useState(() => panelFor(initialDestination));');
     expect(ws).toContain('const [splitOpen, setSplitOpen] = useState(initialDestination === PDF_VIEW_TAB);');
+  });
+
+  /* ── 120.md r2 — hydration may not contradict the URL ───────────────────────── */
+
+  it('the remembered pane never re-opens over a URL that says ms=editor', () => {
+    /* §8 makes `?ms=` authoritative and the toolbar's destination a PROJECTION of
+       (panel × splitOpen). The stored-article hydration opened the pane with no
+       destination check at all, so a mount at ?ms=editor with `open:true` in
+       localStorage rendered the nav on PDF View while the URL still said editor:
+       clicking 'PDF View' hit setTab's same-destination guard and did nothing (the URL
+       could never be corrected from the selected tab), and clicking 'Editor' pushed a
+       href identical to the current one — a duplicate history entry, so Back looked
+       dead. destinationFor is the proof of the divergence. */
+    expect(destinationFor(panelFor('editor'), true)).toBe('pdfview');
+    expect(ws).toContain("if (stored.open && !splitTouched.current && initialDestination !== 'editor') {");
+    // …and hydration STILL writes nothing back, so a load pushes no history entry.
+    const effect = ws.slice(ws.indexOf('const stored = readStoredArticle(articleKey, projectId);'));
+    const body = effect.slice(0, effect.indexOf('}, [articleKey, projectId]);'));
+    expect(body).not.toContain('hostNavRef');
+    expect(body).not.toContain('rememberSplit');
+  });
+
+  it('an in-session pane choice outranks a late localStorage hydration', () => {
+    // The `viewTouched` precedent, ten lines above it in the same file: auth (and so
+    // the storage key) arrives asynchronously, so hydration can land AFTER the user
+    // has already closed the pane — and used to reopen it under them.
+    expect(ws).toContain('const splitTouched = useRef(false);');
+    const setSplit = ws.slice(ws.indexOf('const setSplitTo = useCallback((next) => {'));
+    expect(setSplit.slice(0, setSplit.indexOf('\n  }, ['))).toContain('splitTouched.current = true;');
   });
 
   it('the toolbar no longer carries a second control for the same state', () => {

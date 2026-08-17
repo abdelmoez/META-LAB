@@ -235,6 +235,27 @@ describe('120.md §5 — grouping, selected text, and the abstract registry', ()
     expect(body).toContain('end.compareBoundaryPoints(Range.START_TO_START, caret) <= 0');
   });
 
+  it('120.md r2 — a SOFT LINE BREAK in the gap is content, so nothing merges across it', () => {
+    /* Shift+Enter reaches the browser untouched (only Enter inside a caption title is
+       claimed), so it puts a real <br> in the paragraph — and a <br> contributes
+       NOTHING to Range.toString(). The gap between a chip and a caret one visual line
+       below stringified to the single nbsp the chip inserter leaves behind, so
+       citation B merged into the chip on the PREVIOUS line and nothing appeared where
+       the researcher was typing. mdDom serializes br → '\n', so this is model content,
+       not decoration. */
+    const fn = EDITOR.slice(EDITOR.indexOf('const adjacentCiteChip = () => {'));
+    const body = fn.slice(0, fn.indexOf('\n  };'));
+    expect(body).toContain('if (gapHasElement(gap)) continue;');
+    expect(body.indexOf('if (gapHasElement(gap)) continue;'))
+      .toBeLessThan(body.indexOf('if (joinableGap(gap.toString())) return chip;'));
+    // the probe CLONES the range, because toString() cannot see an element boundary
+    const probe = EDITOR.slice(EDITOR.indexOf('const gapHasElement = (range) => {'));
+    const probeBody = probe.slice(0, probe.indexOf('\n  };'));
+    expect(probeBody).toContain('range.cloneContents()');
+    expect(probeBody).toContain('frag.querySelectorAll(\'*\')');
+    expect(EDITOR).toContain("const VOID_CONTENT_TAGS = new Set(['BR', 'IMG', 'HR', 'VIDEO', 'CANVAS', 'INPUT']);");
+  });
+
   it('an inline chip is inserted inside a sacrificial wrapper (the list-item defect)', () => {
     /* Blink's execCommand('insertHTML') UNWRAPS the outermost element of the
        fragment when the caret is inside an <li>: the chip arrived as literal text,
@@ -300,12 +321,32 @@ describe('120.md §7 — the paste ladder is ONE handler with an HTML-first orde
     expect(tableAt).toBeGreaterThan(-1);
     expect(imageAt).toBeGreaterThan(-1);
     expect(tableAt).toBeLessThan(imageAt);
-    // the check is asked of the SANITIZED markdown, never of the raw string
-    expect(body).toContain('const mdHtml = html ? htmlToMd(html) : \'\';');
+    /* the check is asked of the SANITIZED markdown, never of the raw string.
+       120.md r2 — and of the sanitized markdown with DEGENERATE (1×1) tables already
+       reduced to their text, so one copied Excel cell cannot mint a manuscript Table
+       object. Still one conversion of the clipboard HTML, still before the image rung. */
+    expect(body).toContain('const mdHtml = html ? flattenDegenerateTables(htmlToMd(html)) : \'\';');
     // …and every branch is a mutually-exclusive return
     expect(body).toContain('{ pasteMarkdown(e, mdHtml, { table: true }); return; }');
     expect(body).toContain('{ e.preventDefault(); placeImageFiles(imgs); return; }');
     expect(body).toContain('{ pasteMarkdown(e, tsv, { table: true }); return; }');
+  });
+
+  it('120.md r2 — a GAP-redirected multi-block prose paste is hoisted, not truncated', () => {
+    /* The §4 gap redirect moves the caret into the caption title before the ladder
+       runs, so `titleRegionAtCaret()` is truthy for ANY paste that lands there — and
+       the title rung flattens to the first line. That contract is right for a paste
+       the researcher aimed at a title and wrong for a caret the BROWSER chose (a
+       boundary click lands between the caption island and its table): two pasted
+       paragraphs became one line inside the title and the rest was silently gone,
+       while the identical paste WITH a table in it kept every paragraph. */
+    const fn = EDITOR.slice(EDITOR.indexOf('const onPaste = (e) => {'));
+    const body = fn.slice(0, fn.indexOf('\n  };'));
+    expect(body).toContain('if (gapTitle) { placeCaretInTitle(gapTitle); gapRedirected = true; }');
+    expect(body).toContain('if (gapRedirected && /\\n/.test(String(mdHtml).trim())) {');
+    expect(body).toContain('pasteMarkdown(e, mdHtml, { block: true });');
+    // …and `block` hoists past the whole media object, exactly like a table paste.
+    expect(EDITOR).toContain('const hasBlock = opts.table || opts.block');
   });
 
   it('the TSV rung is reached only when there is no text/html at all', () => {

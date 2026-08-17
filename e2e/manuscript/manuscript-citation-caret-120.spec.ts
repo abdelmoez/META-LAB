@@ -348,6 +348,47 @@ test.describe('Exact-caret citation and cross-reference insertion (120.md §5)',
     await expect(menu.getByTestId('stitch-manuscript-cite-remove-s2')).toBeVisible();
   });
 
+  /* ── 120.md r2 — grouping stops at a SOFT line break ───────────────────────── */
+
+  test('§5 (r2): a citation after Shift+Enter is its own chip on the new line', async ({ page, request, tmpProject }) => {
+    /* A <br> is content between two citations, but `Range.toString()` cannot see it —
+       an element contributes nothing to the string — so the gap from the chip to a
+       caret one visual line below stringified to the single nbsp the inserter leaves
+       behind, and citation B merged into the chip on the PREVIOUS line while nothing
+       appeared where the researcher was typing. Shift+Enter is never intercepted in
+       prose, so this is the browser's own <br>, which mdDom serializes as a newline. */
+    await seedStudies(request, tmpProject.id);
+    const editor = await openEditorSection(page, tmpProject.id, 'discussion');
+    await editor.click();
+    await page.keyboard.press('ControlOrMeta+End');
+    await page.keyboard.type('Efficacy was shown ');
+    await cite(page, 'Alpha');
+    await expect(citeChips(page)).toHaveCount(1);
+    await expect(citeChips(page).first()).toHaveText('[1]', { timeout: 10_000 });
+
+    await editorOf(page).click();
+    await page.keyboard.press('ControlOrMeta+End');
+    await page.keyboard.press('Shift+Enter');
+    await cite(page, 'Beta');
+
+    // TWO chips — the one above is untouched, the new one is where the caret was.
+    await expect(citeChips(page)).toHaveCount(2, { timeout: 10_000 });
+    await expect(citeChips(page).first()).toHaveText('[1]');
+    await expect(citeChips(page).nth(1)).toHaveText('[2]');
+    await expect(citeChips(page).first()).toHaveAttribute('data-cite', /^s1$/);
+
+    await saved(page);
+    await expect(async () => {
+      const proj = await (await request.get(`/api/projects/${tmpProject.id}`)).json();
+      const draft = (proj.manuscripts || [])[0] || {};
+      const md = String(draft.sections?.discussion?.content || '');
+      // two separate tokens, never one grouped [[cite:s1,s2]]
+      expect(md).toContain('[[cite:s1]]');
+      expect(md).toContain('[[cite:s2]]');
+      expect(md).not.toMatch(/\[\[cite:s1,s2\]\]|\[\[cite:s2,s1\]\]/);
+    }).toPass({ timeout: 25_000 });
+  });
+
   /* ── §5 "History behavior": cancel changes nothing ──────────────────────────── */
 
   test('§5: canceling the picker clears the bookmark and modifies nothing', async ({ page, request, tmpProject }) => {

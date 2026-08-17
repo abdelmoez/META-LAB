@@ -42,6 +42,12 @@ export const TOKEN = Object.freeze({
   PUNCT: 'punct',
   SYMBOL: 'symbol',
   SPACE: 'space',
+  /* 120.md r2 — a multi-word Latin scholarly phrase (`et al.`, `in vivo`, `de novo`).
+     Firewalled as ONE token because its halves are not English words and never will
+     be: the r2 review proved `Smith et al. reported` produced two spelling errors per
+     citation (suggesting `er` for `et` and `all` for `al`), and `in vivo`/`in vitro`/
+     `de novo`/`in silico` each flagged their second word, in every manuscript. */
+  LATIN: 'latin',
 });
 
 /**
@@ -198,8 +204,39 @@ const RE_STAT_CMP = /(?:<|>|≤|≥|≠|±|≈|~)\s*\d[\d.,]*\s*%?/y;
 const RE_RANGE = /\d+(?:[.,]\d+)?\s*[‐-―−-]\s*\d+(?:[.,]\d+)?/y;
 /** A plain number, including thousands separators, decimals and a trailing `%`. */
 const RE_NUMBER = /[-−+]?\d+(?:,\d{3})*(?:\.\d+)?(?:\s*%)?/y;
-/** Greek block + the MICRO SIGN (U+00B5), which is NOT the Greek mu (U+03BC). */
-const RE_GREEK = /[Ͱ-Ͽἀ-῿µ]+/y;
+/**
+ * Greek block + the MICRO SIGN (U+00B5), which is NOT the Greek mu (U+03BC).
+ *
+ * 120.md r2 — plus the MATHEMATICAL ALPHANUMERIC Greek ranges (U+1D6A8‥U+1D7CB).
+ * Word's equation editor and MathType paste `β` as U+1D6FD MATHEMATICAL ITALIC SMALL
+ * BETA, which is `\p{L}` but is not in the Greek block, so it fell through to RE_WORD
+ * and — being TWO UTF-16 units — passed pipeline.js's `length < 2` guard and was
+ * looked up: `“𝛽” is not in the dictionary`, suggesting A–E. §6 names Greek letters
+ * as a must-not-flag class, and it does not stop at the BMP. The `u` flag is what
+ * makes the astral range a range rather than four surrogate halves.
+ */
+const RE_GREEK = /[Ͱ-Ͽἀ-῿µ\u{1D6A8}-\u{1D7CB}]+/uy;
+
+/**
+ * 120.md r2 — the LATIN SCHOLARLY PHRASES, firewalled before the word scanner.
+ *
+ * `et`, `al`, `vivo`, `vitro`, `novo`, `silico` and `hoc` are in no English
+ * dictionary, in no medical lexicon, and cannot be rescued by the project lexicon
+ * (which rejects terms under three characters), so every one of them was a spelling
+ * ERROR with junk suggestions — 2N underlines in a Discussion citing N studies.
+ * Matching the PHRASE rather than teaching the halves as words is what keeps a bare
+ * `al` (a plausible typo for `all`) checkable.
+ */
+const RE_LATIN = new RegExp(
+  '(?:et[ \\t\\u00a0]+al\\.?'
+  + '|in[ \\t\\u00a0]+(?:vivo|vitro|situ|silico|utero|toto|vacuo|extenso)'
+  + '|ex[ \\t\\u00a0]+vivo'
+  + '|de[ \\t\\u00a0]+novo'
+  + '|post[ \\t\\u00a0]+hoc'
+  + '|ad[ \\t\\u00a0]+(?:hoc|libitum)'
+  + '|per[ \\t\\u00a0]+se)(?![\\p{L}\\p{N}])',
+  'uiy',
+);
 /** Super/subscript digits and signs. */
 const RE_SUPER = /[²³¹⁰-ₜ]+/y;
 /** A run of mask characters. */
@@ -286,6 +323,8 @@ function readQuantity(text, i) {
 
 const hasDigit = (s) => /\d/.test(s);
 const hasLower = (s) => /[a-z]/.test(s);
+/** Any Greek letter, BMP or mathematical-alphanumeric (the RE_GREEK class, unanchored). */
+const hasGreek = (s) => /[Ͱ-Ͽἀ-῿µ\u{1D6A8}-\u{1D7CB}]/u.test(s);
 
 /** `NaCl`, `CO2`, `H2O2`, `CaCO3` — every segment must be a real element symbol. */
 function isChemicalFormula(word) {
@@ -315,6 +354,16 @@ export function classifyWordRun(word) {
   if (!word) return TOKEN.WORD;
   if (/^[A-Z]{2,8}$/.test(word)) return TOKEN.ACRONYM;
   if (hasDigit(word) && /[\p{L}]/u.test(word) && word.length <= 16) return TOKEN.GENE;
+  /* 120.md r2 — a protein/cytokine symbol carrying its conventional GREEK suffix:
+     TNF-α, IFN-γ, TGF-β, NF-κB. RE_WORD consumes the whole run (Greek is \p{L}, the
+     hyphen is a WORD_JOINER) and every existing guard missed it — /^[A-Z]{2,8}$/
+     fails on the hyphen, there is no digit, and both mixed-case branches require an
+     ASCII [a-z] that Greek lowercase can never satisfy. The run was therefore
+     checkable, subWords split it, and `TNF`, `IFN` and `κB` were each reported as
+     misspellings while a BARE `TNF` in the same paragraph was accepted as an acronym.
+     Two or more capitals beside a Greek letter is the symbol signature; a Greek
+     letter beside ordinary lower-case prose (`α-blocker`) is left alone. */
+  if (hasGreek(word) && (word.match(/[A-Z]/g) || []).length >= 2) return TOKEN.GENE;
   if (hasLower(word) && isChemicalFormula(word)) return TOKEN.CHEMICAL;
   // Mixed-case abbreviations are everywhere in medicine — HRQoL, PubMed, MeSH, IgG,
   // mmHg. Two or more capitals inside a short token is the signature; an ordinary
@@ -359,6 +408,10 @@ const PHRASES = [
   [TOKEN.UNIT, (t, i) => readUnitExpr(t, i, false)],
   [TOKEN.GREEK, (t, i) => stickyLen(RE_GREEK, t, i)],
   [TOKEN.SUPERSCRIPT, (t, i) => stickyLen(RE_SUPER, t, i)],
+  // 120.md r2 — the Latin phrase firewall. LAST of the phrase matchers and still
+  // before the generic word scanner, so it can only ever claim a run RE_WORD would
+  // otherwise have handed to the dictionary.
+  [TOKEN.LATIN, (t, i) => stickyLen(RE_LATIN, t, i)],
 ];
 
 /**

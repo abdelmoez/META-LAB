@@ -388,6 +388,56 @@ test.describe('Writing Assistant (120.md §6)', () => {
     await saved(page);
   });
 
+  /* ── 120.md r2 — a store clear must not leave the visible section blank ────── */
+
+  test('§6 (r2): adding a dictionary term re-checks the section being read, not just the others', async ({ page, tmpProject }) => {
+    /* Every §6 action that accepts a word (add to dictionary, ignore term, mute a
+       rule, Recheck, switch English variant) throws the whole issue store away so the
+       accepted word stops being an error everywhere. The recheck that was supposed to
+       follow never reached the FOCUS section: the two debounces do not depend on the
+       store and the background sweep skips the focus section by design. The section
+       the researcher is actually looking at lost every underline and stayed empty —
+       silently claiming clean prose — until they happened to type in it again. */
+    /* A term nobody has accepted yet: the personal dictionary belongs to the SIGNED-IN
+       USER, so it outlives the project fixture and every earlier run of this file —
+       a fixed invented word would already be in the list and would never be flagged.
+       Letters only (a digit would make the tokenizer read it as a gene symbol) and a
+       `qq` tail so a random ending can never collide with a drug suffix rule. */
+    const nonce = Array.from({ length: 5 }, () => 'abcdefghijklmnopqrstuvwxyz'[Math.floor(Math.random() * 26)]).join('');
+    const term = `blorptix${nonce}qq`;
+
+    const editor = await openEditorSection(page, tmpProject.id, 'methods');
+    await editor.click();
+    await page.keyboard.press('ControlOrMeta+End');
+    await page.keyboard.type('The hepatocelular injury was assessed in duplicate.');
+    await page.keyboard.press('Enter');
+    await page.keyboard.type(`Patients received ${term} as maintenance therapy.`);
+    await saved(page);
+
+    await enableAssistant(page);
+    await expect.poll(async () => (await highlightSummary(page)).total, { timeout: READY_MS })
+      .toBeGreaterThan(1);
+
+    await openPanel(page);
+    await page.getByTestId('stitch-manuscript-wa-tab-dictionary').click();
+    await page.getByTestId('stitch-manuscript-wa-dict-input').fill(term);
+    await page.getByTestId('stitch-manuscript-wa-dict-add').click();
+    await expect(page.getByTestId(`stitch-manuscript-wa-dict-remove-${term}`))
+      .toBeVisible({ timeout: 15_000 });
+    await closePanel(page);
+
+    /* WITHOUT touching the keyboard: the accepted term is gone, and the misspelling
+       that was never accepted is underlined again. (Section View mounts one section,
+       so the highlight registry is this section's answer.) */
+    await expect.poll(async () => (await highlightSummary(page)).total, { timeout: 25_000 })
+      .toBeGreaterThan(0);
+    await expect(chip(page)).toHaveAttribute('data-wa-status', 'issues', { timeout: 25_000 });
+    await openPanel(page);
+    await expect(page.getByTestId('stitch-manuscript-wa-list')).toContainText('hepatocelular', { timeout: 25_000 });
+    await expect(page.getByTestId('stitch-manuscript-wa-list')).not.toContainText(term);
+    await closePanel(page);
+  });
+
   /* ── §6 "Incremental checking and performance" ────────────────────────────── */
 
   test('§6 performance: a large manuscript stays responsive with the assistant on', async ({ page, request, tmpProject }) => {

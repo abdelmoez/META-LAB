@@ -25,7 +25,11 @@
 import { describe, it, expect } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { readSource } from '../../helpers/readSource.js';
-import { mdToHtml, htmlToMd, repairCaptionBlocks } from '../../../src/features/manuscript/richEditor/mdDom.js';
+import {
+  mdToHtml, htmlToMd, repairCaptionBlocks,
+  // 120.md r2 — the caption→table pairing that turns the reunion from a guess into a check.
+  captionTablePairs,
+} from '../../../src/features/manuscript/richEditor/mdDom.js';
 import {
   RichSectionEditor, ensureTrailingParagraph, isMediaBlockNode, isEmptyParagraph,
   lastSignificantChild, nextSignificantSibling, prevSignificantSibling,
@@ -109,7 +113,9 @@ describe('120.md §4 — a caption separated from its table is REPAIRED, not dro
     // pinned mdDom suite) is byte-identical to what it always was.
     expect(htmlToMd(html)).toBe(`${capLine('t1', 'Study characteristics')}\n\nstray text\n\n${TABLE_MD}`);
     expect(MDDOM).toContain('function dropOrphanCaptionBlocks(blocks) {');
-    expect(MDDOM).toContain('export function repairCaptionBlocks(blocks) {');
+    // 120.md r2 — the repair takes the previous emit's pairing as an optional second
+    // argument now (see the identity-theft describe below); the function is the same one.
+    expect(MDDOM).toContain('export function repairCaptionBlocks(blocks, opts) {');
   });
 
   it('the repaired markdown is a fixed point of the round trip', () => {
@@ -117,6 +123,74 @@ describe('120.md §4 — a caption separated from its table is REPAIRED, not dro
     const once = htmlToMd(mdToHtml(md), { dropOrphanCaptions: true });
     expect(once).toBe(md);
     expect(htmlToMd(mdToHtml(once), { dropOrphanCaptions: true })).toBe(once);
+  });
+});
+
+/* ══════════════ 120.md r2 — the reunion may not steal an identity ══════════════ */
+
+describe('120.md r2 — a caption never claims a table it has never been seen with', () => {
+  const OTHER_TABLE = '| P | Q |\n| --- | --- |\n| 3 | 4 |';
+
+  it('drops the caption honestly when its OWN table was deleted (the r2 repro)', () => {
+    /* The manuscript: Table 1 (captioned), prose, and a caption-LESS pipe table — a
+       legacy pre-117 table, or one a researcher typed as pipe text. Selecting all of
+       Table 1's cells and pressing Delete removes the <table> natively and leaves the
+       caption island standing, so the blocks that reach the serializer are
+       caption / prose / SOMEBODY ELSE'S table. The repair used to move t1 onto it:
+       its number, its title and every [[table:t1]] cross-reference silently
+       transferred to data the researcher never captioned, byte-stably and forever. */
+    const md = `${capLine('t1', 'Baseline characteristics')}\n\n${TABLE_MD}\n\nSome prose about the trials.\n\n${OTHER_TABLE}`;
+    const pairs = captionTablePairs(md);
+    expect([...pairs]).toEqual([['t1', '| a | b |']]);
+
+    const html = mdToHtml(md).replace(/<table[\s\S]*?<\/table>/, '');   // native whole-table delete
+    const out = htmlToMd(html, { dropOrphanCaptions: true, captionPairs: pairs });
+    expect(out).toBe(`Some prose about the trials.\n\n${OTHER_TABLE}`);
+    expect(out).not.toContain('[[tblcap:t1]]');
+  });
+
+  it('still repairs the §4 gap when the table IS the caption\'s own', () => {
+    const md = `${capLine('t1', 'Study characteristics')}\n\n${TABLE_MD}`;
+    const pairs = captionTablePairs(md);
+    const html = `${mdToHtml(capLine('t1', 'Study characteristics'))}<p>stray text</p>${mdToHtml(TABLE_MD)}`;
+    expect(htmlToMd(html, { dropOrphanCaptions: true, captionPairs: pairs }))
+      .toBe(`stray text\n\n${capLine('t1', 'Study characteristics')}\n\n${TABLE_MD}`);
+  });
+
+  it('bounds the reunion when nothing is remembered about the caption', () => {
+    // A pure caller has no history, so the only honest claim is the small gap a
+    // keystroke, an Enter or an inline paste can produce.
+    const far = [capLine('t1', 'A'), 'p1', 'p2', 'p3', 'p4', TABLE_MD];
+    expect(repairCaptionBlocks(far)).toEqual(['p1', 'p2', 'p3', 'p4', TABLE_MD]);
+    // …and the widest gap the feature ever promised to repair still repairs.
+    expect(repairCaptionBlocks([capLine('t1', 'A'), 'p1', 'p2', 'p3', TABLE_MD]))
+      .toEqual(['p1', 'p2', 'p3', capLine('t1', 'A'), TABLE_MD]);
+  });
+
+  it('matches on the header row, so a moved-but-unchanged table is still reunited', () => {
+    const pairs = captionTablePairs([capLine('t1', 'A'), TABLE_MD]);
+    expect(repairCaptionBlocks([capLine('t1', 'A'), 'x', 'y', 'z', 'w', TABLE_MD], { captionPairs: pairs }))
+      .toEqual(['x', 'y', 'z', 'w', capLine('t1', 'A'), TABLE_MD]);
+  });
+
+  it('is still idempotent, with and without a pairing', () => {
+    const pairs = captionTablePairs([capLine('t1', 'A'), TABLE_MD]);
+    for (const opts of [undefined, { captionPairs: pairs }]) {
+      const blocks = [capLine('t1', 'A'), 'x', OTHER_TABLE, capLine('t2', 'B'), TABLE_MD];
+      const once = repairCaptionBlocks(blocks, opts);
+      expect(repairCaptionBlocks(once, opts)).toEqual(once);
+    }
+  });
+
+  it('closes the WebKit husk vector: the husk is removed whatever follows it', () => {
+    /* runTableOp's escalation kept the husk standing when `cap.nextElementSibling` was
+       a TABLE — which is exactly the shape that fed the theft. `stillThere()` has
+       already proved THIS caption's table is gone, so any table after it is a
+       stranger's and the husk is an orphan. */
+    const fn = EDITOR.slice(EDITOR.indexOf('const stillThere = () =>'));
+    const body = fn.slice(0, fn.indexOf('ensureTrailingParagraph(rootRef.current);'));
+    expect(body).toContain('if (!stillThere() && cap && rootRef.current && rootRef.current.contains(cap)) {');
+    expect(body).not.toContain("next.tagName !== 'TABLE'");
   });
 });
 
@@ -311,9 +385,13 @@ describe('120.md §3/§4 — editor wiring', () => {
     expect(emitFn).toContain('ensureTrailingParagraph(el);');
     // …before the serialization, which is harmless because htmlToMd drops empties.
     expect(emitFn.indexOf('ensureTrailingParagraph(el);'))
-      .toBeLessThan(emitFn.indexOf('onChangeRef.current(htmlToMd('));
-    // the 119.md §2 emit contract is untouched
-    expect(EDITOR).toContain('onChangeRef.current(htmlToMd(el.innerHTML, { dropOrphanCaptions: true }))');
+      .toBeLessThan(emitFn.indexOf('htmlToMd(el.innerHTML,'));
+    /* the 119.md §2 emit contract is untouched — 120.md r2 only widened the call so the
+       repair can VERIFY a reunion against the previous emit's caption→table pairing
+       (see repairCaptionBlocks); the flag still appears on this one path and nowhere else. */
+    expect(EDITOR).toContain('const md = htmlToMd(el.innerHTML, {');
+    expect(EDITOR).toContain('dropOrphanCaptions: true, captionPairs: captionPairsRef.current,');
+    expect(EDITOR).toContain('captionPairsRef.current = captionTablePairs(md);');
     expect(EDITOR).not.toContain('htmlToMd(el.innerHTML)');
   });
 

@@ -101,13 +101,31 @@ for (const verb of IZE_VERBS) {
   addVariantPair(`${stem}ization`, `${stem}isation`);
   addVariantPair(`${stem}izations`, `${stem}isations`);
 }
+/**
+ * 120.md r2 — stems whose `-ysis` NOUN exists, so `-yses` is that noun's PLURAL and
+ * not the UK form of the `-yzes` verb.
+ *
+ * Two defects were pinned to this loop by the r2 review, both firing on essentially
+ * every systematic-review manuscript:
+ *
+ *   · `addVariantPair('analysis','analysis')` registered `analysis` as a variant pair
+ *     of ITSELF, classified US because `lower === entry.us`. A GB-variant manuscript
+ *     therefore got "Mixed English variants; 'analysis' is the UK spelling" on every
+ *     `analysis`, with a suggestion BYTE-IDENTICAL to the text — an underline that no
+ *     Apply could ever satisfy. The line is gone; there is no such pair.
+ *   · `analyses` is the correct US plural of `analysis`, so pairing it as the GB side
+ *     of `analyzes` made a US-variant manuscript underline "sensitivity analyses" and
+ *     offer "sensitivity analyzes" — a noun corrupted into a third-person verb by
+ *     clicking Apply. Ambiguous forms are not classified at all (§6: never guess).
+ */
+const YSIS_NOUN_STEMS = new Set(['anal', 'catal', 'hydrol', 'paral', 'dial', 'electrol']);
+
 for (const verb of YZE_VERBS) {
   const stem = verb.slice(0, -3); // drop "yze"
   addVariantPair(`${stem}yze`, `${stem}yse`);
-  addVariantPair(`${stem}yzes`, `${stem}yses`);
+  if (!YSIS_NOUN_STEMS.has(stem)) addVariantPair(`${stem}yzes`, `${stem}yses`);
   addVariantPair(`${stem}yzed`, `${stem}ysed`);
   addVariantPair(`${stem}yzing`, `${stem}ysing`);
-  addVariantPair(`${stem}ysis`, `${stem}ysis`);
 }
 for (const [us, gb] of US_UK_PAIRS) {
   addVariantPair(us, gb);

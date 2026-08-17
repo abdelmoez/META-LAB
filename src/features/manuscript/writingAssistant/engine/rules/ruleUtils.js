@@ -193,7 +193,11 @@ export function acronymTakesAn(acronym) {
 export const LEXICAL_KINDS = new Set([
   TOKEN.WORD, TOKEN.ACRONYM, TOKEN.GENE, TOKEN.CHEMICAL, TOKEN.NUMBER,
   TOKEN.UNIT, TOKEN.STAT, TOKEN.IDENTIFIER, TOKEN.PLACEHOLDER, TOKEN.RANGE,
-  TOKEN.URL, TOKEN.EMAIL, TOKEN.FILENAME, TOKEN.VERSION, TOKEN.GREEK,
+  /* 120.md r2 — TOKEN.LATIN carries lexical content (`an in vitro study`), so it must
+     be VISIBLE to the rules rather than skipped: an invisible phrase would make the
+     article rule read `an … study` and demand “a”, inventing a false positive out of
+     a firewall. Being non-WORD, every rule that needs an English word declines on it. */
+  TOKEN.URL, TOKEN.EMAIL, TOKEN.FILENAME, TOKEN.VERSION, TOKEN.GREEK, TOKEN.LATIN,
 ]);
 
 export function lexicalTokens(tokens) {

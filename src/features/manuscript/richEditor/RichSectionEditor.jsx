@@ -31,6 +31,8 @@ import {
   mdToHtml, htmlToMd, escapeHtml, citeChipHtml, citeChipLabel, citeChipAria,
   assetChipHtml, assetChipLabel, assetChipAria,
   factChipText, factOf, stripInlineMd,
+  // 120.md r2 — the caption↔table pairing the serialize-time repair verifies against.
+  captionTablePairs,
   CITE_CHIP_CLASS, ASSET_CHIP_CLASS, FACT_CHIP_CLASS, INPUT_CHIP_CLASS,
   TABLE_CAPTION_CLASS, TABLE_CAPTION_NUM_CLASS, TABLE_CAPTION_TITLE_CLASS,
   // 119.md §5 — the uploaded-figure block.
@@ -53,7 +55,11 @@ import {
    caption harvest, the TSV grid test, the duplicate re-mint and the figure-marker
    rule). It is a separate module so the whole pipeline is unit-testable in Node —
    the editor below only supplies the clipboard and the one insertion call. */
-import { transformPastedMd, hasPipeTableBlock, tsvToPipeTable } from './pasteTransform.js';
+import {
+  transformPastedMd, hasPipeTableBlock, tsvToPipeTable,
+  // 120.md r2 — the shape gate the HTML rung was missing (a 1×1 table is not a table).
+  flattenDegenerateTables,
+} from './pasteTransform.js';
 /* 120.md §5 — the PURE half of the picker-session caret bookmark: the rule that
    decides whether a remembered position is still the same place in the text. */
 import { logicalContext, resolveContext } from './caretBookmark.js';
@@ -442,6 +448,14 @@ export const RichSectionEditor = forwardRef(function RichSectionEditor({
       knownAssetIds, templateId, citationStyle, refsById, yearSuffixes, figures,
     });
   }
+
+  /* 120.md r2 — WHICH TABLE EACH CAPTION OWNS, carried from one emit to the next.
+     Seeded from the MOUNTED markdown (where every caption is adjacent to its table by
+     construction) and rewritten by every emit, so the serialize-time repair can tell a
+     caption whose table is one paragraph away from a caption whose table was deleted
+     and a stranger's table happens to follow. See mdDom's repairCaptionBlocks. */
+  const captionPairsRef = useRef(null);
+  if (captionPairsRef.current == null) captionPairsRef.current = captionTablePairs(value || '');
 
   /* 120.md §3 — THE MOUNT-SIDE half of the trailing caret target.
      A section whose markdown ends with a table or a figure mounts with a
@@ -1366,8 +1380,19 @@ export const RichSectionEditor = forwardRef(function RichSectionEditor({
     ensureTrailingParagraph(el);
     /* 119.md §2 — the ONE place the orphan-caption repair runs: a caption whose
        table a native selection-delete removed is dropped as the section is
-       serialized. Undo-safe by construction (see dropOrphanCaptionBlocks). */
-    onChangeRef.current && onChangeRef.current(htmlToMd(el.innerHTML, { dropOrphanCaptions: true }));
+       serialized. Undo-safe by construction (see dropOrphanCaptionBlocks).
+       120.md r2 — and the ONE place that can tell the repair which table each caption
+       actually owned: the answer from the PREVIOUS emit. Without it, a caption whose
+       own table was natively deleted claimed the next caption-less table in the
+       section — a legacy or hand-typed pipe table the researcher never captioned —
+       and kept its number, title and cross-references, silently and byte-stably.
+       The map is derived from the markdown we just produced, so it always describes
+       the state the next emit starts from (including after a native undo). */
+    const md = htmlToMd(el.innerHTML, {
+      dropOrphanCaptions: true, captionPairs: captionPairsRef.current,
+    });
+    captionPairsRef.current = captionTablePairs(md);
+    onChangeRef.current && onChangeRef.current(md);
   }, []);
 
   /* 120.md §6 — the caption-title spellcheck stamp on the paths `emit` does not
@@ -1616,32 +1641,32 @@ export const RichSectionEditor = forwardRef(function RichSectionEditor({
       }
       /* …and whatever caption WebKit left standing goes too — but only once the
          TABLE is provably gone, so a command that failed outright can never turn
-         into "the caption disappeared and the data stayed". The orphan test is the
-         same one the markdown repair uses (a caption whose next sibling is not its
-         table), which covers both shapes WebKit leaves: an emptied husk and a
-         complete caption. It goes through the same execCommand path everything else
-         uses, never a removeChild. */
+         into "the caption disappeared and the data stayed". That covers both shapes
+         WebKit leaves: an emptied husk and a complete caption. It goes through the
+         same execCommand path everything else uses, never a removeChild.
+         120.md r2 — the test is THIS caption's own table, and `stillThere()` has
+         already proved it is gone; the old extra `cap.nextElementSibling !== TABLE`
+         condition kept the husk standing precisely when a DIFFERENT, caption-less
+         table happened to follow it, which is the second route into the caption
+         identity-theft the serializer now refuses (mdDom's repairCaptionBlocks). */
       if (!stillThere() && cap && rootRef.current && rootRef.current.contains(cap)) {
-        const next = cap.nextElementSibling;
-        if (!next || next.tagName !== 'TABLE') {
-          cap.removeAttribute('contenteditable');
-          replaceNode(cap, null);
-          /* 120.md §3 (r1) — and when the mutation path PROVABLY LIED, the husk goes
-             directly. Reproduced under webkit-manuscript: with the §3 trailing
-             affordance now following the husk, WebKit's execCommand('delete') over a
-             selectNode(husk) range RETURNS TRUE while removing nothing (the retry's
-             insertHTML had merged the replacement <p> INSIDE the preserved caption
-             div, and a div holding a block child survives the delete). This direct
-             removal does not violate the never-removeChild doctrine, because that
-             doctrine protects the undo stack and the autosave — and a caption whose
-             table is gone is ALREADY invisible to both: the serializer drops its
-             line on every emit (dropOrphanCaptionBlocks), so the persisted markdown
-             is byte-identical with or without the husk, exactly like a sacrificial
-             pad. Native undo still restores caption + table together from the
-             replacement the engine DID record. Guarded to run only after the
-             execCommand path was given its chance and provably did not finish. */
-          if (rootRef.current.contains(cap) && typeof cap.remove === 'function') cap.remove();
-        }
+        cap.removeAttribute('contenteditable');
+        replaceNode(cap, null);
+        /* 120.md §3 (r1) — and when the mutation path PROVABLY LIED, the husk goes
+           directly. Reproduced under webkit-manuscript: with the §3 trailing
+           affordance now following the husk, WebKit's execCommand('delete') over a
+           selectNode(husk) range RETURNS TRUE while removing nothing (the retry's
+           insertHTML had merged the replacement <p> INSIDE the preserved caption
+           div, and a div holding a block child survives the delete). This direct
+           removal does not violate the never-removeChild doctrine, because that
+           doctrine protects the undo stack and the autosave — and a caption whose
+           table is gone is ALREADY invisible to both: the serializer drops its
+           line on every emit (dropOrphanCaptionBlocks), so the persisted markdown
+           is byte-identical with or without the husk, exactly like a sacrificial
+           pad. Native undo still restores caption + table together from the
+           replacement the engine DID record. Guarded to run only after the
+           execCommand path was given its chance and provably did not finish. */
+        if (rootRef.current.contains(cap) && typeof cap.remove === 'function') cap.remove();
       }
       // 120.md §3 — a deletion can promote another media block to last child.
       ensureTrailingParagraph(rootRef.current);
@@ -2146,6 +2171,26 @@ export const RichSectionEditor = forwardRef(function RichSectionEditor({
   /** A collapsed Range at one boundary point (start/end of a node, or the caret). */
   const pointAt = (fn) => { const p = document.createRange(); fn(p); p.collapse(true); return p; };
 
+  /** Elements that ARE content even though they hold no text — a soft line break, a
+      picture. An EMPTY formatting wrapper (`<strong></strong>` cloned because the
+      caret sits at the edge of a bold run) is not content and stays joinable. */
+  const VOID_CONTENT_TAGS = new Set(['BR', 'IMG', 'HR', 'VIDEO', 'CANVAS', 'INPUT']);
+
+  /** 120.md r2 — does the gap contain a real element? `Range.toString()` concatenates
+      text-node data only, so an element boundary is invisible to it; cloning the
+      contents is the only honest probe. */
+  const gapHasElement = (range) => {
+    try {
+      const frag = range.cloneContents();
+      if (!frag || typeof frag.querySelectorAll !== 'function') return false;
+      for (const el of frag.querySelectorAll('*')) {
+        if (VOID_CONTENT_TAGS.has(String(el.tagName || '').toUpperCase())) return true;
+        if (el.childNodes && el.childNodes.length) return true;
+      }
+      return false;
+    } catch { return false; }
+  };
+
   /**
    * The citation chip the collapsed caret is immediately beside, or null.
    *
@@ -2178,6 +2223,16 @@ export const RichSectionEditor = forwardRef(function RichSectionEditor({
           gap.setStart(caret.startContainer, caret.startOffset);
           gap.setEnd(start.startContainer, start.startOffset);
         }
+        /* 120.md r2 — a SOFT LINE BREAK is content, and Range.toString() cannot see
+           it: a <br> is an element and contributes nothing to the string, so the gap
+           between a chip and a caret one visual line below stringified to the single
+           nbsp the chip inserter leaves behind and read as "adjacent". Shift+Enter in
+           prose is not intercepted anywhere (only Enter inside a caption title is), so
+           the browser puts a real <br> in the paragraph and mdDom serializes it as a
+           newline — the second citation then merged into the chip on the PREVIOUS line
+           and nothing appeared where the researcher was typing. Any element in the gap
+           is content between two citations. */
+        if (gapHasElement(gap)) continue;
         if (joinableGap(gap.toString())) return chip;
       } catch { /* the chip is not comparable with the caret → not adjacent */ }
     }
@@ -2942,7 +2997,9 @@ export const RichSectionEditor = forwardRef(function RichSectionEditor({
        land AFTER the whole object, never as a table inside a cell. A paste with no
        block in it is ordinary inline/prose content and keeps the caret exactly
        where the researcher put it. */
-    const hasBlock = opts.table
+    // 120.md r2 — `opts.block` is the same claim for a payload with no table in it:
+    // multi-paragraph prose that must land AFTER a media object rather than inside it.
+    const hasBlock = opts.table || opts.block
       || /^\s*\|/m.test(md) || /\[\[tblcap:/.test(md) || /\[\[figcap:/.test(md);
     insertHtml(mdToHtml(md, {
       orderMap: orderMapRef.current, assetNumbers: assetNumbersRef.current,
@@ -2994,9 +3051,10 @@ export const RichSectionEditor = forwardRef(function RichSectionEditor({
        and an inline paste lands in the title, which is the only editable region
        the researcher could have meant. */
     const gapCap = captionGapCaption();
+    let gapRedirected = false;
     if (gapCap) {
       const gapTitle = captionTitleOf(gapCap);
-      if (gapTitle) placeCaretInTitle(gapTitle);
+      if (gapTitle) { placeCaretInTitle(gapTitle); gapRedirected = true; }
     }
     const cd = e.clipboardData;
     if (!cd) return;
@@ -3006,7 +3064,12 @@ export const RichSectionEditor = forwardRef(function RichSectionEditor({
        dropped outright by htmlToMd's DROP_TAGS + escape-first parser).
        117.md §4(c)/(d) + 119.md §5 — the identity rules for a marker that came
        along with the copy live in `transformPastedMd`. */
-    const mdHtml = html ? htmlToMd(html) : '';
+    /* 120.md r2 — a DEGENERATE (1×1) table is reduced to its text before the ladder
+       looks at it, so one cell copied from Excel, or an email body wrapped in a
+       layout table, can never take the table route: no minted id, no caption, no
+       registry entry and no renumbering of the manuscript's real tables. Real grids
+       (≥2 rows or ≥2 columns) are untouched. */
+    const mdHtml = html ? flattenDegenerateTables(htmlToMd(html)) : '';
     if (hasPipeTableBlock(mdHtml)) { pasteMarkdown(e, mdHtml, { table: true }); return; }
     // 119.md §5 — an image FILE (never <img> markup) still becomes a figure, and
     // the bytes still take the validated server path a file-picker upload takes.
@@ -3023,6 +3086,18 @@ export const RichSectionEditor = forwardRef(function RichSectionEditor({
       return;   // plain-text paste → browser default (inserted as text)
     }
     if (titleEl) {
+      /* 120.md r2 — the "first line only" flatten is the right contract for a paste
+         the researcher AIMED at a one-line title. It is the wrong one for a caret the
+         §4 gap redirect just moved there: that position was chosen by the browser (a
+         boundary click lands between the caption island and its table), not by the
+         user, and flattening silently discarded every paragraph after the first —
+         while the SAME paste with a table in it is hoisted past the object and keeps
+         all of them. A multi-block prose paste in the gap therefore goes past the
+         object too, as prose. */
+      if (gapRedirected && /\n/.test(String(mdHtml).trim())) {
+        pasteMarkdown(e, mdHtml, { block: true });
+        return;
+      }
       e.preventDefault();
       insertPlainText(firstLineOf(plain || stripInlineMd(mdHtml)));
       return;

@@ -415,6 +415,10 @@ export function ManuscriptWorkspace({ project, upd, initialSubtab, onSubtabChang
      the signed-in user arrives asynchronously. */
   const articleKey = splitArticleKey(userId);
   const splitHydrated = useRef(null);
+  /* 120.md r2 — has the pane been set by the USER in this session? The `viewTouched`
+     precedent: a stored layout preference may seed a fresh mount, never overrule a
+     choice already made on screen. */
+  const splitTouched = useRef(false);
   useEffect(() => {
     if (!articleKey || !projectId || splitHydrated.current === `${articleKey}:${projectId}`) return;
     splitHydrated.current = `${articleKey}:${projectId}`;
@@ -425,12 +429,27 @@ export function ManuscriptWorkspace({ project, upd, initialSubtab, onSubtabChang
     /* 120.md §8 — hydration deliberately does NOT go through `setSplitTo`: that path
        re-writes the remembered article, and at this instant `articleId` is still the
        pre-hydration value, so the stored choice would be clobbered by its own
-       restoration. It opens the pane directly and arms the keep-alive latch. */
-    if (stored.open) {
+       restoration. It opens the pane directly and arms the keep-alive latch.
+
+       120.md r2 — but ONLY when the mount's URL does not already say otherwise, and
+       only when the researcher has not already set the pane themselves this session.
+       `?ms=` is authoritative and the toolbar's destination is a projection of
+       (panel × splitOpen), so opening the pane under `?ms=editor` made the two
+       disagree permanently: the nav showed PDF View while the URL said editor,
+       clicking 'PDF View' was swallowed by setTab's same-destination guard (the URL
+       could never be corrected from the tab that was selected), and clicking 'Editor'
+       pushed a href identical to the current one — a duplicate history entry, so Back
+       looked dead. A URL that names `editor` HAS named the pane: closed. Nothing is
+       written back here, so the no-history-push-on-load property is untouched, and
+       `?ms=pdfview` still opens on the first render through `splitOpen`'s initializer.
+       `splitTouched` mirrors `viewTouched` ten lines above: hydration arriving late
+       (auth resolves asynchronously) must never reopen a pane the user just closed. */
+    if (stored.open && !splitTouched.current && initialDestination !== 'editor') {
       splitOpenRef.current = true;
       setSplitOpen(true);
       setSplitMounted(true);
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [articleKey, projectId]);
 
   const rememberSplit = useCallback((next) => {
@@ -486,6 +505,8 @@ export function ManuscriptWorkspace({ project, upd, initialSubtab, onSubtabChang
      purpose: asking for the state it is already in does nothing at all — no flush, no
      localStorage write, no re-render. */
   const setSplitTo = useCallback((next) => {
+    // 120.md r2 — from here on the pane state is the researcher's, not localStorage's.
+    splitTouched.current = true;
     if (splitOpenRef.current === next) return;
     if (m.flush) m.flush();
     splitOpenRef.current = next;

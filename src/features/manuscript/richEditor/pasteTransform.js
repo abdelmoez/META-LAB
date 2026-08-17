@@ -84,6 +84,59 @@ export function hasPipeTableBlock(md) {
   return splitBlocks(md).some(isTableBlock);
 }
 
+/* ── 120.md r2 — the DEGENERATE table gate ─────────────────────────────────────
+ *
+ * The TSV rung has always gated on shape ("at least two rows, every row ≥ 1 tab")
+ * because "ordinary text pasting must not change". The HTML rung had no equivalent,
+ * so `<table><tr><td>42.7</td></tr></table>` — one cell copied from Excel, or the
+ * layout table Outlook wraps an email body in — became a first-class, numbered,
+ * cross-referenceable manuscript Table: it took an id, a caption and a registry
+ * entry, and it renumbered every real table in the manuscript. Pre-120 the same
+ * paste inserted a bare pipe block (a wart) but minted nothing.
+ *
+ * A grid needs two of something: ≥2 rows or ≥2 columns. A 1×1 "table" is a value or
+ * a paragraph in a box, and it pastes as what it is — its text.
+ */
+
+/** The data rows of a pipe block, ignoring the `| --- |` alignment row. */
+const tableRows = (block) => String(block).split('\n')
+  .map((l) => l.trim())
+  .filter((l) => l && !/^\|[\s|:-]*\|?$/.test(l));
+
+/** Cells of one pipe row (border pipes dropped; `\|` is a literal, not a separator). */
+const rowCells = (line) => String(line).trim()
+  .replace(/^\|/, '').replace(/\|$/, '')
+  .split(/(?<!\\)\|/);
+
+export function isGridTableBlock(block) {
+  if (!isTableBlock(block)) return false;
+  const rows = tableRows(block);
+  if (rows.length >= 2) return true;
+  return rows.length === 1 && rowCells(rows[0]).length >= 2;
+}
+
+/** Does this markdown contain a table with a real grid in it? */
+export function hasGridTableBlock(md) {
+  return splitBlocks(md).some(isGridTableBlock);
+}
+
+/**
+ * Reduce every DEGENERATE (1×1) pipe block to the text it contains, leaving real
+ * grids untouched. Applied by the paste handler to the sanitized markdown BEFORE the
+ * ladder chooses a rung, so a one-cell paste never reaches the table route at all and
+ * never reaches `pasteTableIdentity` either. Pure.
+ */
+export function flattenDegenerateTables(md) {
+  const src = splitBlocks(md);
+  if (!src.some((b) => isTableBlock(b) && !isGridTableBlock(b))) return String(md == null ? '' : md);
+  return src.map((b) => {
+    if (!isTableBlock(b) || isGridTableBlock(b)) return b;
+    const rows = tableRows(b);
+    if (!rows.length) return '';
+    return rowCells(rows[0]).map((c) => c.replace(/\\\|/g, '|').trim()).join(' ').trim();
+  }).filter((b) => b !== '').join('\n\n');
+}
+
 /**
  * 120.md §7 "Caption handling" — a Word caption paragraph, recognized.
  *
@@ -103,10 +156,31 @@ export function hasPipeTableBlock(md) {
  *
  * Conservative by construction: one line, short, no block grammar of its own.
  */
-/* '.' ':' ')' and the whole hyphen/dash family (ASCII '-', U+2010‥U+2015, U+2212). */
-const CAPTION_SEPARATORS = '[.:)\\-\\u2010-\\u2015\\u2212]';
+/*
+ * 120.md r2 — A SEPARATOR IS NOT A RANGE.
+ *
+ * The dash family used to be accepted with no whitespace requirement, so the ordinary
+ * (and, in ESL scientific prose, very common) sentence "Table 1–2 list all adverse
+ * events." parsed as number + separator and the REST OF THE SENTENCE was harvested as
+ * a caption title: the paragraph was popped out of the paste and reappeared as
+ * "Table N. 2 list all adverse events." — a wrong title AND a silently deleted
+ * sentence, which this module's own doc-comment calls worse than not harvesting at
+ * all. `Table 1.2 shows…` (hierarchical numbering) is the same defect through '.'.
+ *
+ * Word's real dash captions are always spaced ("Table 3 — Adverse events"), and its
+ * dot captions are always followed by a space or end-of-line, so:
+ *   · a dash separator REQUIRES whitespace before it;
+ *   · a '.' separator may not be followed immediately by a digit.
+ * Everything Word actually emits still harvests; every attached-number form falls
+ * through and stays prose.
+ */
+const CAPTION_DASHES = '[\\-\\u2010-\\u2015\\u2212]';
 const CAPTION_PARAGRAPH_RE = new RegExp(
-  `^[ \\t]*table[ \\t]+(?:[0-9]{1,4}|[ivxlcdm]{1,7})[ \\t]*(?:${CAPTION_SEPARATORS}[ \\t]*|[ \\t]*$)(.*)$`,
+  '^[ \\t]*table[ \\t]+(?:[0-9]{1,4}|[ivxlcdm]{1,7})'
+  + '(?:[ \\t]*\\.(?![0-9])[ \\t]*'          // "Table 1. Baseline" / "Table 5."
+  + '|[ \\t]*[:)][ \\t]*'                    // "Table 2: Outcomes" / "Table 2) …"
+  + `|[ \\t]+${CAPTION_DASHES}[ \\t]*`       // "Table 3 — Adverse events"
+  + '|[ \\t]*$)(.*)$',                       // "Table 5"
   'i',
 );
 const CAPTION_PARAGRAPH_MAX = 200;
@@ -230,6 +304,17 @@ export function tsvToPipeTable(text) {
     else if (n !== tabs) return null;                 // ragged → not a grid
   }
   const rows = lines.map((l) => l.split('\t').map((c) => c.trim()));
+  /* 120.md r2 — a COLUMN THAT IS EMPTY IN EVERY ROW is indentation or trailing tabs,
+     not a grid. Two tab-indented lines of notes or code ("\tfoo();\n\tbar();") passed
+     every check above — same tab count, ≥1 tab, ≥2 rows — and became a numbered,
+     captioned PecanRev table with an empty first column, from a Notepad/terminal paste
+     in every browser (the rung is reached whenever the clipboard carries no text/html
+     at all, not only in Safari). An Excel range never has a wholly empty column: even
+     a blank cell run comes with real data beside it in some row. */
+  const width = rows[0].length;
+  for (let c = 0; c < width; c += 1) {
+    if (rows.every((r) => !r[c])) return null;
+  }
   // serializePipeTable escapes a literal '|' in a cell (116.md §63) and
   // rectangularizes, so the result is inside the grammar by construction.
   return serializePipeTable({ header: rows[0], rows: rows.slice(1), align: null });
@@ -237,5 +322,6 @@ export function tsvToPipeTable(text) {
 
 export default {
   transformPastedMd, pasteTableIdentity, harvestCaptionTitle,
-  hasPipeTableBlock, tsvToPipeTable, isTableBlock, isCaptionBlock,
+  hasPipeTableBlock, hasGridTableBlock, isGridTableBlock, flattenDegenerateTables,
+  tsvToPipeTable, isTableBlock, isCaptionBlock,
 };

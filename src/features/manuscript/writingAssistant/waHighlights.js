@@ -111,9 +111,18 @@ const EM_RE = /\*([^*\n]+)\*/g;
  */
 export function projectBlock(text, kind) {
   const src = String(text ?? '');
-  // Start with an identity projection, then delete spans from it. Deleting keeps the
-  // surviving characters' original offsets, which is the whole point of the map.
-  let chars = [...src].map((ch, i) => ({ ch, at: i }));
+  /* Start with an identity projection, then delete spans from it. Deleting keeps the
+     surviving characters' original offsets, which is the whole point of the map.
+
+     120.md r2 — indices are UTF-16 CODE UNITS, not code points. `[...src]` iterates
+     by code point, so a single astral character (an emoji, or the mathematical Greek
+     Word pastes for β) made every subsequent `at` one short of the regex `.index`
+     values `dropRanges` receives and of the issue offsets `projectOffset` compares
+     against — the drops then landed one character early and ate real prose
+     ("Emoji 😀 then **bold**" projected as "then *old*"). Surrogate halves stay
+     paired because every drop range comes from a regex over the same string, and
+     those are always code-unit aligned. */
+  let chars = Array.from({ length: src.length }, (_, i) => ({ ch: src[i], at: i }));
 
   const dropRanges = (ranges) => {
     if (!ranges.length) return;

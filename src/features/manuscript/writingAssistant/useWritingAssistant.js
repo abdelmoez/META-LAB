@@ -157,9 +157,29 @@ export function useWritingAssistant(opts = {}) {
   /* ── worker lifetime ──────────────────────────────────────────────────────── */
 
   const workerRef = useRef(null);
+  /* 120.md r2 — the BOOT EPOCH. `boot()` awaits a dynamic import before it can assign
+     `workerRef`, and the only re-entry guard was read BEFORE that await, so a toggle
+     race (enable → disable → enable inside the import window, or simply disabling
+     while the chunk downloads) constructed a Worker nobody owned: teardown found
+     `workerRef` null and terminated nothing, and the resolved worker then parsed the
+     552 kB dictionary and idled for the life of the tab — ~19 MB per orphan, with the
+     mirror case leaving a live worker running while the feature is OFF. Teardown
+     bumps this; a boot whose epoch has moved terminates what it just built. */
+  const bootEpoch = useRef(0);
   const [ready, setReady] = useState(false);
   const [error, setError] = useState(null);
+  /** The same value as `error`, readable from the message handler without a re-render. */
+  const errorRef = useRef(null);
   const [inFlight, setInFlight] = useState(false);
+  /* 120.md r2 — the RECHECK EPOCH. Every intentional store clear (Recheck, a dictionary
+     or ignore/mute change, an English-variant switch) assumed "the normal debounce then
+     rechecks", but the two focus-section debounce effects depend only on
+     [enabled, ready, focusSection, blocksBySection] — none of which changes when the
+     store is cleared — and the background sweep explicitly SKIPS the focus section. The
+     one section the researcher is looking at therefore lost every underline and was
+     never checked again until they typed in it. Bumping this re-arms both debounces. */
+  const [checkEpoch, setCheckEpoch] = useState(0);
+  const bumpCheck = useCallback(() => setCheckEpoch((n) => n + 1), []);
   const pending = useRef(new Map());      // requestId → { sectionId, blocks, mode, startedAt }
   const attemptRef = useRef(0);
   const retryTimer = useRef(null);
@@ -181,6 +201,7 @@ export function useWritingAssistant(opts = {}) {
     if (!msg || typeof msg.type !== 'string') return;
     if (msg.type === 'ready') {
       attemptRef.current = 0;
+      errorRef.current = null;
       setError(null);
       setReady(true);
       setPerf((p) => ({ ...p, initMs: msg.ms || 0, dictionaryBytes: msg.dictionaryBytes || 0 }));
@@ -192,8 +213,18 @@ export function useWritingAssistant(opts = {}) {
       // part of either path.
       pending.current.delete(msg.requestId);
       setInFlight(pending.current.size > 0);
-      setError({ code: msg.code, phase: msg.phase, message: msg.message });
+      const wasFailing = Boolean(errorRef.current);
+      errorRef.current = { code: msg.code, phase: msg.phase, message: msg.message };
+      setError(errorRef.current);
       if (msg.phase === 'init') setReady(false);
+      /* 120.md r2 — a CHECK-phase failure also owes ONE retry of the work that failed.
+         The blocks in that request never entered the store, but nothing re-fires the
+         debounce that would resend them, so they stayed unchecked (and silently
+         uncounted) until the next keystroke in that exact section. Exactly one, and
+         only when we were not already failing: a block whose text reliably throws must
+         not turn the debounce into a 700 ms failure loop — from there it is the
+         ERROR chip's own Retry, which is the affordance §6 asks for. */
+      else if (!wasFailing) setCheckEpoch((n) => n + 1);
       return;
     }
     if (msg.type === 'cancelled') {
@@ -207,6 +238,13 @@ export function useWritingAssistant(opts = {}) {
     setInFlight(pending.current.size > 0);
     // Protocol rule 1 — a response we have moved past.
     if (!entry) return;
+    /* 120.md r2 — a check that SUCCEEDED disproves a previous check failure, so the
+       error state is released here rather than waiting for a manual Retry. An `init`
+       failure is not cleared by a result (there can be none) — its own backoff owns it. */
+    if (errorRef.current && errorRef.current.phase !== 'init') {
+      errorRef.current = null;
+      setError(null);
+    }
     setStore((cur) => ({
       ...cur,
       [entry.sectionId]: applyResult(
@@ -226,6 +264,8 @@ export function useWritingAssistant(opts = {}) {
 
   const teardown = useCallback(() => {
     if (retryTimer.current) { clearTimeout(retryTimer.current); retryTimer.current = null; }
+    // 120.md r2 — any boot still in flight has now been superseded (see bootEpoch).
+    bootEpoch.current += 1;
     const w = workerRef.current;
     workerRef.current = null;
     pending.current.clear();
@@ -239,18 +279,34 @@ export function useWritingAssistant(opts = {}) {
 
   const boot = useCallback(async () => {
     if (workerRef.current) return;
+    const epoch = bootEpoch.current;
     try {
       const w = await workerFactory();
       if (!w) throw new Error('no worker');
+      /* 120.md r2 — POST-AWAIT CANCELLATION. The guard above ran before the dynamic
+         import, so by now the assistant may have been switched off (teardown bumped
+         the epoch and found nothing to terminate) or another boot may have won the
+         race and already installed its worker. Either way this one is unwanted, and
+         nothing else can ever reach it: `teardown` only terminates `workerRef.current`,
+         so an unterminated loser is unreachable for the life of the tab with the whole
+         552 kB dictionary resident. Terminate what we just built. */
+      if (bootEpoch.current !== epoch || workerRef.current) {
+        try { w.terminate(); } catch { /* already gone */ }
+        return;
+      }
       w.onmessage = onMessage;
-      w.onerror = () => setError({ code: 'worker-crashed', phase: 'init', message: 'The writing assistant stopped unexpectedly.' });
+      w.onerror = () => {
+        errorRef.current = { code: 'worker-crashed', phase: 'init', message: 'The writing assistant stopped unexpectedly.' };
+        setError(errorRef.current);
+      };
       workerRef.current = w;
       firstCheckAt.current = performance.now();
       w.postMessage({ type: 'init', requestId: nextRequestId(), variant: prefsRef.current.variant });
     } catch {
       // A bundling / Worker-construction failure is the same class of problem as a
       // dictionary that will not load: recoverable, retried, never fatal.
-      setError({ code: 'worker-unavailable', phase: 'init', message: 'The writing assistant could not start.' });
+      errorRef.current = { code: 'worker-unavailable', phase: 'init', message: 'The writing assistant could not start.' };
+      setError(errorRef.current);
     }
   }, [onMessage, workerFactory]);
 
@@ -272,6 +328,7 @@ export function useWritingAssistant(opts = {}) {
     attemptRef.current += 1;
     retryTimer.current = setTimeout(() => {
       teardown();
+      errorRef.current = null;
       setError(null);
       boot();
     }, delay);
@@ -282,10 +339,19 @@ export function useWritingAssistant(opts = {}) {
   const retry = useCallback(() => {
     attemptRef.current = 0;
     teardown();
+    errorRef.current = null;
     setError(null);
+    // 120.md r2 — Retry re-checks as well as re-boots: a check-phase failure leaves
+    // the store missing exactly the blocks whose check threw, and a fresh worker with
+    // nothing scheduled would sit there showing an empty section as though it were clean.
+    bumpCheck();
     boot();
-  }, [boot, teardown]);
+  }, [boot, teardown, bumpCheck]);
 
+
+  /* The worker's current dictionary CONTENT signature. Declared here, above the
+     variant effect, because a re-init has to be able to forget it (120.md r2). */
+  const dictSig = useRef('');
 
   /* ── the variant is a worker-level decision: re-init when it changes ───────── */
   const variantRef = useRef(prefs.variant);
@@ -294,12 +360,30 @@ export function useWritingAssistant(opts = {}) {
     if (variantRef.current === prefs.variant) return;
     variantRef.current = prefs.variant;
     setStore({});
+    /* 120.md r2 — a re-init REBUILDS the pipeline from scratch, which resets
+       userDictionary / projectDictionary / ignoredTerms / mutes to empty. `ready`
+       never flipped during a re-init (the second `ready` message just re-set it true),
+       so the dict effect's content signature still matched and nothing was re-taught:
+       every term the researcher had added and every "ignore this term" silently
+       stopped applying after a US⇄UK switch — accepted words were underlined again
+       until some unrelated dictionary change happened to alter the signature.
+
+       Dropping `ready` is what makes the re-teach both unconditional and correctly
+       ORDERED: the worker's handleInit awaits the dictionary fetch before it installs
+       the new pipeline, so a `dict` posted in this same commit would be applied to the
+       OLD pipeline and then thrown away with it. Waiting for the worker's own `ready`
+       is the only point at which the new pipeline provably exists — and it is the
+       honest chip state meanwhile (the dictionary really is loading again). The
+       signature reset is belt and braces beside the `[ready]` effect below. */
+    setReady(false);
+    dictSig.current = '';
+    // …and the store clear above owes the focus section a recheck (see checkEpoch).
+    bumpCheck();
     post({ type: 'init', requestId: nextRequestId(), variant: prefs.variant });
-  }, [enabled, ready, prefs.variant, post]);
+  }, [enabled, ready, prefs.variant, post, bumpCheck]);
 
   /* ── dictionary + mute patches reach the worker as a `dict` message ────────── */
 
-  const dictSig = useRef('');
   useEffect(() => {
     if (!enabled || !ready) return;
     const patch = {
@@ -331,8 +415,11 @@ export function useWritingAssistant(opts = {}) {
     // A genuine dictionary change invalidates every cached result: a word that was an
     // error a moment ago is now accepted everywhere it appears. The FIRST teach is
     // not a change — there is nothing cached to invalidate.
-    if (!first) setStore({});
-  }, [enabled, ready, personal, project, ignoredTerms, prefs.mutedCategories, prefs.mutedRules, projectShape, post]);
+    // 120.md r2 — and a clear owes a RECHECK of the focus section: the sweep skips it
+    // by design, so "Add to dictionary" used to empty the section the researcher is
+    // reading and leave it empty (chip undercounting) until they typed in it again.
+    if (!first) { setStore({}); bumpCheck(); }
+  }, [enabled, ready, personal, project, ignoredTerms, prefs.mutedCategories, prefs.mutedRules, projectShape, post, bumpCheck]);
 
   // A fresh worker has an empty dictionary; make the next teach unconditional.
   useEffect(() => { if (!ready) dictSig.current = ''; }, [ready]);
@@ -426,19 +513,21 @@ export function useWritingAssistant(opts = {}) {
   const focusSection = (caretSection && sections && sections[caretSection] !== undefined ? caretSection : null)
     || activeSectionId || sectionIds[0] || null;
 
-  // Incremental: the changed blocks of the section being edited, on the 700 ms beat.
+  /* Incremental: the changed blocks of the section being edited, on the 700 ms beat.
+     120.md r2 — `checkEpoch` is a dependency because an intentional store clear makes
+     every block "changed" without changing anything these effects otherwise watch. */
   useEffect(() => {
     if (!enabled || !ready || !focusSection) return undefined;
     const t = setTimeout(() => sendCheck(focusSection, 'blocks'), WA_DEBOUNCE_MS);
     return () => clearTimeout(t);
-  }, [enabled, ready, focusSection, blocksBySection, sendCheck]);
+  }, [enabled, ready, focusSection, blocksBySection, sendCheck, checkEpoch]);
 
   // Document passes (consistency, acronyms, repeated openers) on the calm beat.
   useEffect(() => {
     if (!enabled || !ready || !focusSection) return undefined;
     const t = setTimeout(() => sendCheck(focusSection, 'document'), WA_DOC_DEBOUNCE_MS);
     return () => clearTimeout(t);
-  }, [enabled, ready, focusSection, blocksBySection, sendCheck]);
+  }, [enabled, ready, focusSection, blocksBySection, sendCheck, checkEpoch]);
 
   /* §6 "Background full-document checking" — every OTHER section, one per idle tick,
      so the chip's total is the manuscript's total rather than one section's. */
@@ -479,10 +568,19 @@ export function useWritingAssistant(opts = {}) {
   );
   const summary = useMemo(() => issueSummary(allIssues), [allIssues]);
 
+  /* 120.md r2 — EVERY phase of error reaches the status machine, not just `init`.
+     waState.statusFor is the pure guarantee that a failure can never render as
+     "No issues found" (§6: "Do not falsely display No issues found when checking
+     actually failed"), and filtering check-phase errors out before consulting it
+     defeated that guarantee at the one call site that matters: a worker whose
+     pipeline threw posted {phase:'check'}, the hook discarded it, and the chip showed
+     the mint "No issues" with no error row and no Retry. The error is released again
+     by the next successful result (see onMessage), so a transient failure does not
+     strand the chip. */
   const status = statusFor({
     enabled,
     ready,
-    error: error && error.phase === 'init' ? error : null,
+    error,
     inFlight,
     issueCount: summary.total,
   });
@@ -547,11 +645,18 @@ export function useWritingAssistant(opts = {}) {
    * thinks the assistant has missed something and wants it looked at afresh. Cheap
    * and honest: it clears the store, which makes every block "changed", which the
    * normal debounce then rechecks.
+   *
+   * 120.md r2 — "which the normal debounce then rechecks" was not true. The two
+   * focus-section debounces watch [enabled, ready, focusSection, blocksBySection], and
+   * a store clear changes none of them, so the ONE section the researcher is looking at
+   * lost every underline and was never re-checked; the background sweep re-populated
+   * every OTHER section and explicitly skips this one. `bumpCheck` re-arms them.
    */
   const recheck = useCallback(() => {
     setStore({});
     setActiveIssueId(null);
-  }, []);
+    bumpCheck();
+  }, [bumpCheck]);
 
   const activeIssue = useMemo(
     () => allIssues.find((i) => i.id === activeIssueId) || null,

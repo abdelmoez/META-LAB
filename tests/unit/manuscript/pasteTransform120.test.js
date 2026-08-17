@@ -20,6 +20,8 @@ import { describe, it, expect } from 'vitest';
 import {
   transformPastedMd, pasteTableIdentity, harvestCaptionTitle,
   hasPipeTableBlock, tsvToPipeTable,
+  // 120.md r2 — the shape gate the HTML rung never had (the TSV rung always did).
+  hasGridTableBlock, flattenDegenerateTables,
 } from '../../../src/features/manuscript/richEditor/pasteTransform.js';
 import { htmlToMd, mdToHtml } from '../../../src/features/manuscript/richEditor/mdDom.js';
 import { firstLineOf } from '../../../src/features/manuscript/richEditor/RichSectionEditor.jsx';
@@ -313,6 +315,74 @@ describe('120.md §7 — sanitization and scale', () => {
     expect(Date.now() - t0).toBeLessThan(8000);
     expect(out.mintedTables).toHaveLength(1);
     expect(tablesOf(out.md)[0].split('\n')).toHaveLength(202);  // header + separator + 200
+  });
+});
+
+/* ══════════════ 120.md r2 — the shape gates the ladder was missing ══════════════ */
+
+describe('120.md r2 — a degenerate 1×1 “table” is text, not a manuscript Table', () => {
+  it('does not route a single copied Excel cell to the table rung', () => {
+    const md = htmlToMd('<table><tr><td>42.7</td></tr></table>');
+    expect(hasPipeTableBlock(md)).toBe(true);          // it IS a pipe block …
+    expect(hasGridTableBlock(md)).toBe(false);         // … but it is not a grid
+    expect(flattenDegenerateTables(md)).toBe('42.7');
+  });
+
+  it('reduces a layout table (Outlook-style) to the prose it wrapped', () => {
+    const md = htmlToMd('<table><tr><td><p>Dear colleague, please see the attached draft.</p></td></tr></table>');
+    expect(flattenDegenerateTables(md)).toBe('Dear colleague, please see the attached draft.');
+    // …and nothing downstream mints an identity for it, so no real table renumbers.
+    const out = transformPastedMd(flattenDegenerateTables(md), { usedTableIds: [], mint: mintSeq() });
+    expect(out.mintedTables).toEqual([]);
+    expect(captionsOf(out.md)).toHaveLength(0);
+  });
+
+  it('leaves every REAL grid untouched — two rows or two columns is a table', () => {
+    const oneRowTwoCols = htmlToMd('<table><tr><td>a</td><td>b</td></tr></table>');
+    const twoRowsOneCol = '| A |\n| --- |\n| 1 |';
+    for (const md of [oneRowTwoCols, twoRowsOneCol, htmlToMd(WORD_TABLE_HTML)]) {
+      expect(hasGridTableBlock(md)).toBe(true);
+      expect(flattenDegenerateTables(md)).toBe(md);
+    }
+  });
+});
+
+describe('120.md r2 — the caption harvest refuses range forms', () => {
+  it('leaves "Table 1–2 list all adverse events." as prose', () => {
+    for (const dash of ['-', '–', '—', '‐']) {
+      expect(harvestCaptionTitle(`Table 1${dash}2 list all adverse events.`), dash).toBeNull();
+    }
+    expect(harvestCaptionTitle('Table 1.2 shows the subgroup analysis.')).toBeNull();
+    // …and the paragraph therefore survives the paste instead of being eaten.
+    const md = 'Table 1–2 list all adverse events.\n\n| A |\n| --- |\n| 1 |';
+    const out = transformPastedMd(md, { usedTableIds: [], mint: mintSeq() });
+    expect(out.md).toContain('Table 1–2 list all adverse events.');
+    expect(out.mintedTables).toEqual([{ id: 'p1', title: '' }]);
+  });
+
+  it('still harvests every separator Word actually emits', () => {
+    expect(harvestCaptionTitle('Table 1. Baseline')).toBe('Baseline');
+    expect(harvestCaptionTitle('Table 2: Outcomes')).toBe('Outcomes');
+    expect(harvestCaptionTitle('Table 3 — Adverse events')).toBe('Adverse events');
+    expect(harvestCaptionTitle('Table 4 – Follow-up')).toBe('Follow-up');
+    expect(harvestCaptionTitle('Table 1 - continued')).toBe('continued');
+    expect(harvestCaptionTitle('TABLE IV. Sensitivity analyses')).toBe('Sensitivity analyses');
+    expect(harvestCaptionTitle('Table 5')).toBe('');
+    expect(harvestCaptionTitle('Table 5.')).toBe('');
+  });
+});
+
+describe('120.md r2 — tab INDENTATION is not a grid', () => {
+  it('rejects two tab-indented lines of notes or code', () => {
+    expect(tsvToPipeTable('\tfoo();\n\tbar();')).toBeNull();
+    expect(tsvToPipeTable('\tone\n\ttwo\n\tthree')).toBeNull();
+    // trailing-tab shape — the same defect from the other end
+    expect(tsvToPipeTable('foo\t\nbar\t')).toBeNull();
+  });
+
+  it('still accepts a real Excel range, including one with blank cells', () => {
+    expect(tsvToPipeTable('Group\tEvents\nArm A\t12\nArm B\t8')).toContain('| Group | Events |');
+    expect(tsvToPipeTable('A\tB\r\n\t2\r\nx | y\t3\r\n')).toContain('|  | 2 |');
   });
 });
 

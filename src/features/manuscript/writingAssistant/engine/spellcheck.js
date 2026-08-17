@@ -53,6 +53,23 @@ export function normalizeVariant(value) {
  *
  * The second dictionary is still supported (`secondary` in `createSpellChecker`) for
  * callers that want it; the worker leaves it off by default.
+ *
+ * 120.md r2 — WHAT A RULE IS ALLOWED TO BE. A transform here is applied to an
+ * ARBITRARY unknown word and a dictionary hit is then treated as proof that the word
+ * is the other English variant, so a rule whose left side is not a variant-specific
+ * MORPHEME silently accepts whole classes of real typos. The r2 review proved
+ * exactly that for five of them: `[/re\b/,'er']` accepted `othre`, `papre`, `numbre`,
+ * `chaptre`, `considre`; `[/ense\b/,'ence']` accepted `evidense`, `sciense`,
+ * `prevalense`; `[/lled\b/,'led']` accepted `controled` and `enroled` (misspellings
+ * in BOTH variants); `[/lling/,'ling']` accepted `samplling`. Every one produced no
+ * underline at all, because the host always sends `flagOtherVariant:false`.
+ *
+ * The five generic stem rules are therefore GONE. `-re`/`-ense` and the `-ll-`
+ * doubling family are closed sets in real English, so they are enumerated in
+ * VARIANT_PAIRS (and, for the doubling verbs, generated from a stem list) instead —
+ * the same doctrine consistency.js's IZE_VERBS already follows. What survives here
+ * is only what a misspelling cannot plausibly imitate: -ize/-ise, -yze/-yse, -our/-or,
+ * -ogue/-og and the ae/oe medical family.
  */
 const VARIANT_RULES = [
   [/ization\b/, 'isation'], [/isation\b/, 'ization'],
@@ -67,11 +84,8 @@ const VARIANT_RULES = [
   [/our\b/, 'or'], [/or\b/, 'our'],
   [/ours\b/, 'ors'], [/ors\b/, 'ours'],
   [/oured\b/, 'ored'], [/ored\b/, 'oured'],
-  [/re\b/, 'er'], [/er\b/, 're'],
-  [/res\b/, 'ers'], [/ers\b/, 'res'],
   [/ogue\b/, 'og'], [/og\b/, 'ogue'],
   [/ogues\b/, 'ogs'], [/ogs\b/, 'ogues'],
-  [/ence\b/, 'ense'], [/ense\b/, 'ence'],
   [/^ae/, 'e'], [/ae/, 'e'], [/oe/, 'e'],
   [/^e/, 'ae'],
   [/haem/, 'hem'], [/hem/, 'haem'],
@@ -80,10 +94,25 @@ const VARIANT_RULES = [
   [/oesoph/, 'esoph'], [/esoph/, 'oesoph'],
   [/aemia\b/, 'emia'], [/emia\b/, 'aemia'],
   [/aemic\b/, 'emic'], [/emic\b/, 'aemic'],
-  [/lling/, 'ling'], [/ling/, 'lling'],
-  [/lled\b/, 'led'], [/led\b/, 'lled'],
   [/llment\b/, 'lment'], [/lment\b/, 'llment'],
   [/lfil\b/, 'lfill'], [/lfill\b/, 'lfil'],
+];
+
+/**
+ * 120.md r2 — the `-l` DOUBLING verbs, enumerated because the rule cannot be.
+ *
+ * British English doubles a final `l` before `-ed`/`-ing` when the last syllable is
+ * UNSTRESSED (travel → travelled), American English does not. Verbs whose last
+ * syllable is stressed (control, enrol, patrol, fulfil, propel) double in BOTH
+ * variants, which is why the old `[/lled\b/,'led']` rule was pure damage: it turned
+ * `controled` — a misspelling on both sides of the Atlantic — into an accepted word.
+ * Only unstressed-final-syllable stems belong below.
+ */
+const L_DOUBLING_STEMS = [
+  'travel', 'label', 'model', 'cancel', 'counsel', 'signal', 'total', 'level',
+  'dial', 'marvel', 'quarrel', 'channel', 'funnel', 'tunnel', 'panel', 'fuel',
+  'refuel', 'equal', 'rival', 'pedal', 'spiral', 'revel', 'shovel', 'libel',
+  'unravel', 'grovel', 'initial', 'parcel', 'jewel', 'duel', 'stencil',
 ];
 
 /** Pairs the regex rules cannot reach; both directions are generated automatically. */
@@ -106,7 +135,25 @@ const VARIANT_PAIRS = [
   ['labeled', 'labelled'], ['labeling', 'labelling'], ['traveled', 'travelled'],
   ['aging', 'ageing'], ['edema', 'oedema'], ['esophagus', 'oesophagus'],
   ['anemia', 'anaemia'], ['hemoglobin', 'haemoglobin'], ['hemorrhage', 'haemorrhage'],
+  /* 120.md r2 — the `-re` and `-ense` families, enumerated now that the generic
+     `[/re\b/,'er']` and `[/ense\b/,'ence']` transforms are gone (they accepted
+     `othre`, `numbre`, `evidense` and every other transposition/s-for-c typo). Both
+     families are closed sets in real English, and these are the members a medical
+     manuscript actually uses — the metric spellings especially. */
+  ['caliber', 'calibre'], ['saber', 'sabre'], ['somber', 'sombre'],
+  ['specter', 'spectre'], ['luster', 'lustre'], ['scepter', 'sceptre'],
+  ['titer', 'titre'], ['goiter', 'goitre'], ['ocher', 'ochre'], ['miter', 'mitre'],
+  ['kilometer', 'kilometre'], ['centimeter', 'centimetre'],
+  ['millimeter', 'millimetre'], ['micrometer', 'micrometre'],
+  ['nanometer', 'nanometre'], ['milliliter', 'millilitre'],
+  ['microliter', 'microlitre'], ['deciliter', 'decilitre'],
+  ['pretense', 'pretence'],
 ];
+
+/** `traveled ⇄ travelled`, `traveling ⇄ travelling` — both directions, per stem. */
+for (const stem of L_DOUBLING_STEMS) {
+  VARIANT_PAIRS.push([`${stem}ed`, `${stem}led`], [`${stem}ing`, `${stem}ling`]);
+}
 
 /** Re-exported so consistency.js can build the same US/UK families from one table. */
 export const US_UK_PAIRS = Object.freeze(VARIANT_PAIRS.map((p) => Object.freeze([...p])));

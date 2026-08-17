@@ -39,6 +39,20 @@ const CURATOR_ROLES = Object.freeze(['owner', 'leader']);
 
 const listOrder = { createdAt: 'asc' };
 
+/**
+ * 120.md r2 — WHY THE LIST QUERIES CARRY NO `take`.
+ *
+ * The scope cap is enforced as count-then-create, which is not transactional: N
+ * concurrent adds can all read 1999 and all insert, so a scope can end up a handful
+ * of rows over WA_SCOPE_MAX. That overshoot is benign — growth is still bounded by
+ * the check — but paginating the LIST at exactly WA_SCOPE_MAX turned it into data
+ * loss: the overflow rows were never returned, and since deletion needs an entry id
+ * that only the list provides, they could not be removed either, while still counting
+ * toward "your dictionary is full". §6 requires that an accidental addition can always
+ * be reversed, so every stored row must be listable. Returning what exists is the
+ * honest read; `limit` still tells the client what the cap is.
+ */
+
 /* ── personal scope ─────────────────────────────────────────────────────────── */
 
 /** GET /api/dictionary/personal → { entries } */
@@ -47,7 +61,6 @@ export async function listPersonal(req, res) {
     const rows = await prisma.userDictionaryEntry.findMany({
       where: { userId: req.user.id },
       orderBy: listOrder,
-      take: WA_SCOPE_MAX,
     });
     return res.json({ entries: rows.map(publicDictionaryEntry), limit: WA_SCOPE_MAX });
   } catch (err) {
@@ -134,7 +147,6 @@ export async function listProject(req, res) {
     const rows = await prisma.projectDictionaryEntry.findMany({
       where: { projectId: access.project.id },
       orderBy: listOrder,
-      take: WA_SCOPE_MAX,
     });
     return res.json({
       entries: rows.map(publicDictionaryEntry),
