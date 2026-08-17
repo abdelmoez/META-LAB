@@ -170,6 +170,22 @@ export const OPS_FLAGS = Object.freeze([
   // drafter (ManuscriptTab's fallback path) and never deletes a draft.
   { key: 'manuscriptEditor', label: 'Manuscript Editor (P3)', default: true, group: 'reporting',
     description: 'The full manuscript authoring workspace: structured IMRAD drafting, data-linked tables with one document-order numbering sequence, an integrated reference manager and citation engine, a PRISMA 2020 diagram synchronized with the record-derived flow, one-click .docx export and a reproducibility archive. All artifacts are generated in the browser from live project data. Turning this off restores the legacy plain-text drafter; drafts are preserved either way.' },
+  /* 120.md §6 — DEFAULT ON, and it governs AVAILABILITY ONLY. The distinction
+     matters: this flag decides whether the Writing Assistant control EXISTS in the
+     manuscript toolbar, while the feature itself stays OFF for every user until
+     that user turns it on (User.writingAssistant, §6 "The feature must be off until
+     the user enables it… Do not force it on globally"). Default ON follows the
+     109.md governance style for shipped behaviour — an operator kill switch, not a
+     rollout gate. Turning it off hides the control and stops the worker from ever
+     initialising; it never deletes a dictionary entry or a preference.
+
+     Deliberately declares NO `requires: ['manuscriptEditor']`, even though it only
+     decorates that surface: 117.md §K.2 pins manuscriptEditor as a flag that gates
+     nothing else, and the containment is already STRUCTURAL — with the editor off,
+     ManuscriptToolbar never renders, so there is nothing for this control to appear
+     in. A declared gate would add a second, weaker statement of the same fact. */
+  { key: 'writingAssistant', label: 'Writing Assistant (Spelling & Grammar)', default: true, group: 'reporting',
+    description: 'The manuscript Writing Assistant: a LOCAL, in-browser spelling and grammar checker built for medical and scientific prose (scientific tokenizer, versioned medical lexicon, project-derived terminology, personal and project dictionaries). No manuscript text is ever transmitted — the checker runs in a Web Worker with a bundled dictionary. This flag controls AVAILABILITY only; every user starts with the assistant off and enables it for themselves. Turning it off hides the toolbar control and preserves every saved dictionary entry.' },
   { key: 'researchProvenance', label: 'Research Provenance Ledger', default: false, group: 'reporting',
     description: 'The append-only, project-wide event ledger (search, screening, extraction, RoB, analysis, manuscript) with deterministic significance classification and a Project History tab. Off means /api/provenance does not exist and no events are captured. This ledger is IMMUTABLE and entirely separate from the Undo/Redo history (§50).' },
   { key: 'publicSynthesis', label: 'Public Synthesis Pages (P8)', default: false, group: 'reporting',

@@ -88,6 +88,14 @@ model User {
   // `prisma db push` stays additive-safe. Mirrors dashboardPreferences;
   // cross-device, server-backed.
   emailNotifications            String?
+  // 120.md §6 — per-user Writing Assistant preferences as a small JSON blob:
+  // { enabled, variant, mutedCategories, mutedRules, showStyle }. The feature is
+  // OFF until the user turns it on, so null ⇒ off — nobody gets a spell checker
+  // they never asked for. Deliberately TINY: it rides the profile allowlist's
+  // 500-character cap, which is why the dictionaries live in their own tables
+  // instead. Nullable → `prisma db push` stays additive-safe. Mirrors
+  // dashboardPreferences; cross-device, server-backed.
+  writingAssistant              String?
   // prompt39 Task 5 — per-user left workflow-menu mode: "pinned" (stay open, never
   // auto-collapse on workflow navigation) | "auto" (auto-collapse on workflow
   // steps). null ⇒ "auto" (current default). Nullable → `prisma db push` stays
@@ -155,6 +163,7 @@ model User {
   onboardingResponses           UserOnboardingResponse[] // prompt32 — per-question onboarding state
   authAccounts                  AuthAccount[] // 94.md §2.3 — linked external identity providers (Google)
   adminNotes                    UserAdminNote[] // 95.md Phase 5 — internal Ops notes (never exposed to the user)
+  dictionaryEntries             UserDictionaryEntry[] // 120.md §6 — personal writing-assistant dictionary
 
   @@index([userNumber])
   // 95.md Phase 9 — server-side list filtering/sorting at scale. Plain additive
@@ -3318,4 +3327,84 @@ model ManuscriptFigure {
   @@index([projectId, createdAt])
   @@index([projectId, fileHash])
   @@index([projectId, deletedAt])
+}
+
+// 120.md §6 "Dictionary scopes" — the PERSONAL writing-assistant dictionary.
+//
+// WHY A TABLE AND NOT A PREFERENCE BLOB: the per-user preference column
+// (User.writingAssistant) rides the profile allowlist's 500-character cap, and a
+// researcher's accepted-terms list is unbounded by nature (drug names, trial
+// acronyms, gene symbols). Capping a dictionary at ~15 words would make the
+// feature useless, so the small settings go in the blob and the long tail lives
+// here.
+//
+// NORMALIZATION (§6 "Prevent duplicate entries and normalize safely without
+// destroying meaningful capitalization"): `term` keeps EXACTLY what the researcher
+// typed — TP53 and BRCA1 are not tp53 and brca1 — while `termLower` exists only as
+// the uniqueness key. The unique is therefore on (userId, termLower), so "Upadacitinib"
+// cannot be added twice in different cases, and the stored casing is still the
+// author's.
+//
+// PRIVACY (§6): a dictionary entry is a WORD the user chose to accept. No manuscript
+// sentence, no surrounding context and no document id is ever stored here — the
+// checker itself runs entirely in the browser and never sends text to this server.
+//
+// This is a BRAND-NEW table, so @@unique is allowed (house rule: uniques by
+// construction on new tables only). Every column is defaulted or nullable, so
+// `db push` onto a live database is additive.
+// After editing, re-run `node server/scripts/sync-postgres-schema.mjs`.
+model UserDictionaryEntry {
+  id                String   @id @default(uuid())
+  userId            String
+  user              User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  term              String // EXACTLY as typed — meaningful capitalization is preserved
+  termLower         String // lowercase uniqueness key only; never displayed
+  caseSensitive     Boolean  @default(false) // §6 "Case sensitivity" — TP53 must not accept tp53
+  preferredSpelling String? // §6 "Optional preferred spelling" (e.g. "randomised" → "randomized")
+  expansion         String? // §6 "Optional abbreviation expansion" ("RCT" → "randomized controlled trial")
+  category          String? // §6 "Optional category" — drug | trial | gene | tool | other
+  source            String   @default("user") // §6 "Source" — user | suggestion | import
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  @@unique([userId, termLower])
+  @@index([userId, createdAt])
+}
+
+// 120.md §6 "Dictionary scopes" — the PROJECT writing-assistant dictionary.
+//
+// The same row shape as the personal list, scoped to a META·LAB project instead of
+// a user, so a review team stops re-teaching every collaborator the same drug name.
+// §6: "Available to project collaborators. Changes should respect project roles and
+// permissions." Enforced in dictionaryController, not here: reads need canView,
+// writes need canEdit, and deleting SOMEONE ELSE'S entry needs owner/leader.
+//
+// `projectId` is a bare scope key with no FK, matching ManuscriptFigure and
+// ScreenPdfAttachment: the row describes a project rather than belonging to its
+// cascade, and `addedById`/`addedByName` are the same denormalised who-did-this
+// pair the Logbook and ScreenDecision use (display name AT THE TIME).
+//
+// PRIVACY (§6): as above — a term, never a sentence.
+//
+// This is a BRAND-NEW table, so @@unique is allowed (house rule: uniques by
+// construction on new tables only). Every column is defaulted or nullable, so
+// `db push` onto a live database is additive.
+// After editing, re-run `node server/scripts/sync-postgres-schema.mjs`.
+model ProjectDictionaryEntry {
+  id                String   @id @default(uuid())
+  projectId         String // META·LAB Project id (plain scope key — no relation)
+  term              String // EXACTLY as typed — meaningful capitalization is preserved
+  termLower         String // lowercase uniqueness key only; never displayed
+  caseSensitive     Boolean  @default(false)
+  preferredSpelling String?
+  expansion         String?
+  category          String?
+  source            String   @default("user")
+  addedById         String // user id (bare string; not a FK)
+  addedByName       String   @default("") // display name AT THE TIME (Logbook precedent)
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  @@unique([projectId, termLower])
+  @@index([projectId, createdAt])
 }

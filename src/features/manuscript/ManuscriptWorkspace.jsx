@@ -32,6 +32,14 @@ import {
 // read from the signed-in user when there is one. Optional on purpose: this
 // workspace renders in SSR contract tests and in shells without the provider.
 import { useOptionalAuth } from '../../frontend/context/AuthContext.jsx';
+/* 120.md §6 — the Writing Assistant. The HOOK lives here, at the one level that has
+   BOTH the project blob (title/question/PICO/studies → the project lexicon) and the
+   manuscript hook (sections, references, tables), and whose children are both the
+   toolbar (which shows the chip) and the editor panel (which owns the prose). */
+import { useWritingAssistant } from './writingAssistant/useWritingAssistant.js';
+import { WritingAssistantControl } from './writingAssistant/WritingAssistantControl.jsx';
+import { buildWaProjectShape } from './writingAssistant/waProjectShape.js';
+import { publicFeatureFlags } from '../../frontend/featureAccess/featureFlagState.js';
 // 119.md §4 — the Editor + included-article PDF split workspace.
 /* 120.md §8 — ManuscriptSplitToggle is no longer mounted here: the PDF View
    destination in the toolbar's tablist replaced it, so the pane has exactly one
@@ -640,6 +648,58 @@ export function ManuscriptWorkspace({ project, upd, initialSubtab, onSubtabChang
 
   const exporters = { onExportWord, onExportRepro, onPrismaChecklist, onPrismaSChecklist, exporting, exportError, exportProgress };
 
+  /* ── 120.md §6 — the Writing Assistant ───────────────────────────────────────
+     Instantiated HERE because this is the only level with both halves of what it
+     needs: the raw project blob (title/question/PICO/studies → the project-aware
+     lexicon) and the manuscript hook (the live sections it checks, the references
+     and captions it learns from). Its chip goes up into the toolbar's Level-A right
+     group; its decorations, its suggestion card and its editor registrations go down
+     into EditorPanel. One hook, two consumers, no duplicated state.
+
+     `available` is the OPS flag — availability only. The feature itself stays off for
+     every user until they turn it on (§6), which is the `prefs.enabled` the hook
+     reads from User.writingAssistant. Fail-closed: a failed settings fetch means the
+     control simply does not appear. */
+  const [waAvailable, setWaAvailable] = useState(false);
+  useEffect(() => {
+    let alive = true;
+    publicFeatureFlags()
+      .then((flags) => { if (alive) setWaAvailable(!!(flags && flags.writingAssistant === true)); })
+      .catch(() => {});
+    return () => { alive = false; };
+  }, []);
+
+  /* The LIVE draft (pending, pre-autosave edits overlaid) is what the researcher can
+     see, so it is what gets checked — an underline must appear under the sentence
+     they are looking at, not under the version that last reached the server. */
+  const waLive = m.liveDraft || m.activeDraft || {};
+  const waSections = useMemo(() => {
+    const secs = (waLive && waLive.sections) || {};
+    const out = {};
+    for (const id of Object.keys(secs)) out[id] = (secs[id] && secs[id].content) || '';
+    return out;
+  }, [waLive]);
+  /* Memoized on the four STABLE inputs, never on the whole `m` surface (a fresh
+     object every keystroke) — see buildWaProjectShape's own note. The keyword list is
+     keyed by its joined text so a re-created array with identical contents does not
+     count as a change. */
+  const waKeywordSig = ((m.activeDraft && m.activeDraft.keywords) || []).join('|');
+  const waProjectShape = useMemo(() => buildWaProjectShape(project, {
+    references: m.references,
+    tables: m.tables,
+    figures: m.figures,
+    keywords: waKeywordSig ? waKeywordSig.split('|') : [],
+  }), [project, m.references, m.tables, m.figures, waKeywordSig]);
+
+  const wa = useWritingAssistant({
+    available: waAvailable,
+    userId,
+    projectId,
+    docId: `${projectId}:${m.activeId || ''}`,
+    sections: waSections,
+    projectShape: waProjectShape,
+  });
+
   if (!m.activeDraft) {
     // 118.md §49 — reserve the toolbar's dimensions while the manuscript resolves,
     // so the workspace does not jump when the real bar arrives.
@@ -674,6 +734,12 @@ export function ManuscriptWorkspace({ project, upd, initialSubtab, onSubtabChang
            control which surface it landed on. */
         viewSwitcher={({ condensed, onDark }) => (
           <ManuscriptViewSwitcher view={view} onChange={setView} condensed={condensed} onDark={onDark} />
+        )}
+        /* 120.md §6 — the Writing Assistant chip. Same node-or-function slot
+           contract as the view switcher; the toolbar owns the Editor/PDF-View gate
+           and tells the control which surface it landed on. */
+        writingAssistant={({ condensed, onDark }) => (
+          <WritingAssistantControl wa={wa} condensed={condensed} onDark={onDark} />
         )} />
 
       {/* 119.md §7 — the structure switcher, and the in-context undo the switch
@@ -790,7 +856,11 @@ export function ManuscriptWorkspace({ project, upd, initialSubtab, onSubtabChang
                 onNavigate={setTab}
                 onOpenAssetPanel={(which) => setTab(which === 'figures' ? 'figures' : 'tables')}
                 /* 117.md §38 — View / Edit / Open PDF / Go to References from a chip. */
-                onOpenReference={openReference} />
+                onOpenReference={openReference}
+                /* 120.md §6 — the assistant's editor half: root registration for the
+                   decoration layer, api registration for the one apply path, the
+                   caret's section, and the suggestion card. */
+                wa={wa} />
             )}
             {/* 118.md §65 — "View in manuscript" on a table/figure row. */}
             {tab === 'tables' && <TablesPanel m={m} onNavigate={setTab} onOpenAsset={openAsset} />}

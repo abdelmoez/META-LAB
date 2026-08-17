@@ -217,6 +217,7 @@ export const MANUSCRIPT_TOOLBAR_CSS = `
 .ms-toolbar .ms-view-btn:hover{color:${TB.ink};}
 .ms-toolbar .ms-view-btn[data-active="true"]:hover{color:${TB.ink};}
 .ms-toolbar .ms-tb-dark:focus-visible{outline:none;box-shadow:0 0 0 3px ${TB.ring};}
+.ms-toolbar .ms-wa-row:hover{background:var(--t-card2);}
 `;
 
 /* ── local hooks ────────────────────────────────────────────────────────────── */
@@ -987,6 +988,13 @@ export function ManuscriptToolbar({
      dropdown change: §7 requires a preview, a diff and a mapping step before any
      write, so the bar reports the intent and the workspace owns the surface. */
   onOpenStructure = null,
+  /* 120.md §6 — the Writing Assistant control. Same node-or-function contract as
+     `viewSwitcher`/`splitToggle`, and it lives in the Level-A RIGHT group beside the
+     save pill: like the save state it is WORKSPACE state rather than a document
+     control, so it never overflows into '⋯' and stays reachable at every width
+     (§41). Gated to the Editor and PDF View destinations by the bar itself — it
+     decorates prose, and there is no prose on the other seven. */
+  writingAssistant = null,
 }) {
   const rootRef = useRef(null);
   const width = useContainerWidth(rootRef);
@@ -1133,6 +1141,13 @@ export function ManuscriptToolbar({
             workspace state rather than document controls, and both stay reachable at
             every width (§41 keeps only Level-A DOCUMENT controls in the '⋯' menu). */}
         <span style={{ marginLeft: 'auto', flexShrink: 0, display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+          {/* 120.md §6 — the Writing Assistant chip, on the two prose destinations
+              only, condensing to its glyph + status like everything else here. */}
+          {writingAssistant && (tab === 'editor' || tab === 'pdfview') && (
+            typeof writingAssistant === 'function'
+              ? writingAssistant({ condensed, density, onDark: true })
+              : writingAssistant
+          )}
           {splitToggle && (typeof splitToggle === 'function' ? splitToggle({ condensed, density, onDark: true }) : splitToggle)}
           {/* 120.md §2 — the save pill is ALWAYS on the bar, so it always gets the
               on-purple skin (its legacy green/amber/red chips measured 1.8-2.8:1

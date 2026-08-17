@@ -44,6 +44,9 @@ import {
   RichSectionEditor, RichToolbar, RICH_EDITOR_CSS, CrossRefPicker, CrossRefList,
   CiteRefPicker, citeItemOf,
 } from './richEditor/RichSectionEditor.jsx';
+// 120.md §6 — the Writing Assistant's editor-side surface: the anchored suggestion
+// card and the stylesheet carrying the four ::highlight() registrations.
+import { WritingAssistantCard, WA_UI_CSS } from './writingAssistant/WritingAssistantCard.jsx';
 // 101.md §34 — the optional "recent manuscript updates" panel paired with Show Changes.
 import { ChangeTrackingPanel } from './ChangeTrackingPanel.jsx';
 // 119.md §7 — the guideline/journal provenance renderers and the ONE no-compliance
@@ -1038,7 +1041,7 @@ export function TableDeleteDialog({ info, onConfirm, onCancel }) {
  * @param {'sections'|'continuous'} view  118.md §10/§12. Section View shows one
  *        section at a time (unchanged); Continuous View renders the whole document.
  */
-export function EditorPanel({ m, exporters, sectionRequest, onOpenAssetPanel, onOpenReference, onNavigate, view = 'sections' }) {
+export function EditorPanel({ m, exporters, sectionRequest, onOpenAssetPanel, onOpenReference, onNavigate, view = 'sections', wa = null }) {
   const continuous = view === 'continuous';
   // Live handle for the callbacks that are built ONCE (the per-section api/activate
   // handles below) and must still know which view is on screen.
@@ -1082,6 +1085,13 @@ export function EditorPanel({ m, exporters, sectionRequest, onOpenAssetPanel, on
   const commitSection = useCallback((id, val) => {
     if (((m.activeDraft.sections || {})[id] || {}).locked) return;
     m.updateSection(id, val);
+    /* 120.md §6 — RE-ANCHOR after every emit. The decorations are DOM Ranges over
+       live text nodes; an edit that only reflows the block (a chip renumbering, a
+       table op, an undo) leaves the issue offsets valid but the Range objects
+       pointing at detached nodes. Re-anchoring here costs one pass over the visible
+       issues and is what keeps the underlines aligned through typing, undo,
+       Continuous View and fullscreen (§6 "Efficient decoration updates"). */
+    if (waRef.current) waRef.current.reanchor();
   }, [m]);
   const onTitleType = (val) => { if (locked) return; setTitleBuf(val); commitSection('title', val); };
 
@@ -1097,6 +1107,12 @@ export function EditorPanel({ m, exporters, sectionRequest, onOpenAssetPanel, on
   const apis = useRef(new Map());
   const activeApi = useRef(null);
   const activeSectionRef = useRef(null);
+  /* 120.md §6 — the writing assistant, read through a ref. The `handles` below are
+     built ONCE per section SET (never per keystroke), so an assistant read directly
+     from the closure would be frozen at the first render, exactly like every other
+     callback in this factory. */
+  const waRef = useRef(wa);
+  waRef.current = wa;
   /* r2 — the caret-owning section as RENDER state, not just a ref. `sel` cannot
      serve: in Continuous View it is also written by the IntersectionObserver as the
      reader scrolls, so it answers "what am I looking at", not "where is my caret".
@@ -1114,6 +1130,11 @@ export function EditorPanel({ m, exporters, sectionRequest, onOpenAssetPanel, on
         // Stable callback ref: an inline arrow would detach/re-attach the handle on
         // every render of a document that re-renders on every keystroke.
         apiRef: (api) => {
+          // 120.md §6 — the assistant applies a correction through the SAME api the
+          // toolbar uses, so it needs the same registry entry and the same
+          // unregistration. Kept beside the existing bookkeeping so the two can
+          // never fall out of step on a remount.
+          if (waRef.current) waRef.current.registerEditor(s.id, api || null);
           if (api) {
             apis.current.set(s.id, api);
             /* r2 — a regenerate changes the section's mountKey, so React UNMOUNTS
@@ -1133,6 +1154,9 @@ export function EditorPanel({ m, exporters, sectionRequest, onOpenAssetPanel, on
           activeApi.current = api;
           activeSectionRef.current = s.id;
           setCaretSection(s.id);
+          // 120.md §6 — the assistant checks the section the CARET is in, which in
+          // Continuous View is not the section the reader is scrolled to.
+          if (waRef.current) waRef.current.setCaretSection(s.id);
           // The abstract's subsection editors have no ref of their own — activating
           // is how they register, which keeps `apiFor('abstract')` honest.
           if (api) apis.current.set(s.id, api);
@@ -1140,6 +1164,10 @@ export function EditorPanel({ m, exporters, sectionRequest, onOpenAssetPanel, on
           // outline as well. Same value → React bails out, so this is free.
           if (continuousRef.current) setSel((cur) => (cur === s.id ? cur : s.id));
         },
+        /* 120.md §6 — a STABLE root-handout per section (built once with the rest of
+           the handle, never per render): an inline arrow would detach and re-attach
+           the decoration layer's root on every keystroke. */
+        rootRef: (el) => { if (waRef.current) waRef.current.registerRoot(s.id, el); },
         /* 120.md §5 — the missing HALF of `activate`, for the editors that register
            through it: drop the registry entry when the handle that owns it is
            unmounted. Identity-checked, because the abstract mounts several editors
@@ -1908,6 +1936,14 @@ export function EditorPanel({ m, exporters, sectionRequest, onOpenAssetPanel, on
       onCiteChipHover: (info) => setCiteHover(info ? { ...info, sectionId: id } : null),
       ariaLabel: sectionLabelOf(id),
       placeholder: 'Write this section here, or generate it from your project data. Use the toolbar for headings, lists and citations.',
+      /* 120.md §6 — native spellcheck coordination. Only ever false while the
+         assistant is ENABLED for this user, and only for the manuscript editor: the
+         browser's own checker keeps working everywhere else in the app, and comes
+         straight back when the assistant is switched off (a prop, not a remount). */
+      nativeSpellcheck: !(wa && wa.suppressNativeSpellcheck),
+      /* The live root, handed to the decoration layer. It only READS this element —
+         the underlines live in CSS.highlights, outside the DOM. */
+      onRootRef: (wa && h) ? h.rootRef : null,
     };
   };
 
@@ -1992,6 +2028,15 @@ export function EditorPanel({ m, exporters, sectionRequest, onOpenAssetPanel, on
     <div ref={rowRef} data-testid="stitch-manuscript-editor" data-view={view}
       style={{ display: 'flex', gap: 18, alignItems: 'flex-start', flexWrap: 'wrap' }}>
       <style>{RICH_EDITOR_CSS}</style>
+      {/* 120.md §6 — the assistant's own stylesheet: the four ::highlight()
+          registrations and the suggestion card's two hover rules. Injected beside
+          RICH_EDITOR_CSS (the same precedent), never merged into
+          MANUSCRIPT_TOOLBAR_CSS, whose every rule must stay scoped to `.ms-toolbar `. */}
+      {wa && wa.enabled && <style>{WA_UI_CSS}</style>}
+      {/* §6 — the anchored suggestion card. Rendered ONCE for the panel (there is one
+          active issue at a time) and positioned `fixed` against the resolved range,
+          so no editor container's overflow can clip it. */}
+      {wa && wa.enabled && <WritingAssistantCard wa={wa} />}
       {/* 117.md §11 — deleting a cited table warns first, then allows it. */}
       <TableDeleteDialog info={tableDelete} onConfirm={confirmDeleteTable} onCancel={() => setTableDelete(null)} />
       {/* 119.md §5 — the referenced-figure removal warning. */}

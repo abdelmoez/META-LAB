@@ -190,6 +190,12 @@ const DEFAULTS = {
     // so an EXISTING deployment keeps whatever it stored and an operator flips it in
     // Ops › Flags. (Same for every other default in this table.)
     manuscriptEditor: true,
+    // 120.md §6 — the manuscript Writing Assistant (local spelling + grammar). Default
+    // ON as an AVAILABILITY gate only: it decides whether the toolbar control exists,
+    // while the feature stays OFF per user until that user enables it
+    // (User.writingAssistant). Depends on manuscriptEditor — there is no other surface
+    // it decorates. Off hides the control and preserves every dictionary entry.
+    writingAssistant: true,
     // 66.md (P5) — structured data extraction: element forms, dual extraction with
     // adjudication, provenance-first values, AI extraction ASSIST (suggestions only —
     // human review is mandatory, nothing auto-commits). Default OFF: the Extraction

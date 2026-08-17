@@ -29,6 +29,9 @@ import studiesRouter     from './routes/studies.js';
 import recordsRouter     from './routes/records.js';
 // 119.md §5 — manuscript figure binaries (uploaded pictures as scholarly figures).
 import manuscriptFiguresRouter from './routes/manuscriptFigures.js';
+// 120.md §6 — the writing assistant's personal + project dictionaries. Terms only:
+// the checker itself runs in a browser worker and sends no manuscript text here.
+import dictionaryRouter from './routes/dictionary.js';
 import metaRouter        from './routes/meta.js';
 import nmaRouter         from './routes/nma.js';
 import gradeRouter       from './routes/grade.js';
@@ -574,6 +577,9 @@ app.use('/api/projects/:id/records', recordsRouter);
 // 119.md §5 — figure bytes stream through this authenticated router; the storage
 // directory itself is never statically served.
 app.use('/api/projects/:id/manuscript-figures', manuscriptFiguresRouter);
+// 120.md §6 — writing-assistant dictionaries (personal + project). requireAuth is
+// applied inside the router; the project routes additionally resolve project access.
+app.use('/api/dictionary',           dictionaryRouter);
 app.use('/api/meta',                 metaRouter);
 app.use('/api/nma',                  nmaRouter);
 // ── P12 GRADE certainty + Summary of Findings (grade.md). requireAuth at the mount;

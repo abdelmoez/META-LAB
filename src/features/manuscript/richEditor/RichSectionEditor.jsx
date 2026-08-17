@@ -28,7 +28,7 @@ import { useRef, useState, useEffect, useMemo, useCallback, useImperativeHandle,
 import { C, btnS, inp } from '../../../frontend/workspace/ui/styles.js';
 import { alpha } from '../../../frontend/theme/tokens.js';
 import {
-  mdToHtml, htmlToMd, citeChipHtml, citeChipLabel, citeChipAria,
+  mdToHtml, htmlToMd, escapeHtml, citeChipHtml, citeChipLabel, citeChipAria,
   assetChipHtml, assetChipLabel, assetChipAria,
   factChipText, factOf, stripInlineMd,
   CITE_CHIP_CLASS, ASSET_CHIP_CLASS, FACT_CHIP_CLASS, INPUT_CHIP_CLASS,
@@ -372,12 +372,30 @@ export const RichSectionEditor = forwardRef(function RichSectionEditor({
   figures = null,
   onImageFiles = null,
   onFigureFocus = null,
+  /* 120.md §6 — native browser spellcheck coordination. TRUE (the historical
+     behaviour) leaves the browser's own red underline on; FALSE turns it off inside
+     THIS editor only, which is what the PecanRev Writing Assistant needs so the two
+     underline systems never overlap. §6: "Disable native checking only inside the
+     relevant editor surfaces… Do not disable browser spellcheck globally… Restore
+     the expected native behavior when the PecanRev engine is turned off." Prop-
+     driven, so turning the assistant off restores it on the next render with no
+     remount and no caret loss. */
+  nativeSpellcheck = true,
+  /* 120.md §6 — a callback the editor calls with its live root element on mount and
+     with null on unmount. The decoration layer resolves issue offsets against this
+     element; it NEVER writes to it (CSS Custom Highlight API only). */
+  onRootRef = null,
 }, ref) {
   const rootRef = useRef(null);
   const savedRange = useRef(null);
   const orderMapRef = useRef(orderMap);
   const assetNumbersRef = useRef(assetNumbers);
   const onChangeRef = useRef(onChange);
+  /* 120.md §6 — read through a ref, because `emit` is a `useCallback([])` and would
+     otherwise keep the FIRST render's value for ever (the same reason every other
+     callback here is mirrored). */
+  const nativeSpellcheckRef = useRef(nativeSpellcheck);
+  nativeSpellcheckRef.current = nativeSpellcheck;
   useEffect(() => { orderMapRef.current = orderMap; });
   useEffect(() => { assetNumbersRef.current = assetNumbers; });
   useEffect(() => { onChangeRef.current = onChange; });
@@ -1302,11 +1320,26 @@ export const RichSectionEditor = forwardRef(function RichSectionEditor({
    * where every mutation already passes: the emit path, which an undo triggers.
    */
   const repairCaptionIslands = (el) => {
+    // 120.md §6 — the caption TITLES are the other two places the browser's native
+    // spellchecker runs inside this surface (mdDom renders them with
+    // spellcheck="true"). They are re-stamped HERE, beside the editability repair,
+    // rather than parameterised in mdDom, for three reasons:
+    //   · mdDom's output stays BYTE-IDENTICAL for every caller and every pinned
+    //     byte-stability test — the module is not touched at all;
+    //   · toggling the assistant would otherwise have to re-render the section's
+    //     HTML through mdToHtml, which means a remount: a lost caret, a lost undo
+    //     stack and a contentEpoch bump, for an attribute;
+    //   · this is already the ONE pass that runs where every shape change passes,
+    //     including the ones no command of ours made (a native undo, a drop), so a
+    //     caption restored by Ctrl+Z is re-stamped for free.
+    // `setAttr` writes only on a genuine difference and the attribute is not
+    // content, so htmlToMd ignores it and the undo stack never sees it.
+    const spell = nativeSpellcheckRef.current === false ? 'false' : 'true';
     const caps = el.querySelectorAll(`div.${TABLE_CAPTION_CLASS}[data-tblcap]`);
     for (const cap of caps) {
       setAttr(cap, 'contenteditable', 'false');
       const title = cap.querySelector(`span.${TABLE_CAPTION_TITLE_CLASS}`);
-      if (title) setAttr(title, 'contenteditable', 'true');
+      if (title) { setAttr(title, 'contenteditable', 'true'); setAttr(title, 'spellcheck', spell); }
     }
     // 119.md §5 — the uploaded-figure block is the same kind of island and needs
     // the same re-stamp after a native undo restores it.
@@ -1314,7 +1347,7 @@ export const RichSectionEditor = forwardRef(function RichSectionEditor({
     for (const fb of figs) {
       setAttr(fb, 'contenteditable', 'false');
       const title = fb.querySelector(`span.${FIGURE_CAPTION_TITLE_CLASS}`);
-      if (title) setAttr(title, 'contenteditable', 'true');
+      if (title) { setAttr(title, 'contenteditable', 'true'); setAttr(title, 'spellcheck', spell); }
     }
   };
 
@@ -1336,6 +1369,29 @@ export const RichSectionEditor = forwardRef(function RichSectionEditor({
        serialized. Undo-safe by construction (see dropOrphanCaptionBlocks). */
     onChangeRef.current && onChangeRef.current(htmlToMd(el.innerHTML, { dropOrphanCaptions: true }));
   }, []);
+
+  /* 120.md §6 — the caption-title spellcheck stamp on the paths `emit` does not
+     cover: the FIRST paint (mdDom rendered them with spellcheck="true" and no
+     mutation has happened yet) and a later flip of the prop while the section sits
+     untouched. Attribute writes only, on non-content structure — nothing here can
+     reach htmlToMd, the autosave or the undo stack.
+
+     Also the root-element handout the decoration layer needs. The layer only READS
+     this element (TreeWalker + Range); the underlines themselves live in
+     CSS.highlights, outside the DOM entirely. */
+  useEffect(() => {
+    const el = rootRef.current;
+    if (el) repairCaptionIslands(el);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [nativeSpellcheck]);
+
+  useEffect(() => {
+    if (!onRootRef) return undefined;
+    onRootRef(rootRef.current || null);
+    return () => onRootRef(null);
+    // `onRootRef` must be a STABLE callback (the panel builds one per section, once)
+    // — an inline arrow here would detach and re-attach the root on every render.
+  }, [onRootRef]);
 
   const selectionInRoot = () => {
     const sel = typeof window !== 'undefined' && window.getSelection && window.getSelection();
@@ -2182,6 +2238,46 @@ export const RichSectionEditor = forwardRef(function RichSectionEditor({
   const api = useMemo(() => ({
     exec,
     focus: () => rootRef.current && rootRef.current.focus(),
+    /**
+     * 120.md §6 — apply ONE writing-assistant correction.
+     *
+     * The whole point of routing it through here rather than letting the assistant
+     * touch the DOM is that this is the SAME selection → execCommand path every
+     * toolbar command uses: one native undo step, one autosave emit, the caret left
+     * after the replacement. A correction is an ordinary editor transaction and
+     * behaves like one (§6 "Accepted corrections are real editor transactions").
+     *
+     * `expect` is the stale guard §6 demands — "Verify that the original text still
+     * matches before applying a correction. Never apply a correction to text that has
+     * changed." The range is read back and compared BEFORE anything is written; a
+     * mismatch refuses and returns false rather than corrupting a sentence the
+     * researcher has since edited. (The hook checks the committed markdown too; this
+     * is the second, DOM-level half of the same promise.)
+     *
+     * Focus is installed before `insertHtml` so its `focusWithSelection()` sees a
+     * live in-root selection and keeps it, instead of restoring the remembered caret
+     * over the range we just selected.
+     */
+    applyRangeText: (range, replacement, expect) => {
+      if (readOnlyRef.current) return false;
+      const el = rootRef.current;
+      if (!el || !range || typeof replacement !== 'string') return false;
+      if (!el.contains(range.commonAncestorContainer)) return false;
+      const nbsp = (s) => String(s).replace(/ /g, ' ');
+      if (expect != null && nbsp(range.toString()) !== nbsp(expect)) return false;
+      const sel = typeof window !== 'undefined' && window.getSelection && window.getSelection();
+      if (!sel) return false;
+      restoringRef.current = true;
+      try { el.focus(); } finally { restoringRef.current = false; }
+      sel.removeAllRanges();
+      sel.addRange(range);
+      // Re-read AFTER the selection is installed: WebKit can normalise a Range on
+      // its way into the selection, and a silent no-op insert is its classic trap.
+      if (expect != null && nbsp(String(sel.toString())) !== nbsp(expect)) return false;
+      insertHtml(escapeHtml(replacement));
+      rememberSelection();
+      return true;
+    },
     /** Insert subset markdown at the caret as normal editable content (MS-8). */
     insertMarkdown: (md) => insertHtml(mdToHtml(md, {
       orderMap: orderMapRef.current, assetNumbers: assetNumbersRef.current,
@@ -3019,7 +3115,10 @@ export const RichSectionEditor = forwardRef(function RichSectionEditor({
       /* 119.md §5 — drag-and-drop target feedback (styled in RICH_EDITOR_CSS). */
       data-fig-drop={dropActive ? 'true' : undefined}
       data-placeholder={placeholder || 'Write this section, or generate it from your project data.'}
-      spellCheck
+      /* 120.md §6 — was a bare `spellCheck` (always on). Now prop-driven so the
+         Writing Assistant can suppress the browser's overlapping red underline in
+         THIS surface only, and restore it the moment the assistant is switched off. */
+      spellCheck={nativeSpellcheck !== false}
       onInput={() => { rememberSelection(); emit(); }}
       onKeyDown={onKeyDown}
       onKeyUp={rememberSelection}

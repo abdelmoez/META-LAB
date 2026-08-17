@@ -24,6 +24,10 @@ const SESSION_COOKIE = sessionCookieName();
 const PROFILE_SELECT = {
   id: true, email: true, name: true, createdAt: true, lastActive: true,
   themePreference: true, workflowMenuMode: true, projectSidebarPinned: true, uiDesignMode: true, dashboardPreferences: true, screeningShortcuts: true, emailNotifications: true,
+  // 120.md §6 — the Writing Assistant preference blob ({ enabled, variant,
+  // mutedCategories, mutedRules, showStyle }). Tiny by design: the dictionaries it
+  // implies live in their own tables, precisely because this column is capped.
+  writingAssistant: true,
   primaryRole: true, researchField: true, mainUseCase: true, country: true,
   institutionOriginal: true, institutionCanonicalName: true, institutionRorId: true,
   institutionCity: true, institutionCountryName: true, institutionCountryCode: true,
@@ -56,7 +60,7 @@ export async function getProfile(req, res) {
  */
 export async function updateProfile(req, res) {
   try {
-    const { name, themePreference, workflowMenuMode, projectSidebarPinned, uiDesignMode, dashboardPreferences, screeningShortcuts, emailNotifications, institution, country } = req.body || {};
+    const { name, themePreference, workflowMenuMode, projectSidebarPinned, uiDesignMode, dashboardPreferences, screeningShortcuts, emailNotifications, writingAssistant, institution, country } = req.body || {};
     if (name !== undefined && typeof name !== 'string') {
       return res.status(400).json({ error: 'name must be a string' });
     }
@@ -165,6 +169,26 @@ export async function updateProfile(req, res) {
         return res.status(400).json({ error: 'emailNotifications must be an object' });
       }
     }
+    // 120.md §6 — per-user Writing Assistant prefs, the same JSON-blob pattern as
+    // dashboardPreferences (object or JSON string; null clears). REPLACE, not merge:
+    // this column has exactly one writer (the assistant's own settings popover), so
+    // the emailNotifications merge exists for a hazard this blob does not have.
+    // The 500-character cap is why dictionaries are tables — the client clamps the
+    // blob before it sends (waState.clampWaPrefs), and this is the server's own line.
+    let waPatch = {};
+    if (writingAssistant !== undefined) {
+      let obj = writingAssistant;
+      if (typeof obj === 'string') { try { obj = JSON.parse(obj); } catch { return res.status(400).json({ error: 'writingAssistant must be valid JSON' }); } }
+      if (obj === null) {
+        waPatch = { writingAssistant: null };
+      } else if (typeof obj === 'object' && !Array.isArray(obj)) {
+        const json = JSON.stringify(obj);
+        if (json.length > 500) return res.status(400).json({ error: 'writingAssistant is too large' });
+        waPatch = { writingAssistant: json };
+      } else {
+        return res.status(400).json({ error: 'writingAssistant must be an object' });
+      }
+    }
     // prompt35 — institution: accepts a canonical selection object (ROR/local) or a
     // custom string; the service preserves the typed text and links/flags as needed.
     // `country` is the free-text onboarding-stated country (≠ IP-derived registration).
@@ -189,6 +213,7 @@ export async function updateProfile(req, res) {
         ...dashPatch,
         ...shortcutPatch,
         ...emailPrefPatch,
+        ...waPatch,
         ...instPatch,
         ...countryPatch,
         lastActive: new Date(),
