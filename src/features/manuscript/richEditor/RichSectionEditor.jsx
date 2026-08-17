@@ -61,18 +61,48 @@ import {
   flattenDegenerateTables,
 } from './pasteTransform.js';
 /* 120.md §5 — the PURE half of the picker-session caret bookmark: the rule that
-   decides whether a remembered position is still the same place in the text. */
-import { logicalContext, resolveContext } from './caretBookmark.js';
+   decides whether a remembered position is still the same place in the text.
+   121.md §4 — plus the NEIGHBOUR half, which is what finally tells one empty
+   paragraph from another (see caretLogicalOf / rangeFromLogical below). */
+import {
+  logicalContext, resolveContext, neighborContext, neighborsMatch,
+} from './caretBookmark.js';
+/* 121.md §4:168 — the ONE shared, editor-safe insertion utility. Citations,
+   cross-references and symbols converge on it: same session, same caret
+   normalisations, same single transaction, different PAYLOAD POLICY. */
+import {
+  insertionPlan, wrapInlineChipHtml, insertionPostconditionProblem,
+} from './insertionSession.js';
+// 121.md §1 — the Symbols picker (data-driven catalogue + grid popover).
+import { SymbolPicker } from './SymbolPicker.jsx';
 import { SHOW_CHANGES_CSS, indexFactChanges, factChipTitle } from '../showChanges.js';
 // 117.md §44 — an overlay that consumes an Escape owns the fullscreen exit it causes.
 import { markOverlayEscape } from '../../../frontend/focus/overlayEscapeLatch.js';
+
+/* 121.md §4 — the insertion postcondition is a DEVELOPMENT check: it costs two
+   Range reads per insertion and its only output is a console warning, so it runs
+   where a developer can act on it and never in a researcher's session. Read
+   defensively because this module is also imported by Node unit tests. */
+const DEV_INSERT_CHECKS = (() => {
+  try { return !!(import.meta && import.meta.env && import.meta.env.DEV); } catch { return false; }
+})();
 
 /* Page-scoped CSS: the paper is LITERAL white in both themes (a printed page),
    so the ink colors are fixed — theme tokens on purpose only OUTSIDE the page. */
 export const RICH_EDITOR_CSS = `
 .ms-paper{background:#ffffff;color:#1c2330;border:1px solid rgba(15,23,42,0.10);border-radius:6px;
   box-shadow:0 1px 2px rgba(15,23,42,0.10),0 14px 34px rgba(15,23,42,0.12);}
-.ms-page-body{font-family:Georgia,'Times New Roman',serif;font-size:14.5px;line-height:1.8;color:#1c2330;}
+/* 121.md §1 — "Provide appropriate font fallbacks so symbols render consistently in
+   the editor and exported documents." Georgia has no glyph for most of the symbol
+   catalogue (∮ ⊆ ⇔ …), so the browser fell through to whatever the platform chose
+   and the same manuscript looked different on two machines. The symbol faces are
+   APPENDED to the one page font stack: per-glyph fallback means every letter of
+   ordinary prose still renders in Georgia, and only the codepoints Georgia cannot
+   draw reach the symbol faces. The picker grid uses the same stack (SYMBOL_FONT_STACK
+   below) so the preview matches the document. The docx path needs nothing — TextRuns
+   carry the characters unfiltered and Word does its own per-glyph fallback — but
+   editor-and-Word GLYPH APPEARANCE is not promised to be identical. */
+.ms-page-body{font-family:Georgia,'Times New Roman','Segoe UI Symbol','Noto Sans Symbols 2',serif;font-size:14.5px;line-height:1.8;color:#1c2330;}
 .ms-rich{outline:none;min-height:340px;caret-color:#1c2330;}
 .ms-rich:empty::before{content:attr(data-placeholder);color:#98a1b3;font-style:italic;pointer-events:none;}
 .ms-page-body h2{font-size:1.3em;font-weight:700;line-height:1.35;margin:1.05em 0 0.45em;}
@@ -305,6 +335,178 @@ export function firstLineOf(s) {
   return String(s == null ? '' : s).replace(/\r\n?/g, '\n').split('\n')[0].trim();
 }
 
+/* ══════════ 121.md r2 — THE END-OF-BLOCK PAD IS NOT A POSITION ══════════
+ *
+ * `endOfBlockPad` (below) appends ONE `&nbsp;` so Blink stops calling the caret
+ * "end of block" and inserts the chip inside the paragraph instead of ejecting it.
+ * Its own comment promised the pad "cannot accumulate — the gap probe already
+ * refuses a second one" and "cannot reach the model — the serializer trims every
+ * block". Both were true only for a caret sitting BEFORE the pad. A caret at the
+ * true end of the line (End, Ctrl+End, a click past the last glyph) sits AFTER it,
+ * and then:
+ *   · the probe measured an empty gap and padded AGAIN — one more nbsp per insert;
+ *   · the chip landed between the two pads, so a pad became INTERIOR content and
+ *     mdDom (which folds nbsp to a space and trims only block EDGES) wrote a
+ *     permanent double space into the markdown that round-trips byte-stably into
+ *     the autosave and the docx;
+ *   · the chip-to-caret gap measured two nbsp, `joinableGap` allows one, and the
+ *     citation GROUPING that 120.md §5 requires was refused — "[1] [2]" instead of
+ *     "[1,2]".
+ *
+ * The repair is to make the pad what the comment always claimed it was: transparent.
+ * `snapCaretBeforeTrailingPad` moves a caret at-or-after the pad back in front of it
+ * (the same visual position — the pad is not content), which restores the gap probe,
+ * the grouping gap and the in-place insertion at one stroke; and a pad that has
+ * STOPPED being trailing (the researcher typed after it) is dropped as the section is
+ * serialized, so it can never reach the model. Pure helpers, module scope, so the
+ * unit suite can pin them against the real serializer.
+ */
+const PAD_CHAR = ' ';
+/* Two leading whitespace characters, at least one an nbsp, then something that is not
+   whitespace: the chip separator plus the end-of-block pad, in either engine's
+   spelling. `\s` covers U+00A0 in JavaScript, so the classes are explicit. */
+const SEP_PLUS_PAD_RE = /^(?: [ 	]|[ 	] |  )(?:[^\s]|$)/;
+const PAD_ONLY_RE = /^ +$/;
+
+/** Is everything after `n` in its parent nothing but pad/placeholder markup? */
+export function padIsTrailing(n) {
+  const p = n && n.parentNode;
+  if (!p) return false;
+  const kids = Array.from(p.childNodes);
+  for (let i = kids.indexOf(n) + 1; i < kids.length; i += 1) {
+    const k = kids[i];
+    if (k.nodeType === 3) {
+      const v = k.nodeValue || '';
+      if (v.length && !PAD_ONLY_RE.test(v)) return false;
+      continue;
+    }
+    if (k.nodeType === 1 && String(k.tagName || '').toUpperCase() === 'BR') continue;
+    return false;
+  }
+  return true;
+}
+
+/** The FIRST node of a block's trailing pad run (text nodes made only of nbsp), or
+    null. Empty text nodes and the placeholder `<br>` are skipped, exactly as
+    `caretAtEndOfBlock` skips them. */
+export function trailingPadNode(block) {
+  if (!block || block.nodeType !== 1) return null;
+  const kids = Array.from(block.childNodes);
+  let first = null;
+  for (let i = kids.length - 1; i >= 0; i -= 1) {
+    const n = kids[i];
+    if (n.nodeType === 1 && String(n.tagName || '').toUpperCase() === 'BR') continue;
+    if (n.nodeType !== 3) break;
+    const v = n.nodeValue || '';
+    if (!v.length) continue;
+    if (!PAD_ONLY_RE.test(v)) break;
+    first = n;
+  }
+  return first;
+}
+
+/** Every TEXT node under `n`, in document order. A manual walk rather than a
+    TreeWalker so the pure pad rules can be exercised in node. */
+function textNodesIn(n, out) {
+  const kids = (n && n.childNodes) ? Array.from(n.childNodes) : [];
+  for (const k of kids) {
+    if (k.nodeType === 3) out.push(k);
+    else if (k.nodeType === 1) textNodesIn(k, out);
+  }
+  return out;
+}
+
+/** The pads still worth tracking: connected, and still beginning with the character
+    this editor appended. Anything else is no longer ours. Pure — no DOM writes. */
+export function livePads(root, pads) {
+  const list = Array.isArray(pads) ? pads : [];
+  if (!root || !list.length) return [];
+  return list.filter((n) => n && n.parentNode && root.contains && root.contains(n)
+    && String(n.nodeValue || '').charAt(0) === PAD_CHAR);
+}
+
+/**
+ * The section's DOM with the pads taken out — as a CLONE, never the live tree.
+ *
+ * A pad that is still trailing costs the model nothing (mdDom trims every block), so
+ * it is left alone: removing it from the live DOM would corrupt the engine's un-apply
+ * of the very command that appended it, which is the r1 measurement this must not
+ * weaken. A pad that has stopped being trailing is different — mdDom trims block
+ * EDGES only, so it folds into a permanent double space in the markdown, in the
+ * autosave and in the .docx.
+ *
+ * It is taken out of a CLONE because the researcher's caret is very likely inside the
+ * node in question: typing at the end of a line writes INTO the pad's own text node
+ * (both engines do), and rewriting the value of the node a caret sits in moves that
+ * caret out from under them mid-keystroke. A clone has no caret, no selection and no
+ * undo stack, so this is invisible to everything except the serializer.
+ *
+ * @returns {string|null} html to serialize, or null when there is nothing to strip
+ *                        (the overwhelmingly common case — the caller uses innerHTML).
+ */
+/**
+ * The pad node identity cannot follow: WEBKIT's insertHTML rebuilds a block's text
+ * nodes, so the chip separator, the pad and the prose typed after them come out as ONE
+ * node ("<nbsp><nbsp>and a cohort agreed.", measured under `webkit-manuscript`) and the
+ * tracked node is detached. Two adjacent nbsp immediately after an ELEMENT is a shape
+ * only this editor produces — exactly one separator from the chip inserter, exactly one
+ * pad from the block — so it is recognised structurally instead.
+ *
+ * @param {Node} node
+ * @param {boolean} apply  false → only report whether there is one (no clone needed)
+ */
+function mergedPads(node, apply) {
+  const kids = (node && node.childNodes) ? Array.from(node.childNodes) : [];
+  let found = false;
+  for (let i = 0; i < kids.length; i += 1) {
+    const k = kids[i];
+    if (k.nodeType === 1) {
+      if (mergedPads(k, apply)) { found = true; if (!apply) return true; }
+      continue;
+    }
+    if (k.nodeType !== 3 || i === 0 || kids[i - 1].nodeType !== 1) continue;
+    const v = String(k.nodeValue || '');
+    /* EXACTLY two whitespace characters, at least one of them an NBSP — one separator,
+       one pad. (Which of the two survives as an nbsp is the engine's business: WebKit
+       normalises one of them to a plain space while merging the nodes. Markdown's own
+       double space arrives as two PLAIN spaces through mdToHtml and is left alone, and
+       so is a longer run — that could only come from a build that let pads accumulate,
+       and is not guessed at.) */
+    if (!SEP_PLUS_PAD_RE.test(v)) continue;
+    found = true;
+    if (!apply) return true;
+    k.nodeValue = v.slice(1);
+  }
+  return found;
+}
+
+export function padStrippedHtml(root, pads) {
+  const list = Array.isArray(pads) ? pads : [];
+  if (!root) return null;
+  const live = livePads(root, list);
+  // The text-node walk is only worth doing when there is a tracked pad to place.
+  const texts = live.length ? textNodesIn(root, []) : [];
+  const marks = [];
+  for (const n of live) {
+    const i = texts.indexOf(n);
+    if (i < 0) continue;
+    const v = String(n.nodeValue || '');
+    if (v === PAD_CHAR) { if (!padIsTrailing(n)) marks.push([i, 'drop']); continue; }
+    marks.push([i, 'strip']);          // the engine typed into it — the pad is its head
+  }
+  if (!marks.length && !mergedPads(root, false)) return null;
+  const clone = root.cloneNode(true);
+  const cloneTexts = textNodesIn(clone, []);
+  for (const [i, kind] of marks) {
+    const t = cloneTexts[i];
+    if (!t) continue;
+    if (kind === 'drop') { if (t.parentNode) t.parentNode.removeChild(t); }
+    else t.nodeValue = String(t.nodeValue || '').slice(1);
+  }
+  mergedPads(clone, true);      // …and the shape identity cannot follow (see above)
+  return clone.innerHTML;
+}
+
 export const RichSectionEditor = forwardRef(function RichSectionEditor({
   value, orderMap, onChange, placeholder, minHeight = 340,
   ariaLabel, testId = 'stitch-manuscript-rich-editor', onActivate,
@@ -455,6 +657,9 @@ export const RichSectionEditor = forwardRef(function RichSectionEditor({
      caption whose table is one paragraph away from a caption whose table was deleted
      and a stranger's table happens to follow. See mdDom's repairCaptionBlocks. */
   const captionPairsRef = useRef(null);
+  /* 121.md r2 — the end-of-block pads this editor has appended, so `emit` can drop the
+     ones that stopped being trailing without guessing which nbsp is whose. */
+  const padNodesRef = useRef([]);
   if (captionPairsRef.current == null) captionPairsRef.current = captionTablePairs(value || '');
 
   /* 120.md §3 — THE MOUNT-SIDE half of the trailing caret target.
@@ -1378,6 +1583,14 @@ export const RichSectionEditor = forwardRef(function RichSectionEditor({
        is byte-identical either way, which is what keeps the affordance out of the
        document, out of the autosave and out of the export. */
     ensureTrailingParagraph(el);
+    /* 121.md r2 — …and the ONE place a STALE end-of-block pad is kept out of the
+       model: one that no longer ends its block is interior whitespace, and mdDom trims
+       block EDGES only, so it would otherwise fold into a permanent double space in
+       the markdown, the autosave and the .docx. Byte-identical for every pad that is
+       still trailing (the serializer trims those already) and for every section that
+       has none — `padStrippedHtml` answers null and the live innerHTML is used
+       unchanged. It never writes to the live DOM: see the function. */
+    const padded = padStrippedHtml(el, padNodesRef.current);
     /* 119.md §2 — the ONE place the orphan-caption repair runs: a caption whose
        table a native selection-delete removed is dropped as the section is
        serialized. Undo-safe by construction (see dropOrphanCaptionBlocks).
@@ -1388,7 +1601,7 @@ export const RichSectionEditor = forwardRef(function RichSectionEditor({
        and kept its number, title and cross-references, silently and byte-stably.
        The map is derived from the markdown we just produced, so it always describes
        the state the next emit starts from (including after a native undo). */
-    const md = htmlToMd(el.innerHTML, {
+    const md = htmlToMd(padded == null ? el.innerHTML : padded, {
       dropOrphanCaptions: true, captionPairs: captionPairsRef.current,
     });
     captionPairsRef.current = captionTablePairs(md);
@@ -1491,8 +1704,23 @@ export const RichSectionEditor = forwardRef(function RichSectionEditor({
     const sel = window.getSelection();
     if (!sel) return true;
     sel.removeAllRanges();
+    /* 121.md §4 (fix 4) — A SAVED RANGE POINTED AT THE ROOT IS NOT A TEXT POSITION.
+       A live Range survives the removal of its own nodes: the browser re-points it at
+       the surviving parent, so a section whose children were all replaced leaves
+       `savedRange` collapsed at (root, k) — and `el.contains(...)` accepts that
+       without complaint. Inserting there puts the chip BETWEEN two blocks, and
+       mdDom's walkBlocks then serializes that inline run as its OWN paragraph: the
+       one variant of the "next line" defect that survives a reload. So a rooted range
+       is first SNAPPED into the adjacent block (which is where the researcher's caret
+       visibly was), and only a rooted range that cannot be snapped is rejected — the
+       caret-at-end fallback below, unchanged, is what a lost caret has always meant
+       on this path (the picker paths refuse instead; see restoreCaretBookmark). */
+    const rootedSaved = !!saved && saved.commonAncestorContainer === el;
+    // Deferred, so the snap runs ONLY on the branch that would install this range.
+    const usable = () => !!saved && el.contains(saved.commonAncestorContainer)
+      && (!rootedSaved || snapCollapsedEndIntoBlock(saved, null));
     if (keep) sel.addRange(keep);
-    else if (saved && el.contains(saved.commonAncestorContainer)) {
+    else if (usable()) {
       // Clone: a Range handed to the selection is live in some engines, and the
       // saved caret must not be dragged along by the next cursor movement.
       savedRange.current = saved;
@@ -1526,6 +1754,11 @@ export const RichSectionEditor = forwardRef(function RichSectionEditor({
   const insertHtml = useCallback((html, opts) => {
     if (!focusWithSelection()) return;
     if (opts && opts.hoistFromIslands) hoistInsertionPoint({ blockLevel: !!(opts && opts.blockLevel) });
+    /* 121.md §4 r1 — an INLINE insertion at the end of a block needs the sacrificial
+       nbsp pad, or Blink puts the element after the block (see endOfBlockPad). It stays
+       in the DOM on purpose — the serializer trims it, and removing it would corrupt
+       the engine's own undo of this very command. */
+    if (opts && opts.inlineAtCaret) endOfBlockPad();
     let ok = false;
     try { ok = document.execCommand('insertHTML', false, html); } catch { ok = false; }
     if (!ok) {
@@ -2012,13 +2245,232 @@ export const RichSectionEditor = forwardRef(function RichSectionEditor({
     return null;
   };
 
-  /** Snapshot a caret position as { blockIndex, charOffset, before, after }. */
+  /* ══════════ 121.md §4 — the BOUNDARY NORMALISATION ══════════
+   *
+   * §4: "There is an intermittent defect where inserting a citation or cross-reference
+   * places it on the following line even though the caret was located within the
+   * current line." The dominant path needs no remount, no async data and no browser
+   * bug — it is arithmetic the editor was doing to itself.
+   *
+   * A selection with LINE or PARAGRAPH granularity — triple-click, a drag past the end
+   * of a line, Shift+Down — ends at the START OF THE NEXT BLOCK: Blink reports
+   * (nextParagraph, 0). Both places that collapse a selection for an insertion
+   * (`saveCaretBookmark` when the picker opens, `collapseSelectionToEnd` when it
+   * commits) do `collapse(false)`, which honestly takes that boundary at its word. The
+   * bookmark then records blockIndex = the FOLLOWING paragraph at charOffset 0, every
+   * validity check passes, and the chip is inserted at the start of the next line —
+   * exactly what the researcher reported, and only for selections that end at a
+   * boundary, which is why it read as "intermittent".
+   *
+   * The normalisation: a collapsed caret at the START of a line block, produced by
+   * collapsing a selection that BEGAN in an earlier block, belongs at the END of the
+   * previous block's content — the position the researcher's selection visibly ended
+   * at. A caret genuinely placed at the start of a line (no selection) is left exactly
+   * where it is; that is the whole reason the previously-dead `hadSelection` flag
+   * scopes this.
+   *
+   * The second, unconditional half is a caret at ROOT level, which is not a text
+   * position at all in any editing model: it sits BETWEEN blocks, and execCommand
+   * there produces an inline run that mdDom serializes as its own paragraph (the one
+   * "next line" variant that survives a reload). It is snapped into the adjacent block
+   * whether or not there was a selection.
+   */
+
+  /** A top-level block a caret can genuinely sit IN — a line of the document, or the
+      bare text node Blink leaves when the first run is typed into an empty host. A
+      table or a media island is not one. */
+  const isRealLineBlock = (top) => {
+    if (!top) return false;
+    if (top.nodeType === 3) return true;
+    if (top.nodeType !== 1) return false;
+    if (isMediaBlockNode(top)) return false;
+    return LINE_BLOCK_TAGS.has(String(top.tagName || '').toUpperCase());
+  };
+
+  /** A collapsed Range at the END of a block's content, SKIPPING the trailing
+      placeholder `<br>` (a caret after it renders on a second visual line — the very
+      shape §4 is about). Empty block → its start. */
+  const caretAtEndOfBlock = (block) => {
+    if (!block || typeof document === 'undefined') return null;
+    const r = document.createRange();
+    if (block.nodeType === 3) {
+      r.setStart(block, (block.nodeValue || '').length);
+      r.collapse(true);
+      return r;
+    }
+    if (block.nodeType !== 1) return null;
+    const kids = Array.from(block.childNodes);
+    let i = kids.length - 1;
+    while (i >= 0) {
+      const n = kids[i];
+      const isBr = n.nodeType === 1 && String(n.tagName || '').toUpperCase() === 'BR';
+      const blank = n.nodeType === 3 && !(n.nodeValue || '').length;
+      if (!isBr && !blank) break;
+      i -= 1;
+    }
+    const last = i >= 0 ? kids[i] : null;
+    if (!last) { r.selectNodeContents(block); r.collapse(true); return r; }
+    if (last.nodeType === 3) { r.setStart(last, (last.nodeValue || '').length); r.collapse(true); return r; }
+    r.setStartAfter(last);      // after a chip / a bold run — still INSIDE the block
+    r.collapse(true);
+    return r;
+  };
+
+  /** Is there genuinely nothing before this caret inside its own block? Text is
+      measured with a Range (chips and nested marks contribute their text), and
+      `gapHasElement` catches the invisible content `toString()` cannot see — a leading
+      `<br>` or image means the caret is on a LATER visual line, not at the start. */
+  const atBlockStart = (block, r) => {
+    try {
+      const probe = document.createRange();
+      probe.selectNodeContents(block);
+      probe.setEnd(r.startContainer, r.startOffset);
+      if (probe.toString().length) return false;
+      return !gapHasElement(probe);
+    } catch { return false; }
+  };
+
+  /**
+   * Move a collapsed caret out of a between-blocks / start-of-next-block position and
+   * into the line it belongs to. Mutates `range` in place and returns whether it did.
+   *
+   * @param {Range}      range   the collapsed caret (mutated)
+   * @param {Range|null} origin  the selection it was collapsed FROM, when there WAS a
+   *                             selection (the `hadSelection` scope). null → only the
+   *                             unconditional root-level rule applies.
+   */
+  const snapCollapsedEndIntoBlock = (range, origin) => {
+    const el = rootRef.current;
+    if (!el || !range || typeof document === 'undefined') return false;
+    if (!range.collapsed) return false;
+    if (!el.contains(range.startContainer)) return false;
+    const blocks = significantChildren(el);
+    const moveTo = (r) => {
+      if (!r) return false;
+      range.setStart(r.startContainer, r.startOffset);
+      range.collapse(true);
+      return true;
+    };
+    const top = topBlockOf(range.startContainer);
+    if (!top) {
+      // (a) ROOT LEVEL — between two blocks. Prefer the end of the block BEFORE the
+      //     boundary (where a downward selection or a boundary click came from); the
+      //     start of the block after it when there is nothing before.
+      if (range.startContainer !== el) return false;
+      const kids = Array.from(el.childNodes);
+      const idx = Math.max(0, Math.min(range.startOffset, kids.length));
+      let prev = null;
+      for (let i = idx - 1; i >= 0; i -= 1) if (blocks.indexOf(kids[i]) >= 0) { prev = kids[i]; break; }
+      if (isRealLineBlock(prev)) return moveTo(caretAtEndOfBlock(prev));
+      /* 121.md r2 — a LIST is not a line, so the old refusal here left the caret at
+         root level for every section that ends in one (Ctrl+A ends exactly there), and
+         the chip was written after the `</ul>` as its own paragraph — the §4 variant
+         that survives a reload. Descend to the end of the last item, which is the line
+         the researcher's selection actually covered. */
+      const lastLi = lastListLine(prev);
+      if (lastLi) return moveTo(caretAtEndOfBlock(lastLi));
+      let next = null;
+      for (let i = idx; i < kids.length; i += 1) if (blocks.indexOf(kids[i]) >= 0) { next = kids[i]; break; }
+      const startAt = (n) => {
+        const r = document.createRange();
+        r.selectNodeContents(n);
+        r.collapse(true);
+        return moveTo(r);
+      };
+      if (!isRealLineBlock(next)) {
+        const firstLi = firstListLine(next);      // 121.md r2 — …and the same on this side
+        return firstLi ? startAt(firstLi) : false;
+      }
+      return startAt(next);
+    }
+    // (b) START OF A LINE BLOCK, reached by collapsing a selection that began earlier.
+    if (!origin || origin.collapsed) return false;
+    /* (c) 121.md §4 r1 — …or the selection ended in a block the caret cannot write
+       PROSE into. WebKit's paragraph-granularity selection does not stop at the end of
+       the paragraph: it reaches into the CAPTION ISLAND that follows, and collapsing to
+       that end put the cross-reference inside the table's TITLE — a different line
+       block, and one whose serialization keeps only the marker, so the chip vanished at
+       the next save. The insertion belongs on the last REAL line the selection covered.
+       Scoped twice over: a collapsed caret never reaches here (origin is null), so
+       §1's "a symbol inserts inside a caption title" is untouched; and a selection that
+       ends in a table CELL is left alone, because a cell IS a real line of the
+       document and a chip there is legal. */
+    if (!isRealLineBlock(top)) {
+      const lb = lineBlockOf(range.startContainer);
+      const lbTag = lb && lb.tagName ? String(lb.tagName).toUpperCase() : '';
+      if (lbTag === 'TD' || lbTag === 'TH') return false;
+      const endsIn = blocks.indexOf(top);
+      const from = blocks.indexOf(topBlockOf(origin.startContainer));
+      if (endsIn < 0 || from < 0 || from >= endsIn) return false;
+      for (let i = endsIn - 1; i >= from; i -= 1) {
+        if (isRealLineBlock(blocks[i])) return moveTo(caretAtEndOfBlock(blocks[i]));
+      }
+      return false;
+    }
+    if (!atBlockStart(top, range)) return false;
+    const here = blocks.indexOf(top);
+    const began = blocks.indexOf(topBlockOf(origin.startContainer));
+    if (here <= 0 || began < 0 || began >= here) return false;
+    const prev = blocks[here - 1];
+    if (!isRealLineBlock(prev)) return false;   // never snap INTO a table or a figure
+    return moveTo(caretAtEndOfBlock(prev));
+  };
+
+  /**
+   * 121.md §4 r1 — THE SCOPE OF "a root-level caret is not a text position".
+   *
+   * Fix 4 refuses a caret whose container is the editing host itself, because that is
+   * how a chip ends up BETWEEN two blocks. But the host's children are not always
+   * blocks: typing the first run into an empty section leaves bare text nodes, chips
+   * and `<br>`s as DIRECT children (Blink wraps nothing until the first Enter), so a
+   * caret after a Shift+Enter at that level has a root container and is nevertheless a
+   * perfectly ordinary position inside the one implicit line of the document. Refusing
+   * it turned "cite, Shift+Enter, cite again" into a CARET_LOST notice
+   * (manuscript-citation-caret-120.spec.ts §5 r2).
+   *
+   * The distinction fix 4 actually needs is not "root container" but "between BLOCKS":
+   * if either side of the offset is INLINE content, the insertion joins that inline run
+   * and mdDom's walkBlocks keeps it in the same block — no paragraph is created. A host
+   * with no significant children at all has nothing to be between, so it is inline too.
+   * Everything fix 4 was written for — a caret between two paragraphs, before the first
+   * block, after the last one — still has blocks on both sides and is still refused.
+   */
+  const rootInlineCaret = (container, offset) => {
+    const el = rootRef.current;
+    if (!el || container !== el) return false;
+    const kids = Array.from(el.childNodes);
+    const blocks = significantChildren(el);
+    if (!blocks.length) return true;                 // nothing to be BETWEEN
+    const idx = Math.max(0, Math.min(Math.floor(Number(offset) || 0), kids.length));
+    let prev = null;
+    for (let i = idx - 1; i >= 0; i -= 1) if (blocks.indexOf(kids[i]) >= 0) { prev = kids[i]; break; }
+    let next = null;
+    for (let i = idx; i < kids.length; i += 1) if (blocks.indexOf(kids[i]) >= 0) { next = kids[i]; break; }
+    const inline = (n) => {
+      if (!n) return false;
+      if (n.nodeType === 3) return true;             // a bare run of prose
+      if (n.nodeType !== 1) return false;
+      if (isMediaBlockNode(n)) return false;
+      const tag = String(n.tagName || '').toUpperCase();
+      /* 121.md r2 — a CONTAINER of lines is a block, however inline it looks to a
+         tag-name test. A UL/OL passed both tests above and read as inline, so the
+         caret Ctrl+A leaves after a trailing list was accepted as "a real position"
+         and the chip landed between the list and the end of the section. */
+      if (BLOCK_CONTAINER_TAGS.has(tag)) return false;
+      return !LINE_BLOCK_TAGS.has(tag);
+    };
+    return inline(prev) || inline(next);
+  };
+
+  /** Snapshot a caret position as { blockIndex, charOffset, before, after } — plus,
+      for a caret in an EMPTY block, { prevTail, nextHead } (121.md §4, see below). */
   const caretLogicalOf = (r) => {
     const el = rootRef.current;
     if (!el || !r) return null;
     const top = topBlockOf(r.endContainer);
     if (!top) return null;
-    const blockIndex = significantChildren(el).indexOf(top);
+    const blocks = significantChildren(el);
+    const blockIndex = blocks.indexOf(top);
     if (blockIndex < 0) return null;
     let offset = 0;
     try {
@@ -2027,7 +2479,25 @@ export const RichSectionEditor = forwardRef(function RichSectionEditor({
       pre.setEnd(r.endContainer, r.endOffset);
       offset = pre.toString().length;
     } catch { return null; }
-    return { blockIndex, ...logicalContext(top.textContent || '', offset) };
+    const lg = { blockIndex, ...logicalContext(top.textContent || '', offset) };
+    /* 121.md §4 (fix 3) — AN EMPTY CONTEXT SAYS NOTHING ABOUT WHERE IT WAS. `before`
+       and `after` are both empty exactly when the block holds no text, and that
+       snapshot matches EVERY empty block in the section: after a remount (which drops
+       un-persisted empty paragraphs — a blank markdown line renders nothing) the
+       unique-block scan deterministically found the §3 trailing affordance and the
+       citation landed at the end of the section (the documented F17,
+       docs/editor-engine-120.md item 10). Remembering the NEIGHBOURS is what tells one
+       empty block from another — and `null` for "there is no next block" is precisely
+       what tells the trailing affordance apart from a paragraph in the middle. */
+    if (!lg.before && !lg.after) {
+      const prev = blockIndex > 0 ? blocks[blockIndex - 1] : null;
+      const next = blocks[blockIndex + 1] || null;
+      Object.assign(lg, neighborContext(
+        prev ? (prev.textContent || '') : null,
+        next ? (next.textContent || '') : null,
+      ));
+    }
+    return lg;
   };
 
   /** Character offset within a block → a collapsed Range, never inside an atomic
@@ -2056,7 +2526,20 @@ export const RichSectionEditor = forwardRef(function RichSectionEditor({
       seen += len;
     }
     const r = document.createRange();
-    if (!node) { r.selectNodeContents(top); r.collapse(false); return r; }
+    if (!node) {
+      r.selectNodeContents(top);
+      /* 121.md §4 (fix 2) — WHICH SIDE OF THE PLACEHOLDER <br>. An empty block is
+         `<p><br></p>`, and `collapse(false)` yields (p, 1) — AFTER the br. Inserting
+         there puts the chip on the second visual line of the very paragraph the caret
+         was in, because the engine keeps the placeholder (WebKit reliably, Blink in
+         some shapes): "inserted on the next line" without any block boundary being
+         crossed at all. An empty block's only honest caret is at its START, which is
+         also what the §3 trailing-affordance click handler installs (collapse(true)).
+         A block WITH text keeps the old end-of-block behaviour: there the branch means
+         "the offset is past the last character", and the end is where it belongs. */
+      r.collapse(!(top.textContent || '').length);
+      return r;
+    }
     let atomic = null;
     let up = node.parentElement;
     while (up && up !== top && up !== rootRef.current) {
@@ -2076,10 +2559,42 @@ export const RichSectionEditor = forwardRef(function RichSectionEditor({
     if (!el || !logical) return null;
     // Elements AND bare text nodes — see rangeAtTextOffset for why both are blocks.
     const blocks = significantChildren(el);
-    const offsetIn = (b) => resolveContext(b.textContent || '', logical);
+    /* 121.md §4 (fix 3) — a candidate must satisfy the block's OWN text rule AND, for
+       an empty-context bookmark, still have the neighbours it was taken beside. Old
+       bookmarks (no neighbour fields — one held across a hot update, or handed in by
+       the workspace session) degrade to the pre-121 rule: `neighborsMatch` answers
+       TRUE when there is nothing to verify. */
+    const offsetIn = (b) => {
+      const i = blocks.indexOf(b);
+      const off = resolveContext(b.textContent || '', logical);
+      if (off == null) return null;
+      const prev = i > 0 ? blocks[i - 1] : null;
+      const next = i >= 0 ? (blocks[i + 1] || null) : null;
+      const ok = neighborsMatch(
+        logical,
+        prev ? (prev.textContent || '') : null,
+        next ? (next.textContent || '') : null,
+      );
+      return ok ? off : null;
+    };
+    const emptyContext = !logical.before && !logical.after;
     const top0 = blocks[logical.blockIndex] || null;
     let top = top0;
     let off = top ? offsetIn(top) : null;
+    /* …and the DIRECT INDEX HIT is not privileged for an empty context. Every empty
+       block "fits" an empty context, so a remembered index that now addresses a
+       DIFFERENT empty block resolved silently and confidently into the wrong place —
+       the aliasing half of F17. For an empty context the index hit is therefore held
+       to the same uniqueness discipline as the scan below: exactly one block in the
+       section may claim it, or nothing is resolved. A context WITH text keeps index
+       priority on purpose: two paragraphs may legitimately read the same ("Not
+       applicable."), the remembered index is real evidence about which one, and
+       refusing there would turn working insertions into refusal notices. */
+    if (off != null && emptyContext) {
+      let claims = 0;
+      for (const b of blocks) if (offsetIn(b) != null) claims += 1;
+      if (claims !== 1) return null;
+    }
     if (off == null) {
       /* The block itself moved (a paste or a generation inserted blocks above it).
          Accept a match elsewhere ONLY when exactly one block in the section can
@@ -2115,9 +2630,38 @@ export const RichSectionEditor = forwardRef(function RichSectionEditor({
    * may still find the position honestly; if that fails too, the caller refuses.
    */
   const liveRangeStillValid = (r, logical) => {
-    if (!logical) return true;            // nothing to verify against — best effort
+    /* 121.md §4 (fix 4) — A NULL LOGICAL IS NOT A LICENCE. `caretLogicalOf` returns
+       null when it cannot name a top-level block for the position: a selection END at
+       ROOT level (select-all, a boundary click between two blocks) is the everyday
+       way to get there. "Nothing to verify against — best effort" then accepted a
+       caret that is not in any line of the document, and execCommand put the chip
+       BETWEEN two paragraphs, where mdDom serializes it as its own paragraph. That is
+       the only variant of the next-line defect that survives a reload.
+       So a null logical is trusted ONLY when the range genuinely sits in a real line
+       block (its own logical snapshot merely failed for some other reason). The
+       save-side normalisation is the other half of this: `saveCaretBookmark` snaps
+       root-level ends into the block they came from BEFORE the bookmark is taken, so
+       this stays a rare refusal rather than a new everyday one. */
+    if (!logical) {
+      if (isRealLineBlock(topBlockOf(r && r.endContainer))) return true;
+      /* 121.md §4 r1 — …and a root-level caret sitting in an INLINE run at root is a
+         real position too (see rootInlineCaret): a section whose prose has never been
+         wrapped in a block keeps its lines as bare children, and Shift+Enter leaves the
+         caret exactly there. Scoping fix 4 to genuinely between-BLOCKS positions is
+         what it always meant; refusing this one only produced a CARET_LOST notice
+         where a second citation belonged. */
+      return !!r && rootInlineCaret(r.endContainer, r.endOffset);
+    }
     const now = caretLogicalOf(r);
-    return !!now && now.before === logical.before && now.after === logical.after;
+    if (!now) return false;
+    /* Deliberately NOT neighbour-checked. The neighbour context (fix 3) exists to tell
+       one empty block from another when the position has to be RE-FOUND by text; a live
+       range whose container is still connected to this root is not a re-resolution at
+       all — it is the very node the bookmark was taken in. Requiring its neighbours to
+       be unchanged would refuse a perfectly good caret because someone edited the
+       paragraph above it, which is the refusal-rate risk the audit warns about. The
+       re-resolution path (rangeFromLogical) is where the check belongs and is applied. */
+    return now.before === logical.before && now.after === logical.after;
   };
 
   /** Install a resolved caret and hand DOM focus to whichever host owns it. */
@@ -2126,6 +2670,10 @@ export const RichSectionEditor = forwardRef(function RichSectionEditor({
     if (!el || !r || typeof window === 'undefined' || !window.getSelection) return false;
     const sel = window.getSelection();
     if (!sel) return false;
+    // 121.md §4 (fix 1) — normalise the INPUT too: a resolved range that landed at
+    // root level (or at the start of a block a selection ran into) is snapped back
+    // into the block it belongs to before it is installed as the caret.
+    snapCollapsedEndIntoBlock(r, null);
     const host = titleHostOf(r.startContainer) || el;
     restoringRef.current = true;
     try { host.focus(); } finally { restoringRef.current = false; }
@@ -2152,6 +2700,37 @@ export const RichSectionEditor = forwardRef(function RichSectionEditor({
    * otherwise call the end of the previous paragraph "adjacent".
    */
   const LINE_BLOCK_TAGS = new Set(['P', 'LI', 'TD', 'TH', 'H1', 'H2', 'H3', 'H4', 'H5', 'H6', 'BLOCKQUOTE', 'DIV', 'PRE']);
+  /* 121.md r2 — CONTAINERS that hold lines without being one. mdDom's walkBlocks
+     treats a UL/OL as a block (its BLOCK_TAGS lists them); the caret classifiers did
+     not, and the disagreement is the whole "section that ends in a list" defect:
+     `isRealLineBlock` refused to snap into one, and `rootInlineCaret` then read the
+     very same UL as INLINE and accepted a caret sitting between it and the end of the
+     section — where execCommand writes a root-level run that mdDom serializes as its
+     own paragraph. Both sides now read a list the way the serializer does. */
+  const BLOCK_CONTAINER_TAGS = new Set(['UL', 'OL', 'DL', 'TABLE', 'FIGURE', 'HR']);
+  const LIST_TAGS = new Set(['UL', 'OL']);
+  const tagOf = (n) => (n && n.nodeType === 1 ? String(n.tagName || '').toUpperCase() : '');
+  const listItemsOf = (list) => Array.from((list && list.children) || [])
+    .filter((c) => tagOf(c) === 'LI');
+  /** The LAST line inside a list — its last item, or the last item of the nested list
+      that item ends with (which is the visually last line of the whole construct). */
+  const lastListLine = (node) => {
+    let list = node;
+    let li = null;
+    for (let guard = 0; list && LIST_TAGS.has(tagOf(list)) && guard < 32; guard += 1) {
+      const items = listItemsOf(list);
+      if (!items.length) break;
+      li = items[items.length - 1];
+      const tail = li.lastElementChild;
+      list = tail && LIST_TAGS.has(tagOf(tail)) ? tail : null;
+    }
+    return li;
+  };
+  /** …and the FIRST, for a caret that sits before a leading list. */
+  const firstListLine = (node) => {
+    const items = LIST_TAGS.has(tagOf(node)) ? listItemsOf(node) : [];
+    return items.length ? items[0] : null;
+  };
   const NON_SPACE_RE = /\S/;
 
   const lineBlockOf = (node) => {
@@ -2185,7 +2764,17 @@ export const RichSectionEditor = forwardRef(function RichSectionEditor({
       if (!frag || typeof frag.querySelectorAll !== 'function') return false;
       for (const el of frag.querySelectorAll('*')) {
         if (VOID_CONTENT_TAGS.has(String(el.tagName || '').toUpperCase())) return true;
-        if (el.childNodes && el.childNodes.length) return true;
+        /* 121.md r2 — "has children" is not "has content", and the difference is the
+           whole "immediately after formatted text" row of §4's matrix. `cloneContents`
+           PARTIALLY contains the element a boundary point sits inside, and the spec
+           clones it as a SHELL holding one sliced — here zero-length — text node. So a
+           caret at the end of a trailing `<b>bold</b>` (or `<i>`, or a link) produced a
+           gap whose clone was `<b></b>` with childNodes.length === 1, the end-of-block
+           pad was refused, and Blink ejected the chip out of the paragraph onto its own
+           line. Read the TEXT: a wrapper whose whole descendant text is empty and that
+           holds no void content is exactly the empty formatting wrapper the comment
+           above already says is not content. */
+        if ((el.textContent || '').length) return true;
       }
       return false;
     } catch { return false; }
@@ -2257,7 +2846,11 @@ export const RichSectionEditor = forwardRef(function RichSectionEditor({
    * trailing `&nbsp;` stays OUTSIDE the wrapper, where it is ordinary text either
    * way. Same idea as removeFigureBlock's sacrificial empty blocks (119.md §5).
    */
-  const wrapInlineChip = (chipHtml) => `<span>${chipHtml}</span>`;
+  /* 121.md §4:168 — ONE definition, now in the shared insertion utility so the
+     insert path (which reaches it through the {kind:'chip'} payload policy) and the
+     three chip-MUTATION paths below (group, remove one id, relink — node swaps, not
+     insertions) can never disagree about the shape. */
+  const wrapInlineChip = wrapInlineChipHtml;
 
   /** Merge ids into an existing chip through the SAME replaceNode + citeChipLabel
       path removeCitation uses: one node swap, one native undo step. */
@@ -2285,10 +2878,256 @@ export const RichSectionEditor = forwardRef(function RichSectionEditor({
     if (!rootRef.current || !rootRef.current.contains(r.commonAncestorContainer)) return;
     const end = r.cloneRange();
     end.collapse(false);
+    // 121.md §4 (fix 1) — a paragraph-granularity selection ENDS at (nextBlock, 0);
+    // taking that literally is what put the chip on the following line. The selection
+    // itself is the scope: `r` is not collapsed here by construction.
+    snapCollapsedEndIntoBlock(end, r);
     sel.removeAllRanges();
     sel.addRange(end);
     savedRange.current = end.cloneRange();
   };
+
+  /* ══════════ 121.md §4:168 — THE ONE INSERTION TRANSACTION ══════════
+   *
+   * "If citations, cross-references and symbols currently use different insertion
+   * logic, create or strengthen a shared, editor-safe insertion utility that preserves
+   * and restores the active selection consistently. Do not duplicate fragile
+   * caret-handling logic across separate features."
+   *
+   * `prepareCaret` is the caret discipline every inline insertion needs, in one place:
+   * restore focus WITH the selection (the 120 §5 clobber fix), then collapse a
+   * selection to its normalised END so the insertion lands AFTER the selected words
+   * without deleting them or disturbing their marks. `commitInsertion` is the single
+   * transaction — one execCommand, one native undo step, one autosave emit — with the
+   * payload policy in insertionSession.js deciding WHAT is written (element chips get
+   * the sacrificial wrapper and the grouping nbsp; text gets neither).
+   */
+  /**
+   * 121.md §4 r1 — A CARET INSIDE AN ATOMIC CHIP IS NOT A CARET.
+   *
+   * `rangeAtTextOffset` has always said so on the re-resolution path ("a chip is
+   * contenteditable=false; a caret 'inside' one is not a caret"), but the LIVE path
+   * never did — and a click lands inside one every day: the abstract's first field is
+   * a single manual-input placeholder (102.md §3), so clicking it parks the caret in
+   * the middle of an atomic span. execCommand happily wrote the citation THERE, the
+   * chip rendered, the action menu opened, and the serializer — which emits an atomic
+   * chip from its own attributes and never from its children — dropped it at the next
+   * save. An insertion that disappears when the researcher reloads is the worst shape
+   * of §4's family, so the caret is moved to the one honest position: immediately
+   * AFTER the chip, which is where rangeAtTextOffset puts it too.
+   *
+   * The walk stops at the nearest contenteditable="true" ancestor, because a nested
+   * EDITING ISLAND (a table caption's title lives inside a contenteditable=false
+   * caption) is a place the caret legally belongs — 121.md §1's "a symbol inserts
+   * inside a caption title" depends on not hoisting out of it.
+   */
+  const atomicAtCaret = (node) => {
+    const el = rootRef.current;
+    let up = node && (node.nodeType === 1 ? node : node.parentElement);
+    let atomic = null;
+    while (up && up !== el && el && el.contains(up)) {
+      const ce = up.getAttribute && up.getAttribute('contenteditable');
+      if (ce === 'true') break;
+      if (ce === 'false') atomic = up;
+      up = up.parentElement;
+    }
+    return atomic;
+  };
+
+  const snapCaretOutOfAtomic = () => {
+    if (typeof window === 'undefined' || !window.getSelection) return;
+    const sel = window.getSelection();
+    if (!sel || !sel.rangeCount || !sel.isCollapsed) return;
+    const r = sel.getRangeAt(0);
+    if (!rootRef.current || !rootRef.current.contains(r.startContainer)) return;
+    const atomic = atomicAtCaret(r.startContainer);
+    if (!atomic) return;
+    /* 121.md r2 — WHICH SIDE the caret escapes to. Moving it unconditionally AFTER the
+       chip inserted on the wrong side of the I-beam: a paragraph that BEGINS with a
+       manual-input placeholder (the abstract's first field) is clicked at its leading
+       edge every day, the selection reports offset 0 inside the atomic span, and the
+       symbol the researcher meant to put in front of the placeholder landed behind it.
+       §4's promise is the I-beam's position, so read it: nothing of the chip's own text
+       before the caret means the caret was at its leading edge, and the honest escape
+       is BEFORE. Everywhere else — mid-chip, at its end — after it is still right. */
+    let leading = false;
+    try {
+      const probe = document.createRange();
+      probe.selectNodeContents(atomic);
+      probe.setEnd(r.startContainer, r.startOffset);
+      leading = probe.toString().length === 0;
+    } catch { leading = false; }
+    const out = document.createRange();
+    if (leading) out.setStartBefore(atomic);
+    else out.setStartAfter(atomic);
+    out.collapse(true);
+    sel.removeAllRanges();
+    sel.addRange(out);
+    savedRange.current = out.cloneRange();
+  };
+
+  /** 121.md r2 — a caret at or after the end-of-block pad is a caret at the end of the
+      block's CONTENT: the pad is markup this editor appended, not a character of the
+      document (see the module-scope pad helpers). Moving in front of it is the same
+      visual position, and it is what makes the pad probe, the citation grouping gap
+      and the insertion itself agree about where the end of the line is. */
+  const snapCaretBeforeTrailingPad = () => {
+    if (typeof window === 'undefined' || !window.getSelection) return;
+    const sel = window.getSelection();
+    if (!sel || !sel.rangeCount || !sel.isCollapsed) return;
+    const r = sel.getRangeAt(0);
+    const el = rootRef.current;
+    if (!el || !el.contains(r.startContainer)) return;
+    const block = lineBlockOf(r.startContainer);
+    if (!block || block === el || block.nodeType !== 1) return;
+    const pad = trailingPadNode(block);
+    if (!pad) return;
+    try {
+      const before = document.createRange();
+      before.setStartBefore(pad);
+      before.collapse(true);
+      // A caret EARLIER in the line is where the researcher put it and stays there.
+      if (before.compareBoundaryPoints(Range.START_TO_START, r) > 0) return;
+      sel.removeAllRanges();
+      sel.addRange(before);
+      savedRange.current = before.cloneRange();
+    } catch { /* not comparable → leave the caret alone */ }
+  };
+
+  const prepareCaret = () => {
+    if (readOnlyRef.current) return false;
+    if (!focusWithSelection()) return false;
+    collapseSelectionToEnd();
+    // 121.md §4 r1 — one more normalisation, shared by every inline insertion.
+    snapCaretOutOfAtomic();
+    // 121.md r2 — …and the pad is transparent to all of them.
+    snapCaretBeforeTrailingPad();
+    return true;
+  };
+
+  /* 121.md r2 — …and transparent to TYPING, which is the other half of the same rule.
+     A caret at the true end of the line sits AFTER the pad, so the next character the
+     researcher typed landed behind it and turned this editor's own markup into
+     INTERIOR content: mdDom trims block edges only, so the separator nbsp plus the pad
+     nbsp folded into a permanent double space in the model, byte-stable through every
+     reload and into the .docx. Moving the caret in front of the pad before the engine
+     performs the insertion is the same visual position and leaves the pad where it
+     belongs — trailing, and trimmed away by the serializer.
+
+     A NATIVE listener, not React's `onBeforeInput`: React 18 synthesizes that one from
+     `textInput` in Blink, and a `textInput` event carries no `inputType`, so the
+     discrimination below would be impossible. Scoped to insertions that write TEXT —
+     an IME must never have its caret moved mid-composition (`insertCompositionText`),
+     Enter may leave the pad on the line it is already on, and a deletion is never
+     redirected. */
+  useEffect(() => {
+    const el = rootRef.current;
+    if (!el || typeof el.addEventListener !== 'function') return undefined;
+    const onBeforeInput = (e) => {
+      const t = String((e && e.inputType) || '');
+      if (t !== 'insertText' && t !== 'insertFromPaste' && t !== 'insertReplacementText') return;
+      if (readOnlyRef.current) return;
+      snapCaretBeforeTrailingPad();
+    };
+    el.addEventListener('beforeinput', onBeforeInput);
+    return () => el.removeEventListener('beforeinput', onBeforeInput);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  /**
+   * 121.md §4 r1 — THE END-OF-BLOCK PAD.
+   *
+   * MEASURED, not assumed (the matrix is reproduced in the §4 journey): Blink's
+   * `execCommand('insertHTML')` with the caret at the END of a block's content puts an
+   * inserted ELEMENT *after* the block instead of inside it. Text goes in — a leading
+   * zero-width space in the same fragment lands inside the paragraph while the element
+   * behind it still comes out at root level — and an atomic chip is always an element.
+   * mdDom's walkBlocks then writes that root-level run as its OWN paragraph, which is
+   * §4's "inserted on the next line" in its most durable form: it survives a reload.
+   *
+   * It is the DOMINANT §4 shape rather than an edge case, because every one of the
+   * caret normalisations lands the caret exactly there: a triple-click, a selection
+   * dragged across a block boundary and a Ctrl+End all resolve to the end of a
+   * paragraph, which is the one position the engine will not honour.
+   *
+   * ONE `&nbsp;` appended to the block makes the caret no longer the last position in
+   * it, and the engine then inserts in place. Three properties, all measured:
+   *
+   *   · it must be an NBSP, not a plain space. A trailing plain space is collapsed and
+   *     the engine still calls the caret end-of-block — the chip escapes anyway;
+   *   · it must STAY. Removing it after the execCommand corrupts the un-apply: undo
+   *     then strips the separator, restores the sacrificial wrapper and LEAVES the
+   *     chip, which breaks §4's "a single undoable transaction". Left in place, undo
+   *     reverts cleanly to the paragraph plus this one nbsp;
+   *   · it is therefore NOT CONTENT, by the same construction the §3 trailing
+   *     affordance relies on: mdDom folds nbsp to a space and TRIMS every block, so a
+   *     trailing nbsp cannot reach the model, cannot reach an export and cannot
+   *     accumulate — the gap probe below already refuses to add a second one. It is
+   *     also the exact shape the chip inserter's own separator leaves behind, which is
+   *     why the 121 bookmark normalisations (nbsp-tolerant context, the end-of-block
+   *     trim) already resolve carets beside it.
+   *
+   * Deliberately NOT applied when: the caret's line block is the editing host itself (a
+   * section whose prose has never been wrapped has no block to be pushed out of), the
+   * block is a media island (padding one would put a stray text node inside a caption),
+   * or something already holds the end of the block (text, a `<br>`, a picture, an
+   * earlier pad) — there the caret is not at the boundary and the engine already
+   * behaves.
+   */
+  /** @returns {boolean} whether it padded. Pure-ish: appends at most one nbsp. */
+  const endOfBlockPad = () => {
+    const el = rootRef.current;
+    if (!el || typeof document === 'undefined') return false;
+    const r = collapsedCaretRange();
+    if (!r) return false;
+    const block = lineBlockOf(r.startContainer);
+    if (!block || block === el || block.nodeType !== 1) return false;
+    if (isMediaBlockNode(block)) return false;
+    if (block.getAttribute && block.getAttribute('contenteditable') === 'false') return false;
+    /* 121.md r2 — REUSE, never accumulate. The gap probe below only refuses a second
+       pad when the caret sits BEFORE the first one; a caret at the true end of the
+       line sits AFTER it and measured an empty gap. `prepareCaret` now moves such a
+       caret in front of the pad (snapCaretBeforeTrailingPad), and this is the second
+       half of the same rule for the paths that reach an insertion without it: an
+       existing pad already holds the end of the block, which is the whole job. */
+    if (trailingPadNode(block)) return false;
+    try {
+      const gap = document.createRange();
+      gap.setStart(r.startContainer, r.startOffset);
+      gap.setEnd(block, block.childNodes.length);
+      if (gap.toString().length) return false;
+      if (gapHasElement(gap)) return false;
+    } catch { return false; }
+    const pad = document.createTextNode(' ');
+    block.appendChild(pad);
+    padNodesRef.current = padNodesRef.current.concat([pad]);
+    return true;
+  };
+
+  const commitInsertion = (payload) => {
+    const plan = insertionPlan(payload);
+    if (!plan) return false;
+    /* The DEV postcondition §4 was missing: every defect in this family SUCCEEDED,
+       silently, in the wrong block. Read the caret's line block before the write and
+       the inserted content's line block after it — a mismatch is the bug itself. */
+    const caretLine = () => {
+      const cr = collapsedCaretRange();
+      return cr ? lineBlockOf(cr.startContainer) : null;
+    };
+    const before = DEV_INSERT_CHECKS ? caretLine() : null;
+    // 121.md §4 r1 — `inlineAtCaret` is what turns on the end-of-block pad; a BLOCK
+    // insertion (a table, a pasted document) belongs between blocks and must not get it.
+    if (plan.via === 'html') insertHtml(plan.html, { inlineAtCaret: true });
+    else insertPlainText(plan.text);
+    if (DEV_INSERT_CHECKS) {
+      const problem = insertionPostconditionProblem(before, caretLine());
+      if (problem && typeof console !== 'undefined' && console.warn) console.warn(problem);
+    }
+    return true;
+  };
+
+  /** The whole inline-insertion path in one call: caret discipline + one transaction. */
+  const insertAtCaret = (payload) => (prepareCaret() ? commitInsertion(payload) : false);
 
   const api = useMemo(() => ({
     exec,
@@ -2435,18 +3274,17 @@ export const RichSectionEditor = forwardRef(function RichSectionEditor({
      */
     insertCitation: (refId) => {
       const ids = (Array.isArray(refId) ? refId : parseCiteIds(refId)).filter(Boolean);
-      if (!ids.length || readOnlyRef.current) return;
+      if (!ids.length) return;
       /* 120.md §5 — resolve the caret FIRST (this is the restore that used to be
          clobbered by its own focus() call), then decide between grouping and a new
-         chip. Calling it here as well as inside insertHtml is free: once the live
-         selection is inside this root, it returns immediately. */
-      if (!focusWithSelection()) return;
-      collapseSelectionToEnd();
+         chip. 121.md §4:168 — `prepareCaret` is that discipline, shared verbatim with
+         the cross-reference and symbol paths; the chip payload is what differs. */
+      if (!prepareCaret()) return;
       const chip = adjacentCiteChip();
       if (chip) { mergeIntoCiteChip(chip, ids); return; }
       const ro = refOptsRef.current || {};
       const { label, broken } = citeChipLabel(ids, orderMapRef.current, ro.citationStyle, ro.refsById, ro.yearSuffixes);
-      insertHtml(`${wrapInlineChip(citeChipHtml(ids, label, { broken }))}&nbsp;`);
+      commitInsertion({ kind: 'chip', html: citeChipHtml(ids, label, { broken }) });
     },
     /* ── 120.md §5 — the picker-session bookmark (see the block above the api) ── */
     /** Snapshot the caret the moment a picker opens, BEFORE it takes focus. */
@@ -2469,7 +3307,15 @@ export const RichSectionEditor = forwardRef(function RichSectionEditor({
          exactly as they made it while the picker is open. */
       const end = r.cloneRange();
       end.collapse(false);
-      const bm = { range: end, hadSelection: !r.collapsed, logical: caretLogicalOf(end) };
+      /* 121.md §4 (fix 1) — and the collapse is NORMALISED before anything is
+         remembered about it. `hadSelection` was recorded here since 120 and never
+         read; it is what scopes the start-of-next-block repair, and doing the repair
+         at SAVE time (rather than only at insert time) is what keeps the tightened
+         null-logical refusal rare: a root-level end becomes a real position in a real
+         block before the bookmark ever describes it. */
+      const hadSelection = !r.collapsed;
+      snapCollapsedEndIntoBlock(end, hadSelection ? r : null);
+      const bm = { range: end, hadSelection, logical: caretLogicalOf(end) };
       bookmarkRef.current = bm;
       return bm;
     },
@@ -2527,14 +3373,38 @@ export const RichSectionEditor = forwardRef(function RichSectionEditor({
      * which is the only place a cross-reference belongs.
      */
     insertAssetRef: (assetId) => {
-      if (!assetId || readOnlyRef.current) return;
-      // 120.md §5 — same caret discipline as insertCitation: resolve first, and a
-      // selection is never silently replaced (the chip lands after it).
-      if (!focusWithSelection()) return;
-      collapseSelectionToEnd();
+      if (!assetId) return;
+      // 120.md §5 / 121.md §4:168 — the SAME shared caret discipline and the SAME
+      // single transaction as insertCitation; only the chip's html differs.
+      if (!prepareCaret()) return;
       const ro = refOptsRef.current || {};
       const { label, broken } = assetChipLabel(assetId, assetNumbersRef.current, ro.knownAssetIds, ro.templateId);
-      insertHtml(`${wrapInlineChip(assetChipHtml(assetId, label, { broken }))}&nbsp;`);
+      commitInsertion({ kind: 'chip', html: assetChipHtml(assetId, label, { broken }) });
+    },
+    /**
+     * 121.md §1 — insert ONE symbol character at the caret.
+     *
+     * The same session, the same caret discipline and the same one transaction as a
+     * citation, with the {kind:'text'} payload policy: NO element wrapper (htmlToMd
+     * serializes only known constructs and would silently drop a styled span around
+     * the character) and NO trailing nbsp (the serializer folds it to a space and
+     * trims it at a block end, which is what makes an end-of-paragraph bookmark refuse
+     * after a remount — symbols must not inherit that). It reaches the document
+     * through `insertPlainText`, i.e. execCommand('insertText') with WebKit's
+     * silent-no-op verified and a Range fallback: island-legal, so a symbol can be
+     * typed into a table or figure caption title, and a NATIVE undo step, so §1's
+     * "participates normally in undo/redo" is the browser's own behaviour rather than
+     * a second history implementation. Blink may coalesce that step with an adjacent
+     * typed run — which is exactly how a typed character behaves here already.
+     *
+     * No equation editor exists in this codebase (no KaTeX/MathJax/MathML anywhere in
+     * src; mdDom drops <math> outright), so §1's "existing equation fields" clause has
+     * nothing to target: superscripts and subscripts ship as Unicode characters.
+     */
+    insertSymbol: (ch) => {
+      const s = String(ch == null ? '' : ch);
+      if (!s) return;
+      insertAtCaret({ kind: 'text', text: s });
     },
     /** 117.md §10 — "Remove cross-reference": the CHIP goes, the table stays. */
     removeCrossRef: () => {
@@ -3721,6 +4591,10 @@ export function RichToolbar({
   // 119.md §5 — Insert → Picture. Rendered only when the host supplies the seam,
   // so a shell without a figure store never shows a control that cannot act (§69).
   onInsertPicture = null,
+  // 121.md §1 — Insert → Symbol. The workspace routes it through the same picker
+  // session as the other two pickers; without a host seam the control falls back to
+  // the caret's own editor api, exactly like the cross-reference control does.
+  onInsertSymbol = null,
   // 120.md §5 — both Insert pickers bookmark the caret before they open and clear
   // the bookmark when they close without inserting. The toolbar only forwards;
   // the workspace owns the session (it is the one that knows WHICH section's
@@ -3766,6 +4640,18 @@ export function RichToolbar({
           ▤ Picture
         </button>
       )}
+      {/* 121.md §1 — Insert → Symbol, at the caret. Between ▤ Picture and
+          ⧉ Cross-reference: the Insert group in the order a researcher reaches for it,
+          and the same session wiring, so "clicking the Symbols menu must not cause the
+          editor to lose the intended insertion position" is the SAME guarantee the
+          citation picker already keeps rather than a second implementation of it. */}
+      <SymbolPicker disabled={disabled}
+        onSessionStart={onInsertSessionStart} onSessionEnd={onInsertSessionEnd}
+        onInsert={(ch) => {
+          if (onInsertSymbol) { onInsertSymbol(ch); return; }
+          const api = getApi && getApi();
+          if (api && api.insertSymbol) api.insertSymbol(ch);
+        }} />
       {/* 117.md §9 — Insert → Cross-reference, at the caret */}
       <CrossRefPicker items={crossRefs || []} disabled={disabled}
         onSessionStart={onInsertSessionStart} onSessionEnd={onInsertSessionEnd}

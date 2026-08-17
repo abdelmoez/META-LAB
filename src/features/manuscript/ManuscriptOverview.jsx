@@ -1358,7 +1358,11 @@ function ExportEntry({ exporters, onNavigate, blocked }) {
         )}
       </Row>
       {exporters && exporters.exportError && (
-        /* §50 — a failed export is stated with the retry still one click away. */
+        /* §50 — a failed export is stated with the retry still one click away.
+           121.md §3 — deliberately kept as an UNANNOUNCED echo (no role, no
+           aria-live): the announced, focused and scrolled-to copy is the workspace's
+           single ExportFeedbackRegion, and a second live region would make a screen
+           reader read the same failed export twice. */
         <InfoBox color={C.red}>{exporters.exportError} — fix the problem and run the export again.</InfoBox>
       )}
     </Group>

@@ -37,6 +37,9 @@ import {
   filterReferenceRows, sortReferences, collectReferenceTags, REFERENCE_SORTS,
 } from '../../research-engine/manuscript/referenceLibrary.js';
 import { authorYearLabel } from '../../research-engine/manuscript/citations.js';
+// 121.md §3 — "is this finding anchored to something the editor can navigate to?",
+// as ONE pure rule the dialog and its tests both read.
+import { findingTarget } from '../../research-engine/manuscript/exportValidation.js';
 // 117.md §J.3 — decorate references with the PDF attachment the lazy resolver found,
 // so "Open PDF" appears exactly when a PDF really is reachable.
 import { withResolvedPdfIds } from './referencePdfLinks.js';
@@ -44,6 +47,10 @@ import {
   RichSectionEditor, RichToolbar, RICH_EDITOR_CSS, CrossRefPicker, CrossRefList,
   CiteRefPicker, citeItemOf,
 } from './richEditor/RichSectionEditor.jsx';
+/* 121.md §4:168 — the ONE editor-safe insertion utility. The picker-session lifecycle
+   (bookmark on open, clear on cancel, route to the bookmarked section on insert) is
+   its pure half; this layer supplies only the app knowledge it needs. */
+import { createInsertionSession } from './richEditor/insertionSession.js';
 // 120.md §6 — the Writing Assistant's editor-side surface: the anchored suggestion
 // card and the stylesheet carrying the four ::highlight() registrations.
 import { WritingAssistantCard, WA_UI_CSS } from './writingAssistant/WritingAssistantCard.jsx';
@@ -246,13 +253,98 @@ export function ExportButtons({ exporters, canonical }) {
 
 const fmtFetched = (iso) => { try { return iso ? new Date(iso).toLocaleTimeString() : null; } catch { return null; } };
 
+/* ════════════ 121.md §3 — the ONE announced export feedback surface ════════════
+   §3's complaint is that "an export error or warning may appear near the top of the
+   page while the user remains lower on the page". The fix is not a toast (§3 forbids
+   relying on one) and not a second copy of the message: it is ONE region, at the
+   workspace seam that already owns both feedback states, which is announced, focused
+   and scrolled to.
+
+   Why one region and not per-surface roles: a live region per panel would make a
+   screen reader announce the same failed export two to four times (the run-error
+   InfoBox exists in four panels). The four panel copies therefore stay EXACTLY as
+   they are — no role, no aria-live, unannounced echoes local to the button that was
+   pressed — and everything assistive happens here. */
+
+/** The id the region is labelled by, and the heading the reveal moves focus to. */
+export const EXPORT_FEEDBACK_HEADING_ID = 'ms-export-feedback-heading';
+
+/**
+ * @param {object}  props
+ * @param {object}  props.regionRef  the workspace's ref — the element the reveal scrolls to.
+ * @param {boolean} props.blocked    true when nothing was exported and cannot be until
+ *                                   something is fixed. Decides the politeness ONLY.
+ *
+ * role="alert" (implicitly assertive) for blocking failures — the repo's
+ * Workspace.jsx / waitlist precedent — and role="status" (polite) for a warnings-only
+ * review or an informational notice, which is what §3's "an appropriate status or
+ * alert behavior depending on whether they block export" asks for. The old
+ * role="alertdialog" on the review Card is GONE (see ExportValidationDialog): it is
+ * not a modal, nothing traps focus in it, and telling a screen reader "dialog" about
+ * an in-flow card is worse than saying nothing.
+ */
+export function ExportFeedbackRegion({ regionRef, blocked, headingId, style, children }) {
+  return (
+    <div
+      ref={regionRef}
+      data-testid="stitch-manuscript-export-feedback"
+      data-tone={blocked ? 'blocking' : 'advisory'}
+      role={blocked ? 'alert' : 'status'}
+      aria-live={blocked ? 'assertive' : 'polite'}
+      aria-atomic="false"
+      aria-labelledby={headingId}
+      style={{ maxWidth: 900, margin: '0 auto', ...style }}
+    >
+      {children}
+    </div>
+  );
+}
+
+/**
+ * 121.md §3 — the run-error banner, hoisted from the four panels to the workspace
+ * seam so there is exactly one element a reveal effect can target and exactly one
+ * announcement point. Says what happened and what to do next, which is §3's
+ * "explain what happened … and provide an actionable next step"; there is no
+ * per-item target because a failed RUN is about the export, not about one object.
+ */
+export function ExportRunErrorNotice({ message, headingId, headingRef }) {
+  if (!message) return null;
+  return (
+    <Card data-testid="stitch-manuscript-export-error"
+      style={{ marginBottom: 18, borderColor: C.red, borderLeft: `3px solid ${C.red}` }}>
+      <h3 id={headingId} ref={headingRef} tabIndex={-1}
+        data-testid="stitch-manuscript-export-error-heading"
+        style={{ margin: 0, fontSize: 13.5, fontWeight: 700, color: C.txt, outline: 'none' }}>
+        Export failed — nothing was downloaded
+      </h3>
+      <div style={{ display: 'flex', gap: 8, alignItems: 'flex-start', flexWrap: 'wrap', padding: '6px 0' }}>
+        <span style={{ ...tagS('red'), flexShrink: 0 }}>Blocks export</span>
+        <span style={{ flex: '1 1 280px', minWidth: 0, fontSize: 12, color: C.txt2, lineHeight: 1.6 }}>
+          {message}
+          <span style={{ display: 'block', fontSize: 11, color: C.muted }}>
+            Fix the problem and run the export again — this message stays until you do.
+          </span>
+        </span>
+      </div>
+    </Card>
+  );
+}
+
 /**
  * Pre-export validation review (85.md B2). Shown ONLY when validateExport found
  * something: errors BLOCK the export (each with an action hint); warnings offer
  * "Export anyway" / "Fix first". A clean report never mounts this — the export
  * stays one-click.
  */
-export function ExportValidationDialog({ review, onExportAnyway, onClose, exporting }) {
+export function ExportValidationDialog({
+  review, onExportAnyway, onClose, exporting,
+  // 121.md §3 — supplied when the dialog renders inside ExportFeedbackRegion: the
+  // heading becomes the region's label and the reveal's focus target.
+  headingId, headingRef,
+  // 121.md §3 — "provide a control that navigates directly to it". Absent (a host
+  // that cannot navigate) → no buttons, which is the honest degrade.
+  onGoTo,
+}) {
   if (!review || !review.validation) return null;
   const v = review.validation;
   const errors = v.errors || [];
@@ -260,21 +352,43 @@ export function ExportValidationDialog({ review, onExportAnyway, onClose, export
   const info = v.info || [];
   const blocked = errors.length > 0;
   const fetched = fmtFetched(review.fetchedAt);
-  const row = (e, tone, i, prefix) => (
-    <div key={`${prefix}-${e.code}-${i}`} style={{ display: 'flex', gap: 8, alignItems: 'flex-start', flexWrap: 'wrap', padding: '6px 0' }}>
-      <span style={{ ...tagS(tone), flexShrink: 0 }}>{tone === 'red' ? 'Blocks export' : tone === 'yellow' ? 'Check' : 'Note'}</span>
-      <span style={{ flex: '1 1 280px', minWidth: 0, fontSize: 12, color: C.txt2, lineHeight: 1.6 }}>
-        {e.message}
-        {e.action && <span style={{ display: 'block', fontSize: 11, color: C.muted }}>{e.action}</span>}
-      </span>
-    </div>
-  );
+  const row = (e, tone, i, prefix) => {
+    /* Statement-anchored citation findings carry a `statementKey` and no section:
+       `statement:<key>` is not a place openSection can go, so findingTarget returns
+       null and the control is OMITTED rather than offered and then doing nothing. */
+    const target = onGoTo ? findingTarget(e) : null;
+    return (
+      <div key={`${prefix}-${e.code}-${i}`} style={{ display: 'flex', gap: 8, alignItems: 'flex-start', flexWrap: 'wrap', padding: '6px 0' }}>
+        <span style={{ ...tagS(tone), flexShrink: 0 }}>{tone === 'red' ? 'Blocks export' : tone === 'yellow' ? 'Check' : 'Note'}</span>
+        <span style={{ flex: '1 1 280px', minWidth: 0, fontSize: 12, color: C.txt2, lineHeight: 1.6 }}>
+          {e.message}
+          {e.action && <span style={{ display: 'block', fontSize: 11, color: C.muted }}>{e.action}</span>}
+        </span>
+        {target && (
+          <button type="button"
+            data-testid={`stitch-manuscript-export-goto-${prefix}-${i}`}
+            data-code={e.code}
+            onClick={() => onGoTo(target)}
+            title="Open the part of the manuscript this is about"
+            style={{ ...btnS('ghost'), fontSize: 10.5, padding: '3px 9px', flexShrink: 0 }}>
+            Go to it
+          </button>
+        )}
+      </div>
+    );
+  };
   return (
-    <Card data-testid="stitch-manuscript-export-validation" role="alertdialog"
+    /* 121.md §3 — role="alertdialog" REMOVED (deliberate, see ExportFeedbackRegion):
+       this Card is an in-flow panel, not a modal, and nothing ever moved focus into
+       it or trapped focus in it. The announcement now belongs to the one live region
+       this renders inside. */
+    <Card data-testid="stitch-manuscript-export-validation"
       aria-label="Export check results"
       style={{ marginBottom: 18, borderColor: blocked ? C.red : C.yel, borderLeft: `3px solid ${blocked ? C.red : C.yel}` }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', marginBottom: 6 }}>
-        <h3 style={{ margin: 0, fontSize: 13.5, fontWeight: 700, color: C.txt }}>
+        <h3 id={headingId} ref={headingRef} tabIndex={headingId ? -1 : undefined}
+          data-testid="stitch-manuscript-export-validation-heading"
+          style={{ margin: 0, fontSize: 13.5, fontWeight: 700, color: C.txt, outline: 'none' }}>
           {blocked ? 'Export blocked — fix these first' : 'Check before you export'}
         </h3>
         {fetched && (
@@ -1572,6 +1686,18 @@ export function EditorPanel({ m, exporters, sectionRequest, onOpenAssetPanel, on
     const wantsAsset = !!(sectionRequest.assetId || sectionRequest.manualId);
     if (continuous) {
       setSel(id);
+      /* 121.md §3 — and the LIVE handle with it, synchronously.
+         Arriving at the Editor destination from somewhere else (an export finding's
+         "Go to it", an Overview CTA, "View in manuscript") MOUNTS this panel, so the
+         mount effect fifteen lines below — which lands the reader on the section they
+         were last in — is scheduled in the same commit as this one. Its rAF reads
+         `selRef.current`, and a `setSel` from a passive effect had not re-rendered
+         yet when that frame ran: the mount effect then scrolled back to the OLD
+         section and silently undid this jump (measured: the request scrolled +2825,
+         the mount frame scrolled to +400 and won). Writing the ref here closes the
+         window without changing anything else — it is re-assigned from `sel` on every
+         render anyway, so this only affects the frames before that render. */
+      selRef.current = id;
       suppressActive(800);
       // The asset reveal scrolls to the object itself, which is more precise than
       // scrolling to the section that holds it.
@@ -1668,47 +1794,31 @@ export function EditorPanel({ m, exporters, sectionRequest, onOpenAssetPanel, on
    * the whole point: §5 forbids the start-of-section fallback, and a wrong-place
    * insertion in a manuscript is worse than an insertion that did not happen.
    */
+  /* 121.md §4:168 — the lifecycle itself now lives in the SHARED insertion utility
+     (richEditor/insertionSession.js), which citations, cross-references and symbols all
+     go through; what stays here is the thin glue only this layer can supply: which
+     section holds the caret, how to reach an editor handle, what "locked" means, and
+     where the honest refusal is shown. The session object is rebuilt each render on
+     purpose — its STATE lives in the ref below, so the callbacks always close over the
+     current draft instead of a stale one. */
   const caretSectionId = () => (activeApi.current && activeSectionRef.current) || caretSection || sel;
   const insertSession = useRef(null);          // { sectionId, bm }
   const [insertNotice, setInsertNotice] = useState(null);
 
-  const beginInsertSession = () => {
-    setInsertNotice(null);
-    const sectionId = caretSectionId();
-    const api = apiFor(sectionId) || getApi();
-    const bm = api && api.saveCaretBookmark ? api.saveCaretBookmark() : null;
-    insertSession.current = bm ? { sectionId, bm } : null;
-  };
+  const insertionSession = createInsertionSession({
+    store: insertSession,
+    caretSectionId,
+    apiFor,
+    getApi,
+    isLocked: (id) => !!(sections[id] || {}).locked,
+    targetLocked,
+    onBegin: () => setInsertNotice(null),
+    onRefusal: () => setInsertNotice(CARET_LOST_TEXT),
+  });
 
-  const endInsertSession = () => {
-    const s = insertSession.current;
-    insertSession.current = null;
-    if (!s) return;
-    const api = apiFor(s.sectionId);
-    if (api && api.clearCaretBookmark) api.clearCaretBookmark();
-  };
-
-  const withBookmarkedCaret = (run) => {
-    const s = insertSession.current;
-    insertSession.current = null;
-    if (s) {
-      // The bookmark names the section, so the lock check names it too — a routed
-      // insert must still refuse a locked section (`targetLocked` answers for the
-      // CARET's section, which is the same one here, but this is explicit).
-      if ((sections[s.sectionId] || {}).locked) return;
-      const api = apiFor(s.sectionId);
-      if (api && api.restoreCaretBookmark && api.restoreCaretBookmark(s.bm)) { run(api); return; }
-      setInsertNotice(CARET_LOST_TEXT);
-      return;
-    }
-    /* No session at all — a caller that inserts without opening a picker. The
-       pre-120 behaviour is exactly right there: the caret's own editor, guarded on
-       the section the insert will LAND in rather than on whatever is scrolled into
-       view (r2's `targetLocked`). */
-    if (targetLocked()) return;
-    const api = getApi();
-    if (api) run(api);
-  };
+  const beginInsertSession = () => insertionSession.begin();
+  const endInsertSession = () => insertionSession.end();
+  const withBookmarkedCaret = (run) => insertionSession.withBookmarkedCaret(run);
 
   // 117.md §34/§35 — one or MANY ids; the editor turns them into ONE chip.
   // 120.md §5 — routed through the picker session (see above).
@@ -1744,6 +1854,17 @@ export function EditorPanel({ m, exporters, sectionRequest, onOpenAssetPanel, on
       if (api.insertAssetRef) api.insertAssetRef(assetId);
       else api.insertMarkdown(assetToken(assetId)); // abstract subfields, older handles
     });
+  };
+  /* 121.md §1 — "clicking the Symbols menu must not cause the editor to lose the
+     intended insertion position. Save the active editor selection when the menu opens
+     and insert the selected symbol at that exact I-beam cursor location."
+     That is the SAME session the citation and cross-reference pickers use, routed to
+     the same bookmarked section's editor, refusing the same way when the position can
+     no longer be found honestly. The payload is what differs (plain text, no wrapper,
+     no nbsp — see insertionSession.js). */
+  const insertSymbol = (ch) => {
+    if (!ch) return;
+    withBookmarkedCaret((api) => { if (api.insertSymbol) api.insertSymbol(ch); });
   };
 
   /* ── 117.md §10/§11 — chip menu actions ── */
@@ -2321,6 +2442,8 @@ export function EditorPanel({ m, exporters, sectionRequest, onOpenAssetPanel, on
                  when one closes without inserting. */
               onInsertSessionStart={beginInsertSession}
               onInsertSessionEnd={endInsertSession}
+              /* 121.md §1 — Insert → Symbol, through the same session. */
+              onInsertSymbol={insertSymbol}
               /* 119.md §5 — Insert → Picture. Opens the ONE hidden file input; the
                  upload, the validation and the marker insertion are the same path
                  paste and drag-and-drop take. */
@@ -2515,6 +2638,10 @@ export function EditorPanel({ m, exporters, sectionRequest, onOpenAssetPanel, on
           {exporters && (
             <ToolsGroup id="export" title="Export">
               <ExportButtons exporters={exporters} />
+              {/* 121.md §3 — an UNANNOUNCED echo. The announced, focused and
+                  scrolled-to copy is the workspace's ExportFeedbackRegion; this one keeps
+                  the message beside the button that was pressed and carries no role and no
+                  aria-live, so a screen reader hears the failure exactly once. */}
               {exporters.exportError && <InfoBox color={C.red}>{exporters.exportError}</InfoBox>}
             </ToolsGroup>
           )}
@@ -4293,6 +4420,8 @@ export function PrismaPanel({ m, exporters }) {
             <Icon name="checkSquare" size={13} /> {exporters.exporting === 'prismaS' ? 'Generating…' : 'PRISMA-S checklist'}
           </button>
         </div>
+        {/* 121.md §3 — an UNANNOUNCED echo of the workspace's ExportFeedbackRegion
+            (no role, no aria-live): one announcement, several places to see it. */}
         {exporters.exportError && <InfoBox color={C.red}>{exporters.exportError}</InfoBox>}
       </Block>
     </div>
@@ -4492,6 +4621,8 @@ export function ExportPanel({ m, exporters, onOpenStructure }) {
         <div style={{ marginTop: 16 }}>
           <ExportButtons exporters={exporters} />
         </div>
+        {/* 121.md §3 — an UNANNOUNCED echo of the workspace's ExportFeedbackRegion
+            (no role, no aria-live): one announcement, several places to see it. */}
         {exporters.exportError && <InfoBox color={C.red}>{exporters.exportError}</InfoBox>}
       </Block>
     </div>

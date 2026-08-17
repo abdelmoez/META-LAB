@@ -96,6 +96,35 @@ Safari sign-off.
 Record the result (version, OS, pass/fail per step) in the round's report before any
 claim of "Safari is fixed" is made in user-facing copy.
 
+## Fullscreen coverage is Chromium-only — by harness, not by choice (121.md §2)
+
+`e2e/focus/fullscreen.spec.ts` has always skipped outside Chromium: fullscreen grants
+depend on the window manager, and the Firefox and WebKit harnesses refuse or hang on a
+headless `requestFullscreen` (WebKit is the worst of the three — a headless grant
+simply never resolves). 121.md §2's two new measurements inherit that limit and say so
+in their own `test.skip`:
+
+* `manuscript-pdf-split.spec.ts` → "…and in REAL browser fullscreen it fills the
+  screen" and "the divider drags under REAL fullscreen too";
+* `manuscript-export-reveal-121.spec.ts` → "real fullscreen: the reveal works in the
+  focused, chrome-less layout too".
+
+**What still holds in every engine.** The layout itself is engine-neutral flex inside a
+height-bounded column (no `vh` arithmetic anywhere any more), and it is pinned in
+`tests/unit/manuscript/pdfSplit121.test.jsx`. The WINDOWED half of both measurements —
+"the split fills the workspace, no dead strip", the real mouse drag, the double-click
+reset, the ratio persistence, and the whole export-reveal matrix (Section × Continuous
+× normal × split × narrow stacked) — runs with no fullscreen at all and is therefore
+engine-portable; it is Chromium today only because these files are not enrolled in a
+WebKit project.
+
+**Status:** no real-Safari verification of the fullscreen split layout was possible in
+this round, for the same Windows-only reason recorded above. A Safari owner should add
+to the checklist: open the Manuscript Editor's PDF View, confirm the browser does NOT
+go fullscreen on its own, then use the focus bar's "Enter full screen" and confirm the
+PDF pane fills the screen with no strip at the bottom or right, and that dragging the
+divider still resizes live.
+
 These are the natural next coverage increments: add a study/result seeding helper (unlocks
 RoB deep flows + populated meta-analysis), a PDF-attachment helper (unlocks the loaded-PDF
 viewer flows), and per-role login sessions for project members (unlocks viewer/reviewer UI).

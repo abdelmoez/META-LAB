@@ -635,7 +635,12 @@ describe('118.md §46/§47 — the workspace wiring', () => {
     const s = src();
     // Re-pinned for 118.md §12: `initialView` joined the optional URL props; the
     // legacy shell passes none of them and still runs on component state alone.
-    expect(s).toContain('export function ManuscriptWorkspace({ project, upd, initialSubtab, onSubtabChange, initialView })');
+    // RE-PINNED for 121.md §2: `onWorkspaceChange` joined them — it is how the Stitch
+    // host learns the PDF split is open and takes the stage full-bleed. The GUARANTEE
+    // is unchanged and is what this pins: every host prop is optional, so the legacy
+    // shell (which passes none of them) still runs on component state alone and never
+    // gets the bounded column it has no bounded height for.
+    expect(s).toContain('export function ManuscriptWorkspace({ project, upd, initialSubtab, onSubtabChange, initialView, onWorkspaceChange })');
     expect(s).toContain("if (typeof hostNavRef.current !== 'function' || initialSubtab == null) return;");
   });
 

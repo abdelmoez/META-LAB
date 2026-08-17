@@ -72,10 +72,24 @@ export default defineConfig({
     // were a passing claim about Safari. That defect is fixed by an engine-neutral
     // shape — sacrificial empty blocks on both sides of the removal, see
     // removeFigureBlock — so the claim is now the test.
+    // 121.md §1/§4 — the SYMBOLS and INSERT-CARET files join them, by NAME rather than
+    // by a name chosen to match. The matcher is a glob over file names, so a new spec
+    // could have inherited WebKit coverage by being called manuscript-table-symbols…;
+    // that would be a claim about Safari made by a filename. The honest form is an
+    // ARRAY that says which files are enrolled and why. Both belong here for the same
+    // reason the table files do: 121 §4 is selection and execCommand behaviour (where a
+    // paragraph selection ENDS, which side of a placeholder <br> a caret lands on,
+    // whether a focus-stealing popover keeps the document selection at all), and every
+    // one of those differs between engines — WebKit most of all, which drops the
+    // document selection the moment focus reaches a control.
     {
       name: 'webkit-manuscript',
       use: { ...devices['Desktop Safari'] },
-      testMatch: '**/manuscript/manuscript-{table,figure}*.spec.ts',
+      testMatch: [
+        '**/manuscript/manuscript-{table,figure}*.spec.ts',
+        '**/manuscript/manuscript-symbols-121.spec.ts',
+        '**/manuscript/manuscript-insert-caret-121.spec.ts',
+      ],
     },
     // Responsive projects only run the responsive specs (which assert layout at size).
     { name: 'mobile-chrome', use: { ...devices['Pixel 5'] }, testMatch: '**/responsive/**/*.spec.ts' },

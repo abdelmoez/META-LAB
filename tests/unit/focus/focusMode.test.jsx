@@ -7,6 +7,7 @@
  *      including its locks, so Next cannot smuggle anyone past a closed gate.
  */
 import { describe, it, expect, vi } from 'vitest';
+import { readSource } from '../../helpers/readSource.js';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { MemoryRouter } from 'react-router-dom';
 import StitchAppShell from '../../../src/frontend/stitch/shell/StitchAppShell.jsx';
@@ -853,5 +854,78 @@ describe('the focus nav drawer in the shell', () => {
     const html = shell({ ...props, focusable: false }, true);
     expect(html).not.toContain('focus-edge-zone');
     expect(html).not.toContain('focus-nav-drawer');
+  });
+});
+
+/* ═══════════════ 121.md §2 — the layout-only entry ═══════════════ */
+
+describe('121.md §2 — Focus Mode can be entered WITHOUT taking the screen', () => {
+  const src = readSource('src/frontend/focus/FocusModeContext.jsx');
+
+  /**
+   * Focus Mode (a layout flag) and browser fullscreen (the bridge) have been two
+   * states in this file since 114.md §1, but there was only ONE entry into the
+   * layout and it always requested fullscreen with it. Windowed focus existed only
+   * as a DEGRADE — a refusal, a reload, an external exit — never as an intent, which
+   * is why opening the manuscript's PDF pane took over the whole screen (121.md §2:
+   * "opening the PDF viewer must not automatically enter fullscreen").
+   */
+  it('setFocus takes a layout-only option, and skips the request for it', () => {
+    expect(src).toContain('const setFocus = useCallback((on, opts) => {');
+    expect(src).toContain('const wantsFullscreen = !(opts && opts.fullscreen === false);');
+    expect(src).toContain('? (wantsFullscreen ? fsRef.current.enter() : Promise.resolve(false))');
+  });
+
+  it('the DEFAULT path is unchanged — every existing caller still asks for fullscreen', () => {
+    // The header FocusToggle, Ctrl+Shift+F, Escape and exitFocus all go through
+    // these three, and none of them passes an option: omitting it IS 114/117.
+    expect(src).toContain('const toggleFocus = useCallback(() => setFocus((p) => !p), [setFocus]);');
+    expect(src).toContain('const exitFocus = useCallback(() => setFocus(false), [setFocus]);');
+    expect(src).toContain("if (!focusRef.current) { setFocus(true); return; }");
+    // …and nothing in this file ever passes fullscreen:false to itself.
+    expect(src).not.toContain('setFocus(true, {');
+  });
+
+  it('EXITING never needs the option — leave() is already a no-op when nothing is ours', async () => {
+    // Which is why only the entry gained a parameter: a layout-only session owns no
+    // fullscreen, so the ordinary exit path has nothing to exit and says so.
+    const doc = fakeDoc();
+    const fs = createFullscreenBridge(doc);
+    fs.attach(() => {});
+    await expect(fs.leave()).resolves.toBe(false);
+    expect(doc.exitFullscreen).not.toHaveBeenCalled();
+  });
+
+  it('layout-only focus IS the windowed-focus state the phase view already names', () => {
+    /* Nothing new is modelled: skipping enter() leaves wanted/pending/owned all
+       false, so the phase is 'normal' (117.md §45 explicitly includes
+       focused-but-windowed there), `isFullscreen` is false, and the focus bar shows
+       the "Enter full screen" button that exists in exactly that state — which is
+       121.md §2's "fullscreen should remain an optional, separate action". */
+    const doc = fakeDoc();
+    const fs = createFullscreenBridge(doc);
+    fs.attach(() => {});
+    expect(doc.documentElement.requestFullscreen).not.toHaveBeenCalled();
+    expect(fs.isOwned()).toBe(false);
+    expect(fs.isWanted()).toBe(false);
+    expect(fs.isPending()).toBe(false);
+    expect(deriveFullscreenPhase({
+      focus: true, wanted: fs.isWanted(), pending: fs.isPending(), owned: fs.isOwned(),
+    })).toBe('normal');
+    // …and the honest exit copy for it does not promise to leave a full screen.
+    expect(focusToggleCopy(true, false).aria).toBe('Exit focus mode — restore navigation');
+  });
+
+  it('the ONE caller that asks for it is the manuscript split, and it is gated on the shell', () => {
+    const ws = readSource('src/features/manuscript/ManuscriptWorkspace.jsx');
+    expect(ws).toContain('api.setFocus(true, { fullscreen: false });');
+    /* FocusModeProvider wraps every route (App.jsx), so this entry used to flip
+       GLOBAL focus state — and request real fullscreen — in the legacy shell, whose
+       chrome never subscribes to it and stayed fully visible. `useFocusAvailable` is
+       the synchronous "can this shell render the focused layout?" answer. */
+    expect(ws).toContain('const focusAvailable = useFocusAvailable();');
+    expect(ws).toContain('if (focusAvailableRef.current && !api.focus && api.setFocus) {');
+    // The RELEASE branch 119 §4 owns is untouched: only the split's own entry exits.
+    expect(ws).toMatch(/} else if \(focusOwned\.current\) \{/);
   });
 });

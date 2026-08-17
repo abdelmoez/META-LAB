@@ -20,49 +20,17 @@
  *
  * Drives the Stitch workspace at `/app/project/:id?tab=manuscript`.
  */
-import { test, expect, Page } from '../fixtures/stitch-test';
+import { test, expect } from '../fixtures/stitch-test';
 import { attachPdfToFirstRecord, FIXTURE_HEADING } from '../helpers/pdf';
 
-const SPLIT = 'stitch-manuscript-split';
-
-async function openManuscript(page: Page, projectId: string, params = '') {
-  await page.goto(`/app/project/${projectId}?tab=manuscript&ms=editor${params}`);
-  await expect(page.getByTestId('stitch-manuscript-workspace')).toBeVisible({ timeout: 20_000 });
-  await expect(page.getByTestId('stitch-manuscript-editor')).toBeVisible({ timeout: 20_000 });
-}
-
-const desktop = (page: Page) => page.setViewportSize({ width: 1600, height: 900 });
-
-/** Included studies, so the selector has real articles to offer. */
-async function seedStudies(request: import('@playwright/test').APIRequestContext, projectId: string) {
-  const proj = await (await request.get(`/api/projects/${projectId}`)).json();
-  proj.studies = [
-    { id: 's1', title: 'Trial A statins after infarction', authors: 'Smith J', year: '2020', journal: 'Lancet', outcome: 'MACE', esType: 'OR', es: '-0.36', lo: '-0.6', hi: '-0.12', nExp: '500', nCtrl: '500' },
-    { id: 's2', title: 'Trial B aspirin in prevention', authors: 'Lee K', year: '2021', journal: 'NEJM', outcome: 'MACE', esType: 'OR', es: '-0.22', lo: '-0.5', hi: '0.06', nExp: '300', nCtrl: '300' },
-    { id: 's3', title: 'Trial C anticoagulation', authors: 'Brown T', year: '2019', journal: 'JAMA', outcome: 'MACE', esType: 'OR', es: '-0.30', lo: '-0.55', hi: '-0.05', nExp: '400', nCtrl: '400' },
-  ];
-  expect((await request.put(`/api/projects/${projectId}/autosave`, { data: proj })).ok()).toBeTruthy();
-}
-
-/* 120.md §8 — PDF View is a toolbar destination; choosing it opens the pane. */
-const PDF_TAB = 'stitch-manuscript-subtab-pdfview';
-const EDITOR_TAB = 'stitch-manuscript-subtab-editor';
-
-const openSplit = async (page: Page) => {
-  await page.getByTestId(PDF_TAB).click();
-  await expect(page.getByTestId('stitch-manuscript-split-pdf')).toBeVisible({ timeout: 15_000 });
-  await expect(page.getByTestId(PDF_TAB)).toHaveAttribute('aria-selected', 'true');
-};
-
-/* …and choosing Editor closes it. The pane stays MOUNTED once it has been opened
-   (120.md §8's keep-alive rule), so "closed" is HIDDEN, not gone. */
-const closeSplit = async (page: Page) => {
-  await page.getByTestId(EDITOR_TAB).click();
-  await expect(page.getByTestId('stitch-manuscript-split-pdf')).toBeHidden();
-  await expect(page.getByTestId(EDITOR_TAB)).toHaveAttribute('aria-selected', 'true');
-};
-
-const ratio = async (page: Page) => Number(await page.getByTestId(SPLIT).getAttribute('data-ratio'));
+/* 121.md — openManuscript / openSplit / closeSplit / seedStudies now live in
+   e2e/helpers/manuscript.ts: three files need them (this one, the §3 export-reveal
+   spec, and anything else that has to reach the Editor with the pane in a known
+   state), and the assertions they carry ARE the contract. */
+import {
+  SPLIT, PDF_TAB, EDITOR_TAB, desktop, openManuscript, openSplit, closeSplit,
+  splitRatio as ratio, isFullscreen, seedStudies,
+} from '../helpers/manuscript';
 
 test.describe('Manuscript Editor + PDF split workspace (119.md §4)', () => {
   test.beforeEach(async ({ setFlags }) => {
@@ -110,6 +78,17 @@ test.describe('Manuscript Editor + PDF split workspace (119.md §4)', () => {
     // which UNMOUNTS the rails and leaves the slim focus bar.
     await expect(page.getByTestId('stitch-app-shell')).toHaveAttribute('data-focused', 'true');
     await expect(page.getByTestId('focus-nav-bar')).toBeVisible();
+
+    /* 121.md §2 — …and NOT the browser's screen. The Focus LAYOUT is the feature (the
+       rails go, and without that the row falls under SPLIT_STACK_BELOW on a laptop and
+       degrades to one stacked pane); the fullscreen REQUEST that used to ride along
+       with it was the bug: "opening the PDF viewer must not automatically enter
+       fullscreen … fullscreen should remain an optional, separate action". */
+    expect(await isFullscreen(page)).toBe(false);
+    await expect(page.locator('html')).not.toHaveAttribute('data-fullscreen-phase', /.*/);
+    // The way UP is still there, and it is the control that exists exactly in this
+    // focused-but-windowed state.
+    await expect(page.getByTestId('focus-fullscreen')).toBeVisible();
 
     // The workspace toolbar §4 asks for: exit · article identity · width presets.
     await expect(page.getByTestId('stitch-manuscript-split-exit')).toBeVisible();
@@ -284,16 +263,18 @@ test.describe('Manuscript Editor + PDF split workspace (119.md §4)', () => {
 
   /* ── §4 responsive floor ────────────────────────────────────────────────────── */
 
-  /* The viewport is set BEFORE the pane opens on purpose: opening it enters the
-     shell's Focus Mode, whose fullscreen bridge maximises the browser window, and a
-     maximised window cannot be resized by the driver. That is the shell's documented
-     behaviour (114.md), not something this workspace re-implements. */
+  /* 121.md §2 — the viewport is now set in the ORDINARY order (before or after the
+     pane opens, it no longer matters): opening the pane asks Focus Mode for its
+     LAYOUT only, so the fullscreen bridge is never engaged and the window is never
+     maximised. The choreography this test used to need — and the comment explaining
+     it — described a behaviour that no longer exists. */
   test('§4: a narrow window shows one pane at a time instead of two unusable columns', async ({ page, request, tmpProject }) => {
     await desktop(page);
     await seedStudies(request, tmpProject.id);
     await openManuscript(page, tmpProject.id);
     await page.setViewportSize({ width: 760, height: 900 });
     await openSplit(page);
+    expect(await isFullscreen(page)).toBe(false);
 
     await expect(page.getByTestId(SPLIT)).toHaveAttribute('data-layout', 'stacked');
     await expect(page.getByTestId('stitch-manuscript-split-divider')).toHaveCount(0);
@@ -310,14 +291,15 @@ test.describe('Manuscript Editor + PDF split workspace (119.md §4)', () => {
     await page.getByTestId('stitch-manuscript-split-pane-pdf').click();
     await expect(page.getByTestId('stitch-manuscript-split-pdf')).toBeVisible();
 
-    // Back to a wide window: two panes and the separator return. (Closing the pane
-    // first releases Focus Mode, so the window is resizable again.)
-    await closeSplit(page);
-    await expect(page.getByTestId('stitch-app-shell')).not.toHaveAttribute('data-focused', 'true');
+    /* Back to a wide window: two panes and the separator return. 121.md §2 — this is
+       now a plain resize WITH the pane still open (nothing has maximised the window),
+       which is one of the resize triggers §2 requires the layout to follow live. */
     await desktop(page);
-    await openSplit(page);
     await expect(page.getByTestId(SPLIT)).toHaveAttribute('data-layout', 'split');
     await expect(page.getByTestId('stitch-manuscript-split-divider')).toBeVisible();
+    // …and closing it still releases the Focus layout the split turned on.
+    await closeSplit(page);
+    await expect(page.getByTestId('stitch-app-shell')).not.toHaveAttribute('data-focused', 'true');
   });
 
   /* ── 120.md §8 — Journey I: the whole Editor ⇄ PDF View round trip ──────────── */
@@ -408,5 +390,198 @@ test.describe('Manuscript Editor + PDF split workspace (119.md §4)', () => {
       const proj = await (await request.get(`/api/projects/${tmpProject.id}`)).json();
       expect(JSON.stringify(proj.manuscripts || [])).toContain(typed + more);
     }).toPass({ timeout: 25_000 });
+  });
+
+  /* ── 121.md §2 — THE FILL ────────────────────────────────────────────────────
+     "There is currently a layout defect where the PDF viewer occupies only part of
+     its available region." Nothing in this suite ever MEASURED that, which is why a
+     `calc(100vh - 150px)` guess survived two rounds. These tests measure it. */
+
+  test('121.md §2: the split fills the workspace — no dead strip, in windowed focus', async ({ page, request, tmpProject }) => {
+    await desktop(page);
+    await seedStudies(request, tmpProject.id);
+    await openManuscript(page, tmpProject.id);
+    await openSplit(page);
+    await expect(page.getByTestId(SPLIT)).toHaveAttribute('data-layout', 'split');
+    // The host really did go full-bleed for the open pane (and only for it).
+    await expect(page.getByTestId('stitch-manuscript-workspace')).toHaveAttribute('data-fills', 'true');
+
+    const vp = page.viewportSize()!;
+    const pdf = (await page.getByTestId('stitch-manuscript-split-pdf').boundingBox())!;
+    const editor = (await page.getByTestId('stitch-manuscript-split-editor').boundingBox())!;
+    expect(pdf).toBeTruthy();
+
+    /* VERTICAL — the pane runs from just under the chrome to within a hair of the
+       bottom of the window. The old hardcoded height left ~100-150px of nothing
+       there; 24px of tolerance is the shell's own padding, not a dead strip. */
+    expect(vp.height - (pdf.y + pdf.height)).toBeLessThan(24);
+    // …and the editor half is exactly as tall, because they are one bounded row.
+    expect(Math.abs(editor.height - pdf.height)).toBeLessThan(24);
+
+    /* HORIZONTAL — the 1560 shell cap, the rounded card's 20px frame and the content
+       padding are all gone, so the two panes plus the 16px gutter really do span the
+       window. (1600px viewport > 1560 cap: without the full-bleed fix this alone
+       would fail.) */
+    expect(editor.x).toBeLessThan(24);
+    expect(vp.width - (pdf.x + pdf.width)).toBeLessThan(24);
+
+    /* …and NO nested scrollbar was introduced to pay for it: the page itself does
+       not scroll, the editor half owns its own scrolling, and the PDF pane does not
+       scroll the document. §2: "avoid clipping, nested unnecessary scrollbars, blank
+       areas, or content appearing beneath the toolbar". */
+    const pageScrolls = await page.evaluate(() =>
+      document.documentElement.scrollHeight > document.documentElement.clientHeight + 2);
+    expect(pageScrolls).toBe(false);
+
+    // The ribbon is ABOVE the panes, never over them (§2's toolbar accounting).
+    const bar = (await page.getByTestId('stitch-manuscript-header').boundingBox())!;
+    expect(pdf.y).toBeGreaterThanOrEqual(bar.y + bar.height - 2);
+
+    /* A window resize is one of §2's four resize triggers — the pane must follow it
+       immediately, with no vh arithmetic to go stale. */
+    await page.setViewportSize({ width: 1400, height: 780 });
+    await expect(async () => {
+      const after = (await page.getByTestId('stitch-manuscript-split-pdf').boundingBox())!;
+      expect(780 - (after.y + after.height)).toBeLessThan(24);
+      expect(1400 - (after.x + after.width)).toBeLessThan(24);
+    }).toPass({ timeout: 5_000 });
+  });
+
+  test('121.md §2: …and in REAL browser fullscreen it fills the screen', async ({ page, request, tmpProject, browserName }) => {
+    /* Chromium only. Fullscreen grants depend on the window manager and the WebKit /
+       Firefox harnesses refuse or hang on a headless requestFullscreen — WebKit is
+       the worst of the three, a headless grant simply never resolves. Same rule and
+       same rationale as e2e/focus/fullscreen.spec.ts; the layout itself is
+       engine-neutral flex and is pinned in tests/unit/manuscript/pdfSplit121. */
+    test.skip(browserName !== 'chromium',
+      'Fullscreen grants are unreliable outside the Chromium harness (see e2e/focus/fullscreen.spec.ts).');
+    await desktop(page);
+    await seedStudies(request, tmpProject.id);
+    await openManuscript(page, tmpProject.id);
+    await openSplit(page);
+    expect(await isFullscreen(page)).toBe(false);
+
+    // Fullscreen is the SEPARATE, explicit action §2 says it should be — the button
+    // that exists exactly in the focused-but-windowed state the split lands in.
+    await page.getByTestId('focus-fullscreen').click();
+    await expect.poll(() => isFullscreen(page), { timeout: 10_000 }).toBe(true);
+
+    await expect(async () => {
+      const size = await page.evaluate(() => ({ w: window.innerWidth, h: window.innerHeight }));
+      const pdf = (await page.getByTestId('stitch-manuscript-split-pdf').boundingBox())!;
+      const bar = (await page.getByTestId('focus-nav-bar').boundingBox())!;
+      // The pane starts below the focus bar and runs to the bottom of the screen …
+      expect(pdf.y).toBeGreaterThanOrEqual(bar.height - 2);
+      expect(size.h - (pdf.y + pdf.height)).toBeLessThan(24);
+      // … and the right-hand column reaches the right-hand edge.
+      expect(size.w - (pdf.x + pdf.width)).toBeLessThan(24);
+    }).toPass({ timeout: 10_000 });
+
+    /* HONEST SCOPE, stated where it is relied on: these studies carry no attached
+       PDF, so what fills the pane here is its honest empty state, not pdf.js. That
+       the VIEWER fills the pane it is given follows structurally (the viewer host is
+       `position:absolute; inset:0` inside a `flex:1` body — pinned in
+       tests/unit/manuscript/pdfSplit121) and the real-bytes journey is the
+       "included study with an attached full text" test above. Asserting a viewer
+       box here would just be waiting for an element this fixture never has. */
+
+    // Leaving fullscreen is the other half of §2's "resize immediately" list.
+    await page.evaluate(() => document.exitFullscreen && document.exitFullscreen());
+    await expect.poll(() => isFullscreen(page), { timeout: 10_000 }).toBe(false);
+    await expect(async () => {
+      const vp = page.viewportSize()!;
+      const pdf = (await page.getByTestId('stitch-manuscript-split-pdf').boundingBox())!;
+      expect(vp.height - (pdf.y + pdf.height)).toBeLessThan(40);
+    }).toPass({ timeout: 10_000 });
+  });
+
+  /* ── 121.md §2 — THE DIVIDER, DRAGGED ────────────────────────────────────────
+     §2: "Test dragging in both regular and fullscreen modes." Every existing divider
+     assertion in this suite is a keyboard nudge or a preset click; a real
+     page.mouse drag is net-new (the pattern is e2e/files/pdf-annotations-drag.spec.ts,
+     which exists for exactly this reason — synthetic input cannot catch what real
+     pointer input does). */
+
+  async function dragDivider(page: import('@playwright/test').Page, dx: number) {
+    const box = (await page.getByTestId('stitch-manuscript-split-divider').boundingBox())!;
+    const cx = box.x + box.width / 2;
+    const cy = box.y + box.height / 2;
+    await page.mouse.move(cx, cy);
+    await page.mouse.down();
+    // Several small steps, so the live rAF path is really exercised rather than one
+    // teleport the browser could coalesce away.
+    for (let i = 1; i <= 6; i += 1) await page.mouse.move(cx + (dx * i) / 6, cy, { steps: 2 });
+    await page.mouse.up();
+  }
+
+  test('121.md §2: the divider drags with the mouse, live, and double-click resets it', async ({ page, request, tmpProject }) => {
+    await desktop(page);
+    await seedStudies(request, tmpProject.id);
+    await openManuscript(page, tmpProject.id);
+    await openSplit(page);
+    expect(await ratio(page)).toBe(50);
+
+    // The affordance §2 asks for is really on screen before anyone touches it.
+    const divider = page.getByTestId('stitch-manuscript-split-divider');
+    await expect(page.getByTestId('stitch-manuscript-split-divider-line')).toBeVisible();
+    await expect(page.getByTestId('stitch-manuscript-split-divider-grip')).toBeVisible();
+    await divider.hover();
+    await expect(page.getByRole('tooltip')).toContainText('Drag to resize editor and PDF');
+
+    // DRAG RIGHT — the editor grows, live, and the committed ratio follows.
+    const before = (await page.getByTestId('stitch-manuscript-split-editor').boundingBox())!;
+    await dragDivider(page, 220);
+    await expect.poll(() => ratio(page), { timeout: 5_000 }).toBeGreaterThan(55);
+    const after = (await page.getByTestId('stitch-manuscript-split-editor').boundingBox())!;
+    expect(after.width).toBeGreaterThan(before.width + 120);
+    // The separator's own value follows the pointer, not just the data attribute.
+    await expect(divider).toHaveAttribute('aria-valuenow', String(await ratio(page)));
+
+    // …and the minimum widths §2 asks for hold: dragging far past the edge clamps.
+    await dragDivider(page, -4000);
+    await expect.poll(() => ratio(page), { timeout: 5_000 }).toBe(30);
+    const clamped = (await page.getByTestId('stitch-manuscript-split-pdf').boundingBox())!;
+    expect(clamped.width).toBeGreaterThan(200);
+
+    // DOUBLE-CLICK resets to the 50/50 default (§2).
+    await divider.dblclick();
+    await expect.poll(() => ratio(page), { timeout: 5_000 }).toBe(50);
+
+    // …and it PERSISTS across visits at whatever the researcher last chose.
+    await dragDivider(page, 160);
+    const chosen = await ratio(page);
+    expect(chosen).toBeGreaterThan(50);
+    await page.reload();
+    await expect(page.getByTestId('stitch-manuscript-split-pdf')).toBeVisible({ timeout: 20_000 });
+    await expect(page.getByTestId(SPLIT)).toHaveAttribute('data-ratio', String(chosen));
+    // Layout is a preference, never project data.
+    const proj = await (await request.get(`/api/projects/${tmpProject.id}`)).json();
+    expect(JSON.stringify(proj)).not.toContain('manuscriptSplit');
+  });
+
+  test('121.md §2: the divider drags under REAL fullscreen too', async ({ page, request, tmpProject, browserName }) => {
+    test.skip(browserName !== 'chromium',
+      'Fullscreen grants are unreliable outside the Chromium harness (see e2e/focus/fullscreen.spec.ts).');
+    await desktop(page);
+    await seedStudies(request, tmpProject.id);
+    await openManuscript(page, tmpProject.id);
+    await openSplit(page);
+    await page.getByTestId('focus-fullscreen').click();
+    await expect.poll(() => isFullscreen(page), { timeout: 10_000 }).toBe(true);
+
+    const start = await ratio(page);
+    await dragDivider(page, 200);
+    await expect.poll(() => ratio(page), { timeout: 5_000 }).toBeGreaterThan(start);
+    // The pane still fills its column after the drag — the third resize trigger §2
+    // lists, and the one a vh-based height could never have followed.
+    await expect(async () => {
+      const size = await page.evaluate(() => ({ w: window.innerWidth, h: window.innerHeight }));
+      const pdf = (await page.getByTestId('stitch-manuscript-split-pdf').boundingBox())!;
+      expect(size.w - (pdf.x + pdf.width)).toBeLessThan(24);
+      expect(size.h - (pdf.y + pdf.height)).toBeLessThan(24);
+    }).toPass({ timeout: 5_000 });
+
+    await page.evaluate(() => document.exitFullscreen && document.exitFullscreen());
+    await expect.poll(() => isFullscreen(page), { timeout: 10_000 }).toBe(false);
   });
 });

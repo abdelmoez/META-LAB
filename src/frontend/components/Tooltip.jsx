@@ -94,6 +94,15 @@ export default function Tooltip({
     };
   }, [open, compute, hide]);
 
+  /* 121.md r2 — `disabled` means "no bubble", not "no NEW bubble". Gating `show`
+     alone left an already-open bubble on screen for as long as the disabled state
+     lasted, which is exactly the case every caller has: the split divider hovers
+     (bubble opens), then pointerdown starts a drag and sets `disabled` — and pointer
+     capture defers the mouseleave that would hide it until the drag ends, so the
+     bubble floated over the panes through the whole live resize. Honour the intent
+     the moment it is declared. */
+  useEffect(() => { if (disabled) hide(); }, [disabled, hide]);
+
   useEffect(() => () => clearTimeout(showTimer.current), []);
 
   const Wrap = as;

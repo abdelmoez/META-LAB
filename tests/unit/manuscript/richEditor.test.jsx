@@ -52,11 +52,26 @@ describe('RichToolbar — keyboard-accessible formatting controls', () => {
     const html = renderToStaticMarkup(
       <RichToolbar getApi={() => null} citeRefs={[{ id: 'a' }]} refLabel={(r) => r.id} />,
     );
-    for (const label of ['Paragraph', 'Heading level 2', 'Heading level 3', 'Bold (Ctrl+B)', 'Italic (Ctrl+I)', 'Bulleted list', 'Numbered list', 'Insert citation']) {
+    // 121.md §1 — the Symbols control joins the toolbar's a11y contract: it is a
+    // ribbon command like the others, labelled and reachable the same way.
+    for (const label of ['Paragraph', 'Heading level 2', 'Heading level 3', 'Bold (Ctrl+B)', 'Italic (Ctrl+I)', 'Bulleted list', 'Numbered list', 'Insert citation', 'Insert symbol']) {
       expect(html).toContain(`aria-label="${label}"`);
     }
     expect(html).toContain('role="toolbar"');
     expect(html).toContain('data-testid="stitch-manuscript-insert-citation"');
+    expect(html).toContain('data-testid="stitch-manuscript-symbols-open"');
+  });
+
+  it('121.md §1 — the Symbols picker is a dialog popup, closed on first paint', () => {
+    const html = renderToStaticMarkup(
+      <RichToolbar getApi={() => null} citeRefs={[]} refLabel={(r) => r.id} />,
+    );
+    expect(html).toContain('Ω Symbols');
+    expect(html).toContain('aria-haspopup="dialog"');
+    // the grid, its search field and the catalogue only exist after an interaction —
+    // never on first paint (the same rule the table grid selector follows)
+    expect(html).not.toContain('stitch-manuscript-symbols-popover');
+    expect(html).not.toContain('stitch-manuscript-symbols-search');
   });
 
   it('116.md §60 — carries the Insert → Table control (grid selector closed by default)', () => {

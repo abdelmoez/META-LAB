@@ -327,15 +327,25 @@ describe('118.md §13/§18 — one state, one prop factory, one write path', () 
        knows the section by name), and a caller with no picker session still refuses
        `targetLocked()`. The property is unchanged: neither can write into a locked
        section, and neither is gated on scroll position. */
-    for (const guard of ['insertCitation', 'insertAssetRef']) {
+    /* 121.md §1 re-pin: the SYMBOLS insert joins the same two, for the same reason. */
+    for (const guard of ['insertCitation', 'insertAssetRef', 'insertSymbol']) {
       const at = panels.indexOf(`const ${guard} = (`);
       expect(at, guard).toBeGreaterThan(-1);
       expect(panels.slice(at, at + 320), guard).toContain('withBookmarkedCaret(');
     }
-    const wb = panels.slice(panels.indexOf('const withBookmarkedCaret = (run) => {'));
+    /* 121.md §4:168 re-pin: `withBookmarkedCaret` itself moved into the ONE shared
+       editor-safe insertion utility (§4 forbids duplicating caret logic across the
+       three features), so the BOTH-WAYS lock guard is pinned where it now lives, plus
+       the workspace side that tells it what "locked" means here. Unchanged property:
+       no insert of any kind can write into a locked section, and none is gated on
+       scroll position. */
+    const session = readSource('src/features/manuscript/richEditor/insertionSession.js');
+    const wb = session.slice(session.indexOf('const withBookmarkedCaret = (run) => {'));
     const body = wb.slice(0, wb.indexOf('\n  };'));
-    expect(body).toContain('if ((sections[s.sectionId] || {}).locked) return;');
-    expect(body).toContain('if (targetLocked()) return;');
+    expect(body).toContain('if (call(d.isLocked, s.sectionId)) return;');
+    expect(body).toContain('if (call(d.targetLocked)) return;');
+    expect(panels).toContain('isLocked: (id) => !!(sections[id] || {}).locked,');
+    expect(panels).toContain('targetLocked,');
     // the caret owner is real render state, written where the caret actually lands
     expect(panels).toContain('const [caretSection, setCaretSection] = useState(null);');
     expect(panels).toContain('setCaretSection(s.id);');
@@ -421,7 +431,15 @@ describe('118.md §15-§17 — navigation inside the document', () => {
     expect(doc).toContain('if (bestId && onActiveRef.current) onActiveRef.current(bestId);');
     // a programmatic scroll owns the indicator until it settles — and the update is
     // DEFERRED rather than dropped, or the indicator would stay where it came from
-    expect(doc).toContain('const until = (suppressRef && suppressRef.current) || 0;');
+    /* RE-PINNED for 121.md §3: there is now a SECOND caller of the same invariant.
+       The export-feedback reveal scrolls from the workspace seam — the only level
+       that sees both feedback states — and therefore cannot reach EditorPanel's own
+       ref, while its scroll crosses exactly the same sections. One module-level
+       deadline is read alongside the ref, so the guarantee this line exists to pin
+       ("a programmatic scroll owns the indicator until it settles") is unchanged and
+       is now true for BOTH callers instead of only the panel's own. */
+    expect(doc).toContain('const until = Math.max((suppressRef && suppressRef.current) || 0, sharedSuppressUntil);');
+    expect(doc).toContain('export function suppressActiveScroll(ms = 800) {');
     expect(doc).toContain('deferred = setTimeout(apply, (until - Date.now()) + 60);');
     // no IntersectionObserver → click-driven only, never a broken indicator
     expect(doc).toContain("if (typeof IntersectionObserver === 'undefined') return undefined;");

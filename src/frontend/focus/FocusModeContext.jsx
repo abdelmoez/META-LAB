@@ -539,7 +539,27 @@ export function FocusModeProvider({ children, initial = null }) {
     ));
   }, []);
 
-  const setFocus = useCallback((on) => {
+  /**
+   * @param {boolean|function} on   the next Focus Mode state (or an updater).
+   * @param {object} [opts]
+   * @param {boolean} [opts.fullscreen=true]  121.md §2 — ask for the LAYOUT only.
+   *
+   * Focus Mode (a layout flag) and browser fullscreen (the bridge) have always been
+   * two states in this file, but since 114.md §1 there was only ONE entry into the
+   * layout and it always requested fullscreen too. Windowed focus — rails hidden,
+   * browser chrome intact — existed only as a DEGRADE (a refusal, a reload, an
+   * external exit), never as an intent, which is why opening the manuscript's PDF
+   * pane took over the whole screen. `fullscreen:false` is that missing entry: the
+   * layout changes, the bridge is not touched, and `phase` stays 'normal' — exactly
+   * the focused-but-windowed state FocusControls already describes honestly and
+   * offers its "Enter full screen" button from.
+   *
+   * The DEFAULT is unchanged in every respect: omit the option (the header toggle,
+   * Ctrl+Shift+F, exitFocus, Escape) and this is byte-for-byte the 114/117 path.
+   * Exiting never needs the option — leave() is a no-op when nothing is owned.
+   */
+  const setFocus = useCallback((on, opts) => {
+    const wantsFullscreen = !(opts && opts.fullscreen === false);
     const prev = focusRef.current;
     const next = typeof on === 'function' ? !!on(prev) : !!on;
     // Idempotent by construction: every exit path (button, Esc, exitFocus, the
@@ -559,7 +579,15 @@ export function FocusModeProvider({ children, initial = null }) {
     // fallback — the alternative is a hack that fakes a gesture, and there isn't
     // an honest one. The focus bar's "Enter full screen" button (which only
     // appears in exactly that windowed state) is the way back up.
-    const settled = next ? fsRef.current.enter() : fsRef.current.leave();
+    //
+    // 121.md §2 — a LAYOUT-ONLY entry skips the request entirely (it does not make
+    // one and cancel it): the bridge keeps wanted/pending/owned all false, so the
+    // phase is 'normal', `isFullscreen` is false, and the focus bar shows the
+    // "Enter full screen" button that only exists in that state. Fullscreen stays
+    // exactly one explicit user gesture away.
+    const settled = next
+      ? (wantsFullscreen ? fsRef.current.enter() : Promise.resolve(false))
+      : fsRef.current.leave();
     // 117.md §45 — sync IMMEDIATELY as well as on settle, or the in-flight phase
     // ('entering', and the disowned-grant 'exiting') would never reach a render:
     // the request promise stays pending for exactly as long as that state lasts.

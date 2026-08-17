@@ -33,6 +33,10 @@ import { CARET_LOST_TEXT } from '../../../src/features/manuscript/manuscriptPane
 const EDITOR = readSource('src/features/manuscript/richEditor/RichSectionEditor.jsx');
 const PANELS = readSource('src/features/manuscript/manuscriptPanels.jsx');
 const ABSTRACT = readSource('src/features/manuscript/richEditor/AbstractEditor.jsx');
+/* 121.md §4:168 — the session lifecycle and the payload policy were extracted into the
+   ONE shared insertion utility, so the pins that guarded them here follow the code
+   rather than being deleted (the repo's RE-PINNED convention). */
+const SESSION = readSource('src/features/manuscript/richEditor/insertionSession.js');
 
 const SENTENCE = 'Pooled estimates favoured the intervention in every sensitivity analysis.';
 
@@ -112,8 +116,16 @@ describe('120.md §5 — the focus clobber (the "start of section" defect)', () 
     expect(savedAt).toBeLessThan(focusAt);
     expect(body).toContain('restoringRef.current = true;');
     expect(body).toContain('finally { restoringRef.current = false; }');
-    // …and the fallback now reads the LOCAL, never the ref the focus just touched.
-    expect(body).toContain('else if (saved && el.contains(saved.commonAncestorContainer))');
+    /* …and the fallback still reads the LOCAL, never the ref the focus just touched.
+       RE-PINNED in 121 (§4 fix 4): the same guarantee, now expressed through `usable`,
+       which adds the second condition — a saved range whose commonAncestorContainer is
+       the ROOT is not a text position (a live Range survives its own nodes' removal by
+       being re-pointed at the surviving parent) and is snapped into the adjacent block
+       or rejected, never installed as-is. */
+    expect(body).toContain('const usable = () => !!saved && el.contains(saved.commonAncestorContainer)');
+    expect(body).toContain('else if (usable()) {');
+    expect(body).toContain('const rootedSaved = !!saved && saved.commonAncestorContainer === el;');
+    expect(body).toContain('(!rootedSaved || snapCollapsedEndIntoBlock(saved, null))');
   });
 
   it('rememberSelection is a no-op while a restoration is in flight', () => {
@@ -143,8 +155,19 @@ describe('120.md §5 — the picker session', () => {
     // a locked section refuses outright
     expect(body).toContain('readOnlyRef.current');
     const verify = EDITOR.slice(EDITOR.indexOf('const liveRangeStillValid = (r, logical) => {'));
-    expect(verify.slice(0, verify.indexOf('\n  };')))
-      .toContain('return !!now && now.before === logical.before && now.after === logical.after;');
+    const verifyBody = verify.slice(0, verify.indexOf('\n  };'));
+    /* RE-PINNED in 121 (§4 fix 4). Same guarantee — the live range counts only when the
+       text around it still says what it said — split into an early refusal so the
+       NULL-logical case could stop meaning "trust it": a caret whose block cannot be
+       named sits at root level, between two paragraphs, which is where mdDom turns an
+       inserted chip into its own paragraph. */
+    expect(verifyBody).toContain('return now.before === logical.before && now.after === logical.after;');
+    /* 121 r1 — the refusal is SCOPED, not removed: a root container is refused only
+       when the caret is genuinely between BLOCKS. A section whose prose has never been
+       wrapped keeps its lines as bare children of the host, and a caret there is a real
+       position (see rootInlineCaret). */
+    expect(verifyBody).toContain('if (isRealLineBlock(topBlockOf(r && r.endContainer))) return true;');
+    expect(verifyBody).toContain('return !!r && rootInlineCaret(r.endContainer, r.endOffset);');
   });
 
   it('a bare text node at the root is a resolvable block, not a non-block', () => {
@@ -182,15 +205,28 @@ describe('120.md §5 — the picker session', () => {
   });
 
   it('the workspace routes the insert to the BOOKMARKED section, never through getApi()', () => {
-    const fn = PANELS.slice(PANELS.indexOf('const withBookmarkedCaret = (run) => {'));
+    /* RE-PINNED in 121 (§4:168): the routing rule itself moved into the SHARED
+       insertion utility — 121 requires citations, cross-references and symbols to use
+       one editor-safe insertion path rather than three copies — so the pin follows it
+       to richEditor/insertionSession.js. The guarantee is unchanged and still two
+       halves: a session insert goes to the BOOKMARKED section's editor and refuses
+       rather than falling back, and `getApi()` survives only for the no-session
+       callers. */
+    const fn = SESSION.slice(SESSION.indexOf('const withBookmarkedCaret = (run) => {'));
     const body = fn.slice(0, fn.indexOf('\n  };'));
-    expect(body).toContain('const api = apiFor(s.sectionId);');
+    expect(body).toContain("const api = call(d.apiFor, s.sectionId);");
     expect(body).toContain('api.restoreCaretBookmark(s.bm)');
-    expect(body).toContain('setInsertNotice(CARET_LOST_TEXT);');
+    expect(body).toContain('call(d.onRefusal);');
     // the locked-section guard survives the routing
-    expect(body).toContain("if ((sections[s.sectionId] || {}).locked) return;");
+    expect(body).toContain('if (call(d.isLocked, s.sectionId)) return;');
     // getApi() remains ONLY for the no-session callers
-    expect(body.indexOf('const api = getApi();')).toBeGreaterThan(body.indexOf('setInsertNotice(CARET_LOST_TEXT);'));
+    expect(body.indexOf('const api = call(d.getApi);')).toBeGreaterThan(body.indexOf('call(d.onRefusal);'));
+    // …and the workspace still supplies the app knowledge only it has: which section
+    // the caret is in, what "locked" means there, and where the refusal is shown.
+    expect(PANELS).toContain('const insertionSession = createInsertionSession({');
+    expect(PANELS).toContain('isLocked: (id) => !!(sections[id] || {}).locked,');
+    expect(PANELS).toContain('onRefusal: () => setInsertNotice(CARET_LOST_TEXT),');
+    expect(PANELS).toContain('const withBookmarkedCaret = (run) => insertionSession.withBookmarkedCaret(run);');
   });
 
   it('both Insert paths go through the session', () => {
@@ -261,13 +297,27 @@ describe('120.md §5 — grouping, selected text, and the abstract registry', ()
        fragment when the caret is inside an <li>: the chip arrived as literal text,
        with no data-cite and nothing for the renumbering effect to find. The repair
        is a shape, not a browser check. */
-    expect(EDITOR).toContain('const wrapInlineChip = (chipHtml) => `<span>${chipHtml}</span>`;');
-    expect(EDITOR).toContain('insertHtml(`${wrapInlineChip(citeChipHtml(ids, label, { broken }))}&nbsp;`);');
-    expect(EDITOR).toContain('insertHtml(`${wrapInlineChip(assetChipHtml(assetId, label, { broken }))}&nbsp;`);');
-    /* …and every chip mutation path uses it, so the shape can never drift apart:
-       insert citation, insert cross-reference, group into an existing chip, remove
-       one id from a multi-cite, relink a cross-reference. */
-    expect(EDITOR.match(/wrapInlineChip\(/g)).toHaveLength(5);
+    /* RE-PINNED in 121 (§4:168). The wrapper is now defined ONCE, in the shared
+       insertion utility, and the two INSERT paths reach it through the {kind:'chip'}
+       payload policy instead of assembling the same template literal twice — which is
+       exactly what let symbols join without inheriting the chip conventions. Same
+       guarantee, one authority: the sacrificial <span> and the trailing separator. */
+    expect(SESSION).toContain('export const wrapInlineChipHtml = (chipHtml) => `<span>${chipHtml}</span>`;');
+    expect(SESSION).toContain("export const CHIP_SEPARATOR = '&nbsp;';");
+    expect(SESSION).toContain('return { via: \'html\', html: `${wrapInlineChipHtml(html)}${sep}` };');
+    expect(EDITOR).toContain('const wrapInlineChip = wrapInlineChipHtml;');
+    expect(EDITOR).toContain("commitInsertion({ kind: 'chip', html: citeChipHtml(ids, label, { broken }) });");
+    expect(EDITOR).toContain("commitInsertion({ kind: 'chip', html: assetChipHtml(assetId, label, { broken }) });");
+    /* …and every chip MUTATION path still uses the wrapper directly (a node swap, not
+       an insertion), so the shape can never drift apart: group into an existing chip,
+       remove one id from a multi-cite, relink a cross-reference. The count fell from 5
+       to 3 because the two insert paths now express the same shape through the payload
+       policy — nothing lost it. */
+    expect(EDITOR.match(/wrapInlineChip\(/g)).toHaveLength(3);
+    /* 121.md §1 — and the symbol payload is the OTHER policy: no wrapper, no nbsp. */
+    expect(SESSION).toContain("if (payload.kind === 'text') {");
+    expect(SESSION).toContain("return { via: 'text', text };");
+    expect(EDITOR).toContain("insertAtCaret({ kind: 'text', text: s });");
   });
 
   it('a selection is collapsed to its END — never deleted, marks untouched', () => {
@@ -275,13 +325,23 @@ describe('120.md §5 — grouping, selected text, and the abstract registry', ()
     const body = fn.slice(0, fn.indexOf('\n  };'));
     expect(body).toContain('end.collapse(false);');
     expect(body).not.toContain('deleteContents');
-    // both inline inserts use it, and both resolve the caret first
+    /* RE-PINNED in 121 (§4:168): the two-step caret discipline (restore focus WITH the
+       selection, then collapse to its end) is now ONE shared step, `prepareCaret`, so
+       the citation, cross-reference and symbol paths cannot drift apart. The pin
+       follows it — the guarantee is the same two calls, in the same order. */
+    const prep = EDITOR.slice(EDITOR.indexOf('const prepareCaret = () => {'));
+    const prepBody = prep.slice(0, prep.indexOf('\n  };'));
+    expect(prepBody).toContain('if (readOnlyRef.current) return false;');
+    expect(prepBody).toContain('if (!focusWithSelection()) return false;');
+    expect(prepBody).toContain('collapseSelectionToEnd();');
+    expect(prepBody.indexOf('focusWithSelection')).toBeLessThan(prepBody.indexOf('collapseSelectionToEnd'));
     for (const m of ['insertCitation: (refId) => {', 'insertAssetRef: (assetId) => {']) {
       const f = EDITOR.slice(EDITOR.indexOf(m));
       const b = f.slice(0, f.indexOf('\n    },'));
-      expect(b).toContain('if (!focusWithSelection()) return;');
-      expect(b).toContain('collapseSelectionToEnd();');
+      expect(b).toContain('if (!prepareCaret()) return;');
     }
+    // …and the symbol path is the same discipline plus the same one transaction.
+    expect(EDITOR).toContain('const insertAtCaret = (payload) => (prepareCaret() ? commitInsertion(payload) : false);');
   });
 
   it('the chip DOM shape (the serialization contract) is untouched', () => {
@@ -309,7 +369,14 @@ describe('120.md §7 — the paste ladder is ONE handler with an HTML-first orde
   it('exactly one paste handler exists, and no beforeinput layer was added', () => {
     expect(EDITOR.match(/const onPaste = \(e\) => \{/g)).toHaveLength(1);
     expect(EDITOR.match(/onPaste=\{onPaste\}/g)).toHaveLength(1);
-    expect(EDITOR).not.toMatch(/onBeforeInput|addEventListener\(\s*['"]beforeinput/);
+    /* 121.md r2 — re-pinned. The "no beforeinput layer" clause was about the PASTE
+       ladder: §7 must stay ONE handler, and a second interception rung would make its
+       order unprovable. There is now exactly one `beforeinput` listener and it is not a
+       paste rung at all — it moves the caret in front of the end-of-block pad and writes
+       nothing (see snapCaretBeforeTrailingPad). The clause that matters is kept below,
+       verbatim: no second paste path. */
+    expect(EDITOR.match(/addEventListener\('beforeinput'/g)).toHaveLength(1);
+    expect(EDITOR).not.toMatch(/beforeinput[\s\S]{0,400}?clipboardData/);
     expect(EDITOR).not.toContain("addEventListener('paste'");
   });
 

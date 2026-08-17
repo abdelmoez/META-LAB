@@ -245,7 +245,12 @@ describe('119.md §2 — an orphan caption does not outlive its table', () => {
        table was deleted cannot claim a stranger's table, which meant the single-line
        call became a three-line one. What this test guards is unchanged: the flag is set
        on the EDITOR'S serialization and nowhere else. */
-    expect(EDITOR).toContain('const md = htmlToMd(el.innerHTML, {');
+    /* 121.md r2 — re-pinned: still ONE serialization call in `emit`, still with the
+       orphan-caption options. Its INPUT is now the live innerHTML unless a stale
+       end-of-block pad has to be kept out of the model, in which case it is a CLONE
+       with that pad removed — the live DOM (and so the caret and the undo stack) is
+       never touched. See padStrippedHtml. */
+    expect(EDITOR).toContain('const md = htmlToMd(padded == null ? el.innerHTML : padded, {');
     expect(EDITOR).toContain('dropOrphanCaptions: true, captionPairs: captionPairsRef.current,');
     expect(EDITOR).toContain('onChangeRef.current(md)');
     expect(EDITOR).not.toContain('htmlToMd(el.innerHTML)');

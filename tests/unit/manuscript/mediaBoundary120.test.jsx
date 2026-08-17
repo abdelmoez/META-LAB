@@ -385,11 +385,13 @@ describe('120.md §3/§4 — editor wiring', () => {
     expect(emitFn).toContain('ensureTrailingParagraph(el);');
     // …before the serialization, which is harmless because htmlToMd drops empties.
     expect(emitFn.indexOf('ensureTrailingParagraph(el);'))
-      .toBeLessThan(emitFn.indexOf('htmlToMd(el.innerHTML,'));
+      .toBeLessThan(emitFn.indexOf('htmlToMd(padded == null ? el.innerHTML : padded,'));
     /* the 119.md §2 emit contract is untouched — 120.md r2 only widened the call so the
        repair can VERIFY a reunion against the previous emit's caption→table pairing
        (see repairCaptionBlocks); the flag still appears on this one path and nowhere else. */
-    expect(EDITOR).toContain('const md = htmlToMd(el.innerHTML, {');
+    // 121.md r2 — re-pinned: same ONE call, now fed a pad-stripped clone when there is
+    // a stale end-of-block pad to keep out of the model (see padStrippedHtml).
+    expect(EDITOR).toContain('const md = htmlToMd(padded == null ? el.innerHTML : padded, {');
     expect(EDITOR).toContain('dropOrphanCaptions: true, captionPairs: captionPairsRef.current,');
     expect(EDITOR).toContain('captionPairsRef.current = captionTablePairs(md);');
     expect(EDITOR).not.toContain('htmlToMd(el.innerHTML)');

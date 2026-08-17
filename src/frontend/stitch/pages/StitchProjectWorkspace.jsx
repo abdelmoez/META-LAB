@@ -173,6 +173,13 @@ function DeepToolPage({ stage }) {
   // needs the full viewport). Lifted from the extraction tab via onWorkspaceChange,
   // exactly like RoB, so toggling full-bleed never remounts the engine.
   const [extractionInWorkspace, setExtractionInWorkspace] = useState(false);
+  // 121.md §2 — true while the Manuscript Editor's PDF split is open in its
+  // two-column layout (editor | divider | PDF). Same seam, same reason: that
+  // workspace needs the whole viewport, and it needs a BOUNDED height to give the
+  // PDF pane, which only the full-bleed wrapper below can supply. Keyed on the
+  // pane STATE, not on the stage — Overview, Tables, References and every other
+  // manuscript destination keep their reading column.
+  const [manuscriptInWorkspace, setManuscriptInWorkspace] = useState(false);
 
   const spId = project ? linkedSiftId(project) : null;
   const perms = project ? projectPerms(project) : null;
@@ -251,7 +258,11 @@ function DeepToolPage({ stage }) {
   // tab's tall result content can no longer push the header off-screen or let the page
   // scroll into empty space. (SearchWorkspace only adopts its internal scroller when the
   // white side-menu is driving it — `railHidden` — so SSR/tests keep the page-scroll model.)
-  const fullbleed = stage === 'screening' || stage === 'search' || (stage === 'rob' && robInWorkspace) || (stage === 'extraction' && extractionInWorkspace);
+  // 121.md §2 — the manuscript joins the same list while its PDF split is open, which
+  // is what removes the 1560 shell cap, the rounded card's 20px frame + border and the
+  // content padding in one move, and replaces them with a wrapper whose height is
+  // derived from the REAL chrome (topChromeH, below).
+  const fullbleed = stage === 'screening' || stage === 'search' || (stage === 'rob' && robInWorkspace) || (stage === 'extraction' && extractionInWorkspace) || (stage === 'manuscript' && manuscriptInWorkspace);
 
   const renderPrimaryRail = (variant) => (
     <StitchProjectRail projectId={projectId} linkedSiftId={spId} statusMap={statusMap}
@@ -446,6 +457,11 @@ function DeepToolPage({ stage }) {
     body = (<LazyManuscript project={project} upd={doc.upd}
       initialSubtab={readManuscriptSubParam(search)}
       initialView={readManuscriptViewParam(search)}
+      /* 121.md §2 — lifts "the PDF split is open in its two-column layout" so this
+         page goes full-bleed for it, exactly as it already does for an open RoB
+         assessment and an open Extraction article. The wrapper keeps the same DOM
+         position in both layouts, so toggling it never remounts the editor. */
+      onWorkspaceChange={setManuscriptInWorkspace}
       onSubtabChange={(id, view, explicitView) => navigate(manuscriptSubHref(id, { projectId, view, explicitView }))} />);
   } else if (stage === 'report') {
     body = (<LazyReport project={project} upd={doc.upd} />);

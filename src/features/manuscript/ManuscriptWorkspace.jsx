@@ -20,6 +20,8 @@ import { useManuscript } from './useManuscript.js';
 import {
   OverviewPanel, EditorPanel, TablesPanel, FiguresPanel, ReferencesPanel, PrismaPanel, ExportPanel,
   UpdatesPanel, ExportValidationDialog,
+  // 121.md §3 — the ONE announced + revealed export feedback surface.
+  ExportFeedbackRegion, ExportRunErrorNotice, EXPORT_FEEDBACK_HEADING_ID,
 } from './manuscriptPanels.jsx';
 // 119.md §7 — the reporting-structure switcher (preview · diff · mapping · undo).
 import { StructureSwitcher, StructureChangeUndo } from './StructureSwitcher.jsx';
@@ -57,8 +59,22 @@ import {
    leaves the slim focus bar), so the split DRIVES it instead of inventing a second
    hide-the-rails path that the global navigation would then have to know about. Safe
    outside the provider: `useFocusMode` returns a permanently-off no-op shape, which is
-   what the legacy shell and the SSR contract tests get. */
-import { useFocusMode } from '../../frontend/focus/FocusModeContext.jsx';
+   what the SSR contract tests get.
+   121.md §2 — CORRECTING what this comment used to claim: the LEGACY shell is NOT one
+   of those. FocusModeProvider wraps every route (App.jsx), so `useFocusMode` there is
+   the real thing and the split's entry really did flip global focus state — and
+   request browser fullscreen — in a shell whose chrome never subscribes to it and
+   stayed fully visible. `useFocusAvailable` is the synchronous "does the enclosing
+   shell declare itself focusable?" answer (only StitchAppShell does), and it is what
+   the entry below is gated on. */
+import { useFocusMode, useFocusAvailable } from '../../frontend/focus/FocusModeContext.jsx';
+/* 121.md §3 — the reveal reuses the manuscript's OWN scroll utilities rather than a
+   fourth copy of "find the scroller": `scrollSectionIntoView` resolves the right one
+   in every configuration (Stitch main, legacy div, Focus Mode, the pdfview split),
+   compensates the sticky toolbar and honours prefers-reduced-motion, and
+   `suppressActiveScroll` keeps the 118.md §16/§17 active-section indicator honest
+   while the page flies past sections on the way to the message. */
+import { scrollSectionIntoView, suppressActiveScroll, useReducedMotion } from './ContinuousView.jsx';
 
 const safeName = (s) => String(s || 'manuscript').replace(/[^a-z0-9]+/gi, '-').replace(/^-+|-+$/g, '') || 'manuscript';
 
@@ -92,6 +108,33 @@ export const destinationFor = (panelTab, splitOpen) => (
    the project blob, which must stay byte-stable. */
 export const viewPrefKey = (userId) => (userId ? `metalab.manuscriptView.${userId}` : null);
 
+/* ── 121.md §3 — WHEN is there something new to reveal? ────────────────────────
+   The reveal must fire for a NEW message and stay quiet for a re-render, so it is
+   keyed on stable CONTENT rather than on the review object — a fresh
+   `{model, validation, fetchedAt}` is built on every attempt, and keying on its
+   identity would re-scroll and re-steal focus on any unrelated re-render that
+   happened to recreate it. `fetchedAt` + the recheck flag + the three finding counts
+   are exactly what changes when there is something new to say, which is also why the
+   recheck path re-reveals for free (a re-check always carries a newer fetchedAt).
+   A run ERROR outranks a review: it is the thing that just happened, and the two are
+   mutually exclusive in practice (runExport clears the error before every attempt).
+   '' means "nothing to reveal", which also RESETS the latch, so raising the same
+   message again after dismissing it reveals it again. Pure, and exported so the state
+   machine is pinned without a DOM. */
+export function exportRevealKey(exportError, exportReview) {
+  if (exportError) return `error ${exportError}`;
+  if (!exportReview) return '';
+  const v = exportReview.validation || {};
+  return [
+    'review',
+    exportReview.fetchedAt || '',
+    exportReview.recheck ? 'recheck' : '',
+    (v.errors || []).length,
+    (v.warnings || []).length,
+    (v.info || []).length,
+  ].join(' ');
+}
+
 export function readStoredView(key) {
   if (!key || typeof localStorage === 'undefined') return null;
   try {
@@ -116,6 +159,19 @@ const SHELL_STYLE = { maxWidth: 1440, margin: '0 auto', padding: '4px 2px' };
    rails are gone). Same object shape, so nothing else in the layout moves. */
 const SPLIT_SHELL_STYLE = { ...SHELL_STYLE, maxWidth: 'none' };
 
+/* 121.md §2 — …and when the HOST has taken the workspace full-bleed for the open
+   split (see `onWorkspaceChange` below), the engine column becomes a BOUNDED COLUMN:
+   its height comes from the host's `calc(100vh - <real chrome>)` wrapper, the toolbar
+   keeps its natural height at the top, and the split row takes everything that is
+   left. That is what replaces PdfSplitPane's old `calc(100vh - 150px)` guess — the
+   pane is simply `height:100%` of a box whose height was measured, so fullscreen
+   enter/exit, a window resize, a divider drag and a pinned drawer all flow through
+   flex with no viewport arithmetic anywhere. */
+const SPLIT_SHELL_BOUNDED = {
+  ...SPLIT_SHELL_STYLE,
+  flex: '1 1 auto', minHeight: 0, display: 'flex', flexDirection: 'column',
+};
+
 /**
  * @param {string}   initialSubtab   118.md §47 — the host's URL sub-param (`?ms=`).
  *                   Stitch passes it; the LEGACY shell passes nothing, so the default
@@ -127,8 +183,17 @@ const SPLIT_SHELL_STYLE = { ...SHELL_STYLE, maxWidth: 'none' };
  *                   Absent → local state only, exactly as before.
  * @param {string}   initialView     118.md §12/§47 — `?msv=`, or null/absent when the
  *                   URL does not name a view (the legacy shell never does).
+ * @param {function} onWorkspaceChange 121.md §2 — (boolean) => void. Reports "the PDF
+ *                   split is open in its two-column layout", so the host can take the
+ *                   stage FULL-BLEED exactly as it already does for an open RoB
+ *                   assessment and an open Extraction article (the
+ *                   robInWorkspace/extractionInWorkspace seam). Keyed on the STATE,
+ *                   never on the stage: Overview, Tables, References and the rest of
+ *                   the manuscript destinations keep their reading column. Absent (the
+ *                   legacy shell, the SSR contract tests) → the workspace keeps the
+ *                   page-scroll model it has always had, unchanged.
  */
-export function ManuscriptWorkspace({ project, upd, initialSubtab, onSubtabChange, initialView }) {
+export function ManuscriptWorkspace({ project, upd, initialSubtab, onSubtabChange, initialView, onWorkspaceChange }) {
   const m = useManuscript(project, upd);
   /* 120.md §8 — the URL names a DESTINATION ('pdfview' included); the state below
      holds the PANEL it resolves to. A `?ms=pdfview` deep link therefore lands on the
@@ -334,14 +399,25 @@ export function ManuscriptWorkspace({ project, upd, initialSubtab, onSubtabChang
   // 73.md Part 9 — Overview/Consistency "Open" actions jump into the Editor at a
   // specific section (or straight to the References tab for reference findings).
   const [sectionRequest, setSectionRequest] = useState(null);
+  /* 121.md §3 — "go to this place in the manuscript" means the EDITOR PANEL, and the
+     destination that names it is PDF View whenever the pane is open (destinationFor is
+     that projection). Asking for `'editor'` by name went through setTab's one open/
+     close path and CLOSED the researcher's PDF as a side effect of a jump that was
+     never about the pane — and, because the workspace un-full-bleeds with it, the
+     scroll that jump just computed was measured against a column that no longer
+     existed, so the reader landed nowhere. One helper, used by every in-manuscript
+     jump, so Overview CTAs and "View in manuscript" get the same fix. */
+  const openEditorDestination = useCallback(
+    () => setTab(destinationFor('editor', splitOpenRef.current)), [setTab],
+  );
   const openSection = useCallback((id) => {
     if (id === 'references') { setTab('references'); return; }
     // 119.md §7 — the DRAFT'S sections: a jump can legitimately name a section a
     // template introduced (CARE's Timeline) or one preserved from an older one.
-    if (!draftSectionIds(m.activeDraft).includes(id)) { setTab('editor'); return; }
+    if (!draftSectionIds(m.activeDraft).includes(id)) { openEditorDestination(); return; }
     setSectionRequest({ id, at: Date.now() });
-    setTab('editor');
-  }, [setTab, m.activeDraft]);
+    openEditorDestination();
+  }, [setTab, openEditorDestination, m.activeDraft]);
 
   /* 118.md §65 — "View in manuscript" from the Tables / Figures managers. The
      manager and the inline representation are the SAME entity, so this navigates to
@@ -352,8 +428,10 @@ export function ManuscriptWorkspace({ project, upd, initialSubtab, onSubtabChang
   const openAsset = useCallback((target) => {
     if (!target || !target.sectionId) return;
     setSectionRequest({ ...target, id: target.sectionId, at: Date.now() });
-    setTab('editor');
-  }, [setTab]);
+    // 121.md §3 — same rule as openSection: land on the editor PANEL without closing
+    // an open PDF pane (see openEditorDestination).
+    openEditorDestination();
+  }, [openEditorDestination]);
 
   /* 117.md §38 — the citation chip's menu actions. "View reference" / "Edit
      reference" / "Open PDF" all live in the References tab (which owns the library),
@@ -397,6 +475,32 @@ export function ManuscriptWorkspace({ project, upd, initialSubtab, onSubtabChang
   const [stackPane, setStackPane] = useState('editor');   // narrow layout: which pane is shown
   const split = useManuscriptSplit(splitRowRef, splitRatioKey(userId));
   const splitLayout = useSplitLayout(splitRowRef, splitOpen);
+
+  /* ── 121.md §2 — the fill fix, in ONE flag ───────────────────────────────────
+     `splitFills` is true exactly when the two-column split is on screen in a host
+     that offers the full-bleed seam. It is the same flag on both sides of that
+     seam: the host uses it to drop the 1560 shell cap, the rounded card's 20px
+     frame and the content padding, and this workspace uses it to become a bounded
+     column inside the height the host derived from REAL chrome (57px header, or
+     the 40px focus bar). Reported through `onWorkspaceChange`, the precedent an
+     open RoB assessment and an open Extraction article already use.
+
+     Deliberately conditioned on the callback existing: a host that does not offer
+     the seam (the legacy shell, the SSR contract tests) never gets a bounded
+     column it has no bounded height for, so its layout is untouched. */
+  const splitFills = splitOpen && splitLayout === 'split' && typeof onWorkspaceChange === 'function';
+  useEffect(() => {
+    if (typeof onWorkspaceChange !== 'function') return undefined;
+    onWorkspaceChange(splitFills);
+    // Leaving the Manuscript stage with the pane open must not strand the shell
+    // full-bleed (the PecanExtractionEngine cleanup, same reason).
+    return () => onWorkspaceChange(false);
+  }, [splitFills, onWorkspaceChange]);
+
+  /* 121.md §2 — the divider's `reduced` prop has existed since 119 §4 and was never
+     wired. Read once per mount and kept live, because the OS setting can change
+     while the workspace is open. */
+  const reducedMotion = useReducedMotion();
 
   const articles = useMemo(
     () => buildSplitArticles(m.references, project && project.studies),
@@ -472,18 +576,53 @@ export function ManuscriptWorkspace({ project, upd, initialSubtab, onSubtabChang
 
   /* §4 — the maximized layout. Focus Mode is the shell's own rail-hiding mechanism, so
      the split enters it and, on exit, RELEASES it only when the split is what turned it
-     on (a researcher who was already in Focus Mode stays there). */
+     on (a researcher who was already in Focus Mode stays there).
+
+     121.md §2 — "opening the PDF viewer must not automatically enter fullscreen". The
+     LAYOUT half of that is still exactly right and stays (without the rails hidden a
+     1440px laptop's row falls under SPLIT_STACK_BELOW and the split degrades to one
+     stacked pane — a 119 §4 regression), so the fix is the entry, not the intent:
+     `{ fullscreen: false }` asks Focus Mode for its layout and leaves the browser
+     chrome alone. Fullscreen stays one explicit gesture away (the focus bar's "Enter
+     full screen", the header toggle, Ctrl+Shift+F), and a click-opened pane now lands
+     in the SAME state a `?ms=pdfview` deep link already did — that mount has no user
+     activation, so its request was always refused into windowed focus.
+
+     …and the entry is GATED on the shell actually being able to render the focused
+     layout. FocusModeProvider wraps every route, so in the legacy shell this used to
+     flip global focus state (and request real fullscreen) while the legacy chrome —
+     which never subscribes — stayed fully visible. */
   const focus = useFocusMode();
   const focusRef = useRef(focus);
   focusRef.current = focus;
+  const focusAvailable = useFocusAvailable();
+  const focusAvailableRef = useRef(focusAvailable);
+  focusAvailableRef.current = focusAvailable;
   const focusOwned = useRef(false);
   const prevSplitOpen = useRef(false);
+  /* 121.md r2 — OWNERSHIP CANNOT SURVIVE AN EXIT THE SPLIT DID NOT PERFORM.
+     `focusOwned` was raised on the open transition and lowered only by the split's own
+     close branch, so a researcher who left Focus Mode themselves (the focus bar's exit,
+     Ctrl+Shift+F) and later re-entered it DELIBERATELY — that time with real fullscreen,
+     which the gesture grants — was still recorded as "the split turned this on".
+     Closing the pane then dropped them out of the fullscreen they had just chosen, and
+     so did leaving the stage with the pane open. Focus being OFF while the pane is open
+     is proof the split no longer owns it, whoever turned it off; anything after that is
+     the researcher's own. Declared BEFORE the open/close effect on purpose: effects run
+     in declaration order, and the open transition must be able to claim ownership in
+     the same commit that this one observes the pre-open (focus-off) state. */
+  useEffect(() => {
+    if (splitOpen && !focus.focus) focusOwned.current = false;
+  }, [splitOpen, focus.focus]);
   useEffect(() => {
     if (splitOpen === prevSplitOpen.current) return;
     prevSplitOpen.current = splitOpen;
     const api = focusRef.current;
     if (splitOpen) {
-      if (!api.focus && api.setFocus) { api.setFocus(true); focusOwned.current = true; }
+      if (focusAvailableRef.current && !api.focus && api.setFocus) {
+        api.setFocus(true, { fullscreen: false });
+        focusOwned.current = true;
+      }
     } else if (focusOwned.current) {
       focusOwned.current = false;
       if (api.setFocus) api.setFocus(false);
@@ -544,6 +683,103 @@ export function ManuscriptWorkspace({ project, upd, initialSubtab, onSubtabChang
     setReportId(id || '');
     rememberSplit({ refId: (activeArticle && activeArticle.id) || articleId, reportId: id || '', open: true });
   }, [rememberSplit, activeArticle, articleId]);
+
+  /* ══════════ 121.md §3 — the export feedback region, revealed ══════════════════
+     "An export error or warning may appear near the top of the page while the user
+     remains lower on the page and does not understand why the export failed."
+
+     ALL of the reveal lives here because this file is already the one seam that owns
+     both feedback states (`exportError`, `exportReview`), the one every exporter
+     funnels through (`runExport`), and the level the feedback already mounts at —
+     above the panel host, so it is visible from whichever destination started the
+     export. Nothing new is invented: the region is scrolled with the manuscript's own
+     sticky-toolbar-aware `scrollSectionIntoView` (which resolves the correct scroller
+     in every configuration §3 lists) and the heading is focused with
+     `focus({preventScroll:true})` so the browser's default focus-scroll cannot fight
+     the reduced-motion-aware one. */
+  const exportFeedbackRef = useRef(null);
+  const exportHeadingRef = useRef(null);
+
+  /* Blocking vs advisory decides the live-region politeness, and both surfaces feed
+     it: a failed RUN is always blocking (nothing was produced), a review is blocking
+     only when it carries errors. */
+  const exportBlocked = !!exportError
+    || !!(exportReview && exportReview.validation && (exportReview.validation.errors || []).length);
+
+  // See exportRevealKey (above, exported and pinned): stable CONTENT, never the
+  // review object's identity, and '' resets the latch so a dismissed message can be
+  // revealed again if it comes back.
+  const revealKey = exportRevealKey(exportError, exportReview);
+  const lastRevealed = useRef('');
+  useEffect(() => {
+    // Dismissed / resolved: forget it, so raising the SAME message again re-reveals.
+    if (!revealKey) { lastRevealed.current = ''; return undefined; }
+    if (lastRevealed.current === revealKey) return undefined;
+    lastRevealed.current = revealKey;
+    if (typeof window === 'undefined' || typeof document === 'undefined') return undefined;
+    /* ONE requestAnimationFrame — the house pattern (never a setTimeout with a magic
+       delay). React has committed the region by the time an effect runs, and the frame
+       is what guarantees the browser has LAID IT OUT before its box is measured. */
+    const run = () => {
+      const el = exportFeedbackRef.current;
+      if (el) {
+        // 118.md §16/§17 — the sections this scroll crosses must not steal the
+        // Continuous View indicator from where the reader is being taken.
+        suppressActiveScroll(800);
+        scrollSectionIntoView(el);
+      }
+      const h = exportHeadingRef.current;
+      if (h && typeof h.focus === 'function') {
+        try { h.focus({ preventScroll: true }); } catch { h.focus(); }
+      }
+    };
+    const raf = window.requestAnimationFrame
+      ? window.requestAnimationFrame(run)
+      : setTimeout(run, 0);
+    return () => {
+      if (window.cancelAnimationFrame && window.requestAnimationFrame) window.cancelAnimationFrame(raf);
+      else clearTimeout(raf);
+    };
+  }, [revealKey]);
+
+  /* §3 — "If the message relates to a particular section, table, figure, citation or
+     reference, provide a control that navigates directly to it." The validation
+     entries now carry the identity their producing sites always had (see
+     exportValidation.js), and the three navigation callbacks above already implement
+     view-aware scrolling, the suppressActive discipline and object-level reveal — so
+     this is pure routing, not a fourth navigation path. */
+  const goToFinding = useCallback((target) => {
+    if (!target) return;
+    /* 121.md r2 — the References panel lives in the SAME `split-editor` wrapper the
+       comment below is protecting (it is one of the editor tabpanels, not a third
+       pane), so a refId jump in the stacked layout updated a display:none panel and
+       left the PDF on screen: the control appeared to do nothing. Every destination
+       this router can reach is inside that wrapper, so every target is pane-bound. */
+    const editorBound = !!(target.sectionId || target.assetId || target.manualId || target.refId);
+    /* The narrow stacked split shows ONE pane, and the hidden one is display:none —
+       a jump into the editor there would scroll a box with no layout. */
+    if (editorBound) setStackPane('editor');
+    if (target.assetId || target.manualId) {
+      if (target.sectionId) {
+        openAsset({ sectionId: target.sectionId, assetId: target.assetId, manualId: target.manualId });
+        return;
+      }
+      /* 121.md r2 — a GENERATED table/figure is not anchored in the prose, so it has
+         no sectionId and `openAsset` cannot route it — yet the control was rendered
+         anyway and did nothing (stale-asset and included-not-mentioned are the common
+         classes). The object still HAS a home: the Tables & Figures panel, which is
+         literally where these entries' own action text sends the researcher ("Add a
+         title or caption in the Tables & Figures panel", "exclude it from the
+         export"). `kind` is carried by the target from the producing site so this is
+         not an id-string guess. */
+      setTab(target.kind === 'figure' ? 'figures' : 'tables');
+      return;
+    }
+    if (target.sectionId) { openSection(target.sectionId); return; }
+    // A finding about the LIBRARY (incomplete metadata, probable duplicates) is not
+    // anchored in the prose at all; the References panel is where it is fixed.
+    if (target.refId) { openReference(target.refId, 'view'); return; }
+  }, [openAsset, openSection, openReference, setTab]);
 
   const runExport = useCallback(async (key, fn) => {
     setExporting(key);
@@ -740,7 +976,11 @@ export function ManuscriptWorkspace({ project, upd, initialSubtab, onSubtabChang
        column below it narrows (the Editor's outline · page · tools layout, 65.md
        MS-3, needs the full width; the other destinations keep the calmer 900px
        reading column). */
-    <div data-testid="stitch-manuscript-workspace" style={splitOpen ? SPLIT_SHELL_STYLE : SHELL_STYLE}>
+    <div data-testid="stitch-manuscript-workspace"
+      /* 121.md §2 — three states, not two: the ordinary reading column, the wide
+         split column, and the BOUNDED split column the host has taken full-bleed. */
+      data-fills={splitFills ? 'true' : undefined}
+      style={splitFills ? SPLIT_SHELL_BOUNDED : splitOpen ? SPLIT_SHELL_STYLE : SHELL_STYLE}>
       {/* 120.md §8 — the toolbar is told the DESTINATION, which is the projection of
           the panel and the pane. 119.md §4's separate `splitToggle` is deliberately
           NOT passed any more: one state must have one control, and §8 puts that
@@ -774,12 +1014,33 @@ export function ManuscriptWorkspace({ project, upd, initialSubtab, onSubtabChang
       )}
 
       {/* 85.md B2 — pre-export validation review. 118.md keeps it mounted ABOVE
-          every panel so it is visible from whichever destination started the export. */}
-      {exportReview && (
-        <div style={{ maxWidth: 900, margin: '0 auto' }}>
+          every panel so it is visible from whichever destination started the export.
+          121.md §3 — and now it shares ONE live region with the run-error banner: a
+          single announced, focusable, scrolled-to surface, because two of them would
+          make a screen reader say the same failure twice. The four per-panel
+          exportError InfoBoxes stay as UNANNOUNCED echoes (no role, no aria-live) so
+          the message is also local to where the button was pressed. */}
+      {(exportError || exportReview) && (
+        <ExportFeedbackRegion
+          regionRef={exportFeedbackRef}
+          blocked={exportBlocked}
+          headingId={EXPORT_FEEDBACK_HEADING_ID}
+          /* In the bounded split column the region is a flex sibling of the split
+             row, so a long list of findings must scroll inside itself rather than
+             squeeze the writing surface out of the viewport. */
+          style={splitFills ? { flexShrink: 0, maxHeight: '38vh', overflowY: 'auto' } : undefined}>
+          {exportError && (
+            <ExportRunErrorNotice message={exportError}
+              headingId={EXPORT_FEEDBACK_HEADING_ID} headingRef={exportHeadingRef} />
+          )}
           <ExportValidationDialog review={exportReview} exporting={exporting}
-            onExportAnyway={onExportAnyway} onClose={() => setExportReview(null)} />
-        </div>
+            onExportAnyway={onExportAnyway} onClose={() => setExportReview(null)}
+            /* The heading the reveal focuses is the FIRST one in the region: a failed
+               run outranks a review, because it is the thing that just happened. */
+            headingId={exportError ? undefined : EXPORT_FEEDBACK_HEADING_ID}
+            headingRef={exportError ? undefined : exportHeadingRef}
+            onGoTo={goToFinding} />
+        </ExportFeedbackRegion>
       )}
 
       {/* 119.md §4 — the split ROW. Rendered in BOTH states on purpose: the editor
@@ -799,7 +1060,14 @@ export function ManuscriptWorkspace({ project, upd, initialSubtab, onSubtabChang
           // minmax(0, …) on BOTH panes is what keeps a long title or a wide table from
           // widening its column — §4 forbids nested horizontal scrolling.
           gridTemplateColumns: `minmax(0, var(--ms-editor-pct, 50%)) ${SPLIT_DIVIDER_PX}px minmax(0, 1fr)`,
-          alignItems: 'start',
+          /* 121.md §2 — in the bounded column the row IS the remaining height, one
+             explicit row track, and both panes stretch to fill it. Outside it the row
+             keeps 119 §4's content-height behaviour exactly. */
+          ...(splitFills ? {
+            flex: '1 1 0%', minHeight: 0,
+            gridTemplateRows: 'minmax(0, 1fr)',
+            alignItems: 'stretch',
+          } : { alignItems: 'start' }),
         } : { display: 'block' }}
       >
         {/* §4 responsive floor — below ~1024px the row shows ONE pane at a time
@@ -840,12 +1108,17 @@ export function ManuscriptWorkspace({ project, upd, initialSubtab, onSubtabChang
           ))}
         </div>
 
-        {/* The EDITOR pane. This wrapper exists in both layouts and never moves. */}
+        {/* The EDITOR pane. This wrapper exists in both layouts and never moves.
+            121.md §2 — in the bounded column it becomes its OWN scroller: the prose
+            scrolls inside the pane while the ribbon stays put and the PDF beside it
+            never moves, which is what removes the page-level scroll the old
+            `calc(100vh - …)` pane was fighting. */}
         <div
           data-testid="stitch-manuscript-split-editor"
           style={{
             minWidth: 0,
             display: (splitOpen && splitLayout === 'stacked' && stackPane === 'pdf') ? 'none' : 'block',
+            ...(splitFills ? { height: '100%', minHeight: 0, overflowY: 'auto', overflowX: 'hidden' } : null),
           }}
         >
           {/* panels — the tablist's one tabpanel (118.md §42). */}
@@ -903,7 +1176,7 @@ export function ManuscriptWorkspace({ project, upd, initialSubtab, onSubtabChang
         {/* 119.md §4 — the divider and the PDF pane, appended AFTER the editor pane so
             their presence can never shift it. The pane stays MOUNTED in the stacked
             layout (hidden) so switching back to it keeps the open document. */}
-        {splitOpen && splitLayout === 'split' && <SplitResizeDivider split={split} />}
+        {splitOpen && splitLayout === 'split' && <SplitResizeDivider split={split} reduced={reducedMotion} />}
         {/* 120.md §8 — mounted from the first time the pane is opened and NEVER
             unmounted afterwards (see `splitMounted`): closing it hides it, so the
             keep-alive viewer pool, the selected study, the page and the zoom are all
@@ -925,6 +1198,12 @@ export function ManuscriptWorkspace({ project, upd, initialSubtab, onSubtabChang
             onExit={exitSplit}
             split={split}
             layout={splitLayout}
+            /* 121.md §2 — "the PDF viewer must completely fill its assigned pane".
+               In the bounded column the pane is simply 100% of a measured box, so
+               every resize trigger the prompt lists (fullscreen enter/exit, window
+               resize, divider drag, a drawer pinned or unpinned) reaches the viewer
+               through flex and the pane's existing ResizeObserver — no vh math. */
+            bounded={splitFills}
             hidden={!splitOpen || (splitLayout === 'stacked' && stackPane !== 'pdf')}
           />
         )}

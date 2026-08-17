@@ -80,6 +80,53 @@ export function prefersReducedMotion() {
 }
 
 /**
+ * 121.md §2 — the same setting as RENDER state, for the handful of places that must
+ * decide a transition at paint time rather than at scroll time (the split divider's
+ * `reduced` prop). Live: a researcher who turns Reduce Motion on mid-session gets the
+ * calmer divider without a reload. SSR-safe (no matchMedia ⇒ false, no listener).
+ */
+export function useReducedMotion() {
+  const [reduced, setReduced] = useState(() => prefersReducedMotion());
+  useEffect(() => {
+    if (typeof window === 'undefined' || !window.matchMedia) return undefined;
+    let mq = null;
+    try { mq = window.matchMedia('(prefers-reduced-motion: reduce)'); } catch { return undefined; }
+    if (!mq) return undefined;
+    const read = () => setReduced(!!mq.matches);
+    read();
+    if (typeof mq.addEventListener === 'function') {
+      mq.addEventListener('change', read);
+      return () => mq.removeEventListener('change', read);
+    }
+    if (typeof mq.addListener === 'function') {
+      mq.addListener(read);
+      return () => mq.removeListener(read);
+    }
+    return undefined;
+  }, []);
+  return reduced;
+}
+
+/* ══════════ 121.md §3 — one shared "a programmatic scroll is in flight" latch ══════
+   The 118.md §16/§17 invariant is that sections flown past by a programmatic scroll
+   must not steal the active-section indicator, and EditorPanel enforces it with a ref
+   it owns. The export-feedback reveal starts ABOVE that panel (at the workspace seam,
+   which is the only level that sees both feedback states), so it has no access to
+   that ref — and its scroll crosses exactly the same sections. One module-level
+   deadline, read alongside the panel's ref by the observer above, makes the invariant
+   true for both callers without a second indicator authority. */
+let sharedSuppressUntil = 0;
+
+/** Suppress the active-section indicator for `ms` while a programmatic scroll runs. */
+export function suppressActiveScroll(ms = 800) {
+  const n = Number(ms);
+  sharedSuppressUntil = Date.now() + (Number.isFinite(n) && n > 0 ? Math.round(n) : 0);
+}
+
+/** The current shared deadline (0 = none). Exported for the contract tests. */
+export function activeScrollSuppressedUntil() { return sharedSuppressUntil; }
+
+/**
  * The element that actually scrolls this document — the shell's main scroller in
  * Stitch, the workspace's own scroll div in the legacy shell, or null when the
  * page itself scrolls. Found by walking up rather than hard-coding a test id, so
@@ -293,7 +340,7 @@ export function useActiveSectionObserver(rootRef, { enabled, onActive, suppressR
          The update is DEFERRED, never dropped — the last crossing of a smooth scroll
          usually happens inside the window, and swallowing it would leave the
          indicator pointing at wherever the reader came from. */
-      const until = (suppressRef && suppressRef.current) || 0;
+      const until = Math.max((suppressRef && suppressRef.current) || 0, sharedSuppressUntil);
       if (Date.now() < until) {
         if (deferred) clearTimeout(deferred);
         deferred = setTimeout(apply, (until - Date.now()) + 60);

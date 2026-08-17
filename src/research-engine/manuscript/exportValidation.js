@@ -15,6 +15,16 @@
  * Every entry is { code, message, action }. Pure, deterministic and CHEAP —
  * B2 calls this per editor render, so everything expensive (assets, numbering,
  * placements) is taken as INPUT, never recomputed here.
+ *
+ * 121.md §3 adds an OPTIONAL fourth field, `target`, to entries that are about one
+ * identifiable thing: { sectionId?, assetId?, manualId?, refId?, statementKey? }.
+ * Nothing is invented for it — every producing site already held that identity and
+ * was flattening it away (numbering.unresolved.sectionId, a citation token's
+ * sectionId and reference id, a placement warning's sectionId, the asset registry's
+ * sectionId/manualId, the duplicate-caption scan's sectionIds) — which is exactly
+ * what used to make §3's "provide a control that navigates directly to it"
+ * impossible to build. Entries WITHOUT an identity keep the {code,message,action}
+ * shape byte-for-byte, so nothing downstream has to learn a new one.
  */
 
 import {
@@ -70,6 +80,46 @@ export function closestReferenceId(id, knownIds) {
   return bestD <= Math.max(3, Math.floor(String(id || '').length / 2)) ? best : null;
 }
 
+/**
+ * 121.md §3 — build a finding's optional navigation target, dropping empty fields so
+ * an entry with nothing to point at stays exactly the shape it was.
+ *
+ * `statement:<key>` pseudo-sections (validateCitations emits them for the declaration
+ * fields) are recorded as `statementKey` and NEVER as a sectionId: openSection cannot
+ * go there, and a target that quietly fails is worse than no target.
+ */
+function targetOf({ sectionId, assetId, manualId, refId, kind } = {}) {
+  const t = {};
+  const sid = String(sectionId || '');
+  if (sid.startsWith('statement:')) t.statementKey = sid.slice('statement:'.length);
+  else if (sid) t.sectionId = sid;
+  if (assetId) t.assetId = String(assetId);
+  if (manualId) t.manualId = String(manualId);
+  if (refId) t.refId = String(refId);
+  /* 121.md r2 — WHICH PANEL a bare-assetId target belongs to. A GENERATED asset has
+     no sectionId (it is not anchored in the prose), and the workspace routes it to
+     the Tables & Figures panel instead — which needs to know whether it is a table or
+     a figure. The producing site already knows; deriving it from the id prefix in the
+     UI would be a guess about an id format the engine is free to change. */
+  if (assetId && kind) t.kind = String(kind) === 'figure' ? 'figure' : 'table';
+  return Object.keys(t).length ? t : null;
+}
+
+/**
+ * 121.md §3 — can this finding's "Go to it" control actually go somewhere?
+ *
+ * The one rule, pure and exported, so the dialog and its contract tests agree instead
+ * of each restating it. A statement-anchored finding has an identity (`statementKey`)
+ * but no destination the manuscript navigation can reach today, so it answers null
+ * and the control is omitted honestly rather than rendered dead.
+ */
+export function findingTarget(entry) {
+  const t = entry && entry.target;
+  if (!t || typeof t !== 'object') return null;
+  if (t.sectionId || t.assetId || t.manualId || t.refId) return t;
+  return null;
+}
+
 /** Metadata a CITED reference must carry before it is submission-ready (§39). */
 const KEY_REFERENCE_FIELDS = [
   { key: 'title', label: 'title' },
@@ -98,7 +148,11 @@ export function validateCitations(args = {}) {
   const errors = [];
   const warnings = [];
   const info = [];
-  const push = (arr, code, message, action) => arr.push({ code, message, action });
+  // 121.md §3 — `target` is appended ONLY when there is one, so untargeted entries
+  // keep the exact {code,message,action} shape they have always had.
+  const push = (arr, code, message, action, target) => arr.push(
+    target ? { code, message, action, target } : { code, message, action },
+  );
   const refs = Array.isArray(references) ? references : [];
   if (!draft) return { errors, warnings, info };
 
@@ -119,14 +173,16 @@ export function validateCitations(args = {}) {
       if (suppressed.has(id)) {
         push(errors, 'cite-suppressed',
           `The manuscript cites "${raw}" in ${tk.sectionId}, but that reference is hidden from the library.`,
-          'Restore the reference in the References tab, or remove the citation.');
+          'Restore the reference in the References tab, or remove the citation.',
+          targetOf({ sectionId: tk.sectionId }));
         continue;
       }
       const near = closestReferenceId(id, knownIds);
       const nearRef = near ? byId.get(near) : null;
       push(errors, 'cite-unknown',
         `The manuscript cites "${raw}" in ${tk.sectionId}, which is not in the reference library${nearRef ? ` — the closest match is "${nearRef.title || near}"` : ''}.`,
-        nearRef ? 'Re-point the citation from its chip menu, or remove it.' : 'Add the reference to the library, or remove the citation.');
+        nearRef ? 'Re-point the citation from its chip menu, or remove it.' : 'Add the reference to the library, or remove the citation.',
+        targetOf({ sectionId: tk.sectionId }));
     }
   }
 
@@ -137,7 +193,8 @@ export function validateCitations(args = {}) {
     if (!missing.length) continue;
     push(warnings, 'cited-ref-incomplete',
       `Cited reference "${r.title || r.id}" is missing its ${missing.join(' and ')}.`,
-      'Complete the reference in the References tab before submission.');
+      'Complete the reference in the References tab before submission.',
+      targetOf({ refId: r.id }));
   }
 
   // 3. library entries nobody cites — INFO, never a warning: an uncited reference
@@ -154,7 +211,8 @@ export function validateCitations(args = {}) {
   for (const p of dup.pairs.slice(0, 5)) {
     push(warnings, 'duplicate-references',
       `"${p.a.title || p.a.id}" and "${p.b.title || p.b.id}" look like the same work (${p.verdict.reasons.slice(0, 2).join(', ')}).`,
-      'Merge them in the References tab — citations to either one keep working.');
+      'Merge them in the References tab — citations to either one keep working.',
+      targetOf({ refId: p.a.id }));
   }
 
   return { errors, warnings, info };
@@ -198,7 +256,11 @@ export function validateExport(args = {}) {
   const errors = [];
   const warnings = [];
   const info = [];
-  const push = (arr, code, message, action) => arr.push({ code, message, action });
+  // 121.md §3 — see validateCitations: the optional `target` is appended only when
+  // the finding is about one identifiable object.
+  const push = (arr, code, message, action, target) => arr.push(
+    target ? { code, message, action, target } : { code, message, action },
+  );
 
   /* ── ERRORS ── */
 
@@ -212,7 +274,10 @@ export function validateExport(args = {}) {
       const near = closestAssetId(u.id, knownIds);
       push(errors, 'unknown-asset-ref',
         `${u.token} in ${u.sectionId} does not match any table or figure${near ? ` — closest match is "${near}"` : ''}.`,
-        near ? `Change the reference to [[${near}]] or remove it.` : 'Remove or correct the reference.');
+        near ? `Change the reference to [[${near}]] or remove it.` : 'Remove or correct the reference.',
+        // The id does not resolve to an asset, so the destination is the SECTION the
+        // broken reference is written in — where the fix has to be made.
+        targetOf({ sectionId: u.sectionId }));
     } else if (u.reason === 'unavailable') {
       if (seenUnavailable.has(u.id)) continue;
       seenUnavailable.add(u.id);
@@ -220,7 +285,8 @@ export function validateExport(args = {}) {
       const kindLabel = `${assetKindLabel(u.kind)} ?`;
       push(warnings, 'ref-unavailable',
         `${u.token} refers to "${(a && (a.title || a.id)) || u.id}", which has no data yet — it will export as plain "${kindLabel}" and the ${u.kind} will be skipped.`,
-        'Provide the underlying data (or remove the reference) before exporting.');
+        'Provide the underlying data (or remove the reference) before exporting.',
+        targetOf({ sectionId: u.sectionId, assetId: a ? a.id : u.id, kind: (a && a.kind) || u.kind }));
     }
   }
 
@@ -271,7 +337,10 @@ export function validateExport(args = {}) {
     const kindLabel = assetKindLabel(a ? a.kind : 'table');
     push(warnings, 'included-not-mentioned',
       `${kindLabel} "${(a && (a.title || a.id)) || id}" is included but never referenced in the text — it will be placed at the end of the document.`,
-      'Insert a reference where it belongs, or exclude it from the export.');
+      'Insert a reference where it belongs, or exclude it from the export.',
+      // By definition it is NOT in the prose, so a manual table's own section is the
+      // only honest destination; a generated one has none and gets no control.
+      targetOf({ sectionId: a && a.sectionId, assetId: a ? a.id : id, manualId: a && a.manualId, kind: a && a.kind }));
   }
 
   // Emitted assets without any title/caption, and stale ones.
@@ -287,12 +356,14 @@ export function validateExport(args = {}) {
           // 119.md §5 — a PLACED picture's title is its caption line too.
           : (a.origin === 'upload' && a.placed)
             ? 'Give the figure a title in its caption, in the manuscript text.'
-            : 'Add a title or caption in the Tables & Figures panel.');
+            : 'Add a title or caption in the Tables & Figures panel.',
+        targetOf({ sectionId: a.sectionId, assetId: a.id, manualId: a.manualId, kind: a.kind }));
     }
     if (a.stale === true) {
       push(warnings, 'stale-asset',
         `"${a.title || a.id}" may be out of date with the current project data.`,
-        'Refresh project sources, then re-check before exporting.');
+        'Refresh project sources, then re-check before exporting.',
+        targetOf({ sectionId: a.sectionId, assetId: a.id, manualId: a.manualId, kind: a.kind }));
     }
   }
 
@@ -305,7 +376,11 @@ export function validateExport(args = {}) {
     const where = d.sectionLabels.filter(Boolean).join(', ');
     push(warnings, 'duplicate-table-id',
       `Table id "${d.id}" is used by ${d.count} tables${where ? ` (${where})` : ''} — only the first one is numbered and cross-referenced; the others export as unnumbered tables.`,
-      'Delete the repeated caption line and re-add it with “+ Caption” in the editor, which mints a fresh id.');
+      'Delete the repeated caption line and re-add it with “+ Caption” in the editor, which mints a fresh id.',
+      // 121.md §3 — collectDuplicateManualTableIds already carries the section IDS
+      // beside the human labels; the FIRST one is where the surviving numbered copy
+      // is, which is where the researcher starts sorting the duplicates out.
+      targetOf({ sectionId: (d.sectionIds || [])[0], manualId: d.id }));
   }
 
   // Overall generated-content freshness (84.md computeFreshness rollup).
@@ -357,7 +432,8 @@ export function validateExport(args = {}) {
   // consumer downstream. One code, one source.
   for (const w of (pl.warnings || [])) {
     push(warnings, w.code || PLAIN_MENTION_CODE, w.message,
-      'Update or remove the plain-text mention — plain "Table N" text is not renumbered automatically.');
+      'Update or remove the plain-text mention — plain "Table N" text is not renumbered automatically.',
+      targetOf({ sectionId: w.sectionId }));
   }
 
   // Mixed mode: structured tokens AND plain-text "Table N" prose both present.
@@ -413,4 +489,6 @@ export function validateExport(args = {}) {
   return { errors, warnings, info };
 }
 
-export default { validateExport, validateCitations, closestAssetId, closestReferenceId };
+export default {
+  validateExport, validateCitations, closestAssetId, closestReferenceId, findingTarget,
+};

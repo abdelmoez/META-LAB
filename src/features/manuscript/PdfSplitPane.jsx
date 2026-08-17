@@ -24,6 +24,11 @@
 import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { C, btnS, tagS } from '../../frontend/workspace/ui/styles.js';
 import { Icon } from '../../frontend/components/icons.jsx';
+/* 121.md §2 — the SHARED tooltip (the one ManuscriptToolbar uses), deliberately not a
+   Stitch-only primitive: this file renders in both shells. Portaled, so it is never
+   clipped by the split row, and it appears on keyboard focus as well as hover — which
+   a native `title` never does. */
+import Tooltip from '../../frontend/components/Tooltip.jsx';
 import { alpha } from '../../frontend/theme/tokens.js';
 // 117.md §44 — an overlay that consumes Escape must CLAIM the fullscreen exit Escape
 // also causes, or dismissing the article list would drop the whole maximized layout.
@@ -177,47 +182,77 @@ export function useManuscriptSplit(rowRef, prefKey, cssVar = '--ms-editor-pct') 
  * §4 — "Support keyboard resizing and an accessible separator". Copied in behaviour
  * from the RoB divider (role=separator + aria-value* + ←/→/Home), which is the pattern
  * this app has already shipped and tested; the labels name THIS pair of panes.
+ *
+ * 121.md §2 — "the current interface does not adequately communicate that the ratio
+ * can be changed". Everything FUNCTIONAL §2 asks for was already here (live rAF
+ * resizing with no React render, 30–74% minimum widths, a 50/50 default, double-click
+ * reset, per-user cross-visit persistence, role=separator + arrow keys), so this is a
+ * purely VISUAL upgrade and deliberately touches none of it: a full-height hairline
+ * across the 16px gutter so the seam reads as a seam even at rest, a bigger grip
+ * carrying the two-direction ‹ › cue, a deeper hover/active accent in the PecanRev
+ * accent, and the designed Tooltip instead of a native `title` (which no design system
+ * can style and which never appears on keyboard focus). The `reduced` prop — declared
+ * in 119 §4 and never wired until now — is passed from prefers-reduced-motion.
  */
 export function SplitResizeDivider({ split, reduced }) {
   const [hover, setHover] = useState(false);
   const [focused, setFocused] = useState(false);
   const active = hover || focused || split.dragging;
+  const accent = split.dragging ? C.acc : active ? alpha(C.acc, '88') : C.brd2;
   return (
-    <div
-      role="separator"
-      aria-orientation="vertical"
-      tabIndex={0}
-      data-testid="stitch-manuscript-split-divider"
-      aria-label="Resize the manuscript and PDF panes"
-      aria-valuemin={Math.round(SPLIT_MIN * 100)}
-      aria-valuemax={Math.round(SPLIT_MAX * 100)}
-      aria-valuenow={Math.round(split.ratio * 100)}
-      aria-valuetext={`Manuscript ${Math.round(split.ratio * 100)}%, PDF ${100 - Math.round(split.ratio * 100)}%`}
-      onPointerDown={split.onPointerDown}
-      onDoubleClick={split.reset}
-      onMouseEnter={() => setHover(true)}
-      onMouseLeave={() => setHover(false)}
-      onFocus={() => setFocused(true)}
-      onBlur={() => setFocused(false)}
-      onKeyDown={(e) => {
-        if (e.altKey || e.ctrlKey || e.metaKey) return;
-        if (e.key === 'ArrowLeft') { split.nudge(-SPLIT_STEP); e.preventDefault(); }
-        else if (e.key === 'ArrowRight') { split.nudge(SPLIT_STEP); e.preventDefault(); }
-        else if (e.key === 'Home') { split.reset(); e.preventDefault(); }
-      }}
-      title="Drag to resize panes · double-click for 50/50 · ←/→ to nudge"
-      style={{
-        alignSelf: 'stretch', display: 'flex', alignItems: 'center', justifyContent: 'center',
-        cursor: 'col-resize', touchAction: 'none', outline: 'none',
-      }}
-    >
-      <span style={{
-        width: active ? 5 : 3, height: active ? 64 : 44, borderRadius: 5,
-        background: split.dragging ? C.acc : active ? alpha(C.acc, '80') : C.brd2,
-        boxShadow: (split.dragging || focused) ? `0 0 0 3px ${alpha(C.acc, '22')}` : 'none',
-        transition: reduced ? 'none' : 'all 0.15s ease',
-      }} />
-    </div>
+    <Tooltip content="Drag to resize editor and PDF" placement="top"
+      /* A bubble that follows the pointer through the whole drag is noise, not help. */
+      disabled={split.dragging}
+      wrapStyle={{ alignSelf: 'stretch', display: 'flex', minWidth: 0 }}>
+      <div
+        role="separator"
+        aria-orientation="vertical"
+        tabIndex={0}
+        data-testid="stitch-manuscript-split-divider"
+        data-active={active ? 'true' : undefined}
+        aria-label="Resize the manuscript and PDF panes"
+        aria-valuemin={Math.round(SPLIT_MIN * 100)}
+        aria-valuemax={Math.round(SPLIT_MAX * 100)}
+        aria-valuenow={Math.round(split.ratio * 100)}
+        aria-valuetext={`Manuscript ${Math.round(split.ratio * 100)}%, PDF ${100 - Math.round(split.ratio * 100)}%`}
+        onPointerDown={split.onPointerDown}
+        onDoubleClick={split.reset}
+        onMouseEnter={() => setHover(true)}
+        onMouseLeave={() => setHover(false)}
+        onFocus={() => setFocused(true)}
+        onBlur={() => setFocused(false)}
+        onKeyDown={(e) => {
+          if (e.altKey || e.ctrlKey || e.metaKey) return;
+          if (e.key === 'ArrowLeft') { split.nudge(-SPLIT_STEP); e.preventDefault(); }
+          else if (e.key === 'ArrowRight') { split.nudge(SPLIT_STEP); e.preventDefault(); }
+          else if (e.key === 'Home') { split.reset(); e.preventDefault(); }
+        }}
+        style={{
+          flex: '1 1 auto', alignSelf: 'stretch', position: 'relative',
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+          cursor: 'col-resize', touchAction: 'none', outline: 'none',
+        }}
+      >
+        {/* The separator LINE — full height, one hairline, always visible. */}
+        <span aria-hidden="true" data-testid="stitch-manuscript-split-divider-line" style={{
+          position: 'absolute', top: 0, bottom: 0, left: '50%', width: 1, marginLeft: -0.5,
+          background: active ? accent : C.brd,
+          transition: reduced ? 'none' : 'background 0.15s ease',
+        }} />
+        {/* …and the GRIP, which is the part that says "you can move me". */}
+        <span aria-hidden="true" data-testid="stitch-manuscript-split-divider-grip" style={{
+          position: 'relative',
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+          width: active ? 14 : 10, height: active ? 72 : 56, borderRadius: 7,
+          background: split.dragging ? C.acc : active ? alpha(C.acc, '1f') : C.card2,
+          border: `1px solid ${active ? accent : C.brd2}`,
+          boxShadow: (split.dragging || focused) ? `0 0 0 3px ${alpha(C.acc, '22')}` : 'none',
+          color: split.dragging ? C.card : active ? C.acc : C.muted,
+          fontSize: 9, lineHeight: 1, letterSpacing: -1, fontWeight: 700,
+          transition: reduced ? 'none' : 'all 0.15s ease',
+        }}>‹›</span>
+      </div>
+    </Tooltip>
   );
 }
 
@@ -470,7 +505,7 @@ function ReportViewer({ entry, projectId }) {
 export function PdfSplitPane({
   projectId, articles, activeArticle, activeReportId, onPickArticle, onPickReport,
   resolved, screenProjectId, onOpenRecord, onExit, split, layout, condensed = false, height,
-  hidden = false,
+  hidden = false, bounded = false,
 }) {
   /* The multi-report axis (§4 "Multiple reports associated with one study") is
      resolved LAZILY for the SELECTED article only: listing documents for every
@@ -532,11 +567,26 @@ export function PdfSplitPane({
         // The stacked layout HIDES this pane rather than unmounting it, so the open
         // document (and the viewer's own page/zoom/search) survives a pane switch.
         display: hidden ? 'none' : 'flex',
-        position: layout === 'split' ? 'sticky' : 'static',
-        top: layout === 'split' ? 8 : undefined,
-        alignSelf: 'start',
-        height: height || 'calc(100vh - 150px)',
-        minHeight: 380,
+        /* 121.md §2 — BOUNDED is the fix for "the PDF viewer occupies only part of
+           its available region in fullscreen". The old `calc(100vh - 150px)` was a
+           guess that matched no chrome configuration this app has: in the focused /
+           fullscreen layout it left a ~100px dead strip below the pane, and it could
+           not react to any of the resize triggers §2 lists because nothing measured
+           the real available height. Inside the host's bounded column there is
+           nothing to measure — the pane is 100% of a box whose height already came
+           from the real chrome, so flex does all of it. Sticky goes with it: sticky
+           belongs to a column that scrolls, and this one does not.
+           Outside that column (the stacked narrow layout, a host with no full-bleed
+           seam) the 119 §4 behaviour is kept exactly as it was. */
+        ...(bounded ? {
+          position: 'static', alignSelf: 'stretch', height: '100%', minHeight: 0,
+        } : {
+          position: layout === 'split' ? 'sticky' : 'static',
+          top: layout === 'split' ? 8 : undefined,
+          alignSelf: 'start',
+          height: height || 'calc(100vh - 150px)',
+          minHeight: 380,
+        }),
       }}
     >
       {/* §4 — the compact, dedicated workspace toolbar. */}
