@@ -34,7 +34,7 @@
     "nodemailer": "^9.0.3",
     "qrcode": "^1.5.4",
     "uuid": "^11.0.3",
-    "zod": "^3.25.76"
+    "zod": "^4.4.3"
   },
   "devDependencies": {
     "prisma": "^5.22.0"
