@@ -23,7 +23,7 @@
  * The version/commit rules live in ./smoke-version-check.mjs (pure, unit-tested
  * by tests/unit/smokeDeploy.test.js).
  */
-import { checkVersion } from './smoke-version-check.mjs';
+import { checkVersion, describeFetchError } from './smoke-version-check.mjs';
 
 const BASE = (process.env.SMOKE_BASE || process.env.API_BASE || 'http://localhost:3001').replace(/\/+$/, '');
 const EXPECT_COMMIT = (process.env.EXPECT_COMMIT || '').trim();
@@ -49,27 +49,27 @@ async function getJson(path) {
 async function main() {
   // 1. Health
   try { const { res, body } = await getJson('/api/health'); rec('health', res.ok && body?.status === 'ok', body?.version ? `v${body.version}` : ''); }
-  catch (e) { rec('health', false, e.message); }
+  catch (e) { rec('health', false, describeFetchError(e)); }
 
   // 2. Readiness (DB)
   try { const { res, body } = await getJson('/api/health/ready'); rec('readiness(db)', res.ok && body?.checks?.database === 'ok', `db ${body?.dbLatencyMs ?? '?'}ms`); }
-  catch (e) { rec('readiness(db)', false, e.message); }
+  catch (e) { rec('readiness(db)', false, describeFetchError(e)); }
 
   // 3. Version (+ optional commit match)
   try {
     const { res, body } = await getJson('/api/version');
     const v = checkVersion(body, { expectCommit: EXPECT_COMMIT, expectVersion: EXPECT_VERSION });
     rec('version', res.ok && v.ok, res.ok ? v.detail : `HTTP ${res.status} — ${v.detail}`);
-  } catch (e) { rec('version', false, e.message); }
+  } catch (e) { rec('version', false, describeFetchError(e)); }
 
   // 4. Protected route rejects unauthenticated callers
   try { const { res } = await getJson('/api/auth/me'); rec('protected-route-guard', res.status === 401); }
-  catch (e) { rec('protected-route-guard', false, e.message); }
+  catch (e) { rec('protected-route-guard', false, describeFetchError(e)); }
 
   // 5. Public settings (SPA bootstrap)
   let publicSettings = null;
   try { const { res, body } = await getJson('/api/settings/public'); publicSettings = body; rec('public-settings', res.ok); }
-  catch (e) { rec('public-settings', false, e.message); }
+  catch (e) { rec('public-settings', false, describeFetchError(e)); }
 
   // 6. Waitlist DB reachable whenever the betaWaitlist flag is ON. The public
   //    count endpoint is deliberately 200-{count:null} on ANY DB failure, so a
@@ -86,7 +86,7 @@ async function main() {
         ? `count=${body.count}`
         : 'waitlist DB unavailable while betaWaitlist flag is ON (GET /api/waitlist/count did not return an integer count)');
     }
-  } catch (e) { rec('waitlist-db', false, e.message); }
+  } catch (e) { rec('waitlist-db', false, describeFetchError(e)); }
 
   // 7. 94.md — Google OAuth start must 302 either to accounts.google.com (when
   //    configured) or to the safe not-configured error redirect. Both PASS; the
@@ -98,7 +98,7 @@ async function main() {
     const unconfigured = loc.includes('googleError=GOOGLE_NOT_CONFIGURED');
     rec('google-oauth-start', res.status === 302 && (configured || unconfigured),
       configured ? 'configured — redirects to Google' : unconfigured ? 'not configured — safe error redirect' : `status=${res.status} location=${loc.slice(0, 80)}`);
-  } catch (e) { rec('google-oauth-start', false, e.message); }
+  } catch (e) { rec('google-oauth-start', false, describeFetchError(e)); }
 
   // 8. 94.md §3.7 — auth/OAuth responses must never be cacheable. The app-wide
   //    apiNoStore should stamp every /api response; verify on the OAuth surface.
@@ -106,7 +106,7 @@ async function main() {
     const res = await fetch(`${BASE}/api/auth/google/start`, { redirect: 'manual' });
     const cc = (res.headers.get('cache-control') || '').toLowerCase();
     rec('api-no-store', cc.includes('no-store'), cc || 'missing Cache-Control');
-  } catch (e) { rec('api-no-store', false, e.message); }
+  } catch (e) { rec('api-no-store', false, describeFetchError(e)); }
 
   // 9. 94.md §3.7 — hashed assets should carry the immutable CDN caching header.
   //    Informational: parse one /assets URL out of the SPA HTML; skip gracefully
@@ -123,7 +123,7 @@ async function main() {
       rec('asset-immutable-cache', aRes.ok && cc.includes('max-age=31536000'),
         `${m[0].slice(0, 60)} → ${cc || 'no Cache-Control'}`);
     }
-  } catch (e) { rec('asset-immutable-cache', true, `skipped — ${e.message}`); }
+  } catch (e) { rec('asset-immutable-cache', true, `skipped — ${describeFetchError(e)}`); }
 
   const passed = results.filter((r) => r.ok).length;
   for (const r of results) console.log(`${r.ok ? 'PASS' : 'FAIL'}  ${r.name}${r.detail ? '  — ' + r.detail : ''}`);
@@ -131,4 +131,4 @@ async function main() {
   process.exit(passed === results.length ? 0 : 1);
 }
 
-main().catch((e) => { console.error('Smoke runner error:', e.message); process.exit(1); });
+main().catch((e) => { console.error('Smoke runner error:', describeFetchError(e)); process.exit(1); });

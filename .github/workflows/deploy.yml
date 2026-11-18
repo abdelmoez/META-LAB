@@ -256,10 +256,13 @@ jobs:
       - name: Post-deploy smoke test
         env:
           SMOKE_BASE: ${{ secrets.SMOKE_BASE }}
-          VPS_HOST: ${{ secrets.VPS_HOST }}
           EXPECT_COMMIT: ${{ github.sha }}
         run: |
-          BASE="${SMOKE_BASE:-https://${VPS_HOST}}"
+          # 122 — the smoke target is the PUBLIC site. VPS_HOST is the server's SSH
+          # address, which does not answer public HTTPS requests, so the old
+          # https://$VPS_HOST fallback made every check end in "fetch failed" and every
+          # deploy look failed. SMOKE_BASE remains an optional override (e.g. staging).
+          BASE="${SMOKE_BASE:-https://pecanrev.com}"
           EXPECT_VERSION="$(node -p "require('./package.json').version")"
           echo "Smoke testing $BASE (expect v$EXPECT_VERSION)"
           for i in 1 2 3 4 5; do

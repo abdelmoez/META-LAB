@@ -9,7 +9,7 @@
  * (c) still enforce EXPECT_COMMIT whenever a commit IS present.
  */
 import { describe, it, expect } from 'vitest';
-import { checkVersion } from '../../scripts/smoke-version-check.mjs';
+import { checkVersion, describeFetchError } from '../../scripts/smoke-version-check.mjs';
 
 const SHA = '440f65865fbf8951fc74836822586e19b9a7ccf2';
 
@@ -44,5 +44,38 @@ describe('smoke-deploy checkVersion', () => {
 
   it('without expectations only requires a version (local/manual use)', () => {
     expect(checkVersion({ version: '4.29.0' }).ok).toBe(true);
+  });
+});
+
+describe('smoke-deploy describeFetchError', () => {
+  it('returns the message of a plain Error without a cause', () => {
+    expect(describeFetchError(new Error('boom'))).toBe('boom');
+  });
+
+  it('appends the cause code when the cause has one', () => {
+    const e = new TypeError('fetch failed', { cause: { code: 'ECONNREFUSED', message: 'connect ECONNREFUSED' } });
+    expect(describeFetchError(e)).toBe('fetch failed (ECONNREFUSED)');
+  });
+
+  it('falls back to the cause message when the cause has no code', () => {
+    const e = new TypeError('fetch failed', { cause: new Error("Hostname/IP does not match certificate's altnames") });
+    expect(describeFetchError(e)).toBe("fetch failed (Hostname/IP does not match certificate's altnames)");
+  });
+
+  it('reports an AbortError (and TimeoutError) as a timeout', () => {
+    const a = new Error('This operation was aborted'); a.name = 'AbortError';
+    const t = new Error('The operation timed out'); t.name = 'TimeoutError';
+    expect(describeFetchError(a)).toBe('request timed out');
+    expect(describeFetchError(t)).toBe('request timed out');
+  });
+
+  it('handles a non-Error value', () => {
+    expect(describeFetchError('plain string failure')).toBe('plain string failure');
+  });
+
+  it('keeps one line and caps the length at 200 characters', () => {
+    const r = describeFetchError(new Error('a\nb' + 'x'.repeat(300)));
+    expect(r).not.toMatch(/\n/);
+    expect(r.length).toBe(200);
   });
 });

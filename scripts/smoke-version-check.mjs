@@ -39,3 +39,23 @@ export function checkVersion(body, { expectCommit = '', expectVersion = '' } = {
   const head = `v${version || '?'}${expectVersion && version === expectVersion ? ' (matches expected)' : ''}`;
   return { ok: problems.length === 0, detail: [head, commitNote, ...problems].join(' — ') };
 }
+
+/**
+ * describeFetchError
+ *   - an abort/timeout (AbortError / TimeoutError) → 'request timed out';
+ *   - otherwise the error message (or String(e)), plus the underlying reason in
+ *     parentheses when `e.cause` carries one (`cause.code`, else `cause.message`),
+ *     e.g. "fetch failed (ECONNREFUSED)". Single line, at most 200 characters.
+ * @param {any} e the value caught from a failed request
+ * @returns {string}
+ */
+export function describeFetchError(e) {
+  if (e?.name === 'AbortError' || e?.name === 'TimeoutError') return 'request timed out';
+  let out = e?.message || String(e);
+  if (e?.cause) {
+    const c = e.cause;
+    const why = typeof c.code === 'string' && c.code ? c.code : (typeof c.message === 'string' && c.message ? c.message : '');
+    if (why) out += ` (${why})`;
+  }
+  return out.replace(/\s*[\r\n]+\s*/g, ' ').slice(0, 200);
+}
