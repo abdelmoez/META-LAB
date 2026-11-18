@@ -23,8 +23,15 @@ async function api(p, { method = 'GET', body, cookie } = {}) {
   return { res, json };
 }
 async function loginAdmin() {
-  for (const password of [process.env.ADMIN_SEED_PASSWORD, process.env.ADMIN_PASS, 'LocalDevAdmin!2026'].filter(Boolean)) {
-    const { res } = await api('/auth/login', { method: 'POST', body: { email: 'admin@example.com', password } });
+  // The env-configured seeded admin first (CI seeds ADMIN_EMAIL_1 — see deploy.yml),
+  // then the local dev admin with its candidate passwords.
+  const envEmail = process.env.ADMIN_EMAIL_1 || process.env.ADMIN_EMAIL;
+  const candidates = [
+    [envEmail, process.env.ADMIN_SEED_PASSWORD],
+    ...[process.env.ADMIN_SEED_PASSWORD, process.env.ADMIN_PASS, 'LocalDevAdmin!2026'].map((pw) => ['admin@example.com', pw]),
+  ].filter(([e, pw]) => e && pw);
+  for (const [email, password] of candidates) {
+    const { res } = await api('/auth/login', { method: 'POST', body: { email, password } });
     const c = cookieFrom(res);
     if (res.status === 200 && c) return c;
   }
@@ -79,8 +86,10 @@ describe('95.md admin user management', () => {
 
   it('pagination stays fast and sorted at the 14k-user dev DB scale', async () => {
     if (!admin) return;
+    // Page 100 on the ~14k-user dev DB; on a fresh (CI) DB the deepest page that exists.
+    const page = Math.max(1, Math.min(100, Math.ceil((await prisma.user.count()) / 25)));
     const t0 = Date.now();
-    const { json } = await api('/admin/users?page=100&limit=25&sort=created&order=asc', { cookie: admin });
+    const { json } = await api(`/admin/users?page=${page}&limit=25&sort=created&order=asc`, { cookie: admin });
     expect(json.users.length).toBeGreaterThan(0);
     expect(Date.now() - t0).toBeLessThan(3000);
     const ts = json.users.map((u) => new Date(u.createdAt).getTime());
@@ -91,7 +100,8 @@ describe('95.md admin user management', () => {
     if (!admin) return;
     const all = await api('/admin/users/metrics', { cookie: admin });
     expect(all.json.filtered).toBe(false);
-    expect(all.json.metrics.total).toBeGreaterThan(1000);
+    // Unfiltered total must equal the real user count (was "> 1000", a dev-DB-size assumption).
+    expect(all.json.metrics.total).toBe(await prisma.user.count());
     expect(all.json.metrics.googleRegistered).toBeGreaterThanOrEqual(1);
     const f = await api('/admin/users/metrics?status=suspended', { cookie: admin });
     expect(f.json.filtered).toBe(true);

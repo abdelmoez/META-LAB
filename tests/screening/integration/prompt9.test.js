@@ -65,8 +65,17 @@ async function makePair(name) {
 beforeAll(async () => {
   try { const r = await fetch(BASE + '/health'); up = r.ok; } catch { up = false; }
   if (up) {
-    const r = await api('/auth/login', { method: 'POST', body: { email: 'admin@metalab.local', password: process.env.ADMIN_SEED_PASSWORD || 'MetaLabAdmin2026!' } });
-    adminCookie = r.status === 200 ? r.cookie : '';
+    // The env-configured seeded admin (ADMIN_EMAIL_1 — what CI seeds) first, then the dev admin.
+    const envEmail = process.env.ADMIN_EMAIL_1 || process.env.ADMIN_EMAIL;
+    const candidates = [
+      [envEmail, process.env.ADMIN_SEED_PASSWORD],
+      ['admin@metalab.local', process.env.ADMIN_SEED_PASSWORD || 'MetaLabAdmin2026!'],
+    ].filter(([e, pw]) => e && pw);
+    for (const [email, password] of candidates) {
+      if (adminCookie) break;
+      const r = await api('/auth/login', { method: 'POST', body: { email, password } });
+      adminCookie = r.status === 200 ? r.cookie : '';
+    }
   }
 }, 30000);
 

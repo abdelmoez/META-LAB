@@ -43,11 +43,16 @@ beforeAll(async () => {
     try { const r = await fetch(BASE + '/health'); up = r.ok; } catch { up = false; }
   }
   if (up) {
-    const candidates = [...new Set([process.env.ADMIN_SEED_PASSWORD, 'MetaLabAdmin2026!'].filter(Boolean))];
-    for (const password of candidates) {
+    // The env-configured seeded admin (ADMIN_EMAIL_1 — what CI seeds) is tried first.
+    const envEmail = process.env.ADMIN_EMAIL_1 || process.env.ADMIN_EMAIL;
+    const candidates = [
+      [envEmail, process.env.ADMIN_SEED_PASSWORD],
+      ...[...new Set([process.env.ADMIN_SEED_PASSWORD, 'MetaLabAdmin2026!'])].map((pw) => ['admin@metalab.local', pw]),
+    ].filter(([e, pw]) => e && pw);
+    for (const [email, password] of candidates) {
       if (adminCookie) break;
       try {
-        const r = await api('/auth/login', { method: 'POST', body: { email: 'admin@metalab.local', password } });
+        const r = await api('/auth/login', { method: 'POST', body: { email, password } });
         adminCookie = r.status === 200 ? r.cookie : '';
       } catch { adminCookie = ''; }
     }

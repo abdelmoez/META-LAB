@@ -228,13 +228,27 @@ jobs:
           key: ${{ secrets.VPS_SSH_KEY }}
           script_stop: true
           command_timeout: 15m
-          script: bash /usr/local/bin/metalab-deploy.sh
+          # 122 — pin the deploy to THIS run's commit. Without the pin the script
+          # deploys whatever origin/main is when it runs, so a push landing
+          # mid-run could be deployed by the older run and then fail its smoke
+          # (which expects the older run's version). With it, each run deploys
+          # and then verifies exactly its own commit. metalab-deploy.sh already
+          # honours DEPLOY_REF (it fetches first, then resolves the ref); an older
+          # installed script that ignores DEPLOY_REF is unaffected.
+          script: DEPLOY_REF=${{ github.sha }} bash /usr/local/bin/metalab-deploy.sh
 
       # ── Post-deploy smoke test (prompt49 §11) ──────────────────────────────
-      # Hits the live deployment: health, readiness (DB), version (matches the
-      # deployed commit), a protected route's 401, and public settings. Retries
-      # a few times to allow the service to come up, then fails the workflow if
-      # the deployment is unhealthy (so the failure is visible in deploy logs).
+      # Hits the live deployment: health, readiness (DB), version, a protected
+      # route's 401, public settings, waitlist DB, OAuth start, cache headers.
+      # Version: the public /api/version body is { name, version } only — the
+      # commit hash is returned to authenticated callers only (prompt 52, build
+      # metadata is fingerprinting) — so the smoke requires the public version
+      # to EQUAL the checked-out package.json version (EXPECT_VERSION), skips
+      # the commit comparison when no commit is exposed, and still enforces
+      # EXPECT_COMMIT whenever a commit is present. Commit identity of the
+      # release is proven by the pinned, readiness-gated deploy step above.
+      # Retries a few times to allow the service to come up, then fails the
+      # workflow if the deployment is unhealthy (visible in deploy logs).
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
@@ -246,9 +260,10 @@ jobs:
           EXPECT_COMMIT: ${{ github.sha }}
         run: |
           BASE="${SMOKE_BASE:-https://${VPS_HOST}}"
-          echo "Smoke testing $BASE"
+          EXPECT_VERSION="$(node -p "require('./package.json').version")"
+          echo "Smoke testing $BASE (expect v$EXPECT_VERSION)"
           for i in 1 2 3 4 5; do
-            if SMOKE_BASE="$BASE" node scripts/smoke-deploy.mjs; then exit 0; fi
+            if SMOKE_BASE="$BASE" EXPECT_VERSION="$EXPECT_VERSION" node scripts/smoke-deploy.mjs; then exit 0; fi
             echo "smoke attempt $i failed; retrying in 10s…"; sleep 10
           done
           echo "Post-deploy smoke test failed after retries"; exit 1

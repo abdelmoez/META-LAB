@@ -5,7 +5,12 @@
  * Verifies a deployed PecanRev target is healthy WITHOUT any secrets:
  *   - health responds + reports a version
  *   - readiness passes (DB connectivity)
- *   - version endpoint responds (optionally matches EXPECT_COMMIT)
+ *   - version endpoint responds; with EXPECT_VERSION its public `version` must
+ *     equal it exactly. The commit hash is deliberately returned ONLY to
+ *     authenticated callers (prompt 52 — build metadata is fingerprinting), so
+ *     this unauthenticated smoke normally sees no commit: the EXPECT_COMMIT
+ *     comparison is then SKIPPED (and the detail line says so). Whenever a
+ *     commit IS present in the body it must still match EXPECT_COMMIT.
  *   - a protected route rejects unauthenticated callers (401)
  *   - public settings (the SPA's bootstrap) respond
  *   - when the betaWaitlist flag is ON, the waitlist DB answers with a real
@@ -13,12 +18,16 @@
  *     down and public submits 503 even though the page renders)
  *
  * Usage:
- *   SMOKE_BASE=https://pecanrev.com [EXPECT_COMMIT=<sha>] node scripts/smoke-deploy.mjs
+ *   SMOKE_BASE=https://pecanrev.com [EXPECT_VERSION=<x.y.z>] [EXPECT_COMMIT=<sha>] node scripts/smoke-deploy.mjs
  * Exits 0 when all checks pass, 1 otherwise (so CI/deploy can fail/rollback).
+ * The version/commit rules live in ./smoke-version-check.mjs (pure, unit-tested
+ * by tests/unit/smokeDeploy.test.js).
  */
+import { checkVersion } from './smoke-version-check.mjs';
 
 const BASE = (process.env.SMOKE_BASE || process.env.API_BASE || 'http://localhost:3001').replace(/\/+$/, '');
 const EXPECT_COMMIT = (process.env.EXPECT_COMMIT || '').trim();
+const EXPECT_VERSION = (process.env.EXPECT_VERSION || '').trim();
 const TIMEOUT_MS = Number(process.env.SMOKE_TIMEOUT_MS || 8000);
 
 const results = [];
@@ -49,9 +58,8 @@ async function main() {
   // 3. Version (+ optional commit match)
   try {
     const { res, body } = await getJson('/api/version');
-    const commit = body?.commit || '';
-    const commitOk = !EXPECT_COMMIT || (commit && (EXPECT_COMMIT.startsWith(commit) || commit.startsWith(EXPECT_COMMIT)));
-    rec('version', res.ok && !!body?.version && commitOk, `v${body?.version} @ ${commit || '?'}`);
+    const v = checkVersion(body, { expectCommit: EXPECT_COMMIT, expectVersion: EXPECT_VERSION });
+    rec('version', res.ok && v.ok, res.ok ? v.detail : `HTTP ${res.status} — ${v.detail}`);
   } catch (e) { rec('version', false, e.message); }
 
   // 4. Protected route rejects unauthenticated callers
