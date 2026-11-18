@@ -112,3 +112,11 @@ scripts/loadtest/last-run.json
 # never in git, wherever the JSON was dropped.
 client_secret*.json
 **/client_secret*.json
+
+# 122.md — local-only copies of the repository dropped under .claude/ for
+# reconciliation work: an extracted development sandbox (a nested git repo with
+# its own env file and databases), its archive, and macOS zip metadata. They must
+# never be staged — a broad `git add` would otherwise sweep them into a public repo.
+.claude/pecanrev-dev-sandbox/
+.claude/pecanrev-dev-sandbox.zip
+.claude/__MACOSX/

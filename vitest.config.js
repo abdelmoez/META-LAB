@@ -10,7 +10,11 @@ export default defineConfig({
     // The Playwright E2E suite lives under e2e/ and uses @playwright/test (NOT vitest);
     // exclude it so `vitest run` never tries to collect *.spec.ts there. Keep vitest's
     // own defaults for node_modules/dist/etc.
-    exclude: ['e2e/**', 'playwright-report/**', '**/node_modules/**', '**/dist/**', '.{idea,git,cache,output,temp}/**'],
+    // 122.md — `.claude/` holds prompts, agent worktrees and (locally) extracted
+    // copies of the repo. None of it is part of the suite, and a copy's test files
+    // are collected as hundreds of false failures (they resolve against foreign
+    // node_modules). ESLint already ignores `.claude/**`; the test gate must too.
+    exclude: ['e2e/**', 'playwright-report/**', '.claude/**', '**/node_modules/**', '**/dist/**', '.{idea,git,cache,output,temp}/**'],
     // Integration tests do real bcrypt (cost 12) + HTTP round-trips — they need extra time.
     // Unit tests are fast; this ceiling doesn't hurt them. The heavy-setup integration
     // files (multi-user register + workspace/member seeding) can exceed 10s for their
