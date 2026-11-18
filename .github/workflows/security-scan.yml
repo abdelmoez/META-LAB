@@ -5,12 +5,14 @@
 #   gitleaks  — full-history secret scan (fetch-depth: 0) using the repo-tuned
 #               .gitleaks.toml. Needs only GITHUB_TOKEN (no GITLEAKS_LICENSE:
 #               this is an individual/org-free repo). HARD gate: a detected
-#               secret fails the workflow.
+#               secret fails the workflow. Triaged historical false positives
+#               are pinned by exact fingerprint (commit:path:rule:line) in the
+#               root .gitleaksignore, each with a one-line reason (122); a real
+#               secret is rotated, never listed there.
 #   npm-audit — production-dependency audit at high+ severity for BOTH package
-#               trees (root + server/). Root is a HARD gate (clean as of 93.md).
-#               server/ is REPORT-ONLY for now — see the loud comment on that
-#               step for the currently-known vulnerabilities and the promotion
-#               condition.
+#               trees (root + server/). BOTH are HARD gates — see the comments
+#               on each step for the current state and the known-acceptable
+#               moderate findings.
 #
 # Triggers: every push to main, weekly (Mon 06:00 UTC — fresh advisories land
 # continuously, so a quiet repo still gets scanned), and manual dispatch.
@@ -49,17 +51,23 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '20'
-      # Root tree: CLEAN as of 93.md ("found 0 vulnerabilities") → HARD gate.
+      # Root tree: HARD gate. Clean as of 122 ("found 0 vulnerabilities" for
+      # production deps, after the react-router / set-cookie-parser bumps).
       # A new high/critical prod vulnerability in the frontend/build tree fails
       # this workflow until fixed or explicitly triaged.
       - name: npm audit — root (hard gate)
         run: npm audit --omit=dev --audit-level=high
 
-      # Hard gate since the 93.md round-2 upgrades: multer 2.2.0 (DoS fixes) and
-      # nodemailer 9.0.3 (raw-option file-read/SSRF fix) resolved the known high
-      # findings. Remaining known-acceptable: MODERATE ip-address via the
-      # geoip-lite optionalDependency (GHSA-v2v4-37r5-5v8g — XSS in Address6
-      # HTML emitters the app never calls); --audit-level=high ignores it.
+      # server/ tree: HARD gate. High findings cleared in 122 by nodemailer 10.6.0
+      # (addressparser/SMTP DoS advisories), zod 4.6.7 (GHSA-mrhx-c7xc-m3w5; the
+      # schemas use the classic API via 'zod/v3', and bounded arrays have their
+      # size checked from `length` alone before any element is parsed —
+      # server/schemas/countFirstArray.js; the Zod 4 API migration is a tracked
+      # follow-up) and an
+      # `overrides` pin of ip-address ^10.7.6 under the geoip-lite
+      # optionalDependency (only its updatedb script loads ip-address; the app
+      # never does). Remaining known-acceptable: MODERATE qs via express/body-parser
+      # (GHSA-4mjr-xmp4-gh2g, GHSA-6pq8-jhm2-2vcw); --audit-level=high ignores it.
       - name: npm audit — server (hard gate)
         run: npm audit --omit=dev --audit-level=high
         working-directory: server

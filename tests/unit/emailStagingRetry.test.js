@@ -19,9 +19,11 @@ vi.mock('../../server/utils/usage.js', () => ({
 // server/node_modules (the server has its own package.json), so the bare
 // specifier 'nodemailer' resolves to a different file id from this test file
 // than from server/services/* — the mock must target the RESOLVED entry file
-// so it intercepts the service's dynamic `import('nodemailer')`.
+// so it intercepts the service's dynamic `import('nodemailer')`. Since nodemailer
+// 10 (122) that ESM entry is dist/esm/nodemailer.js (package "exports" → import);
+// 9.x shipped lib/nodemailer.js.
 const sendMailMock = vi.fn();
-vi.mock('../../server/node_modules/nodemailer/lib/nodemailer.js', () => ({
+vi.mock('../../server/node_modules/nodemailer/dist/esm/nodemailer.js', () => ({
   default: { createTransport: () => ({ sendMail: sendMailMock }) },
 }));
 

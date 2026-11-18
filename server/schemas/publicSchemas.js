@@ -24,7 +24,9 @@
  * the domain layer's trims/slices keep behaving exactly as before.
  */
 
-import { z } from 'zod';
+// Zod 4 package, classic Zod 3 API via 'zod/v3' (122); migrating to the Zod 4 API is a deliberate separate follow-up.
+import { z } from 'zod/v3';
+import { countFirstArray } from './countFirstArray.js';
 
 // RFC 5321 path ceiling (320) — format is checked by the controllers.
 const looseEmail = z.string().max(320, 'email is too long').nullish();
@@ -98,7 +100,8 @@ export const waitlistSubmitSchema = z
     annualReviewVolume: str(200, 'annualReviewVolume'),
     workingStyle: str(100, 'workingStyle'),
     teamSize: str(100, 'teamSize'),
-    areasOfInterest: z.array(z.string().max(200, 'interest is too long')).max(100, 'too many interests').nullish(),
+    // countFirstArray: reject >100 entries with ONE issue before any entry is parsed (122).
+    areasOfInterest: countFirstArray(z.array(z.string().max(200, 'interest is too long')).max(100, 'too many interests')).nullish(),
     referralSource: str(200, 'referralSource'),
     referralOther: str(300, 'referralOther'),
     message: str(5000, 'message'),

@@ -48,8 +48,8 @@ const { sendMail, createTransport, emailTemplate, user, usageEvent } = vi.hoiste
 // package.json), so the bare specifier resolves to a different file id from this
 // test than from server/services/* — the mock must name the RESOLVED entry file
 // to intercept the service's dynamic import(). Same target as
-// tests/unit/emailStagingRetry.test.js.
-vi.mock('../../../server/node_modules/nodemailer/lib/nodemailer.js', () => ({ default: { createTransport } }));
+// tests/unit/emailStagingRetry.test.js (nodemailer 10's ESM entry, dist/esm/ — 122).
+vi.mock('../../../server/node_modules/nodemailer/dist/esm/nodemailer.js', () => ({ default: { createTransport } }));
 vi.mock('../../../server/db/client.js', () => ({ prisma: { emailTemplate, user, usageEvent } }));
 
 import {

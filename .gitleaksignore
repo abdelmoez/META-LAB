@@ -1,0 +1,25 @@
+# .gitleaksignore — inspected gitleaks FALSE POSITIVES (122).
+# One fingerprint per line, in the form commit:path:rule:line. A fingerprint
+# pins one historical finding exactly, so any new or changed finding still
+# fails the scan. Every entry below was viewed at its commit and is not a
+# credential. Something real is rotated and never listed here.
+#
+# Describe each entry in plain words. Do NOT quote the flagged text: the scanner
+# reads this file too, and a quoted line is reported again.
+
+# A source comment about saved metadata. Prose only.
+79c13780bea057eabd72f209509c78d0ae6cb1e0:src/features/searchBuilder/SearchBuilderTab.jsx:generic-api-key:1035
+# A sign-in value for a throwaway user that the test itself creates on the local test server.
+07a716bdc6582a0ac4935ce38951bb4064c9af1a:tests/integration/api-google-auth.test.js:generic-api-key:45
+# A sign-in value for a throwaway user that the test itself creates on the local test server.
+4eb8a1ae1872f275a1cb04d28a61b184133bd4af:tests/integration/api-security-prompt49.test.js:generic-api-key:68
+# The same throwaway test-user value, second use in that file.
+4eb8a1ae1872f275a1cb04d28a61b184133bd4af:tests/integration/api-security-prompt49.test.js:generic-api-key:170
+# The same throwaway test-user value, used by the waitlist suite.
+ff2792efae2a452bf2de1b62cb20afc891ef9041:tests/integration/api-waitlist.test.js:generic-api-key:120
+# A section label in the end-to-end discovery map. A name, not a value.
+0dd2975590daea6474aeffdb31b96fdc69db0235:e2e/.discovery/maps.json:generic-api-key:6979
+# A variable assignment in application code. No literal value.
+ad9b467f0e60d30bc2481bf3003a3c38d645c8b9:src/frontend/workspace/tabs/analysisTabs.jsx:generic-api-key:61
+# The same variable assignment, in the legacy single-file prototype.
+78f0ee29d0ba96a59b164c45500bc787c3a3d42d:meta-lab-3-patched.jsx:generic-api-key:3625

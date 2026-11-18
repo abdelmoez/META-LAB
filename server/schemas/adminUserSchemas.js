@@ -8,7 +8,9 @@
  * Enums come from src/shared/adminUsers.js — the same vocabulary the Ops UI
  * renders, so client and server can never drift.
  */
-import { z } from 'zod';
+// Zod 4 package, classic Zod 3 API via 'zod/v3' (122); migrating to the Zod 4 API is a deliberate separate follow-up.
+import { z } from 'zod/v3';
+import { countFirstArray } from './countFirstArray.js';
 import {
   USER_LIST_SORTS, USER_LIST_STATUS_FILTERS, USER_LIST_AUTH_FILTERS,
   USER_LIST_REG_FILTERS, USER_LIST_CREATED_WINDOWS, USER_LIST_ACTIVE_WINDOWS,
@@ -51,7 +53,8 @@ export function parseUsersListQuery(query) {
 export const bulkUserActionSchema = z
   .object({
     action: z.enum(BULK_USER_ACTIONS),
-    ids: z.array(z.string().min(1).max(64)).min(1).max(200),
+    // countFirstArray: enforce 1..200 ids with ONE issue before any id is parsed (122).
+    ids: countFirstArray(z.array(z.string().min(1).max(64)).min(1).max(200)),
     tierId: z.string().trim().min(1).max(64).optional(),
     reason: z.string().trim().max(500).optional(),
   })

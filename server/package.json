@@ -31,15 +31,20 @@
     "helmet": "^8.0.0",
     "jsonwebtoken": "^9.0.2",
     "multer": "^2.1.1",
-    "nodemailer": "^9.0.3",
+    "nodemailer": "^10.6.0",
     "qrcode": "^1.5.4",
     "uuid": "^11.0.3",
-    "zod": "^3.25.76"
+    "zod": "^4.6.7"
   },
   "devDependencies": {
     "prisma": "^5.22.0"
   },
   "optionalDependencies": {
     "geoip-lite": "^1.4.10"
+  },
+  "overrides": {
+    "geoip-lite": {
+      "ip-address": "^10.7.6"
+    }
   }
 }

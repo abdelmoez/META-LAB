@@ -11,7 +11,8 @@
  *   - IMPORT: object strips unknown keys — a fixed { text, projectId } contract.
  */
 
-import { z } from 'zod';
+// Zod 4 package, classic Zod 3 API via 'zod/v3' (122); migrating to the Zod 4 API is a deliberate separate follow-up.
+import { z } from 'zod/v3';
 
 // Generous upper bounds: real DoS guards, not business limits. A project rarely
 // exceeds these; exceeding them returns a structured 400 instead of OOMing.
